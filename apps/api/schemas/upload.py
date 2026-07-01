@@ -39,7 +39,7 @@ ALLOWED_MIME_TYPES = {
 MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024 * 1024  # 2000 GB
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
-def mime_to_asset_type(mime_type: str) -> AssetType:
+def mime_to_asset_type (mime_type: str) -> AssetType:
     if mime_type.startswith("image/"):
         return AssetType.image
     elif mime_type.startswith("audio/"):
