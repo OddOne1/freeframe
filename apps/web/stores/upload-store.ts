@@ -223,7 +223,7 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
 
         // Upload done — backend now processes (transcode/convert).
         // For non-processable types (or if SSE isn't wired), mark complete directly.
-        const isMedia = file.type.startsWith('video/') || file.type.startsWith('audio/') || file.type.startsWith('image/')
+        const isMedia = file.type.startsWith('video/') || file.type.startsWith('audio/') || file.type.startsWith('image/') || file.type === 'application/mxf' || file.type === 'application/octet-stream'
         if (isMedia) {
           updateFile(id, { progress: 100, status: 'processing', processingProgress: 0 })
         } else {
@@ -309,7 +309,7 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
         }
 
         await api.post('/upload/complete', { s3_key, upload_id, asset_id: assetId, version_id, parts })
-        const isMedia = file.type.startsWith('video/') || file.type.startsWith('audio/') || file.type.startsWith('image/')
+        const isMedia = file.type.startsWith('video/') || file.type.startsWith('audio/') || file.type.startsWith('image/') || file.type === 'application/mxf' || file.type === 'application/octet-stream'
         updateFile(id, { progress: 100, status: isMedia ? 'processing' : 'complete', processingProgress: 0 })
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') {
