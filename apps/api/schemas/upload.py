@@ -5,14 +5,28 @@ from ..models.asset import AssetType
 ALLOWED_MIME_TYPES = {
     # Images
     "image/jpeg", "image/png", "image/webp", "image/heic", "image/tiff", "image/gif",
+    "image/x-dpx", "image/x-exr",
     # Audio
     "audio/mpeg", "audio/wav", "audio/flac", "audio/aac", "audio/ogg", "audio/x-m4a",
-    # Video
+    "audio/x-wav", "audio/x-aiff", "audio/aiff",
+    # Video - standard
     "video/mp4", "video/quicktime", "video/x-msvideo", "video/x-matroska",
-    "video/webm", "video/mpeg", "video/x-ms-wmv",
+    "video/webm", "video/mpeg", "video/x-ms-wmv", "video/x-flv",
+    "video/3gpp", "video/3gpp2", "video/ogg",
+    # Video - broadcast/professional containers
+    "application/mxf", "application/x-mxf", "video/mxf", "video/x-mxf",
+    "video/x-m2ts", "video/mp2t", "video/mts",
+    # Generic fallback for professional formats browsers misidentify
+    "application/octet-stream",
+    # RAW camera formats
+    "video/x-raw", "image/x-raw",
+    "application/x-braw", "application/braw",
+    "application/x-redraw", "application/x-r3d",
+    "application/x-arriraw", "application/x-ari",
+    "application/x-cine", "application/x-cinema-dng",
 }
 
-MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
+MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024 * 1024  # 2000 GB
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 def mime_to_asset_type(mime_type: str) -> AssetType:
