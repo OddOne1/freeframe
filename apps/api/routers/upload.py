@@ -33,7 +33,7 @@ def initiate_upload(
     if body.mime_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {body.mime_type}")
     if body.file_size_bytes > MAX_FILE_SIZE_BYTES:
-        raise HTTPException(status_code=400, detail="File exceeds 10GB limit")
+        raise HTTPException(status_code=400, detail="File exceeds 2000GB limit")
 
     # Verify project access (editor or above)
     project = db.query(Project).filter(Project.id == body.project_id, Project.deleted_at.is_(None)).first()
