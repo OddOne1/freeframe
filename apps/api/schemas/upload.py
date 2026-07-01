@@ -36,9 +36,6 @@ ALLOWED_MIME_TYPES = {
     "movie/x-redraw", "movie/redraw", "movie/x-ar", "movie/ari"
 }
 
-MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024 * 1024  # 2000 GB
-CHUNK_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
-
 def mime_to_asset_type(mime_type: str) -> AssetType:
     if mime_type.startswith("image/"):
         return AssetType.image
@@ -46,7 +43,7 @@ def mime_to_asset_type(mime_type: str) -> AssetType:
         return AssetType.audio
     elif mime_type.startswith("video/"):
         return AssetType.video
-elif mime_type.startswith("movie/") or mime_type in (
+    elif mime_type.startswith("movie/") or mime_type in (
         "application/mxf", "application/x-mxf", "video/mxf", "video/x-mxf",
         "application/x-braw", "application/braw", "application/x-r3d",
         "application/x-arriraw", "application/x-ari", "application/x-cine",
@@ -55,7 +52,7 @@ elif mime_type.startswith("movie/") or mime_type in (
     ):
         return AssetType.video
     raise ValueError(f"Unsupported mime type: {mime_type}")
-
+    
 class InitiateUploadRequest(BaseModel):
     project_id: uuid.UUID
     asset_name: str
