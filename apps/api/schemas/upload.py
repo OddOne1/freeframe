@@ -26,7 +26,7 @@ ALLOWED_MIME_TYPES = {
     "application/x-cine", "application/x-cinema-dng",
 }
 
-MAX_FILE_SIZE_BYTES = 200 * 1024 * 1024 * 1024  # 200 GB
+MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024 * 1024  # 200 GB
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 def mime_to_asset_type(mime_type: str) -> AssetType:
