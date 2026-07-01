@@ -36,6 +36,12 @@ def mime_to_asset_type(mime_type: str) -> AssetType:
         return AssetType.audio
     elif mime_type.startswith("video/"):
         return AssetType.video
+    elif mime_type in ("application/mxf", "application/x-mxf", "video/mxf", "video/x-mxf",
+                       "application/x-braw", "application/braw", "application/x-r3d",
+                       "application/x-arriraw", "application/x-ari", "application/x-cine",
+                       "application/x-cinema-dng", "application/octet-stream",
+                       "video/mp2t", "video/x-m2ts", "video/mts"):
+        return AssetType.video
     raise ValueError(f"Unsupported mime type: {mime_type}")
 
 class InitiateUploadRequest(BaseModel):
