@@ -182,7 +182,7 @@ minio:
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: Yon.Studio
-      MINIO_ROOT_PASSWORD: Yon.Studio257!
+      MINIO_ROOT_PASSWORD: Yon.Studio
     volumes:
       - miniodata:/data
     healthcheck:
