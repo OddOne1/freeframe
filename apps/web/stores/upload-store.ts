@@ -309,8 +309,7 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
         }
 
         await api.post('/upload/complete', { s3_key, upload_id, asset_id: assetId, version_id, parts })
-        const isMedia = file.type.startsWith('video/') || file.type.startsWith('audio/') || file.type.startsWith('image/') || file.type === 'application/mxf' || file.type === 'application/octet-stream' || file.type === 'application/x-matroska' || file.type === '' || file.name.match(/\.(mxf|mov|mts|m2ts|braw|r3d|ari|dng|cine|dpx|exr|mkv|prores)$/i) !== null
-        updateFile(id, { progress: 100, status: isMedia ? 'processing' : 'complete', processingProgress: 0 })
+        const isMedia = file.type.startsWith('video/') || file.type.startsWith('audio/') || file.type.startsWith('image/') || file.type === 'application/mxf' || file.type === 'application/octet-stream' || file.type === 'application/x-matroska' || file.type === '' || file.name.match(/\.(mxf|mov|mts|m2ts|braw|r3d|ari|dng|cine|dpx|exr|mkv|prores)$/i) !== null        updateFile(id, { progress: 100, status: isMedia ? 'processing' : 'complete', processingProgress: 0 })
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') {
           updateFile(id, { status: 'cancelled', progress: 0 })
