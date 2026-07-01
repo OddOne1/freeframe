@@ -36,7 +36,7 @@ ALLOWED_MIME_TYPES = {
     "movie/x-redraw", "movie/redraw", "movie/x-ar", "movie/ari"
 }
 
-MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024 * 1024  # 200 GB
+MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024 * 1024  # 2000 GB
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 def mime_to_asset_type(mime_type: str) -> AssetType:
@@ -46,26 +46,13 @@ def mime_to_asset_type(mime_type: str) -> AssetType:
         return AssetType.audio
     elif mime_type.startswith("video/"):
         return AssetType.video
-    elif mime_type in ("application/mxf", "application/x-mxf", "video/mxf", "video/x-mxf",
-                       "application/x-braw", "application/braw", "application/x-r3d",
-                       "application/x-arriraw", "application/x-ari", "application/x-cine",
-                       "application/x-cinema-dng", "application/octet-stream",
-                       "video/x-raw", "image/x-raw",
-                        "application/x-braw", "application/braw",
-                        "application/x-redraw", "application/x-r3d",
-                        "application/x-arriraw", "application/x-ari",
-                        "application/x-cine", "application/x-cinema-dng",
-                        "video/x-braw", "video/braw", "video/x-raw", "video/raw",
-                        "video/x-arriraw", "video/arriraw", "video/x-r3d",
-                        "video/r3d", "video/x-redraw", "video/redraw",
-                        "video/x-cine", "video/cine", "video/x-cinema-dng",
-                        "video/cinema-dng", "video/x-ari", "video/ari",
-                        "movie/x-braw", "movie/braw", "movie/x-raw", "movie/raw", 
-                        "movie/x-arriraw", "movie/arriraw", "movie/x-r3d",
-                        "movie/r3d", "movie/x-cine", "movie/cine",
-                        "movie/x-cinema-dng", "movie/cinema-dng",
-                        "movie/x-redraw", "movie/redraw", "movie/x-ar", "movie/ari",
-                       "video/mp2t", "video/x-m2ts", "video/mts"):
+elif mime_type.startswith("movie/") or mime_type in (
+        "application/mxf", "application/x-mxf", "video/mxf", "video/x-mxf",
+        "application/x-braw", "application/braw", "application/x-r3d",
+        "application/x-arriraw", "application/x-ari", "application/x-cine",
+        "application/x-cinema-dng", "application/octet-stream",
+        "video/mp2t", "video/x-m2ts", "video/mts"
+    ):
         return AssetType.video
     raise ValueError(f"Unsupported mime type: {mime_type}")
 
