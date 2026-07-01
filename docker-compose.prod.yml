@@ -71,7 +71,7 @@ services:
     environment:
       - DISABLE_DOCS=true
     depends_on:
-       minio:
+      minio:
         condition: service_healthy
       postgres:
         condition: service_healthy
