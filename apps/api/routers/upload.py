@@ -40,6 +40,16 @@ def initiate_upload(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     require_project_role(db, body.project_id, current_user, ProjectRole.editor)
+    
+    # Enforce per-project storage limit if set
+    if project.storage_limit_bytes is not None:
+        current_storage = db.query(func.coalesce(func.sum(MediaFile.file_size_bytes), 0))\
+            .join(AssetVersion, MediaFile.version_id == AssetVersion.id)\
+            .join(Asset, AssetVersion.asset_id == Asset.id)\
+            .filter(Asset.project_id == project.id, Asset.deleted_at.is_(None))\
+            .scalar()
+        if current_storage + body.file_size_bytes > project.storage_limit_bytes:
+            raise HTTPException(status_code=400, detail="Project storage limit exceeded")
 
     # Get or create asset
     if body.asset_id:
