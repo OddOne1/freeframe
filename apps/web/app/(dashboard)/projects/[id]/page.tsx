@@ -1256,12 +1256,14 @@ export default function ProjectDetailPage() {
         projectId={projectId}
         projectName={project?.name ?? ""}
       />
-      <ProjectSettingsDialog
-        project={project}
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        onUpdated={refetch}
-      />
+      {project && (
+        <ProjectSettingsDialog
+          project={project}
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          onUpdated={refetch}
+        />
+      )}
 
       {/* Bulk delete confirmation */}
       <ConfirmDialog
