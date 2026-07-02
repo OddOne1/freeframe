@@ -586,11 +586,26 @@ export default function ProjectDetailPage() {
         {/* Spacer */}
         <div className="flex-1" />
 
-        {/* Storage indicator — matches global sidebar bottom section (p-2 + space-y-1) */}
+       {/* Storage indicator */}
         {(() => {
           const used = project?.storage_bytes ?? 0;
-          const limit = 10 * 1024 * 1024 * 1024; // 10 GB default limit
-          const pct = limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
+          const limit = project?.storage_limit_bytes ?? null;
+          if (limit === null) {
+            return (
+              <div className="border-t border-border shrink-0 p-2 space-y-1">
+                <div className="flex flex-col gap-1 px-2.5 py-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-medium text-text-secondary">Storage</span>
+                    <span className="text-[10px] tabular-nums text-text-tertiary">
+                      {formatBytes(used)} used
+                    </span>
+                  </div>
+                </div>
+                <div className="h-5" />
+              </div>
+            );
+          }
+          const pct = Math.min((used / limit) * 100, 100);
           const isCritical = pct >= 90;
           const isWarning = pct >= 80;
           return (
@@ -618,6 +633,7 @@ export default function ProjectDetailPage() {
               <div className="h-5" />
             </div>
           );
+        })()}
         })()}
       </div>
 
