@@ -183,29 +183,30 @@ export function ProjectSettingsDialog({
                         </Switch.Root>
                       </div>
                       <p className="text-xs text-text-tertiary mt-0.5">
-                        {isPublic
-                          ? 'All users in the system can view this project.'
-                          : 'Only invited members can access this project.'}
-                      </p>
-                      {/* Storage limit */}
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Storage Limit (GB)</label>
-                          <input
-                            type="number"
-                            min="1"
-                            value={storageLimitGB}
-                            onChange={(e) => setStorageLimitGB(e.target.value)}
-                            placeholder="Unlimited"
-                            className="w-full rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors"
-                          />
-                        <p className="text-xs text-text-tertiary">Leave empty for unlimited storage.</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+                {isPublic
+                  ? 'All users in the system can view this project.'
+                  : 'Only invited members can access this project.'}
+              </p>
             </div>
           </div>
+        </div>
+
+                {/* Storage limit */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Storage Limit (GB)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={storageLimitGB}
+                    onChange={(e) => setStorageLimitGB(e.target.value)}
+                    placeholder="Unlimited"
+                    className="w-full rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors"
+                  />
+                  <p className="text-xs text-text-tertiary">Leave empty for unlimited storage.</p>
+                </div>
+      </div>
+    </div>
+  </div>
 
           {/* Footer */}
           <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-border">
