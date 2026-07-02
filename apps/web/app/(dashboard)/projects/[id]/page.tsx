@@ -8,6 +8,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   Upload,
+  Settings,
   X,
   FolderOpen,
   Link as LinkIcon,
@@ -49,6 +50,7 @@ import {
 import { NameDialog } from "@/components/projects/name-dialog";
 import { ShareCreateDialog } from "@/components/projects/share-create-dialog";
 import { ProjectMembersDialog } from "@/components/projects/project-members-dialog";
+import { ProjectSettingsDialog } from "@/components/projects/project-settings-dialog";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { usePageTitle } from "@/hooks/use-page-title";
 import type {
@@ -109,6 +111,7 @@ export default function ProjectDetailPage() {
   } | null>(null);
   const [shareMode, setShareMode] = React.useState(false);
   const [membersDialogOpen, setMembersDialogOpen] = React.useState(false);
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [pendingBulkDelete, setPendingBulkDelete] = React.useState<{
     assetIds: string[];
     folderIds: string[];
@@ -1252,6 +1255,12 @@ export default function ProjectDetailPage() {
         onOpenChange={setMembersDialogOpen}
         projectId={projectId}
         projectName={project?.name ?? ""}
+      />
+      <ProjectSettingsDialog
+        project={project}
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        onUpdated={refetch}
       />
 
       {/* Bulk delete confirmation */}
