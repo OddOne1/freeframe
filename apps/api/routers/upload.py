@@ -1,6 +1,7 @@
 import os
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 import uuid
 from datetime import datetime, timezone
 from ..database import get_db
