@@ -634,7 +634,6 @@ export default function ProjectDetailPage() {
             </div>
           );
         })()}
-        })()}
       </div>
 
       {/* ─── Main Content ───────────────────────────────────────────────── */}
