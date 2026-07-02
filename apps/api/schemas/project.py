@@ -12,6 +12,7 @@ class ProjectUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     is_public: bool | None = None
+    storage_limit_bytes: int | None = None
 
 class ProjectResponse(BaseModel):
     id: uuid.UUID
@@ -27,6 +28,9 @@ class ProjectResponse(BaseModel):
     member_count: int = 0
     role: ProjectRole | None = None
     model_config = {"from_attributes": True}
+    storage_bytes: int = 0
+    storage_limit_bytes: int | None = None
+    member_count: int = 0
 
 class ProjectMemberResponse(BaseModel):
     id: uuid.UUID
