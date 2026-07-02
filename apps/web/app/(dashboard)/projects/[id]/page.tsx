@@ -1261,7 +1261,7 @@ export default function ProjectDetailPage() {
           project={project}
           open={settingsOpen}
           onOpenChange={setSettingsOpen}
-          onUpdated={refetch}
+          onUpdated={mutateProject}
         />
       )}
 
