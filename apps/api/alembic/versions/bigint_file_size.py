@@ -1,7 +1,7 @@
 """bigint file size
 
 Revision ID: bigint_file_size
-Revises: 8ca3dffea55f
+Revises: b4623f8f4339
 Create Date: 2026-07-01
 
 """
@@ -15,20 +15,20 @@ depends_on = None
 
 def upgrade():
     op.alter_column('media_files', 'file_size_bytes',
-              existing_type=sa.Integer(),
-              type_=sa.BigInteger(),
-              existing_nullable=False)
+               existing_type=sa.Integer(),
+               type_=sa.BigInteger(),
+               existing_nullable=False)
     op.alter_column('comment_attachments', 'file_size_bytes',
-              existing_type=sa.Integer(),
-              type_=sa.BigInteger(),
-              existing_nullable=False)
+               existing_type=sa.Integer(),
+               type_=sa.BigInteger(),
+               existing_nullable=False)
 
 def downgrade():
     op.alter_column('media_files', 'file_size_bytes',
-              existing_type=sa.BigInteger(),
-              type_=sa.Integer(),
-              existing_nullable=False)
+               existing_type=sa.BigInteger(),
+               type_=sa.Integer(),
+               existing_nullable=False)
     op.alter_column('comment_attachments', 'file_size_bytes',
-              existing_type=sa.BigInteger(),
-              type_=sa.Integer(),
-              existing_nullable=False)
+               existing_type=sa.BigInteger(),
+               type_=sa.Integer(),
+               existing_nullable=False)
