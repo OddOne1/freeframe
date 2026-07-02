@@ -154,7 +154,7 @@ export default function ProjectDetailPage() {
     removeReaction,
   } = useComments(selectedAsset?.id || null, selectedVersionId);
 
-  const { data: project, isLoading: loadingProject } = useSWR<Project>(
+  const { data: project, isLoading: loadingProject, mutate: mutateProject } = useSWR<Project>(
     `/projects/${projectId}`,
     () => api.get<Project>(`/projects/${projectId}`),
   );
