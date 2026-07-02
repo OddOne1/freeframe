@@ -66,6 +66,7 @@ export function ProjectSettingsDialog({
         name: name.trim(),
         description: description.trim() || null,
         is_public: isPublic,
+        storage_limit_bytes: storageLimitGB ? Math.round(parseFloat(storageLimitGB) * 1024 ** 3) : null,
       })
 
       onUpdated()
