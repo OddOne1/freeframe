@@ -140,73 +140,71 @@ export function ProjectSettingsDialog({
               </div>
 
               {/* Right: Settings */}
-              <div className="flex-1 space-y-5">
-                {/* Description */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Description</label>
-                  <textarea
-                    rows={2}
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    placeholder="Optional project description..."
-                    className="w-full rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors"
-                  />
-                </div>
+            <div className="flex-1 space-y-5">
+              {/* Description */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Description</label>
+                <textarea
+                  rows={2}
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Optional project description..."
+                  className="w-full rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors"
+                />
+              </div>
 
-                {/* Public / Private toggle */}
-                <div className="rounded-xl border border-border bg-bg-tertiary/50 p-4">
-                  <div className="flex items-start gap-3">
-                    <div className={cn(
-                      'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg mt-0.5',
-                      isPublic ? 'bg-accent/10 text-accent' : 'bg-bg-tertiary text-text-tertiary',
-                    )}>
-                      {isPublic ? <Globe className="h-4.5 w-4.5" /> : <Lock className="h-4.5 w-4.5" />}
+              {/* Public / Private toggle */}
+              <div className="rounded-xl border border-border bg-bg-tertiary/50 p-4">
+                <div className="flex items-start gap-3">
+                  <div className={cn(
+                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg mt-0.5',
+                    isPublic ? 'bg-accent/10 text-accent' : 'bg-bg-tertiary text-text-tertiary',
+                  )}>
+                    {isPublic ? <Globe className="h-4.5 w-4.5" /> : <Lock className="h-4.5 w-4.5" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-text-primary">
+                        {isPublic ? 'Public Project' : 'Private Project'}
+                      </span>
+                      <Switch.Root
+                        checked={isPublic}
+                        onCheckedChange={setIsPublic}
+                        className={cn(
+                          'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors',
+                          isPublic ? 'bg-accent' : 'bg-bg-tertiary',
+                        )}
+                      >
+                        <Switch.Thumb className={cn(
+                          'pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+                          isPublic ? 'translate-x-[18px]' : 'translate-x-0.5',
+                          'mt-0.5',
+                        )} />
+                      </Switch.Root>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-medium text-text-primary">
-                          {isPublic ? 'Public Project' : 'Private Project'}
-                        </span>
-                        <Switch.Root
-                          checked={isPublic}
-                          onCheckedChange={setIsPublic}
-                          className={cn(
-                            'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors',
-                            isPublic ? 'bg-accent' : 'bg-bg-tertiary',
-                          )}
-                        >
-                          <Switch.Thumb className={cn(
-                            'pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
-                            isPublic ? 'translate-x-[18px]' : 'translate-x-0.5',
-                            'mt-0.5',
-                          )} />
-                        </Switch.Root>
-                      </div>
-                      <p className="text-xs text-text-tertiary mt-0.5">
-                {isPublic
-                  ? 'All users in the system can view this project.'
-                  : 'Only invited members can access this project.'}
-              </p>
-            </div>
-          </div>
-        </div>
-
-                {/* Storage limit */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Storage Limit (GB)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={storageLimitGB}
-                    onChange={(e) => setStorageLimitGB(e.target.value)}
-                    placeholder="Unlimited"
-                    className="w-full rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors"
-                  />
-                  <p className="text-xs text-text-tertiary">Leave empty for unlimited storage.</p>
+                    <p className="text-xs text-text-tertiary mt-0.5">
+                      {isPublic
+                        ? 'All users in the system can view this project.'
+                        : 'Only invited members can access this project.'}
+                    </p>
+                  </div>
                 </div>
-      </div>
-    </div>
-  </div>
+              </div>
+
+              {/* Storage limit */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Storage Limit (GB)</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={storageLimitGB}
+                  onChange={(e) => setStorageLimitGB(e.target.value)}
+                  placeholder="Unlimited"
+                  className="w-full rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors"
+                />
+                <p className="text-xs text-text-tertiary">Leave empty for unlimited storage.</p>
+              </div>
+            </div>
 
           {/* Footer */}
           <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-border">
