@@ -155,6 +155,8 @@ def update_project(project_id: uuid.UUID, body: ProjectUpdate, db: Session = Dep
         project.description = body.description
     if body.is_public is not None:
         project.is_public = body.is_public
+    if body.storage_limit_bytes is not None:
+        project.storage_limit_bytes = body.storage_limit_bytes
     db.commit()
     db.refresh(project)
     resp = ProjectResponse.model_validate(project)
