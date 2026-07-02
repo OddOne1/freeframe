@@ -855,13 +855,22 @@ export default function ProjectDetailPage() {
               actions={
                 <>
                   {canManageMembers && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => setMembersDialogOpen(true)}
-                    >
-                      <Users className="h-4 w-4" />
-                    </Button>
+                    <>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setMembersDialogOpen(true)}
+                      >
+                        <Users className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setSettingsOpen(true)}
+                      >
+                        <Settings className="h-4 w-4" />
+                      </Button>
+                    </>
                   )}
                   {canShare && (
                     <Button
