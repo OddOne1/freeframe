@@ -89,6 +89,7 @@ export interface Project {
   deleted_at: string | null;
   asset_count?: number;
   storage_bytes?: number;
+  storage_limit_bytes?: number | null;
   member_count?: number;
   role?: string | null;
 }
