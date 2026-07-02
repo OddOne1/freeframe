@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional
-from sqlalchemy import String, Boolean, Enum, DateTime, ForeignKey, func, UniqueConstraint
+from sqlalchemy import String, Boolean, Enum, DateTime, ForeignKey, BigInteger, func, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 try:
@@ -31,6 +31,7 @@ class Project(Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    storage_limit_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
 class ProjectMember(Base):
     __tablename__ = "project_members"
