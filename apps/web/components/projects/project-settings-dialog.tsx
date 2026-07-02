@@ -205,6 +205,8 @@ export function ProjectSettingsDialog({
                 <p className="text-xs text-text-tertiary">Leave empty for unlimited storage.</p>
               </div>
             </div>
+          </div>
+        </div>
 
           {/* Footer */}
           <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-border">
