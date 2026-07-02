@@ -29,12 +29,16 @@ export function ProjectSettingsDialog({
   const [posterPreview, setPosterPreview] = React.useState<string | null>(project.poster_url ?? null)
   const [posterFile, setPosterFile] = React.useState<File | null>(null)
   const [saving, setSaving] = React.useState(false)
+  const [storageLimitGB, setStorageLimitGB] = React.useState<string>(
+    project.storage_limit_bytes ? String(Math.round(project.storage_limit_bytes / (1024 ** 3))) : ''
+  )
   const fileInputRef = React.useRef<HTMLInputElement>(null)
 
   // Sync state when project changes
   React.useEffect(() => {
     setName(project.name)
     setDescription(project.description || '')
+    setStorageLimitGB(project.storage_limit_bytes ? String(Math.round(project.storage_limit_bytes / (1024 ** 3))) : '')
     setIsPublic(project.is_public ?? false)
     setPosterPreview(project.poster_url ?? null)
     setPosterFile(null)
