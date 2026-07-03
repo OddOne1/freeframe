@@ -3,12 +3,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { ReviewProvider, useReview } from '@/components/review/review-provider'
 import { VideoPlayer } from '@/components/review/video-player'
 import { AudioPlayer } from '@/components/review/audio-player'
 import { ImageViewer } from '@/components/review/image-viewer'
-import { Badge } from '@/components/shared/badge'
+import { StatusDropdown } from '@/components/shared/status-dropdown'
 import { StarRating } from '@/components/shared/star-rating'
 import { AnnotationCanvas } from '@/components/review/annotation-canvas'
 import { AnnotationOverlay } from '@/components/review/annotation-overlay'
@@ -31,7 +30,6 @@ import {
   Loader2,
   Columns2,
   Upload,
-  Check,
 } from 'lucide-react'
 import Link from 'next/link'
 import { cn } from '@/lib/utils'
@@ -116,8 +114,6 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const canVote = currentRole !== 'viewer'
   const canEditStatus = currentRole === 'owner' || currentRole === 'editor'
   const canArchive = user?.is_superadmin ?? false
-
-  const STATUS_OPTIONS: AssetStatus[] = ['draft', 'in_review', 'in_progress', 'approved', 'rejected', 'archived']
 
   const [statusOverride, setStatusOverride] = useState<AssetStatus | null>(null)
   useEffect(() => {
@@ -432,35 +428,17 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             New Version
           </button>
           {displayStatus && (
-            canEditStatus ? (
-              <DropdownMenu.Root>
-                <DropdownMenu.Trigger asChild>
-                  <button className="outline-none">
-                    <Badge status={displayStatus} className="h-8 px-2.5 cursor-pointer hover:opacity-80 transition-opacity" />
-                  </button>
-                </DropdownMenu.Trigger>
-                <DropdownMenu.Portal>
-                  <DropdownMenu.Content
-                    align="start"
-                    sideOffset={4}
-                    className="z-[100] min-w-[170px] rounded-xl border border-border bg-bg-elevated shadow-2xl py-1.5 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
-                  >
-                    {STATUS_OPTIONS.filter((s) => s !== 'archived' || canArchive).map((s) => (
-                      <DropdownMenu.Item
-                        key={s}
-                        onSelect={() => handleStatusChange(s)}
-                        className="flex items-center justify-between gap-2.5 mx-1 px-2.5 py-1.5 rounded-lg cursor-pointer outline-none hover:bg-bg-hover transition-colors"
-                      >
-                        <Badge status={s} />
-                        {displayStatus === s && <Check className="h-3.5 w-3.5 text-accent shrink-0" />}
-                      </DropdownMenu.Item>
-                    ))}
-                  </DropdownMenu.Content>
-                </DropdownMenu.Portal>
-              </DropdownMenu.Root>
-            ) : (
-              <Badge status={displayStatus} className="h-8 px-2.5" />
-            )
+            <StatusDropdown
+              status={displayStatus}
+              onChange={canEditStatus ? handleStatusChange : undefined}
+              readOnly={!canEditStatus}
+              canArchive={canArchive}
+              className={
+                canEditStatus
+                  ? 'bg-transparent border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors'
+                  : undefined
+              }
+            />
           )}
           {(canVote || ratingCount > 0) && (
             <div className="inline-flex items-center gap-1.5 rounded-md px-2.5 h-8 border border-border">
