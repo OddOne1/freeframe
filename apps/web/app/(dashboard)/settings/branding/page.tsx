@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import { useRouter } from 'next/navigation'
 import { Palette, Upload, X, Check, RotateCcw, Moon, Sun, Loader2 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
 import { useSiteSettings } from '@/hooks/use-site-settings'
@@ -91,7 +92,8 @@ function LogoUploadSlot({
 }
 
 export default function BrandingPage() {
-  const { user } = useAuthStore()
+  const { user, isSuperAdmin } = useAuthStore()
+  const router = useRouter()
   const {
     orgName,
     logoDarkUrl,
@@ -110,6 +112,16 @@ export default function BrandingPage() {
   const [resetting, setResetting] = React.useState(false)
 
   React.useEffect(() => { setNameValue(orgName) }, [orgName])
+
+  // This page is admin-only. The settings nav already hides the link for
+  // everyone else, but that doesn't stop direct navigation — redirect away
+  // the same way /settings/admin does, rather than rendering a read-only
+  // view that leaks the workspace's branding config to any logged-in user.
+  React.useEffect(() => {
+    if (user && !isSuperAdmin) {
+      router.replace('/')
+    }
+  }, [user, isSuperAdmin, router])
 
   async function handleSaveName() {
     const trimmed = nameValue.trim()
@@ -157,7 +169,10 @@ export default function BrandingPage() {
     }
   }
 
-  const isAdmin = user?.is_superadmin
+  if (!isSuperAdmin) {
+    return null
+  }
+
   const hasCustomBranding = orgName !== 'FreeFrame' || logoDarkUrl !== null || logoLightUrl !== null
 
   // Which logo is active right now
@@ -179,33 +194,29 @@ export default function BrandingPage() {
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-text-primary">Workspace name</h2>
         <div className="p-4 rounded-lg border border-border bg-bg-secondary space-y-3">
-          {isAdmin ? (
-            <div className="flex items-center gap-2">
-              <Input
-                value={nameValue}
-                onChange={(e) => setNameValue(e.target.value)}
-                placeholder="e.g. Acme Studio"
-                onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
-                className="max-w-xs"
-                disabled={savingName}
-              />
-              <Button
-                size="sm"
-                onClick={handleSaveName}
-                disabled={!nameValue.trim() || nameValue.trim() === orgName || savingName}
-              >
-                {savingName ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : nameSaved ? (
-                  <Check className="h-3.5 w-3.5" />
-                ) : (
-                  'Save'
-                )}
-              </Button>
-            </div>
-          ) : (
-            <p className="text-sm text-text-secondary">{orgName}</p>
-          )}
+          <div className="flex items-center gap-2">
+            <Input
+              value={nameValue}
+              onChange={(e) => setNameValue(e.target.value)}
+              placeholder="e.g. Acme Studio"
+              onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
+              className="max-w-xs"
+              disabled={savingName}
+            />
+            <Button
+              size="sm"
+              onClick={handleSaveName}
+              disabled={!nameValue.trim() || nameValue.trim() === orgName || savingName}
+            >
+              {savingName ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : nameSaved ? (
+                <Check className="h-3.5 w-3.5" />
+              ) : (
+                'Save'
+              )}
+            </Button>
+          </div>
           <p className="text-xs text-text-tertiary">
             Shown in the sidebar for everyone in this workspace. Defaults to &ldquo;FreeFrame&rdquo;.
           </p>
@@ -229,8 +240,8 @@ export default function BrandingPage() {
             description="Shown when the app is in dark mode. Use a light-colored logo."
             logoUrl={logoDarkUrl}
             uploading={uploadingSide === 'dark'}
-            onUpload={isAdmin ? (file) => handleUpload('dark', file) : () => {}}
-            onRemove={isAdmin ? () => handleRemove('dark') : () => {}}
+            onUpload={(file) => handleUpload('dark', file)}
+            onRemove={() => handleRemove('dark')}
             previewBg="bg-zinc-900"
           />
 
@@ -243,8 +254,8 @@ export default function BrandingPage() {
             description="Shown when the app is in light mode. Use a dark-colored logo."
             logoUrl={logoLightUrl}
             uploading={uploadingSide === 'light'}
-            onUpload={isAdmin ? (file) => handleUpload('light', file) : () => {}}
-            onRemove={isAdmin ? () => handleRemove('light') : () => {}}
+            onUpload={(file) => handleUpload('light', file)}
+            onRemove={() => handleRemove('light')}
             previewBg="bg-white"
           />
         </div>
@@ -275,7 +286,7 @@ export default function BrandingPage() {
       </section>
 
       {/* Reset */}
-      {isAdmin && hasCustomBranding && (
+      {hasCustomBranding && (
         <section className="pt-2 border-t border-border">
           <Button
             variant="ghost"
@@ -288,10 +299,6 @@ export default function BrandingPage() {
             Reset to defaults
           </Button>
         </section>
-      )}
-
-      {!isAdmin && (
-        <p className="text-xs text-text-tertiary">Only super admins can edit branding settings.</p>
       )}
     </div>
   )
