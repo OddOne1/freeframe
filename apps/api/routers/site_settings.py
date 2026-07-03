@@ -71,7 +71,7 @@ def update_site_settings(
         )
 
     site_settings = _get_or_create_settings(db)
-    update_data = body.model_dump(exclude_none=True)
+    update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(site_settings, field, value)
     db.commit()

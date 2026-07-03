@@ -17,7 +17,7 @@ import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 import { useUploadStore } from '@/stores/upload-store'
 import { useNotificationStore } from '@/stores/notification-store'
-import { useBrandingStore } from '@/stores/branding-store'
+import { useSiteSettings } from '@/hooks/use-site-settings'
 import { useThemeStore } from '@/stores/theme-store'
 import { Avatar } from '@/components/shared/avatar'
 import { NotificationDrawer } from './notification-drawer'
@@ -42,12 +42,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const { user, logout } = useAuthStore()
   const { files: uploadFiles, togglePanel, panelOpen } = useUploadStore()
   const { unreadCount, fetchNotifications } = useNotificationStore()
-  const { orgName, orgLogoDark, orgLogoLight } = useBrandingStore()
+  const { orgName, logoDarkUrl, logoLightUrl } = useSiteSettings()
   const { theme } = useThemeStore()
   // Pick logo based on resolved theme; fall back to the other if only one is set
   const customLogo = theme === 'light'
-    ? (orgLogoLight ?? orgLogoDark)
-    : (orgLogoDark ?? orgLogoLight)
+    ? (logoLightUrl ?? logoDarkUrl)
+    : (logoDarkUrl ?? logoLightUrl)
   const [notifOpen, setNotifOpen] = React.useState(false)
   const activeUploads = uploadFiles.filter((f) => f.status === 'uploading' || f.status === 'pending' || f.status === 'processing').length
 
@@ -63,12 +63,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         collapsed ? 'w-[52px]' : 'w-[220px]',
       )}
     >
-      {/* Logo */}
-      <div
+      {/* Logo — click to go home */}
+      <Link
+        href="/projects"
         className={cn(
-          'flex h-12 items-center shrink-0 border-b border-border',
+          'flex h-12 items-center shrink-0 border-b border-border hover:bg-bg-hover/60 transition-colors',
           collapsed ? 'justify-center px-0' : 'px-4 gap-2.5',
         )}
+        title="Go to Projects"
       >
         {/* Logo: theme-aware custom logo, or default FreeFrame icons */}
         {customLogo ? (
@@ -99,7 +101,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             {orgName}
           </span>
         )}
-      </div>
+      </Link>
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto overflow-x-hidden py-2 px-2 space-y-0.5">

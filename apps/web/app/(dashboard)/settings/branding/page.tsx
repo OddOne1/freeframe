@@ -1,9 +1,9 @@
 'use client'
 
 import * as React from 'react'
-import { Palette, Upload, X, Check, RotateCcw, Moon, Sun } from 'lucide-react'
+import { Palette, Upload, X, Check, RotateCcw, Moon, Sun, Loader2 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
-import { useBrandingStore } from '@/stores/branding-store'
+import { useSiteSettings } from '@/hooks/use-site-settings'
 import { useThemeStore } from '@/stores/theme-store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,6 +12,7 @@ function LogoUploadSlot({
   label,
   description,
   logoUrl,
+  uploading,
   onUpload,
   onRemove,
   previewBg,
@@ -19,7 +20,8 @@ function LogoUploadSlot({
   label: string
   description: string
   logoUrl: string | null
-  onUpload: (url: string) => void
+  uploading: boolean
+  onUpload: (file: File) => void
   onRemove: () => void
   previewBg: string
 }) {
@@ -28,12 +30,7 @@ function LogoUploadSlot({
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      const result = ev.target?.result
-      if (typeof result === 'string') onUpload(result)
-    }
-    reader.readAsDataURL(file)
+    onUpload(file)
     e.target.value = ''
   }
 
@@ -43,7 +40,9 @@ function LogoUploadSlot({
       <div
         className={`h-16 w-16 rounded-xl border border-border flex items-center justify-center overflow-hidden shrink-0 ${previewBg}`}
       >
-        {logoUrl ? (
+        {uploading ? (
+          <Loader2 className="h-4 w-4 animate-spin text-text-tertiary" />
+        ) : logoUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={logoUrl} alt={label} className="h-full w-full object-contain p-1" />
         ) : (
@@ -63,7 +62,12 @@ function LogoUploadSlot({
             className="hidden"
             onChange={handleFile}
           />
-          <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()}>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+          >
             <Upload className="h-3.5 w-3.5" />
             {logoUrl ? 'Replace' : 'Upload'}
           </Button>
@@ -72,6 +76,7 @@ function LogoUploadSlot({
               variant="ghost"
               size="sm"
               onClick={onRemove}
+              disabled={uploading}
               className="text-status-error hover:text-status-error hover:bg-status-error/10"
             >
               <X className="h-3.5 w-3.5" />
@@ -87,27 +92,76 @@ function LogoUploadSlot({
 
 export default function BrandingPage() {
   const { user } = useAuthStore()
-  const { orgName, orgLogoDark, orgLogoLight, setOrgName, setOrgLogoDark, setOrgLogoLight, resetAll } = useBrandingStore()
+  const {
+    orgName,
+    logoDarkUrl,
+    logoLightUrl,
+    updateOrgName,
+    uploadLogo,
+    removeLogo,
+    resetAll,
+  } = useSiteSettings()
   const { theme } = useThemeStore()
 
   const [nameValue, setNameValue] = React.useState(orgName)
   const [nameSaved, setNameSaved] = React.useState(false)
+  const [savingName, setSavingName] = React.useState(false)
+  const [uploadingSide, setUploadingSide] = React.useState<'dark' | 'light' | null>(null)
+  const [resetting, setResetting] = React.useState(false)
 
   React.useEffect(() => { setNameValue(orgName) }, [orgName])
 
-  function handleSaveName() {
+  async function handleSaveName() {
     const trimmed = nameValue.trim()
     if (!trimmed) return
-    setOrgName(trimmed)
-    setNameSaved(true)
-    setTimeout(() => setNameSaved(false), 2000)
+    setSavingName(true)
+    try {
+      await updateOrgName(trimmed)
+      setNameSaved(true)
+      setTimeout(() => setNameSaved(false), 2000)
+    } catch {
+      // no-op — leave the input as-is so the user can retry
+    } finally {
+      setSavingName(false)
+    }
+  }
+
+  async function handleUpload(side: 'dark' | 'light', file: File) {
+    setUploadingSide(side)
+    try {
+      await uploadLogo(side, file)
+    } catch {
+      // no-op — upload failed, slot just stays as it was
+    } finally {
+      setUploadingSide(null)
+    }
+  }
+
+  async function handleRemove(side: 'dark' | 'light') {
+    try {
+      await removeLogo(side)
+    } catch {
+      // no-op
+    }
+  }
+
+  async function handleReset() {
+    setResetting(true)
+    try {
+      await resetAll()
+      setNameValue('FreeFrame')
+    } catch {
+      // no-op
+    } finally {
+      setResetting(false)
+    }
   }
 
   const isAdmin = user?.is_superadmin
-  const hasCustomBranding = orgName !== 'FreeFrame' || orgLogoDark !== null || orgLogoLight !== null
+  const hasCustomBranding = orgName !== 'FreeFrame' || logoDarkUrl !== null || logoLightUrl !== null
 
   // Which logo is active right now
-  const activeLogo = theme === 'light' ? (orgLogoLight ?? orgLogoDark) : (orgLogoDark ?? orgLogoLight)
+  const activeLogo = theme === 'light' ? (logoLightUrl ?? logoDarkUrl) : (logoDarkUrl ?? logoLightUrl)
 
   return (
     <div className="p-6 max-w-2xl space-y-8">
@@ -133,20 +187,27 @@ export default function BrandingPage() {
                 placeholder="e.g. Acme Studio"
                 onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
                 className="max-w-xs"
+                disabled={savingName}
               />
               <Button
                 size="sm"
                 onClick={handleSaveName}
-                disabled={!nameValue.trim() || nameValue.trim() === orgName}
+                disabled={!nameValue.trim() || nameValue.trim() === orgName || savingName}
               >
-                {nameSaved ? <Check className="h-3.5 w-3.5" /> : 'Save'}
+                {savingName ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : nameSaved ? (
+                  <Check className="h-3.5 w-3.5" />
+                ) : (
+                  'Save'
+                )}
               </Button>
             </div>
           ) : (
             <p className="text-sm text-text-secondary">{orgName}</p>
           )}
           <p className="text-xs text-text-tertiary">
-            Shown in the sidebar. Defaults to &ldquo;FreeFrame&rdquo;.
+            Shown in the sidebar for everyone in this workspace. Defaults to &ldquo;FreeFrame&rdquo;.
           </p>
         </div>
       </section>
@@ -166,9 +227,10 @@ export default function BrandingPage() {
           <LogoUploadSlot
             label="Dark theme logo"
             description="Shown when the app is in dark mode. Use a light-colored logo."
-            logoUrl={orgLogoDark}
-            onUpload={isAdmin ? setOrgLogoDark : () => {}}
-            onRemove={isAdmin ? () => setOrgLogoDark(null) : () => {}}
+            logoUrl={logoDarkUrl}
+            uploading={uploadingSide === 'dark'}
+            onUpload={isAdmin ? (file) => handleUpload('dark', file) : () => {}}
+            onRemove={isAdmin ? () => handleRemove('dark') : () => {}}
             previewBg="bg-zinc-900"
           />
 
@@ -179,9 +241,10 @@ export default function BrandingPage() {
           <LogoUploadSlot
             label="Light theme logo"
             description="Shown when the app is in light mode. Use a dark-colored logo."
-            logoUrl={orgLogoLight}
-            onUpload={isAdmin ? setOrgLogoLight : () => {}}
-            onRemove={isAdmin ? () => setOrgLogoLight(null) : () => {}}
+            logoUrl={logoLightUrl}
+            uploading={uploadingSide === 'light'}
+            onUpload={isAdmin ? (file) => handleUpload('light', file) : () => {}}
+            onRemove={isAdmin ? () => handleRemove('light') : () => {}}
             previewBg="bg-white"
           />
         </div>
@@ -218,9 +281,10 @@ export default function BrandingPage() {
             variant="ghost"
             size="sm"
             className="text-status-error hover:text-status-error hover:bg-status-error/10 gap-1.5"
-            onClick={() => { resetAll(); setNameValue('FreeFrame') }}
+            onClick={handleReset}
+            disabled={resetting}
           >
-            <RotateCcw className="h-3.5 w-3.5" />
+            {resetting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
             Reset to defaults
           </Button>
         </section>
