@@ -228,7 +228,7 @@ export default function ProjectDetailPage() {
       const seen = new Set<string>();
       while (current && nameById.has(current) && !seen.has(current)) {
         seen.add(current);
-        const entry: { name: string; parent_id: string | null } = nameById.get(current)!;
+        const entry = nameById.get(current)!;
         segments.unshift(entry.name);
         current = entry.parent_id;
       }
@@ -796,31 +796,26 @@ export default function ProjectDetailPage() {
                 router.push(`/projects/${projectId}/assets/${asset.id}`)
               }
               canVote={canComment}
-              onAssetVote={async (asset) => {
+              onAssetVote={async (asset, stars) => {
                 const target = asset as AssetResponse;
                 // Optimistic update
                 mutateAssets(
                   (current) =>
                     current?.map((a) =>
-                      a.id === target.id
-                        ? {
-                            ...a,
-                            voted_by_me: !a.voted_by_me,
-                            vote_count: (a.vote_count ?? 0) + (a.voted_by_me ? -1 : 1),
-                          }
-                        : a,
+                      a.id === target.id ? { ...a, my_rating: stars } : a,
                     ),
                   false,
                 );
                 try {
-                  const result = await api.post<{ vote_count: number; voted_by_me: boolean }>(
+                  const result = await api.post<{ avg_rating: number | null; rating_count: number; my_rating: number | null }>(
                     `/assets/${target.id}/vote`,
+                    { stars },
                   );
                   mutateAssets(
                     (current) =>
                       current?.map((a) =>
                         a.id === target.id
-                          ? { ...a, vote_count: result.vote_count, voted_by_me: result.voted_by_me }
+                          ? { ...a, avg_rating: result.avg_rating, rating_count: result.rating_count, my_rating: result.my_rating }
                           : a,
                       ),
                     false,

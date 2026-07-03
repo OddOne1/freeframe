@@ -9,6 +9,7 @@ import { VideoPlayer } from '@/components/review/video-player'
 import { AudioPlayer } from '@/components/review/audio-player'
 import { ImageViewer } from '@/components/review/image-viewer'
 import { Badge } from '@/components/shared/badge'
+import { StarRating } from '@/components/shared/star-rating'
 import { AnnotationCanvas } from '@/components/review/annotation-canvas'
 import { AnnotationOverlay } from '@/components/review/annotation-overlay'
 import { CommentPanel } from '@/components/review/comment-panel'
@@ -30,7 +31,6 @@ import {
   Loader2,
   Columns2,
   Upload,
-  Star,
   Check,
 } from 'lucide-react'
 import Link from 'next/link'
@@ -136,21 +136,23 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     }
   }
 
-  // Vote state — overrides the value embedded in `asset` once the user toggles it
-  const [voteState, setVoteState] = useState<{ vote_count: number; voted_by_me: boolean } | null>(null)
+  // Rating state — overrides the value embedded in `asset` once the user rates it
+  const [ratingState, setRatingState] = useState<{ avg_rating: number | null; rating_count: number; my_rating: number | null } | null>(null)
   useEffect(() => {
-    setVoteState(null)
+    setRatingState(null)
   }, [asset?.id])
-  const voteCount = voteState?.vote_count ?? asset?.vote_count ?? 0
-  const votedByMe = voteState?.voted_by_me ?? asset?.voted_by_me ?? false
+  const avgRating = ratingState?.avg_rating ?? asset?.avg_rating ?? null
+  const ratingCount = ratingState?.rating_count ?? asset?.rating_count ?? 0
+  const myRating = ratingState?.my_rating ?? asset?.my_rating ?? null
 
-  async function handleToggleVote() {
+  async function handleRate(stars: number) {
     if (!asset) return
     try {
-      const result = await api.post<{ vote_count: number; voted_by_me: boolean }>(
+      const result = await api.post<{ avg_rating: number | null; rating_count: number; my_rating: number | null }>(
         `/assets/${asset.id}/vote`,
+        { stars },
       )
-      setVoteState(result)
+      setRatingState(result)
     } catch {
       // no-op — leave state as-is on failure
     }
@@ -460,22 +462,18 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               <Badge status={displayStatus} className="h-8 px-2.5" />
             )
           )}
-          {(canVote || voteCount > 0) && (
-            <button
-              onClick={canVote ? handleToggleVote : undefined}
-              disabled={!canVote}
-              title={canVote ? (votedByMe ? 'Remove vote' : 'Vote for this asset') : `${voteCount} vote(s)`}
-              className={cn(
-                'inline-flex items-center gap-1.5 rounded-md px-2.5 h-8 text-xs font-medium border transition-colors',
-                votedByMe
-                  ? 'border-accent bg-accent/10 text-accent'
-                  : 'border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover',
-                !canVote && 'cursor-default',
+          {(canVote || ratingCount > 0) && (
+            <div className="inline-flex items-center gap-1.5 rounded-md px-2.5 h-8 border border-border">
+              <StarRating
+                value={myRating}
+                onChange={canVote ? handleRate : undefined}
+                readOnly={!canVote}
+                size="sm"
+              />
+              {ratingCount > 0 && (
+                <span className="text-xs text-text-secondary tabular-nums">{avgRating?.toFixed(1)}</span>
               )}
-            >
-              <Star className={cn('h-3.5 w-3.5', votedByMe && 'fill-current')} />
-              {voteCount > 0 ? voteCount : 'Vote'}
-            </button>
+            </div>
           )}
           <ShareDialog assetId={asset.id} assetName={asset.name} projectId={projectId} asset={asset} />
           <button
