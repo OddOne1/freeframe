@@ -6,7 +6,7 @@ export type CardSize = 'S' | 'M' | 'L'
 export type AspectRatio = 'landscape' | 'square' | 'portrait'
 export type ThumbnailScale = 'fit' | 'fill'
 export type TitleLines = '1' | '2' | '3'
-export type SortKey = 'custom' | 'date' | 'name' | 'status' | 'type'
+export type SortKey = 'custom' | 'date' | 'name' | 'status' | 'type' | 'votes'
 export type SortDirection = 'asc' | 'desc'
 
 interface ViewSettings {
