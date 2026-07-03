@@ -72,8 +72,18 @@ def _rewrite_manifest(content: str, s3_prefix: str, manifest_path: str, token: s
 
     - .m3u8 references -> proxy URLs with the same token (appended as query param)
     - .ts references -> proxy URLs with the same token (previously: presigned S3 URLs)
+
+    Per RFC 8216 §4.1, a relative URI inside a manifest is resolved by the
+    client against *that manifest's own URL* — not the top-level master
+    playlist's URL. So references here are passed through unchanged (only
+    the token is appended); they must NOT be prefixed with the current
+    manifest's own directory. Doing that previously caused level playlists
+    (served at .../hls/{level}/playlist.m3u8) to emit segment references
+    like "{level}/seg_000.ts", which every spec-compliant client (hls.js,
+    Safari's native HLS) then resolved to a double-nested, nonexistent
+    ".../hls/{level}/{level}/seg_000.ts" — a 404 that surfaced as a fatal
+    HLS network error and blocked all playback.
     """
-    manifest_dir = posixpath.dirname(manifest_path)
     lines = content.split("\n")
     result = []
 
@@ -85,19 +95,10 @@ def _rewrite_manifest(content: str, s3_prefix: str, manifest_path: str, token: s
             result.append(line)
             continue
 
-        # Resolve segment/playlist path relative to current manifest directory
-        if manifest_dir:
-            relative_key = f"{manifest_dir}/{stripped}"
-        else:
-            relative_key = stripped
-
-        if stripped.endswith(".m3u8"):
-            # Variant playlist -> proxy URL with token
-            result.append(f"{relative_key}?token={token}")
-        elif stripped.endswith(".ts"):
-            # Segment -> proxy URL with the same token (same prefix), so the
-            # client only ever talks to this API container, never S3 directly
-            result.append(f"{relative_key}?token={token}")
+        # Segment/playlist references are already correctly relative to this
+        # manifest's own location — just attach the auth token.
+        if stripped.endswith(".m3u8") or stripped.endswith(".ts"):
+            result.append(f"{stripped}?token={token}")
         else:
             result.append(line)
 
