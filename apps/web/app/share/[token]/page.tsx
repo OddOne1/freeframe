@@ -18,7 +18,7 @@ import {
   Video,
   Music,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { GuestCommentInput } from '@/components/review/guest-comment-input'
 import { FolderShareViewer } from '@/components/share/folder-share-viewer'
@@ -518,7 +518,7 @@ function ShareMediaViewer({ asset, token, streamUrl, streamLoading }: ShareMedia
       {(asset.asset_type === 'image' || asset.asset_type === 'image_carousel') && (
         <div className="w-full h-full flex items-center justify-center p-4">
           <img
-            src={asset.thumbnail_url || asset.stream_url || `${API_URL}/share/${token}/thumbnail/${asset.id}`}
+            src={resolveApiMediaUrl(asset.thumbnail_url) || resolveApiMediaUrl(asset.stream_url) || `${API_URL}/share/${token}/thumbnail/${asset.id}`}
             alt={asset.name}
             className="max-h-full max-w-full object-contain"
             onError={(e) => {
@@ -701,7 +701,7 @@ function ShareViewer({
   shareName,
   onBack,
 }: ShareViewerProps) {
-  const [streamUrl, setStreamUrl] = React.useState<string | null>(asset.stream_url ?? null)
+  const [streamUrl, setStreamUrl] = React.useState<string | null>(resolveApiMediaUrl(asset.stream_url))
   const [streamLoading, setStreamLoading] = React.useState(false)
   const [commentKey, setCommentKey] = React.useState(0)
   const [sidebarOpen, setSidebarOpen] = React.useState(true)
@@ -709,7 +709,7 @@ function ShareViewer({
   // For video/audio assets, get a stream URL if not already provided
   React.useEffect(() => {
     if (asset.stream_url) {
-      setStreamUrl(asset.stream_url)
+      setStreamUrl(resolveApiMediaUrl(asset.stream_url))
       return
     }
     if (asset.asset_type !== 'video' && asset.asset_type !== 'audio') return
@@ -717,8 +717,8 @@ function ShareViewer({
     fetch(`${API_URL}/share/${token}/stream/${asset.id}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
-        if (data?.stream_url) setStreamUrl(data.stream_url)
-        else if (data?.url) setStreamUrl(data.url)
+        if (data?.stream_url) setStreamUrl(resolveApiMediaUrl(data.stream_url))
+        else if (data?.url) setStreamUrl(resolveApiMediaUrl(data.url))
       })
       .catch(() => null)
       .finally(() => setStreamLoading(false))
@@ -827,7 +827,7 @@ function FolderAssetViewer({
 
     Promise.all([streamPromise, thumbPromise]).then(([streamData, thumbData]) => {
       if (cancelled) return
-      if (streamData?.url) setStreamUrl(streamData.url)
+      if (streamData?.url) setStreamUrl(resolveApiMediaUrl(streamData.url))
       if (streamData?.name)
         setAssetInfo({
           name: streamData.name,
@@ -837,7 +837,7 @@ function FolderAssetViewer({
           keywords: streamData.keywords,
         })
       else setAssetInfo({ name: 'Asset', asset_type: 'image' })
-      if (thumbData?.url) setThumbnailUrl(thumbData.url)
+      if (thumbData?.url) setThumbnailUrl(resolveApiMediaUrl(thumbData.url))
       setLoading(false)
     })
 

@@ -24,7 +24,7 @@ import {
   LayoutGrid,
 } from 'lucide-react'
 import * as Switch from '@radix-ui/react-switch'
-import { cn, endOfDayISO } from '@/lib/utils'
+import { cn, endOfDayISO, resolveApiMediaUrl } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
 import type { AssetResponse, Folder, ShareLink, ShareLinkAppearance } from '@/types'
@@ -982,7 +982,7 @@ export function ShareCreateDialog({
             type: 'asset',
             id: preselectedItem.id,
             name: preselectedItem.name,
-            thumbnailUrl: asset?.thumbnail_url ?? null,
+            thumbnailUrl: resolveApiMediaUrl(asset?.thumbnail_url) ?? null,
             assetType: asset?.asset_type ?? 'image',
           })
         }
@@ -998,7 +998,7 @@ export function ShareCreateDialog({
                 type: 'asset',
                 id: item.id,
                 name: item.name,
-                thumbnailUrl: asset.thumbnail_url ?? null,
+                thumbnailUrl: resolveApiMediaUrl(asset.thumbnail_url) ?? null,
                 assetType: asset.asset_type ?? 'image',
               })
             } else {

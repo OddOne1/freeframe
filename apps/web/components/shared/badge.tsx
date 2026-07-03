@@ -10,15 +10,21 @@ interface BadgeProps {
 const statusConfig: Record<AssetStatus, { label: string; dot: string; bg: string; text: string }> = {
   draft: {
     label: 'Draft',
-    dot: 'bg-text-tertiary',
-    bg: 'bg-bg-tertiary',
-    text: 'text-text-secondary',
+    dot: 'bg-status-turquoise',
+    bg: 'bg-status-turquoise/10',
+    text: 'text-status-turquoise',
   },
   in_review: {
-    label: 'In Review',
+    label: 'Needs Review',
     dot: 'bg-status-warning',
     bg: 'bg-status-warning/10',
     text: 'text-status-warning',
+  },
+  in_progress: {
+    label: 'In Progress',
+    dot: 'bg-status-info',
+    bg: 'bg-status-info/10',
+    text: 'text-status-info',
   },
   approved: {
     label: 'Approved',
@@ -27,7 +33,7 @@ const statusConfig: Record<AssetStatus, { label: string; dot: string; bg: string
     text: 'text-status-success',
   },
   rejected: {
-    label: 'Rejected',
+    label: 'Declined',
     dot: 'bg-status-error',
     bg: 'bg-status-error/10',
     text: 'text-status-error',

@@ -23,6 +23,12 @@ interface StreamResponse {
   url: string
 }
 
+// The media proxy returns relative paths (/stream/hls/...) — prepend the API URL.
+function resolveStreamUrl(url: string): string {
+  if (!url.startsWith("/")) return url
+  return `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${url}`
+}
+
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const
 
 // ─── Main Component ──────────────────────────────────────────────────────────
@@ -88,7 +94,7 @@ export function AudioPlayer({ asset, version, comments = [], className }: AudioP
       const sp = shareSession ? `&share_session=${encodeURIComponent(shareSession)}` : ''
       fetch(`${API_URL}/share/${shareToken}/stream/${asset.id}?version_id=${version.id}${sp}`)
         .then(res => res.ok ? res.json() : Promise.reject(new Error('Failed to load audio')))
-        .then(data => { if (!cancelled) setAudioUrl(data.url) })
+        .then(data => { if (!cancelled) setAudioUrl(resolveStreamUrl(data.url)) })
         .catch(err => { if (!cancelled) { setError(err.message); setIsLoading(false) } })
       return () => { cancelled = true }
     }
@@ -105,7 +111,7 @@ export function AudioPlayer({ asset, version, comments = [], className }: AudioP
 
       try {
         const data = await api.get<StreamResponse>(`/assets/${asset.id}/stream`)
-        if (!cancelled) setAudioUrl(data.url)
+        if (!cancelled) setAudioUrl(resolveStreamUrl(data.url))
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to load audio')

@@ -4,11 +4,11 @@ import { Badge } from '../shared/badge'
 import type { AssetStatus } from '@/types'
 
 describe('Badge component', () => {
-  const statuses: AssetStatus[] = ['draft', 'in_review', 'approved', 'rejected', 'archived']
+  const statuses: AssetStatus[] = ['draft', 'in_review', 'in_progress', 'approved', 'rejected', 'archived']
 
   it.each(statuses)('renders %s status badge', (status) => {
     render(<Badge status={status} />)
-    const badge = screen.getByText(/Draft|In Review|Approved|Rejected|Archived/)
+    const badge = screen.getByText(/Draft|Needs Review|In Progress|Approved|Declined|Archived/)
     expect(badge).toBeInTheDocument()
   })
 
@@ -17,9 +17,14 @@ describe('Badge component', () => {
     expect(screen.getByText('Draft')).toBeInTheDocument()
   })
 
-  it('renders "In Review" label for in_review status', () => {
+  it('renders "Needs Review" label for in_review status', () => {
     render(<Badge status="in_review" />)
-    expect(screen.getByText('In Review')).toBeInTheDocument()
+    expect(screen.getByText('Needs Review')).toBeInTheDocument()
+  })
+
+  it('renders "In Progress" label for in_progress status', () => {
+    render(<Badge status="in_progress" />)
+    expect(screen.getByText('In Progress')).toBeInTheDocument()
   })
 
   it('renders "Approved" label for approved status', () => {
@@ -27,9 +32,9 @@ describe('Badge component', () => {
     expect(screen.getByText('Approved')).toBeInTheDocument()
   })
 
-  it('renders "Rejected" label for rejected status', () => {
+  it('renders "Declined" label for rejected status', () => {
     render(<Badge status="rejected" />)
-    expect(screen.getByText('Rejected')).toBeInTheDocument()
+    expect(screen.getByText('Declined')).toBeInTheDocument()
   })
 
   it('renders "Archived" label for archived status', () => {

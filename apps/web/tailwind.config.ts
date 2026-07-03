@@ -37,6 +37,7 @@ const config: Config = {
           warning: 'var(--status-warning)',
           error: 'var(--status-error)',
           info: 'var(--status-info)',
+          turquoise: 'var(--status-turquoise)',
         },
       },
       fontFamily: {

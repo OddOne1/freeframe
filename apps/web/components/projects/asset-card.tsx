@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { Film, Music, Image as ImageIcon, Images, MessageSquare, MoreHorizontal, Check, Share2, Download, Link as LinkIcon, Pencil, Trash2 } from 'lucide-react'
+import { Film, Music, Image as ImageIcon, Images, MessageSquare, MoreHorizontal, Check, Share2, Download, Link as LinkIcon, Pencil, Trash2, Star, Folder as FolderIcon } from 'lucide-react'
 import { cn, formatRelativeTime, formatBytes } from '@/lib/utils'
 import type { Asset, AssetType, User } from '@/types'
 import type { AspectRatio, ThumbnailScale, TitleLines } from '@/stores/view-store'
@@ -37,6 +37,10 @@ interface AssetCardProps {
   onRename?: () => void
   onDelete?: () => void
   fileSize?: number | null
+  canVote?: boolean
+  onVote?: () => void
+  /** Folder path label shown when Flatten Folders is on, e.g. "Test / Sub" */
+  folderPath?: string
   // Appearance settings
   showInfo?: boolean
   showFileSize?: boolean
@@ -75,6 +79,9 @@ export function AssetCard({
   onRename,
   onDelete,
   fileSize,
+  canVote = false,
+  onVote,
+  folderPath,
   showInfo = true,
   showFileSize = true,
   showUploader = true,
@@ -136,6 +143,23 @@ export function AssetCard({
             )}
           >
             <Check className="h-3.5 w-3.5" />
+          </button>
+        )}
+
+        {/* Vote button — top-right */}
+        {(canVote || (asset.vote_count ?? 0) > 0) && (
+          <button
+            onClick={canVote ? (e) => { e.stopPropagation(); onVote?.() } : undefined}
+            disabled={!canVote}
+            title={canVote ? (asset.voted_by_me ? 'Remove vote' : 'Vote for this asset') : `${asset.vote_count ?? 0} vote(s)`}
+            className={cn(
+              'absolute top-2 right-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-2xs font-medium backdrop-blur-sm transition-all',
+              asset.voted_by_me ? 'bg-accent text-white' : 'bg-black/40 text-white/80',
+              canVote ? 'hover:bg-black/60 cursor-pointer' : 'cursor-default',
+            )}
+          >
+            <Star className={cn('h-3 w-3', asset.voted_by_me && 'fill-current')} />
+            {(asset.vote_count ?? 0) > 0 && asset.vote_count}
           </button>
         )}
 
@@ -223,6 +247,14 @@ export function AssetCard({
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
           </div>
+
+          {/* Folder path — shown when Flatten Folders is on */}
+          {folderPath && (
+            <p className="flex items-center gap-1 text-2xs text-text-tertiary line-clamp-1">
+              <FolderIcon className="h-2.5 w-2.5 shrink-0" />
+              <span className="truncate">{folderPath}</span>
+            </p>
+          )}
 
           {/* Author + date + file size row */}
           <p className="text-2xs text-text-tertiary line-clamp-1">

@@ -8,3 +8,4 @@ from .share import ShareLink, AssetShare, ShareLinkActivity, ShareActivityAction
 from .metadata import MetadataField, AssetMetadata, Collection, CollectionShare
 from .branding import ProjectBranding, WatermarkSettings
 from .activity import Mention, ActivityLog, Notification
+from .vote import Vote

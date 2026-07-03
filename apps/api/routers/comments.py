@@ -32,6 +32,7 @@ from ..schemas.comment import (
     ReactionResponse,
 )
 from ..services import s3_service
+from .hls_proxy import proxy_url_for
 from ..services.permissions import require_asset_access, validate_share_link
 from ..tasks.email_tasks import send_mention_email, send_comment_email
 from ..tasks.celery_app import send_task_safe
@@ -56,7 +57,7 @@ def _get_comment(db: Session, comment_id: uuid.UUID) -> Comment:
 
 
 def _build_attachment_response(attachment: CommentAttachment) -> AttachmentResponse:
-    url = s3_service.generate_presigned_get_url(attachment.s3_key, expires_in=3600)
+    url = proxy_url_for(attachment.s3_key, expires_hours=1)
     return AttachmentResponse(
         id=attachment.id,
         file_name=attachment.original_filename,

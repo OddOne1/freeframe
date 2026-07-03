@@ -100,7 +100,7 @@ def list_my_assets(
         query = query.filter(Asset.name.ilike(f"%{q.strip()}%"))
 
     assets = query.order_by(Asset.created_at.desc()).offset(skip).limit(limit).all()
-    return _build_asset_responses_bulk(assets, db)
+    return _build_asset_responses_bulk(assets, db, current_user.id)
 
 
 @router.get("/folders")

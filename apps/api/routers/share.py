@@ -36,9 +36,9 @@ from ..schemas.share import (
 )
 from ..services.permissions import require_project_role, validate_share_link, validate_share_link_with_session
 from ..services.redis_service import create_share_session
-from ..services.s3_service import generate_presigned_get_url, build_download_filename
+from ..services.s3_service import build_download_filename
 from ..services.crypto_service import encrypt_password, decrypt_password
-from .hls_proxy import create_hls_token
+from .hls_proxy import create_hls_token, proxy_url_for
 from ..models.project import Project, ProjectRole
 from ..tasks.email_tasks import send_share_email
 from ..tasks.celery_app import send_task_safe
@@ -291,7 +291,7 @@ def validate_share_link_endpoint(
         media_file = _get_latest_media_file(db, asset.id)
         thumbnail_url = None
         if media_file and media_file.s3_key_thumbnail:
-            thumbnail_url = generate_presigned_get_url(media_file.s3_key_thumbnail)
+            thumbnail_url = proxy_url_for(media_file.s3_key_thumbnail)
         # Get stream URL
         stream_url = None
         if media_file:
@@ -301,9 +301,9 @@ def validate_share_link_endpoint(
                     hls_token = create_hls_token(media_file.s3_key_processed)
                     stream_url = f"/stream/hls/master.m3u8?token={hls_token}"
                 else:
-                    stream_url = generate_presigned_get_url(media_file.s3_key_processed)
+                    stream_url = proxy_url_for(media_file.s3_key_processed)
             elif media_file.s3_key_raw:
-                stream_url = generate_presigned_get_url(media_file.s3_key_raw)
+                stream_url = proxy_url_for(media_file.s3_key_raw)
 
         asset_data = {
             "id": str(asset.id),
@@ -1196,7 +1196,7 @@ def get_folder_share_assets(
                 for pa in preview_assets:
                     mf = _get_latest_media_file(db, pa.id)
                     if mf and mf.s3_key_thumbnail:
-                        thumb_urls.append(generate_presigned_get_url(mf.s3_key_thumbnail))
+                        thumb_urls.append(proxy_url_for(mf.s3_key_thumbnail))
                 subfolder_items.append(FolderShareSubfolder(
                     id=sf.id, name=sf.name, item_count=asset_count + child_folder_count, thumbnail_urls=thumb_urls,
                 ))
@@ -1211,7 +1211,7 @@ def get_folder_share_assets(
             ).order_by(Asset.created_at.desc()).offset(offset).limit(per_page).all()
             for a in shared_assets:
                 mf = _get_latest_media_file(db, a.id)
-                thumbnail_url = generate_presigned_get_url(mf.s3_key_thumbnail) if mf and mf.s3_key_thumbnail else None
+                thumbnail_url = proxy_url_for(mf.s3_key_thumbnail) if mf and mf.s3_key_thumbnail else None
                 comment_count = db.query(sa_func.count(Comment.id)).filter(
                     Comment.asset_id == a.id, Comment.deleted_at.is_(None),
                 ).scalar() or 0
@@ -1275,7 +1275,7 @@ def get_folder_share_assets(
         for pa in preview_assets:
             mf = _get_latest_media_file(db, pa.id)
             if mf and mf.s3_key_thumbnail:
-                thumb_urls.append(generate_presigned_get_url(mf.s3_key_thumbnail))
+                thumb_urls.append(proxy_url_for(mf.s3_key_thumbnail))
             if len(thumb_urls) >= 4:
                 break
 
@@ -1314,7 +1314,7 @@ def get_folder_share_assets(
         media_file = _get_latest_media_file(db, asset.id)
         if media_file:
             if media_file.s3_key_thumbnail:
-                thumbnail_url = generate_presigned_get_url(media_file.s3_key_thumbnail)
+                thumbnail_url = proxy_url_for(media_file.s3_key_thumbnail)
             file_size = media_file.file_size_bytes
             duration_seconds = media_file.duration_seconds
 
@@ -1376,7 +1376,7 @@ def get_share_stream_url(
         if download:
             s3_key = media_file.s3_key_raw or media_file.s3_key_processed
             filename = build_download_filename(asset.name, media_file.original_filename or s3_key)
-            url = generate_presigned_get_url(s3_key, download_filename=filename)
+            url = proxy_url_for(s3_key, download_filename=filename)
         else:
             # Route through /stream/hls so S3 can stay private (#51)
             hls_token = create_hls_token(media_file.s3_key_processed)
@@ -1385,9 +1385,9 @@ def get_share_stream_url(
         s3_key = media_file.s3_key_processed or media_file.s3_key_raw
         if download:
             filename = build_download_filename(asset.name, media_file.original_filename or s3_key)
-            url = generate_presigned_get_url(s3_key, download_filename=filename)
+            url = proxy_url_for(s3_key, download_filename=filename)
         else:
-            url = generate_presigned_get_url(s3_key)
+            url = proxy_url_for(s3_key)
 
     # Log activity
     activity_action = ShareActivityAction.downloaded if download else ShareActivityAction.viewed_asset
@@ -1402,7 +1402,7 @@ def get_share_stream_url(
     # Get thumbnail URL
     thumb_url = None
     if media_file.s3_key_thumbnail:
-        thumb_url = generate_presigned_get_url(media_file.s3_key_thumbnail)
+        thumb_url = proxy_url_for(media_file.s3_key_thumbnail)
 
     return {
         "url": url,
@@ -1433,5 +1433,5 @@ def get_share_thumbnail_url(
     if not media_file or not media_file.s3_key_thumbnail:
         raise HTTPException(status_code=404, detail="Thumbnail not found")
 
-    url = generate_presigned_get_url(media_file.s3_key_thumbnail)
+    url = proxy_url_for(media_file.s3_key_thumbnail)
     return {"url": url}

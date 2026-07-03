@@ -60,9 +60,11 @@ def test_video_stream_returns_hls_proxy_url_with_token(
     assert url.startswith("/stream/hls/master.m3u8?token="), (
         f"Expected /stream/hls/master.m3u8?token=..., got: {url}"
     )
-    assert "s3" not in url.lower(), (
-        f"Stream URL must not contain a presigned S3 URL, got: {url}"
-    )
+    # Relative, token-scoped proxy path — not a presigned S3 URL. Don't check
+    # for a literal "s3" substring: the JWT itself is arbitrary base64 and can
+    # coincidentally contain it. Assert structure instead.
+    assert "://" not in url
+    assert not url.startswith("http")
 
     # The token must be a valid HLS JWT scoped to this asset's S3 prefix.
     token = url.split("token=", 1)[1]
@@ -72,20 +74,19 @@ def test_video_stream_returns_hls_proxy_url_with_token(
     assert "exp" in payload
 
 
-@patch("apps.api.routers.assets.generate_presigned_get_url")
 @patch("apps.api.routers.assets.require_asset_access")
-def test_video_download_still_returns_presigned_raw(
+def test_video_download_routes_through_proxy(
     mock_require_access,
-    mock_presign,
     client,
     mock_db,
     auth_headers,
 ):
+    """Downloads now also route through the media proxy instead of a direct
+    presigned S3 URL, so AIStor never has to be publicly reachable."""
     from apps.api.models.asset import AssetType
 
-    asset, _, _ = _setup_video_asset(mock_db, AssetType.video)
+    asset, _, media_file = _setup_video_asset(mock_db, AssetType.video)
     mock_require_access.return_value = None
-    mock_presign.return_value = "https://s3.example.com/raw.mp4?sig=x"
 
     response = client.get(
         f"/assets/{asset.id}/stream?download=true", headers=auth_headers
@@ -93,30 +94,43 @@ def test_video_download_still_returns_presigned_raw(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    # Downloads bypass the HLS proxy — they need the original file, not a playlist.
-    assert body["url"] == "https://s3.example.com/raw.mp4?sig=x"
-    assert "/stream/hls/" not in body["url"]
+    url = body["url"]
+
+    assert url.startswith("/stream/hls/input.mp4?token="), url
+    assert "download=" in url
+    # The URL is a relative, token-scoped proxy path (no S3 host/bucket
+    # segment) rather than a presigned S3 URL. Checking for a literal "s3"
+    # substring is unreliable since the JWT itself is arbitrary base64 and
+    # can coincidentally contain "s3" -- assert structure instead.
+    assert "://" not in url
+    assert not url.startswith("http")
+
+    token = url.split("token=", 1)[1].split("&", 1)[0]
+    payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    assert payload["sub"] == "hls"
+    assert payload["pfx"] == "raw/proj/version-xyz"
 
 
-@patch("apps.api.routers.assets.generate_presigned_get_url")
 @patch("apps.api.routers.assets.require_asset_access")
-def test_image_stream_still_returns_presigned(
+def test_image_stream_routes_through_proxy(
     mock_require_access,
-    mock_presign,
     client,
     mock_db,
     auth_headers,
 ):
-    """Images and audio don't go through the HLS proxy — only video does."""
+    """Images and audio don't go through the HLS *manifest* path — but they
+    now go through the same object proxy, not a direct presigned S3 URL."""
     from apps.api.models.asset import AssetType
 
-    asset, _, _ = _setup_video_asset(mock_db, AssetType.image)
+    asset, _, media_file = _setup_video_asset(mock_db, AssetType.image)
     mock_require_access.return_value = None
-    mock_presign.return_value = "https://s3.example.com/image.webp?sig=x"
 
     response = client.get(f"/assets/{asset.id}/stream", headers=auth_headers)
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["url"] == "https://s3.example.com/image.webp?sig=x"
-    assert "/stream/hls/" not in body["url"]
+    url = body["url"]
+
+    assert url.startswith("/stream/hls/"), url
+    assert "://" not in url
+    assert "/stream/hls/master.m3u8" not in url

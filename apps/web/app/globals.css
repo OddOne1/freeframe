@@ -32,6 +32,7 @@
   --status-warning: #fbbf24;
   --status-error: #f87171;
   --status-info: #60a5fa;
+  --status-turquoise: #2dd4bf;
 
   /* Fonts */
   --font-sans: var(--font-geist), system-ui, -apple-system, sans-serif;
@@ -71,6 +72,7 @@
   --status-warning: #ca8a04;
   --status-error: #dc2626;
   --status-info: #2563eb;
+  --status-turquoise: #0d9488;
 }
 
 @layer base {

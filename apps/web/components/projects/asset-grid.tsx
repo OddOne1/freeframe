@@ -24,10 +24,11 @@ const assetTypeIcons: Record<string, React.ElementType> = {
 
 const statusOrder: Record<AssetStatus, number> = {
   in_review: 0,
-  draft: 1,
-  approved: 2,
-  rejected: 3,
-  archived: 4,
+  in_progress: 1,
+  draft: 2,
+  approved: 3,
+  rejected: 4,
+  archived: 5,
 }
 
 interface AssetGridProps {
@@ -39,6 +40,8 @@ interface AssetGridProps {
   versionCounts?: Record<string, number>
   authorNames?: Record<string, string>
   fileSizes?: Record<string, number>
+  /** asset id -> folder path label (e.g. "Test / Sub"), used when Flatten Folders is on */
+  folderPaths?: Record<string, string>
   selectedAssetId?: string | null
   onUpload?: () => void
   onAssetSelect?: (asset: Asset, e?: React.MouseEvent) => void
@@ -66,6 +69,9 @@ interface AssetGridProps {
   onAssetDelete?: (asset: Asset) => void
   /** Actions rendered on the right side of the navigator bar */
   actions?: React.ReactNode
+  /** Whether the current user can vote (reviewer role or higher) */
+  canVote?: boolean
+  onAssetVote?: (asset: Asset) => void
 }
 
 // Grid column classes based on card size
@@ -91,6 +97,7 @@ export function AssetGrid({
   versionCounts = {},
   authorNames = {},
   fileSizes = {},
+  folderPaths = {},
   selectedAssetId,
   onUpload,
   onAssetSelect,
@@ -115,6 +122,8 @@ export function AssetGrid({
   onAssetRename,
   onAssetDelete,
   actions,
+  canVote = false,
+  onAssetVote,
 }: AssetGridProps) {
   const [selectedAssetIds, setSelectedAssetIds] = React.useState<Set<string>>(new Set())
   const [selectedFolderIds, setSelectedFolderIds] = React.useState<Set<string>>(new Set())
@@ -138,6 +147,7 @@ export function AssetGrid({
     showCardInfo,
     titleLines,
     flattenFolders,
+    setFlattenFolders,
     showFileSize,
     showUploader,
     sortKey,
@@ -184,6 +194,8 @@ export function AssetGrid({
           cmp = statusOrder[a.status] - statusOrder[b.status]
         } else if (sortKey === 'type') {
           cmp = a.asset_type.localeCompare(b.asset_type)
+        } else if (sortKey === 'votes') {
+          cmp = (a.vote_count ?? 0) - (b.vote_count ?? 0)
         }
         return sortDirection === 'asc' ? cmp : -cmp
       })
@@ -317,13 +329,22 @@ export function AssetGrid({
       )}
 
       {/* ─── Assets (grid) ───────────────────────────────────────────── */}
-      {filtered.length === 0 && !showFolders ? (
+      {filtered.length === 0 && (!folders || folders.length === 0) ? (
         <div className="rounded-lg border border-border bg-bg-secondary">
           <EmptyState
             icon={Layers}
             title="No assets"
             description="Upload your first asset to get started."
             action={onUpload ? { label: 'Upload', onClick: onUpload } : undefined}
+          />
+        </div>
+      ) : filtered.length === 0 && flattenFolders && folders && folders.length > 0 ? (
+        <div className="rounded-lg border border-border bg-bg-secondary">
+          <EmptyState
+            icon={Layers}
+            title={`${folders.length} folder${folders.length === 1 ? '' : 's'} hidden by Flatten Folders`}
+            description="Turn off Flatten Folders in Appearance to see and open them."
+            action={{ label: 'Show Folders', onClick: () => setFlattenFolders(false) }}
           />
         </div>
       ) : layout === 'grid' && filtered.length > 0 ? (
@@ -358,6 +379,9 @@ export function AssetGrid({
                 onDownload={onAssetDownload ? () => onAssetDownload(asset) : undefined}
                 onRename={onAssetRename ? () => onAssetRename(asset) : undefined}
                 onDelete={onAssetDelete ? () => onAssetDelete(asset) : undefined}
+                canVote={canVote}
+                onVote={onAssetVote ? () => onAssetVote(asset) : undefined}
+                folderPath={flattenFolders ? folderPaths[asset.id] : undefined}
                 onDragStart={(e: React.DragEvent) => {
                   const ids = selectedAssetIds.has(asset.id)
                     ? Array.from(selectedIds)
@@ -543,6 +567,9 @@ export function AssetGrid({
                 {/* Name + status */}
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-text-primary truncate leading-snug">{asset.name}</p>
+                  {flattenFolders && folderPaths[asset.id] && (
+                    <p className="text-2xs text-text-tertiary truncate mt-0.5">{folderPaths[asset.id]}</p>
+                  )}
                 </div>
                 {/* Uploader */}
                 {showUploader && (

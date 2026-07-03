@@ -26,7 +26,7 @@ import {
   ExternalLink,
   Users,
 } from "lucide-react";
-import { cn, formatRelativeTime, formatBytes } from "@/lib/utils";
+import { cn, formatRelativeTime, formatBytes, resolveApiMediaUrl } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,6 +59,7 @@ import type {
   ProjectMember,
   User,
   Folder,
+  FolderTreeNode,
   ShareLink,
 } from "@/types";
 
@@ -77,7 +78,7 @@ export default function ProjectDetailPage() {
   const [rightTab, setRightTab] = React.useState<"comments" | "fields">(
     "comments",
   );
-  const { rightPanelOpen } = useViewStore();
+  const { rightPanelOpen, flattenFolders } = useViewStore();
 
   const [currentFolderId, setCurrentFolderId] = React.useState<string | null>(
     searchParams.get("folder") || null,
@@ -196,14 +197,51 @@ export default function ProjectDetailPage() {
   const folderParam = currentFolderId
     ? `folder_id=${currentFolderId}`
     : "folder_id=root";
+  const recursiveParam = flattenFolders ? "&recursive=true" : "";
   const {
     data: assets,
     isLoading: loadingAssets,
     mutate: mutateAssets,
   } = useSWR<AssetResponse[]>(
-    showTrash ? null : `/projects/${projectId}/assets?${folderParam}`,
+    showTrash ? null : `/projects/${projectId}/assets?${folderParam}${recursiveParam}`,
     (key: string) => api.get<AssetResponse[]>(key),
   );
+
+  // asset id -> folder path label (e.g. "Test / Sub"), used by AssetGrid when
+  // Flatten Folders is on so users can tell which folder a flattened asset came from
+  const folderPaths = React.useMemo(() => {
+    const paths: Record<string, string> = {};
+    if (!tree || !assets) return paths;
+
+    const nameById = new Map<string, { name: string; parent_id: string | null }>();
+    const collect = (nodes: FolderTreeNode[]) => {
+      for (const node of nodes) {
+        nameById.set(node.id, { name: node.name, parent_id: (node as any).parent_id ?? null });
+        if (node.children?.length) collect(node.children);
+      }
+    };
+    collect(tree);
+
+    const pathFor = (folderId: string): string => {
+      const segments: string[] = [];
+      let current: string | null = folderId;
+      const seen = new Set<string>();
+      while (current && nameById.has(current) && !seen.has(current)) {
+        seen.add(current);
+        const entry = nameById.get(current)!;
+        segments.unshift(entry.name);
+        current = entry.parent_id;
+      }
+      return segments.join(" / ");
+    };
+
+    for (const asset of assets) {
+      if (asset.folder_id) {
+        paths[asset.id] = pathFor(asset.folder_id);
+      }
+    }
+    return paths;
+  }, [tree, assets]);
 
   // Subfolders for current view
   const { data: subfolders, mutate: mutateSubfolders } = useSWR<Folder[]>(
@@ -217,7 +255,7 @@ export default function ProjectDetailPage() {
     if (!assets) return {};
     const map: Record<string, string> = {};
     for (const a of assets) {
-      if (a.thumbnail_url) map[a.id] = a.thumbnail_url;
+      if (a.thumbnail_url) map[a.id] = resolveApiMediaUrl(a.thumbnail_url) ?? a.thumbnail_url;
     }
     return map;
   }, [assets]);
@@ -741,6 +779,7 @@ export default function ProjectDetailPage() {
               projectId={projectId}
               projectName={project?.name ?? 'Project'}
               folderTree={tree ?? []}
+              folderPaths={folderPaths}
               isLoading={loadingAssets}
               assignees={assigneesMap}
               thumbnails={thumbnails}
@@ -756,6 +795,40 @@ export default function ProjectDetailPage() {
               onAssetOpen={(asset) =>
                 router.push(`/projects/${projectId}/assets/${asset.id}`)
               }
+              canVote={canComment}
+              onAssetVote={async (asset) => {
+                const target = asset as AssetResponse;
+                // Optimistic update
+                mutateAssets(
+                  (current) =>
+                    current?.map((a) =>
+                      a.id === target.id
+                        ? {
+                            ...a,
+                            voted_by_me: !a.voted_by_me,
+                            vote_count: (a.vote_count ?? 0) + (a.voted_by_me ? -1 : 1),
+                          }
+                        : a,
+                    ),
+                  false,
+                );
+                try {
+                  const result = await api.post<{ vote_count: number; voted_by_me: boolean }>(
+                    `/assets/${target.id}/vote`,
+                  );
+                  mutateAssets(
+                    (current) =>
+                      current?.map((a) =>
+                        a.id === target.id
+                          ? { ...a, vote_count: result.vote_count, voted_by_me: result.voted_by_me }
+                          : a,
+                      ),
+                    false,
+                  );
+                } catch {
+                  mutateAssets(); // revert on failure
+                }
+              }}
               onFolderOpen={(folder) => handleSelectFolder(folder.id)}
               onFolderRename={async (id, name) => {
                 await renameFolder(id, name);
@@ -1066,7 +1139,7 @@ export default function ProjectDetailPage() {
                       {selectedAsset.thumbnail_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={selectedAsset.thumbnail_url}
+                          src={resolveApiMediaUrl(selectedAsset.thumbnail_url) ?? selectedAsset.thumbnail_url}
                           alt={selectedAsset.name}
                           className="h-full w-full object-cover"
                         />

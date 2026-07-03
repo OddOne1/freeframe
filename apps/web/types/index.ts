@@ -2,7 +2,7 @@
 
 export type AssetType = "image" | "image_carousel" | "audio" | "video";
 
-export type AssetStatus = "draft" | "in_review" | "approved" | "rejected" | "archived";
+export type AssetStatus = "draft" | "in_review" | "in_progress" | "approved" | "rejected" | "archived";
 
 export type AssetVersionStatus = "uploading" | "processing" | "ready" | "failed";
 
@@ -122,6 +122,8 @@ export interface Asset {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  vote_count?: number;
+  voted_by_me?: boolean;
 }
 
 export interface AssetVersion {

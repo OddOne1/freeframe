@@ -15,7 +15,7 @@ import {
   Upload,
   Search,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, resolveApiMediaUrl } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { Film, Music, Image as ImageIcon } from "lucide-react";
 import type { Project, AssetResponse } from "@/types";
@@ -295,7 +295,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                         {asset.thumbnail_url ? (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img
-                            src={asset.thumbnail_url}
+                            src={resolveApiMediaUrl(asset.thumbnail_url) ?? undefined}
                             alt=""
                             className="h-6 w-6 rounded object-cover shrink-0"
                           />

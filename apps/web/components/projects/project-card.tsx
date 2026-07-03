@@ -4,7 +4,7 @@ import * as React from 'react'
 import Link from 'next/link'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { MoreHorizontal, ImagePlus, Settings, Trash2, Globe, Lock } from 'lucide-react'
-import { cn, formatRelativeTime, formatBytes } from '@/lib/utils'
+import { cn, formatRelativeTime, formatBytes, resolveApiMediaUrl } from '@/lib/utils'
 import { getGradientForProject } from '@/lib/gradient-utils'
 import { api } from '@/lib/api'
 import { ProjectSettingsDialog } from './project-settings-dialog'
@@ -55,7 +55,7 @@ export function ProjectCard({
             {project.poster_url ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={project.poster_url}
+                src={resolveApiMediaUrl(project.poster_url) ?? undefined}
                 alt={project.name}
                 className="h-full w-full object-cover"
               />

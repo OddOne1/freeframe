@@ -24,7 +24,7 @@ import {
   Globe,
   X,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, resolveApiMediaUrl } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { ShareLinkActivityPanel } from "@/components/projects/share-link-activity";
 import type { ShareLink, ShareLinkAppearance } from "@/types";
@@ -755,7 +755,7 @@ export function ShareLinkContent({
                         {asset.thumbnail_url ? (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img
-                            src={asset.thumbnail_url}
+                            src={resolveApiMediaUrl(asset.thumbnail_url) ?? undefined}
                             alt={asset.name}
                             className="h-full w-full object-cover"
                           />

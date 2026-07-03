@@ -11,7 +11,7 @@ from jose import jwt
 from apps.api.config import settings
 
 
-@patch("apps.api.routers.share.generate_presigned_get_url")
+@patch("apps.api.routers.share.proxy_url_for")
 @patch("apps.api.routers.share._get_latest_media_file")
 @patch("apps.api.routers.share._get_asset")
 @patch("apps.api.routers.share.validate_share_link")
@@ -85,7 +85,6 @@ def test_validate_share_link_video_returns_master_m3u8(
     assert payload["pfx"] == "processed/proj/version-abc"
 
 
-@patch("apps.api.routers.share.generate_presigned_get_url")
 @patch("apps.api.routers.share._get_latest_media_file")
 @patch("apps.api.routers.share._get_asset")
 @patch("apps.api.routers.share.validate_share_link")
@@ -93,10 +92,11 @@ def test_validate_share_link_image_does_not_append_master_m3u8(
     mock_validate,
     mock_get_asset,
     mock_get_latest_media_file,
-    mock_presign,
     client,
     mock_db,
 ):
+    """Images route through the media proxy too now — never a direct
+    presigned S3 URL — but never get master.m3u8 appended (video-only)."""
     from apps.api.models.asset import AssetType
 
     asset_id = uuid.uuid4()
@@ -134,17 +134,21 @@ def test_validate_share_link_image_does_not_append_master_m3u8(
     mock_get_latest_media_file.return_value = media_file
 
     mock_db.first.return_value = None
-    mock_presign.side_effect = lambda key, **kwargs: f"https://s3.example/{key}?sig=x"
 
     response = client.get("/share/some-token")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["asset"]["stream_url"] is not None
-    assert "master.m3u8" not in body["asset"]["stream_url"]
-    assert body["asset"]["stream_url"].startswith(
-        "https://s3.example/processed/proj/version-img/out.webp"
-    )
+    stream_url = body["asset"]["stream_url"]
+    assert stream_url is not None
+    assert "master.m3u8" not in stream_url
+    assert "s3.example" not in stream_url
+    assert stream_url.startswith("/stream/hls/out.webp?token=")
+
+    token = stream_url.split("token=", 1)[1]
+    payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    assert payload["sub"] == "hls"
+    assert payload["pfx"] == "processed/proj/version-img"
 
 
 @patch("apps.api.routers.share._validate_asset_in_share")

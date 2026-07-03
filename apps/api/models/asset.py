@@ -19,6 +19,7 @@ class AssetType(str, PyEnum):
 class AssetStatus(str, PyEnum):
     draft = "draft"
     in_review = "in_review"
+    in_progress = "in_progress"
     approved = "approved"
     rejected = "rejected"
     archived = "archived"

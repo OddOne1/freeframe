@@ -6,6 +6,19 @@ export function cn(...inputs: ClassValue[]): string {
 }
 
 /**
+ * Resolve a possibly-relative media URL returned by the API (thumbnails,
+ * posters, logos, attachments, stream URLs) into a fully-qualified one.
+ * The media proxy returns relative paths like "/stream/hls/...?token=..." —
+ * this prepends the API origin so <img>/<video> tags outside of API-proxied
+ * pages can still load them. Absolute URLs are returned unchanged.
+ */
+export function resolveApiMediaUrl(url: string | null | undefined): string | null {
+  if (!url) return url ?? null
+  if (!url.startsWith('/')) return url
+  return `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}${url}`
+}
+
+/**
  * Format seconds into "M:SS" or "H:MM:SS"
  * e.g. 83 → "1:23", 3725 → "1:02:05"
  */

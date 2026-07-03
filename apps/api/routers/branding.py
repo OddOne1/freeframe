@@ -18,6 +18,7 @@ from ..schemas.branding import (
 )
 from ..services.permissions import require_project_role, require_asset_access
 from ..services import s3_service
+from .hls_proxy import proxy_url_for
 from ..config import settings
 
 router = APIRouter(tags=["branding"])
@@ -54,7 +55,7 @@ def _branding_to_response(branding: ProjectBranding) -> BrandingResponse:
     resp = BrandingResponse.model_validate(branding)
     if branding.logo_s3_key:
         try:
-            resp.logo_url = s3_service.generate_presigned_get_url(branding.logo_s3_key)
+            resp.logo_url = proxy_url_for(branding.logo_s3_key)
         except Exception:
             resp.logo_url = None
     return resp

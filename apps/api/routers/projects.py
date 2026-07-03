@@ -11,7 +11,8 @@ from ..models.asset import Asset, AssetVersion, MediaFile
 from ..schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse, ProjectMemberResponse, AddProjectMemberRequest, UpdateProjectMemberRequest
 from ..tasks.email_tasks import send_project_added_email
 from ..tasks.celery_app import send_task_safe
-from ..services.s3_service import put_object, generate_presigned_get_url, delete_object
+from ..services.s3_service import put_object, delete_object
+from .hls_proxy import proxy_url_for
 from ..config import settings
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -24,7 +25,7 @@ def _get_project(db: Session, project_id: uuid.UUID) -> Project:
 
 def _resolve_poster_url(project: Project) -> str | None:
     if project.poster_s3_key:
-        return generate_presigned_get_url(project.poster_s3_key)
+        return proxy_url_for(project.poster_s3_key)
     return None
 
 def _require_project_owner(db: Session, project_id: uuid.UUID, user: User) -> ProjectMember:

@@ -3,7 +3,7 @@
 import React, { useCallback, useState } from 'react'
 import useSWR from 'swr'
 import { Folder, Film, Music, Image as ImageIcon, Images, MoreHorizontal, Pencil, Trash, Share2 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { api } from '@/lib/api'
 import { NameDialog } from './name-dialog'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -32,7 +32,7 @@ function ThumbCell({ asset, className }: { asset: AssetResponse; className?: str
     <div className={cn('overflow-hidden bg-bg-tertiary', className)}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={asset.thumbnail_url}
+        src={resolveApiMediaUrl(asset.thumbnail_url) ?? undefined}
         alt={asset.name}
         onError={() => setFailed(true)}
         className="h-full w-full object-cover"

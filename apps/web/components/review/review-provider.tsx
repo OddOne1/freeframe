@@ -10,6 +10,7 @@ import React, {
   useState,
 } from "react";
 import { api } from "@/lib/api";
+import { resolveApiMediaUrl } from "@/lib/utils";
 import { useReviewStore } from "@/stores/review-store";
 import type { AssetResponse, AssetVersion, Comment } from "@/types";
 
@@ -117,8 +118,8 @@ export function ReviewProvider({
           created_at: "",
           updated_at: "",
           deleted_at: null,
-          stream_url: streamData?.url,
-          thumbnail_url: streamData?.thumbnail_url,
+          stream_url: resolveApiMediaUrl(streamData?.url) ?? undefined,
+          thumbnail_url: resolveApiMediaUrl(streamData?.thumbnail_url),
           latest_version: streamData?.version_id
             ? {
                 id: streamData.version_id,
@@ -135,6 +136,7 @@ export function ReviewProvider({
       } else {
         // Normal mode: authenticated API
         data = await api.get<AssetResponse>(`/assets/${assetId}`);
+        data = { ...data, thumbnail_url: resolveApiMediaUrl(data.thumbnail_url) };
       }
 
       if (!mountedRef.current) return;

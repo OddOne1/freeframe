@@ -8,22 +8,24 @@ from typing import Optional
 from ..database import get_db
 from ..middleware.auth import get_current_user
 from ..models.user import User
-from ..models.asset import Asset, AssetVersion, MediaFile, AssetType, FileType, ProcessingStatus
+from ..models.asset import Asset, AssetVersion, MediaFile, AssetType, AssetStatus, FileType, ProcessingStatus
 from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.share import AssetShare
 from ..models.activity import Mention, Notification, NotificationType
-from ..schemas.asset import AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse
+from ..models.vote import Vote
+from ..schemas.asset import AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, VoteToggleResponse
 from ..schemas.notification import AssignmentUpdate
 from ..services.permissions import require_project_role, require_asset_access, can_access_asset, is_public_project, get_project_member
-from ..services.s3_service import generate_presigned_get_url, build_download_filename
-from .hls_proxy import create_hls_token
+from ..services.s3_service import build_download_filename
+from .hls_proxy import create_hls_token, proxy_url_for
 from ..schemas.upload import InitiateUploadRequest, InitiateUploadResponse, ALLOWED_MIME_TYPES, MAX_FILE_SIZE_BYTES, mime_to_asset_type
 from ..services.s3_service import create_multipart_upload
+from .folders import _get_descendant_ids as _get_descendant_folder_ids
 
 router = APIRouter(tags=["assets"])
 
 
-def _build_asset_response(asset: Asset, db: Session) -> AssetResponse:
+def _build_asset_response(asset: Asset, db: Session, current_user_id: uuid.UUID | None = None) -> AssetResponse:
     """Build AssetResponse with latest version and its files."""
     latest_version = db.query(AssetVersion).filter(
         AssetVersion.asset_id == asset.id,
@@ -41,16 +43,20 @@ def _build_asset_response(asset: Asset, db: Session) -> AssetResponse:
         if asset.asset_type != AssetType.audio:
             for f in files:
                 if f.s3_key_thumbnail:
-                    thumbnail_url = generate_presigned_get_url(f.s3_key_thumbnail)
+                    thumbnail_url = proxy_url_for(f.s3_key_thumbnail)
                     break
 
     resp = AssetResponse.model_validate(asset)
     resp.latest_version = version_response
     resp.thumbnail_url = thumbnail_url
+    resp.vote_count = db.query(Vote).filter(Vote.asset_id == asset.id).count()
+    resp.voted_by_me = current_user_id is not None and db.query(Vote).filter(
+        Vote.asset_id == asset.id, Vote.user_id == current_user_id,
+    ).first() is not None
     return resp
 
 
-def _build_asset_responses_bulk(assets: list[Asset], db: Session) -> list[AssetResponse]:
+def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user_id: uuid.UUID | None = None) -> list[AssetResponse]:
     """Build AssetResponse list with bulk-loaded versions and files (no N+1)."""
     if not assets:
         return []
@@ -81,6 +87,22 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session) -> list[AssetR
     for f in all_files:
         files_by_version.setdefault(f.version_id, []).append(f)
 
+    # Bulk load vote counts + this user's votes
+    vote_counts: dict = dict(
+        db.query(Vote.asset_id, func.count(Vote.id))
+        .filter(Vote.asset_id.in_(asset_ids))
+        .group_by(Vote.asset_id)
+        .all()
+    )
+    my_voted_ids: set = set()
+    if current_user_id is not None:
+        my_voted_ids = set(
+            row[0] for row in db.query(Vote.asset_id).filter(
+                Vote.asset_id.in_(asset_ids),
+                Vote.user_id == current_user_id,
+            ).all()
+        )
+
     result = []
     for asset in assets:
         version = version_by_asset.get(asset.id)
@@ -94,12 +116,14 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session) -> list[AssetR
             if asset.asset_type != AssetType.audio:
                 for f in files:
                     if f.s3_key_thumbnail:
-                        thumbnail_url = generate_presigned_get_url(f.s3_key_thumbnail)
+                        thumbnail_url = proxy_url_for(f.s3_key_thumbnail)
                         break
 
         asset_resp = AssetResponse.model_validate(asset)
         asset_resp.latest_version = version_response
         asset_resp.thumbnail_url = thumbnail_url
+        asset_resp.vote_count = vote_counts.get(asset.id, 0)
+        asset_resp.voted_by_me = asset.id in my_voted_ids
         result.append(asset_resp)
     return result
 
@@ -109,6 +133,7 @@ def list_assets(
     project_id: uuid.UUID,
     include_failed: bool = Query(False, description="Include assets whose latest version failed processing"),
     folder_id: Optional[str] = Query(None, description="Filter by folder. 'root' for root level, UUID for specific folder."),
+    recursive: bool = Query(False, description="If true, also include assets from every descendant subfolder (used by 'Flatten Folders')"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -123,9 +148,16 @@ def list_assets(
     )
 
     if folder_id == "root":
-        query = query.filter(Asset.folder_id.is_(None))
+        if not recursive:
+            query = query.filter(Asset.folder_id.is_(None))
+        # recursive + root: no folder filter at all — every asset in the project
     elif folder_id is not None:
-        query = query.filter(Asset.folder_id == uuid.UUID(folder_id))
+        target_folder_id = uuid.UUID(folder_id)
+        if recursive:
+            descendant_ids = _get_descendant_folder_ids(db, target_folder_id)
+            query = query.filter(Asset.folder_id.in_([target_folder_id] + descendant_ids))
+        else:
+            query = query.filter(Asset.folder_id == target_folder_id)
 
     assets = query.all()
 
@@ -150,7 +182,7 @@ def list_assets(
             )
             assets = [a for a in assets if a.id in usable or a.id not in has_any_version]
 
-    return _build_asset_responses_bulk(assets, db)
+    return _build_asset_responses_bulk(assets, db, current_user.id)
 
 
 @router.get("/assets/{asset_id}", response_model=AssetResponse)
@@ -163,7 +195,7 @@ def get_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     require_asset_access(db, asset, current_user)
-    return _build_asset_response(asset, db)
+    return _build_asset_response(asset, db, current_user.id)
 
 
 @router.patch("/assets/{asset_id}", response_model=AssetResponse)
@@ -177,11 +209,16 @@ def update_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     require_project_role(db, asset.project_id, current_user, ProjectRole.editor)
+    if "status" in body.model_fields_set and body.status == AssetStatus.archived and not current_user.is_superadmin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can archive assets",
+        )
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(asset, field, value)
     db.commit()
     db.refresh(asset)
-    return _build_asset_response(asset, db)
+    return _build_asset_response(asset, db, current_user.id)
 
 
 @router.delete("/assets/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -268,20 +305,21 @@ def get_stream_url(
             # For video downloads, use the raw file (original upload) so user gets a single file
             s3_key = media_file.s3_key_raw or media_file.s3_key_processed
             filename = build_download_filename(asset.name, media_file.original_filename or s3_key)
-            url = generate_presigned_get_url(s3_key, download_filename=filename)
+            url = proxy_url_for(s3_key, download_filename=filename)
         else:
-            # Route through the HLS proxy so the master playlist, variant
-            # playlists, and .ts segments all get served via short-lived
-            # presigned URLs — the S3 bucket can stay fully private. (#51)
+            # Route through the media proxy so the master playlist, variant
+            # playlists, and .ts segments are all served through this API
+            # container — the S3/AIStor bucket never needs to be publicly
+            # reachable. (#51)
             token = create_hls_token(media_file.s3_key_processed)
             url = f"/stream/hls/master.m3u8?token={token}"
     else:
         s3_key = media_file.s3_key_processed or media_file.s3_key_raw
         if download:
             filename = build_download_filename(asset.name, media_file.original_filename or s3_key)
-            url = generate_presigned_get_url(s3_key, download_filename=filename)
+            url = proxy_url_for(s3_key, download_filename=filename)
         else:
-            url = generate_presigned_get_url(s3_key)
+            url = proxy_url_for(s3_key)
 
     return StreamUrlResponse(url=url, asset_type=asset.asset_type)
 
@@ -370,7 +408,7 @@ def update_assignment(
 
     db.commit()
     db.refresh(asset)
-    return _build_asset_response(asset, db)
+    return _build_asset_response(asset, db, current_user.id)
 
 
 @router.get("/assets/{asset_id}/assignment")
@@ -387,3 +425,60 @@ def get_assignment(
         "assignee_id": str(asset.assignee_id) if asset.assignee_id else None,
         "due_date": asset.due_date.isoformat() if asset.due_date else None,
     }
+
+
+# ── Votes ──────────────────────────────────────────────────────────────────────
+
+@router.post("/assets/{asset_id}/vote", response_model=VoteToggleResponse)
+def toggle_vote(
+    asset_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Toggle the current user's vote on an asset. Requires reviewer role or higher."""
+    asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    require_project_role(db, asset.project_id, current_user, ProjectRole.reviewer)
+
+    existing = db.query(Vote).filter(
+        Vote.asset_id == asset_id,
+        Vote.user_id == current_user.id,
+    ).first()
+
+    if existing:
+        db.delete(existing)
+        voted = False
+    else:
+        db.add(Vote(asset_id=asset_id, user_id=current_user.id))
+        voted = True
+
+    db.commit()
+    vote_count = db.query(Vote).filter(Vote.asset_id == asset_id).count()
+    return VoteToggleResponse(vote_count=vote_count, voted_by_me=voted)
+
+
+@router.get("/assets/{asset_id}/votes")
+def list_votes(
+    asset_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List who voted on an asset (name + avatar), newest first."""
+    asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    require_asset_access(db, asset, current_user)
+
+    votes = db.query(Vote).filter(Vote.asset_id == asset_id).order_by(Vote.created_at.desc()).all()
+    user_ids = [v.user_id for v in votes]
+    users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
+    return [
+        {
+            "user_id": str(v.user_id),
+            "name": users[v.user_id].name if v.user_id in users else "Unknown",
+            "avatar_url": users[v.user_id].avatar_url if v.user_id in users else None,
+            "created_at": v.created_at.isoformat() if v.created_at else None,
+        }
+        for v in votes
+    ]

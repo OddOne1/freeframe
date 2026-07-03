@@ -4,7 +4,7 @@ import * as React from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import * as Switch from '@radix-ui/react-switch'
 import { X, ImagePlus, Globe, Lock } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { getGradientForProject } from '@/lib/gradient-utils'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -26,7 +26,7 @@ export function ProjectSettingsDialog({
   const [name, setName] = React.useState(project.name)
   const [description, setDescription] = React.useState(project.description || '')
   const [isPublic, setIsPublic] = React.useState(project.is_public ?? false)
-  const [posterPreview, setPosterPreview] = React.useState<string | null>(project.poster_url ?? null)
+  const [posterPreview, setPosterPreview] = React.useState<string | null>(resolveApiMediaUrl(project.poster_url))
   const [posterFile, setPosterFile] = React.useState<File | null>(null)
   const [saving, setSaving] = React.useState(false)
   const [storageLimitGB, setStorageLimitGB] = React.useState<string>(
@@ -40,7 +40,7 @@ export function ProjectSettingsDialog({
     setDescription(project.description || '')
     setStorageLimitGB(project.storage_limit_bytes ? String(Math.round(project.storage_limit_bytes / (1024 ** 3))) : '')
     setIsPublic(project.is_public ?? false)
-    setPosterPreview(project.poster_url ?? null)
+    setPosterPreview(resolveApiMediaUrl(project.poster_url))
     setPosterFile(null)
   }, [project])
 

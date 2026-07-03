@@ -17,7 +17,7 @@ import {
   PanelRightOpen,
   ArrowLeft,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import type {
   SharePermission,
   ShareLinkAppearance,
@@ -175,6 +175,19 @@ async function handleDownloadAll(
     triggerDownload(url)
     await new Promise((r) => setTimeout(r, 800))
   }
+}
+
+// The media proxy returns relative paths — resolve them to absolute URLs
+// before rendering as <img src>, since this share viewer isn't behind /api.
+function resolveAssetThumbs(assets: FolderShareAssetItem[]): FolderShareAssetItem[] {
+  return assets.map((a) => ({ ...a, thumbnail_url: resolveApiMediaUrl(a.thumbnail_url) }))
+}
+
+function resolveSubfolderThumbs(subfolders: FolderShareSubfolder[]): FolderShareSubfolder[] {
+  return subfolders.map((f) => ({
+    ...f,
+    thumbnail_urls: (f.thumbnail_urls ?? []).map((u) => resolveApiMediaUrl(u) as string),
+  }))
 }
 
 // ─── Subfolder Card ───────────────────────────────────────────────────────────
@@ -1137,8 +1150,8 @@ export function FolderShareViewer({
       })
       .then((data) => {
         if (cancelled) return
-        setAssets(data.assets ?? [])
-        setSubfolders(data.subfolders ?? [])
+        setAssets(resolveAssetThumbs(data.assets ?? []))
+        setSubfolders(resolveSubfolderThumbs(data.subfolders ?? []))
         setTotal(data.total ?? 0)
         setPage(1)
       })
@@ -1161,7 +1174,7 @@ export function FolderShareViewer({
       )
       if (!r.ok) throw new Error('Failed to load more')
       const data = (await r.json()) as FolderShareAssetsResponse
-      setAssets((prev) => [...prev, ...(data.assets ?? [])])
+      setAssets((prev) => [...prev, ...resolveAssetThumbs(data.assets ?? [])])
       setPage(nextPage)
     } catch {
       // silently fail
@@ -1288,7 +1301,7 @@ export function FolderShareViewer({
           ) : branding?.logo_url ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={branding.logo_url}
+              src={resolveApiMediaUrl(branding.logo_url) ?? undefined}
               alt=""
               className="h-7 w-7 rounded-full object-cover shrink-0"
             />

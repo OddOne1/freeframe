@@ -29,6 +29,12 @@ interface StreamResponse {
   url: string
 }
 
+// The media proxy returns relative paths (/stream/hls/...) — prepend the API URL.
+function resolveStreamUrl(url: string): string {
+  if (!url.startsWith("/")) return url
+  return `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${url}`
+}
+
 // AssetVersion already has files?: MediaFile[]
 type VersionWithFiles = AssetVersion
 
@@ -195,7 +201,7 @@ export function ImageViewer({ asset, version, className, annotationCanvas }: Ima
       const sp = shareSession ? `&share_session=${encodeURIComponent(shareSession)}` : ''
       fetch(`${API_URL}/share/${shareToken}/stream/${asset.id}?version_id=${version.id}${sp}`)
         .then(res => res.ok ? res.json() : Promise.reject(new Error('Failed to load image')))
-        .then(data => { if (!cancelled) setImageUrls({ single: data.url }) })
+        .then(data => { if (!cancelled) setImageUrls({ single: resolveStreamUrl(data.url) }) })
         .catch(err => { if (!cancelled) setError(err.message) })
         .finally(() => { if (!cancelled) setIsLoading(false) })
       return () => { cancelled = true }
@@ -214,7 +220,7 @@ export function ImageViewer({ asset, version, className, annotationCanvas }: Ima
               const data = await api.get<StreamResponse>(
                 `/assets/${asset.id}/stream?media_file_id=${mf.id}&version_id=${version.id}`,
               )
-              return [mf.id, data.url] as [string, string]
+              return [mf.id, resolveStreamUrl(data.url)] as [string, string]
             }),
           )
           if (!cancelled) {
@@ -223,7 +229,7 @@ export function ImageViewer({ asset, version, className, annotationCanvas }: Ima
         } else {
           const data = await api.get<StreamResponse>(`/assets/${asset.id}/stream?version_id=${version.id}`)
           if (!cancelled) {
-            setImageUrls({ single: data.url })
+            setImageUrls({ single: resolveStreamUrl(data.url) })
           }
         }
       } catch (err) {

@@ -49,6 +49,8 @@ class AssetResponse(BaseModel):
     updated_at: datetime
     latest_version: Optional[AssetVersionResponse] = None
     thumbnail_url: Optional[str] = None
+    vote_count: int = 0
+    voted_by_me: bool = False
     model_config = {"from_attributes": True}
 
 class AssetUpdate(BaseModel):
@@ -59,6 +61,10 @@ class AssetUpdate(BaseModel):
     assignee_id: Optional[uuid.UUID] = None
     due_date: Optional[datetime] = None
     keywords: Optional[list] = None
+
+class VoteToggleResponse(BaseModel):
+    vote_count: int
+    voted_by_me: bool
 
 class StreamUrlResponse(BaseModel):
     url: str
