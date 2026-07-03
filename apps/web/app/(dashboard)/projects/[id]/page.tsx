@@ -228,7 +228,8 @@ export default function ProjectDetailPage() {
       const seen = new Set<string>();
       while (current && nameById.has(current) && !seen.has(current)) {
         seen.add(current);
-        const entry = nameById.get(current)!;
+        const entry: { name: string; parent_id: string | null } | undefined = nameById.get(current);
+        if (!entry) break;
         segments.unshift(entry.name);
         current = entry.parent_id;
       }
