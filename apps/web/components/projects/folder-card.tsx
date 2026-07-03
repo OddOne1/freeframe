@@ -3,7 +3,7 @@
 import React, { useCallback, useState } from 'react'
 import useSWR from 'swr'
 import { Folder, Film, Music, Image as ImageIcon, Images, MoreHorizontal, Pencil, Trash, Share2 } from 'lucide-react'
-import { cn, resolveApiMediaUrl } from '@/lib/utils'
+import { cn, resolveApiMediaUrl, formatBytes } from '@/lib/utils'
 import { api } from '@/lib/api'
 import { NameDialog } from './name-dialog'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -225,6 +225,7 @@ export function FolderCard({
           </div>
           <p className="text-xs text-text-tertiary mt-0.5">
             {folder.item_count} {folder.item_count === 1 ? 'Item' : 'Items'}
+            {folder.total_size_bytes > 0 && ` · ${formatBytes(folder.total_size_bytes)}`}
           </p>
         </div>
       </div>

@@ -71,7 +71,7 @@ interface AssetGridProps {
   actions?: React.ReactNode
   /** Whether the current user can vote (reviewer role or higher) */
   canVote?: boolean
-  onAssetVote?: (asset: Asset) => void
+  onAssetVote?: (asset: Asset, stars: number) => void
 }
 
 // Grid column classes based on card size
@@ -195,7 +195,7 @@ export function AssetGrid({
         } else if (sortKey === 'type') {
           cmp = a.asset_type.localeCompare(b.asset_type)
         } else if (sortKey === 'votes') {
-          cmp = (a.vote_count ?? 0) - (b.vote_count ?? 0)
+          cmp = (a.avg_rating ?? 0) - (b.avg_rating ?? 0)
         }
         return sortDirection === 'asc' ? cmp : -cmp
       })
@@ -380,7 +380,7 @@ export function AssetGrid({
                 onRename={onAssetRename ? () => onAssetRename(asset) : undefined}
                 onDelete={onAssetDelete ? () => onAssetDelete(asset) : undefined}
                 canVote={canVote}
-                onVote={onAssetVote ? () => onAssetVote(asset) : undefined}
+                onVote={onAssetVote ? (stars) => onAssetVote(asset, stars) : undefined}
                 folderPath={flattenFolders ? folderPaths[asset.id] : undefined}
                 onDragStart={(e: React.DragEvent) => {
                   const ids = selectedAssetIds.has(asset.id)

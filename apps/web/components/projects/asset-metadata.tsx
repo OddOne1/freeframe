@@ -2,13 +2,15 @@
 
 import * as React from 'react'
 import useSWR, { mutate as globalMutate } from 'swr'
-import { Star, ChevronDown, Check, CalendarDays, Tag, X } from 'lucide-react'
+import { ChevronDown, Check, CalendarDays, Tag, X } from 'lucide-react'
 import * as Select from '@radix-ui/react-select'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Avatar } from '@/components/shared/avatar'
+import { StarRating } from '@/components/shared/star-rating'
+import { StatusDropdown } from '@/components/shared/status-dropdown'
 import type {
   Asset,
   AssetStatus,
@@ -17,43 +19,6 @@ import type {
   User,
   MetadataFieldType,
 } from '@/types'
-
-// ─── Star rating ──────────────────────────────────────────────────────────────
-
-function StarRating({
-  value,
-  onChange,
-}: {
-  value: number | null
-  onChange: (v: number | null) => void
-}) {
-  const [hover, setHover] = React.useState(0)
-  return (
-    <div className="flex items-center gap-0.5">
-      {Array.from({ length: 5 }).map((_, i) => {
-        const star = i + 1
-        const filled = star <= (hover || value || 0)
-        return (
-          <button
-            key={i}
-            type="button"
-            className="p-0.5 transition-transform hover:scale-110"
-            onMouseEnter={() => setHover(star)}
-            onMouseLeave={() => setHover(0)}
-            onClick={() => onChange(value === star ? null : star)}
-          >
-            <Star
-              className={cn(
-                'h-4 w-4 transition-colors',
-                filled ? 'fill-yellow-400 text-yellow-400' : 'text-text-tertiary',
-              )}
-            />
-          </button>
-        )
-      })}
-    </div>
-  )
-}
 
 // ─── Custom field renderer ────────────────────────────────────────────────────
 
@@ -174,9 +139,17 @@ interface AssetMetadataEditorProps {
   asset: Asset
   projectId: string
   onUpdated?: () => void
+  canEditStatus?: boolean
+  canArchive?: boolean
 }
 
-export function AssetMetadataEditor({ asset, projectId, onUpdated }: AssetMetadataEditorProps) {
+export function AssetMetadataEditor({
+  asset,
+  projectId,
+  onUpdated,
+  canEditStatus = false,
+  canArchive = false,
+}: AssetMetadataEditorProps) {
   const assetKey = `/assets/${asset.id}`
 
   // Built-in fields
@@ -249,10 +222,21 @@ export function AssetMetadataEditor({ asset, projectId, onUpdated }: AssetMetada
 
   return (
     <div className="space-y-4">
+      {/* Status */}
+      <div className="flex flex-col gap-1.5">
+        <label className="text-xs font-medium text-text-tertiary uppercase tracking-wide">Status</label>
+        <StatusDropdown
+          status={status}
+          onChange={canEditStatus ? setStatus : undefined}
+          readOnly={!canEditStatus}
+          canArchive={canArchive}
+        />
+      </div>
+
       {/* Rating */}
       <div className="flex flex-col gap-1.5">
         <label className="text-xs font-medium text-text-tertiary uppercase tracking-wide">Rating</label>
-        <StarRating value={rating} onChange={setRating} />
+        <StarRating value={rating} onChange={(star) => setRating(rating === star ? null : star)} />
       </div>
 
       {/* Assignee */}

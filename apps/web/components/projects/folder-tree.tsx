@@ -12,7 +12,7 @@ import {
   FolderPlus,
   Trash,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, formatBytes } from '@/lib/utils'
 import type { FolderTreeNode } from '@/types'
 
 interface FolderTreeProps {
@@ -150,7 +150,12 @@ function FolderNode({
 
         {/* Item count */}
         {node.item_count > 0 && !renaming && (
-          <span className="text-[10px] text-text-tertiary shrink-0">{node.item_count}</span>
+          <span
+            className="text-[10px] text-text-tertiary shrink-0"
+            title={node.total_size_bytes > 0 ? formatBytes(node.total_size_bytes) : undefined}
+          >
+            {node.item_count}{node.total_size_bytes > 0 && ` · ${formatBytes(node.total_size_bytes)}`}
+          </span>
         )}
 
         {/* Context menu button */}

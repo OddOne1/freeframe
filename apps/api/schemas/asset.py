@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -49,8 +49,9 @@ class AssetResponse(BaseModel):
     updated_at: datetime
     latest_version: Optional[AssetVersionResponse] = None
     thumbnail_url: Optional[str] = None
-    vote_count: int = 0
-    voted_by_me: bool = False
+    avg_rating: Optional[float] = None
+    rating_count: int = 0
+    my_rating: Optional[int] = None
     model_config = {"from_attributes": True}
 
 class AssetUpdate(BaseModel):
@@ -62,9 +63,13 @@ class AssetUpdate(BaseModel):
     due_date: Optional[datetime] = None
     keywords: Optional[list] = None
 
+class VoteRequest(BaseModel):
+    stars: int = Field(..., ge=1, le=5)
+
 class VoteToggleResponse(BaseModel):
-    vote_count: int
-    voted_by_me: bool
+    avg_rating: Optional[float] = None
+    rating_count: int
+    my_rating: Optional[int] = None
 
 class StreamUrlResponse(BaseModel):
     url: str

@@ -10,9 +10,9 @@ interface BadgeProps {
 const statusConfig: Record<AssetStatus, { label: string; dot: string; bg: string; text: string }> = {
   draft: {
     label: 'Draft',
-    dot: 'bg-status-turquoise',
-    bg: 'bg-status-turquoise/10',
-    text: 'text-status-turquoise',
+    dot: 'bg-status-draft',
+    bg: 'bg-status-draft/10',
+    text: 'text-status-draft',
   },
   in_review: {
     label: 'Needs Review',

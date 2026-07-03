@@ -2,8 +2,9 @@
 
 import * as React from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { Film, Music, Image as ImageIcon, Images, MessageSquare, MoreHorizontal, Check, Share2, Download, Link as LinkIcon, Pencil, Trash2, Star, Folder as FolderIcon } from 'lucide-react'
+import { Film, Music, Image as ImageIcon, Images, MessageSquare, MoreHorizontal, Check, Share2, Download, Link as LinkIcon, Pencil, Trash2, Folder as FolderIcon } from 'lucide-react'
 import { cn, formatRelativeTime, formatBytes } from '@/lib/utils'
+import { StarRating } from '@/components/shared/star-rating'
 import type { Asset, AssetType, User } from '@/types'
 import type { AspectRatio, ThumbnailScale, TitleLines } from '@/stores/view-store'
 
@@ -38,7 +39,7 @@ interface AssetCardProps {
   onDelete?: () => void
   fileSize?: number | null
   canVote?: boolean
-  onVote?: () => void
+  onVote?: (stars: number) => void
   /** Folder path label shown when Flatten Folders is on, e.g. "Test / Sub" */
   folderPath?: string
   // Appearance settings
@@ -146,21 +147,24 @@ export function AssetCard({
           </button>
         )}
 
-        {/* Vote button — top-right */}
-        {(canVote || (asset.vote_count ?? 0) > 0) && (
-          <button
-            onClick={canVote ? (e) => { e.stopPropagation(); onVote?.() } : undefined}
-            disabled={!canVote}
-            title={canVote ? (asset.voted_by_me ? 'Remove vote' : 'Vote for this asset') : `${asset.vote_count ?? 0} vote(s)`}
-            className={cn(
-              'absolute top-2 right-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-2xs font-medium backdrop-blur-sm transition-all',
-              asset.voted_by_me ? 'bg-accent text-white' : 'bg-black/40 text-white/80',
-              canVote ? 'hover:bg-black/60 cursor-pointer' : 'cursor-default',
-            )}
+        {/* Rating — top-right */}
+        {(canVote || (asset.rating_count ?? 0) > 0) && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="absolute top-2 right-2 inline-flex items-center gap-1 rounded bg-black/40 px-1.5 py-0.5 backdrop-blur-sm"
           >
-            <Star className={cn('h-3 w-3', asset.voted_by_me && 'fill-current')} />
-            {(asset.vote_count ?? 0) > 0 && asset.vote_count}
-          </button>
+            <StarRating
+              value={asset.my_rating ?? null}
+              onChange={canVote ? (stars) => onVote?.(stars) : undefined}
+              readOnly={!canVote}
+              size="sm"
+            />
+            {(asset.rating_count ?? 0) > 0 && (
+              <span className="text-2xs font-medium text-white/80 tabular-nums">
+                {asset.avg_rating?.toFixed(1)}
+              </span>
+            )}
+          </div>
         )}
 
         {/* Duration badge — bottom-right (for video/audio) */}

@@ -13,7 +13,7 @@ from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.share import AssetShare
 from ..models.activity import Mention, Notification, NotificationType
 from ..models.vote import Vote
-from ..schemas.asset import AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, VoteToggleResponse
+from ..schemas.asset import AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, VoteToggleResponse, VoteRequest
 from ..schemas.notification import AssignmentUpdate
 from ..services.permissions import require_project_role, require_asset_access, can_access_asset, is_public_project, get_project_member
 from ..services.s3_service import build_download_filename
@@ -23,7 +23,6 @@ from ..services.s3_service import create_multipart_upload
 from .folders import _get_descendant_ids as _get_descendant_folder_ids
 
 router = APIRouter(tags=["assets"])
-
 
 def _build_asset_response(asset: Asset, db: Session, current_user_id: uuid.UUID | None = None) -> AssetResponse:
     """Build AssetResponse with latest version and its files."""
@@ -49,12 +48,17 @@ def _build_asset_response(asset: Asset, db: Session, current_user_id: uuid.UUID 
     resp = AssetResponse.model_validate(asset)
     resp.latest_version = version_response
     resp.thumbnail_url = thumbnail_url
-    resp.vote_count = db.query(Vote).filter(Vote.asset_id == asset.id).count()
-    resp.voted_by_me = current_user_id is not None and db.query(Vote).filter(
-        Vote.asset_id == asset.id, Vote.user_id == current_user_id,
-    ).first() is not None
+    avg_row = db.query(func.avg(Vote.stars), func.count(Vote.id)).filter(Vote.asset_id == asset.id).first()
+    resp.avg_rating = round(float(avg_row[0]), 2) if avg_row and avg_row[0] is not None else None
+    resp.rating_count = int(avg_row[1]) if avg_row else 0
+    if current_user_id is not None:
+        my_vote = db.query(Vote).filter(
+            Vote.asset_id == asset.id, Vote.user_id == current_user_id,
+        ).first()
+        resp.my_rating = my_vote.stars if my_vote else None
+    else:
+        resp.my_rating = None
     return resp
-
 
 def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user_id: uuid.UUID | None = None) -> list[AssetResponse]:
     """Build AssetResponse list with bulk-loaded versions and files (no N+1)."""
@@ -87,21 +91,23 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user_i
     for f in all_files:
         files_by_version.setdefault(f.version_id, []).append(f)
 
-    # Bulk load vote counts + this user's votes
-    vote_counts: dict = dict(
-        db.query(Vote.asset_id, func.count(Vote.id))
+    # Bulk load rating aggregates + this user's rating
+    rating_rows = (
+        db.query(Vote.asset_id, func.avg(Vote.stars), func.count(Vote.id))
         .filter(Vote.asset_id.in_(asset_ids))
         .group_by(Vote.asset_id)
         .all()
     )
-    my_voted_ids: set = set()
+    avg_ratings: dict = {row[0]: (round(float(row[1]), 2) if row[1] is not None else None) for row in rating_rows}
+    rating_counts: dict = {row[0]: int(row[2]) for row in rating_rows}
+
+    my_ratings: dict = {}
     if current_user_id is not None:
-        my_voted_ids = set(
-            row[0] for row in db.query(Vote.asset_id).filter(
-                Vote.asset_id.in_(asset_ids),
-                Vote.user_id == current_user_id,
-            ).all()
-        )
+        my_votes = db.query(Vote.asset_id, Vote.stars).filter(
+            Vote.asset_id.in_(asset_ids),
+            Vote.user_id == current_user_id,
+        ).all()
+        my_ratings = {row[0]: row[1] for row in my_votes}
 
     result = []
     for asset in assets:
@@ -122,11 +128,11 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user_i
         asset_resp = AssetResponse.model_validate(asset)
         asset_resp.latest_version = version_response
         asset_resp.thumbnail_url = thumbnail_url
-        asset_resp.vote_count = vote_counts.get(asset.id, 0)
-        asset_resp.voted_by_me = asset.id in my_voted_ids
+        asset_resp.avg_rating = avg_ratings.get(asset.id)
+        asset_resp.rating_count = rating_counts.get(asset.id, 0)
+        asset_resp.my_rating = my_ratings.get(asset.id)
         result.append(asset_resp)
     return result
-
 
 @router.get("/projects/{project_id}/assets", response_model=list[AssetResponse])
 def list_assets(
@@ -184,7 +190,6 @@ def list_assets(
 
     return _build_asset_responses_bulk(assets, db, current_user.id)
 
-
 @router.get("/assets/{asset_id}", response_model=AssetResponse)
 def get_asset(
     asset_id: uuid.UUID,
@@ -196,7 +201,6 @@ def get_asset(
         raise HTTPException(status_code=404, detail="Asset not found")
     require_asset_access(db, asset, current_user)
     return _build_asset_response(asset, db, current_user.id)
-
 
 @router.patch("/assets/{asset_id}", response_model=AssetResponse)
 def update_asset(
@@ -220,7 +224,6 @@ def update_asset(
     db.refresh(asset)
     return _build_asset_response(asset, db, current_user.id)
 
-
 @router.delete("/assets/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_asset(
     asset_id: uuid.UUID,
@@ -233,7 +236,6 @@ def delete_asset(
     require_project_role(db, asset.project_id, current_user, ProjectRole.editor)
     asset.deleted_at = datetime.now(timezone.utc)
     db.commit()
-
 
 @router.get("/assets/{asset_id}/versions", response_model=list[AssetVersionResponse])
 def list_asset_versions(
@@ -263,7 +265,6 @@ def list_asset_versions(
         vr.files = [MediaFileResponse.model_validate(f) for f in files_by_version.get(v.id, [])]
         result.append(vr)
     return result
-
 
 @router.get("/assets/{asset_id}/stream", response_model=StreamUrlResponse)
 def get_stream_url(
@@ -323,7 +324,6 @@ def get_stream_url(
 
     return StreamUrlResponse(url=url, asset_type=asset.asset_type)
 
-
 @router.post("/assets/{asset_id}/versions", response_model=InitiateUploadResponse)
 def initiate_new_version(
     asset_id: uuid.UUID,
@@ -380,7 +380,6 @@ def initiate_new_version(
         version_id=version.id,
     )
 
-
 @router.patch("/assets/{asset_id}/assignment", response_model=AssetResponse)
 def update_assignment(
     asset_id: uuid.UUID,
@@ -410,7 +409,6 @@ def update_assignment(
     db.refresh(asset)
     return _build_asset_response(asset, db, current_user.id)
 
-
 @router.get("/assets/{asset_id}/assignment")
 def get_assignment(
     asset_id: uuid.UUID,
@@ -426,16 +424,16 @@ def get_assignment(
         "due_date": asset.due_date.isoformat() if asset.due_date else None,
     }
 
-
 # ── Votes ──────────────────────────────────────────────────────────────────────
 
 @router.post("/assets/{asset_id}/vote", response_model=VoteToggleResponse)
-def toggle_vote(
+def rate_asset(
     asset_id: uuid.UUID,
+    body: VoteRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Toggle the current user's vote on an asset. Requires reviewer role or higher."""
+    """Set (or clear, if resubmitting the same value) the current user's star rating on an asset."""
     asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -446,17 +444,22 @@ def toggle_vote(
         Vote.user_id == current_user.id,
     ).first()
 
-    if existing:
+    my_rating: int | None
+    if existing and existing.stars == body.stars:
         db.delete(existing)
-        voted = False
+        my_rating = None
+    elif existing:
+        existing.stars = body.stars
+        my_rating = body.stars
     else:
-        db.add(Vote(asset_id=asset_id, user_id=current_user.id))
-        voted = True
+        db.add(Vote(asset_id=asset_id, user_id=current_user.id, stars=body.stars))
+        my_rating = body.stars
 
     db.commit()
-    vote_count = db.query(Vote).filter(Vote.asset_id == asset_id).count()
-    return VoteToggleResponse(vote_count=vote_count, voted_by_me=voted)
-
+    avg_row = db.query(func.avg(Vote.stars), func.count(Vote.id)).filter(Vote.asset_id == asset_id).first()
+    avg_rating = round(float(avg_row[0]), 2) if avg_row and avg_row[0] is not None else None
+    rating_count = int(avg_row[1]) if avg_row else 0
+    return VoteToggleResponse(avg_rating=avg_rating, rating_count=rating_count, my_rating=my_rating)
 
 @router.get("/assets/{asset_id}/votes")
 def list_votes(
@@ -464,7 +467,7 @@ def list_votes(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List who voted on an asset (name + avatar), newest first."""
+    """List who voted on an asset (name + avatar + stars), newest first."""
     asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -478,6 +481,7 @@ def list_votes(
             "user_id": str(v.user_id),
             "name": users[v.user_id].name if v.user_id in users else "Unknown",
             "avatar_url": users[v.user_id].avatar_url if v.user_id in users else None,
+            "stars": v.stars,
             "created_at": v.created_at.isoformat() if v.created_at else None,
         }
         for v in votes

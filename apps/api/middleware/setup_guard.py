@@ -21,9 +21,9 @@ EXEMPT_PREFIXES = (
     "/docs",
     "/redoc",
     "/openapi.json",
-    "/share/",     # Public share links should work regardless
+    "/share/",  # Public share links should work regardless
+    "/site-settings",
 )
-
 
 class SetupGuardMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):

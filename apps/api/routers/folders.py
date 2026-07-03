@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..middleware.auth import get_current_user
-from ..models.asset import Asset
+from ..models.asset import Asset, AssetVersion, MediaFile
 from ..models.folder import Folder
 from ..models.project import ProjectRole
 from ..models.user import User
@@ -26,9 +26,7 @@ router = APIRouter(tags=["folders"])
 
 MAX_FOLDER_DEPTH = 10
 
-
 # ─── Helpers ──────────────────────────────────────────────────────────────────
-
 
 def _get_folder(db: Session, folder_id: uuid.UUID) -> Folder:
     folder = (
@@ -39,8 +37,6 @@ def _get_folder(db: Session, folder_id: uuid.UUID) -> Folder:
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
     return folder
-
-
 
 def _get_descendant_ids(db: Session, folder_id: uuid.UUID) -> list[uuid.UUID]:
     """Get all descendant folder IDs (BFS)."""
@@ -58,7 +54,6 @@ def _get_descendant_ids(db: Session, folder_id: uuid.UUID) -> list[uuid.UUID]:
             queue.append(child_id)
     return descendants
 
-
 def _get_depth(db: Session, folder_id: Optional[uuid.UUID]) -> int:
     """Count depth from root to folder_id."""
     depth = 0
@@ -70,7 +65,6 @@ def _get_depth(db: Session, folder_id: Optional[uuid.UUID]) -> int:
             break
         current_id = folder.parent_id
     return depth
-
 
 def _compute_item_count(db: Session, folder_id: uuid.UUID) -> int:
     """Count immediate subfolders + assets in a folder."""
@@ -88,12 +82,21 @@ def _compute_item_count(db: Session, folder_id: uuid.UUID) -> int:
     )
     return subfolder_count + asset_count
 
+def _compute_folder_total_size(db: Session, folder_id: uuid.UUID) -> int:
+    """Recursively sum file sizes of every asset in this folder and all descendant folders."""
+    all_folder_ids = [folder_id] + _get_descendant_ids(db, folder_id)
+    total = db.query(func.coalesce(func.sum(MediaFile.file_size_bytes), 0)).join(
+        AssetVersion, MediaFile.version_id == AssetVersion.id
+    ).join(Asset, AssetVersion.asset_id == Asset.id).filter(
+        Asset.folder_id.in_(all_folder_ids), Asset.deleted_at.is_(None),
+    ).scalar() or 0
+    return int(total)
 
 def _folder_to_response(db: Session, folder: Folder) -> FolderResponse:
     resp = FolderResponse.model_validate(folder)
     resp.item_count = _compute_item_count(db, folder.id)
+    resp.total_size_bytes = _compute_folder_total_size(db, folder.id)
     return resp
-
 
 def _get_descendant_ids_including_deleted(db: Session, folder_id: uuid.UUID) -> list[uuid.UUID]:
     """Get all descendant folder IDs including soft-deleted ones."""
@@ -107,7 +110,6 @@ def _get_descendant_ids_including_deleted(db: Session, folder_id: uuid.UUID) -> 
                 descendants.append(child_id)
                 queue.append(child_id)
     return descendants
-
 
 def _max_subtree_depth(db: Session, folder_id: uuid.UUID) -> int:
     """Get the max depth of the subtree rooted at folder_id."""
@@ -127,9 +129,7 @@ def _max_subtree_depth(db: Session, folder_id: uuid.UUID) -> int:
             queue.append((child_id, child_depth))
     return max_depth
 
-
 # ─── CRUD ─────────────────────────────────────────────────────────────────────
-
 
 @router.post(
     "/projects/{project_id}/folders",
@@ -168,7 +168,6 @@ def create_folder(
     db.refresh(folder)
     return _folder_to_response(db, folder)
 
-
 @router.get("/projects/{project_id}/folders", response_model=list[FolderResponse])
 def list_folders(
     project_id: uuid.UUID,
@@ -193,7 +192,6 @@ def list_folders(
 
     folders = query.order_by(Folder.created_at.desc()).all()
     return [_folder_to_response(db, f) for f in folders]
-
 
 @router.get("/projects/{project_id}/folder-tree", response_model=list[FolderTreeNode])
 def get_folder_tree(
@@ -229,6 +227,17 @@ def get_folder_tree(
         .all()
     ) if folder_ids else {}
 
+    # Batch-compute direct (non-recursive) file size per folder — recursive
+    # rollup happens afterwards via _accumulate() once the tree is built.
+    direct_sizes = dict(
+        db.query(Asset.folder_id, func.coalesce(func.sum(MediaFile.file_size_bytes), 0))
+        .join(AssetVersion, AssetVersion.asset_id == Asset.id)
+        .join(MediaFile, MediaFile.version_id == AssetVersion.id)
+        .filter(Asset.folder_id.in_(folder_ids), Asset.deleted_at.is_(None))
+        .group_by(Asset.folder_id)
+        .all()
+    ) if folder_ids else {}
+
     # Build tree in Python
     folder_map: dict[uuid.UUID, FolderTreeNode] = {}
     for f in all_folders:
@@ -237,6 +246,7 @@ def get_folder_tree(
             name=f.name,
             parent_id=f.parent_id,
             item_count=(subfolder_counts.get(f.id, 0) + asset_counts.get(f.id, 0)),
+            total_size_bytes=int(direct_sizes.get(f.id, 0)),
         )
 
     roots: list[FolderTreeNode] = []
@@ -246,8 +256,18 @@ def get_folder_tree(
         else:
             roots.append(node)
 
-    return roots
+    # Bottom-up rollup: each node's total_size_bytes should include all descendants
+    def _accumulate(node: FolderTreeNode) -> int:
+        total = node.total_size_bytes
+        for child in node.children:
+            total += _accumulate(child)
+        node.total_size_bytes = total
+        return total
 
+    for root in roots:
+        _accumulate(root)
+
+    return roots
 
 @router.patch("/folders/{folder_id}", response_model=FolderResponse)
 def update_folder(
@@ -287,7 +307,6 @@ def update_folder(
     db.refresh(folder)
     return _folder_to_response(db, folder)
 
-
 @router.delete("/folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_folder(
     folder_id: uuid.UUID,
@@ -311,9 +330,7 @@ def delete_folder(
 
     db.commit()
 
-
 # ─── Move ─────────────────────────────────────────────────────────────────────
-
 
 @router.patch("/assets/{asset_id}/move", response_model=dict)
 def move_asset(
@@ -336,7 +353,6 @@ def move_asset(
     asset.folder_id = body.folder_id
     db.commit()
     return {"ok": True}
-
 
 @router.post("/projects/{project_id}/bulk-move", response_model=dict)
 def bulk_move(
@@ -399,9 +415,7 @@ def bulk_move(
     db.commit()
     return {"ok": True, "moved_assets": len(body.asset_ids), "moved_folders": len(body.folder_ids)}
 
-
 # ─── Trash & Restore ─────────────────────────────────────────────────────────
-
 
 @router.get("/projects/{project_id}/trash", response_model=dict)
 def list_trash(
@@ -454,7 +468,6 @@ def list_trash(
         ],
     }
 
-
 @router.post("/assets/{asset_id}/restore", response_model=dict)
 def restore_asset(
     asset_id: uuid.UUID,
@@ -480,7 +493,6 @@ def restore_asset(
     asset.deleted_at = None
     db.commit()
     return {"ok": True}
-
 
 @router.post("/folders/{folder_id}/restore", response_model=dict)
 def restore_folder(

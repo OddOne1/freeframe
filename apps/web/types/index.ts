@@ -122,8 +122,9 @@ export interface Asset {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
-  vote_count?: number;
-  voted_by_me?: boolean;
+  avg_rating?: number | null;
+  rating_count?: number;
+  my_rating?: number | null;
 }
 
 export interface AssetVersion {
@@ -460,6 +461,7 @@ export interface Folder {
   created_at: string
   updated_at: string
   item_count: number
+  total_size_bytes: number
 }
 
 export interface FolderTreeNode {
@@ -467,6 +469,7 @@ export interface FolderTreeNode {
   name: string
   parent_id: string | null
   item_count: number
+  total_size_bytes: number
   children: FolderTreeNode[]
 }
 
@@ -517,4 +520,12 @@ export interface AuthTokens {
   access_token: string;
   refresh_token: string;
   token_type: string;
+}
+
+// ─── Site Settings ────────────────────────────────────────────────────────────
+
+export interface SiteSettingsResponse {
+  org_name: string;
+  logo_dark_url: string | null;
+  logo_light_url: string | null;
 }
