@@ -2,6 +2,7 @@
 
 import useSWR from 'swr'
 import { api } from '@/lib/api'
+import { resolveApiMediaUrl } from '@/lib/utils'
 import type { SiteSettingsResponse } from '@/types'
 
 const SITE_SETTINGS_KEY = '/site-settings'
@@ -66,8 +67,13 @@ export function useSiteSettings() {
   return {
     isLoading,
     orgName: data?.org_name ?? 'FreeFrame',
-    logoDarkUrl: data?.logo_dark_url ?? null,
-    logoLightUrl: data?.logo_light_url ?? null,
+    // Backend hands back relative /stream/... proxy paths (see
+    // apps/api/routers/site_settings.py::_to_response) — same as thumbnail_url
+    // elsewhere in this app, they need the API origin prefixed before use in
+    // an <img src>, otherwise the browser resolves them against the Next.js
+    // frontend origin instead of the FastAPI backend and 404s.
+    logoDarkUrl: resolveApiMediaUrl(data?.logo_dark_url ?? null),
+    logoLightUrl: resolveApiMediaUrl(data?.logo_light_url ?? null),
     updateOrgName,
     uploadLogo,
     removeLogo,
