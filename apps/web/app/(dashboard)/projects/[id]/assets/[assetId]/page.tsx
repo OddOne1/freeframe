@@ -1,14 +1,16 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type ElementType, type ReactNode } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { ReviewProvider, useReview } from '@/components/review/review-provider'
 import { VideoPlayer } from '@/components/review/video-player'
 import { AudioPlayer } from '@/components/review/audio-player'
 import { ImageViewer } from '@/components/review/image-viewer'
 import { StatusDropdown } from '@/components/shared/status-dropdown'
 import { StarRating } from '@/components/shared/star-rating'
+import { Avatar } from '@/components/shared/avatar'
 import { AnnotationCanvas } from '@/components/review/annotation-canvas'
 import { AnnotationOverlay } from '@/components/review/annotation-overlay'
 import { CommentPanel } from '@/components/review/comment-panel'
@@ -19,6 +21,7 @@ import { ShareDialog } from '@/components/review/share-dialog'
 import { useReviewStore } from '@/stores/review-store'
 import { useAuthStore } from '@/stores/auth-store'
 import { useComments } from '@/hooks/use-comments'
+import type { CommentWithReplies } from '@/hooks/use-comments'
 import { api } from '@/lib/api'
 import { useUploadStore } from '@/stores/upload-store'
 import { useBreadcrumbStore } from '@/stores/breadcrumb-store'
@@ -26,15 +29,106 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Info,
   Loader2,
   Columns2,
   Upload,
+  FileText,
+  Tag,
+  CircleDot,
+  Star,
+  GitBranch,
+  Activity,
+  MessageSquare,
+  Clock,
+  HardDrive,
+  Maximize2,
+  Timer,
+  Gauge,
+  File as FileIcon,
+  User as UserIcon,
 } from 'lucide-react'
 import Link from 'next/link'
-import { cn } from '@/lib/utils'
+import { cn, formatBytes, formatRelativeTime, formatTime } from '@/lib/utils'
 import { usePageTitle } from '@/hooks/use-page-title'
-import type { Project, AssetResponse, ProjectMember, FolderTreeNode, AssetStatus } from '@/types'
+import type { Project, AssetResponse, ProjectMember, FolderTreeNode, AssetStatus, User } from '@/types'
+
+interface VoteEntry {
+  user_id: string
+  name: string
+  avatar_url: string | null
+  stars: number
+  created_at: string | null
+}
+
+function countAllComments(list: CommentWithReplies[]): number {
+  return list.reduce((sum, c) => sum + 1 + countAllComments(c.replies ?? []), 0)
+}
+
+function FieldRow({
+  icon: Icon,
+  label,
+  children,
+}: {
+  icon: ElementType
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60 last:border-0">
+      <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
+        <Icon className="h-3.5 w-3.5" />
+        {label}
+      </span>
+      <span className="text-xs text-text-primary font-medium text-right min-w-0 truncate">
+        {children}
+      </span>
+    </div>
+  )
+}
+
+function VoteBreakdown({ voters }: { voters: VoteEntry[] }) {
+  if (voters.length === 0) return null
+
+  const row = (v: VoteEntry) => (
+    <div key={v.user_id} className="flex items-center justify-between gap-2 px-2 py-1.5">
+      <div className="flex items-center gap-2 min-w-0">
+        <Avatar src={v.avatar_url} name={v.name} size="sm" />
+        <span className="text-xs text-text-primary truncate">{v.name}</span>
+      </div>
+      <StarRating value={v.stars} readOnly size="sm" />
+    </div>
+  )
+
+  if (voters.length <= 5) {
+    return (
+      <div className="mt-1.5 rounded-md border border-border/60 divide-y divide-border/60">
+        {voters.map(row)}
+      </div>
+    )
+  }
+
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button className="mt-1.5 w-full flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors">
+          <span>Show all {voters.length} ratings</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={4}
+          className="z-[100] w-64 max-h-72 overflow-y-auto rounded-lg border border-border bg-bg-elevated shadow-xl py-1 divide-y divide-border/60"
+        >
+          {voters.map(row)}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  )
+}
 
 const acceptByType: Record<string, string> = {
   video: 'video/*',
@@ -168,6 +262,23 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     addReaction,
     removeReaction,
   } = useComments(asset?.id || '', currentVersion?.id || '')
+
+  // Voter breakdown (who voted, how many stars each) — Fields tab
+  const { data: voters } = useSWR<VoteEntry[]>(
+    asset && ratingCount > 0 ? `/assets/${asset.id}/votes` : null,
+    (key: string) => api.get<VoteEntry[]>(key),
+  )
+
+  // Uploader name for the Fields tab (asset.created_by is just a user id)
+  const { data: uploaderUsers } = useSWR<User[]>(
+    asset ? `/users?ids=${asset.created_by}` : null,
+    (key: string) => api.get<User[]>(key),
+  )
+  const uploaderName = uploaderUsers?.[0]?.name ?? null
+
+  const commentCount = countAllComments(comments)
+  const primaryFile = currentVersion?.files?.[0]
+  const totalFileSize = (currentVersion?.files ?? []).reduce((sum, f) => sum + (f.file_size_bytes || 0), 0)
 
   // Deep-link to a specific comment from notification (?commentId=...)
   // Runs once after comments are loaded — seeks to timecode, focuses comment, shows annotation
@@ -533,27 +644,59 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                   )}
                 </>
               ) : (
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-text-tertiary">Name</span>
-                      <span className="text-xs text-text-primary font-medium truncate ml-4">{asset.name}</span>
+                <div className="flex-1 overflow-y-auto p-4">
+                  <div>
+                    <FieldRow icon={FileText} label="Name">{asset.name}</FieldRow>
+                    <FieldRow icon={Tag} label="Type">
+                      <span className="capitalize">{asset.asset_type.replace('_', ' ')}</span>
+                    </FieldRow>
+
+                    {/* Status — same control as the toolbar, compact */}
+                    <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60">
+                      <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
+                        <CircleDot className="h-3.5 w-3.5" />
+                        Status
+                      </span>
+                      {displayStatus && (
+                        <StatusDropdown
+                          status={displayStatus}
+                          onChange={canEditStatus ? handleStatusChange : undefined}
+                          readOnly={!canEditStatus}
+                          canArchive={canArchive}
+                          className={canEditStatus ? 'h-7 px-2 text-2xs bg-transparent border-border' : 'h-6 px-2'}
+                        />
+                      )}
                     </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-text-tertiary">Type</span>
-                      <span className="text-xs text-text-primary capitalize">{asset.asset_type.replace('_', ' ')}</span>
-                    </div>
-                    {currentVersion && (
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-text-tertiary">Version</span>
-                        <span className="text-xs text-text-primary">v{currentVersion.version_number}</span>
+
+                    {/* Rating + per-voter breakdown */}
+                    <div className="py-2 border-b border-border/60">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
+                          <Star className="h-3.5 w-3.5" />
+                          Rating
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <StarRating
+                            value={myRating}
+                            onChange={canVote ? handleRate : undefined}
+                            readOnly={!canVote}
+                            size="sm"
+                          />
+                          {ratingCount > 0 && (
+                            <span className="text-xs text-text-secondary tabular-nums">{avgRating?.toFixed(1)}</span>
+                          )}
+                        </div>
                       </div>
+                      {ratingCount > 0 && <VoteBreakdown voters={voters ?? []} />}
+                    </div>
+
+                    {currentVersion && (
+                      <FieldRow icon={GitBranch} label="Version">v{currentVersion.version_number}</FieldRow>
                     )}
                     {currentVersion && (
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-text-tertiary">Processing</span>
+                      <FieldRow icon={Activity} label="Processing">
                         <span className={cn(
-                          'text-xs capitalize',
+                          'capitalize',
                           currentVersion.processing_status === 'ready' && 'text-status-success',
                           currentVersion.processing_status === 'processing' && 'text-status-warning',
                           currentVersion.processing_status === 'failed' && 'text-status-error',
@@ -561,7 +704,25 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                         )}>
                           {currentVersion.processing_status}
                         </span>
-                      </div>
+                      </FieldRow>
+                    )}
+                    <FieldRow icon={MessageSquare} label="Comments">{commentCount}</FieldRow>
+                    <FieldRow icon={Clock} label="Uploaded">{formatRelativeTime(asset.created_at)}</FieldRow>
+                    <FieldRow icon={UserIcon} label="Uploaded by">{uploaderName ?? '—'}</FieldRow>
+                    {totalFileSize > 0 && (
+                      <FieldRow icon={HardDrive} label="File size">{formatBytes(totalFileSize)}</FieldRow>
+                    )}
+                    {primaryFile?.width != null && primaryFile?.height != null && (
+                      <FieldRow icon={Maximize2} label="Resolution">{primaryFile.width}×{primaryFile.height}</FieldRow>
+                    )}
+                    {primaryFile?.duration_seconds != null && (
+                      <FieldRow icon={Timer} label="Duration">{formatTime(primaryFile.duration_seconds)}</FieldRow>
+                    )}
+                    {primaryFile?.fps != null && (
+                      <FieldRow icon={Gauge} label="Frame rate">{primaryFile.fps} fps</FieldRow>
+                    )}
+                    {primaryFile?.original_filename && (
+                      <FieldRow icon={FileIcon} label="Source filename">{primaryFile.original_filename}</FieldRow>
                     )}
                   </div>
                 </div>
