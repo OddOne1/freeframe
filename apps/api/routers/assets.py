@@ -123,21 +123,22 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user: 
     # Rating-visibility gating: this batch may span multiple projects (e.g. the
     # "my assets" feed), so bulk-fetch project settings + this user's
     # memberships for every distinct project represented, rather than querying
-    # per asset.
+    # per asset. Mirrors can_see_rating_aggregate(): owner always, editor only
+    # once the project has opted in, reviewer/viewer/non-members never.
     project_ids = list({a.project_id for a in assets})
     ratings_visible_by_project: dict = {}
     owner_project_ids: set = set()
+    editor_project_ids: set = set()
     if current_user is not None and not current_user.is_superadmin and project_ids:
         for pid, visible in db.query(Project.id, Project.ratings_visible_to_all).filter(Project.id.in_(project_ids)).all():
             ratings_visible_by_project[pid] = visible
-        owner_project_ids = {
-            row[0] for row in db.query(ProjectMember.project_id).filter(
-                ProjectMember.project_id.in_(project_ids),
-                ProjectMember.user_id == current_user.id,
-                ProjectMember.role == ProjectRole.owner,
-                ProjectMember.deleted_at.is_(None),
-            ).all()
-        }
+        member_rows = db.query(ProjectMember.project_id, ProjectMember.role).filter(
+            ProjectMember.project_id.in_(project_ids),
+            ProjectMember.user_id == current_user.id,
+            ProjectMember.deleted_at.is_(None),
+        ).all()
+        owner_project_ids = {pid for pid, role in member_rows if role == ProjectRole.owner}
+        editor_project_ids = {pid for pid, role in member_rows if role == ProjectRole.editor}
 
     def _can_see_aggregate(project_id: uuid.UUID) -> bool:
         if current_user is None:
@@ -146,7 +147,9 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user: 
             return True
         if project_id in owner_project_ids:
             return True
-        return ratings_visible_by_project.get(project_id, False)
+        if project_id in editor_project_ids:
+            return ratings_visible_by_project.get(project_id, False)
+        return False
 
     result = []
     for asset in assets:
@@ -515,9 +518,10 @@ def list_votes(
 ):
     """List who voted on an asset (name + avatar + stars), newest first.
 
-    Only owners/superadmins (or everyone, if the project opted in) get the
-    full breakdown — everyone else gets an empty list, matching the nulled-out
-    avg_rating/rating_count they see on the asset itself.
+    Only owners/superadmins (or editors, if the project opted in) get the
+    full breakdown — reviewers, viewers, and non-opted-in editors get an
+    empty list, matching the nulled-out avg_rating/rating_count they see on
+    the asset itself.
     """
     asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
     if not asset:
