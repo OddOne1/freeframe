@@ -49,7 +49,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     ? (logoLightUrl ?? logoDarkUrl)
     : (logoDarkUrl ?? logoLightUrl)
   const [notifOpen, setNotifOpen] = React.useState(false)
-  const activeUploads = uploadFiles.filter((f) => f.status === 'uploading' || f.status === 'pending' || f.status === 'processing').length
+  const activeUploads = uploadFiles.filter((f) => f.status === 'uploading' || f.status === 'pending' || f.status === 'paused' || f.status === 'processing').length
 
   // Fetch notifications on mount
   React.useEffect(() => { fetchNotifications() }, [fetchNotifications])

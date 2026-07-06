@@ -13,6 +13,8 @@ import {
   RotateCcw,
   Ban,
   Cog,
+  Pause,
+  Play,
 } from 'lucide-react'
 import { cn, formatBytes, formatRelativeTime } from '@/lib/utils'
 import { useUploadStore, type UploadFile, type UploadStatus } from '@/stores/upload-store'
@@ -31,7 +33,7 @@ type FilterTab = 'all' | 'active' | 'complete' | 'failed'
 function matchesFilter(status: UploadStatus, filter: FilterTab): boolean {
   switch (filter) {
     case 'all': return true
-    case 'active': return status === 'pending' || status === 'uploading' || status === 'processing'
+    case 'active': return status === 'pending' || status === 'uploading' || status === 'paused' || status === 'processing'
     case 'complete': return status === 'complete'
     case 'failed': return status === 'failed' || status === 'cancelled'
   }
@@ -71,6 +73,8 @@ function StatusBadge({ status }: { status: UploadStatus }) {
       return <span className="inline-flex items-center rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-medium text-text-tertiary">Queued</span>
     case 'uploading':
       return <span className="inline-flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent"><Loader2 className="h-2.5 w-2.5 animate-spin" />Uploading</span>
+    case 'paused':
+      return <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400"><Pause className="h-2.5 w-2.5" />Paused</span>
     case 'processing':
       return <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400"><Cog className="h-2.5 w-2.5 animate-spin" />Processing</span>
     case 'complete':
@@ -85,10 +89,10 @@ function StatusBadge({ status }: { status: UploadStatus }) {
 // ─── Upload Item ──────────────────────────────────────────────────────────────
 
 function UploadItem({ upload }: { upload: UploadFile }) {
-  const { cancelUpload, removeFile } = useUploadStore()
-  const isUploading = upload.status === 'pending' || upload.status === 'uploading'
+  const { cancelUpload, pauseUpload, resumeUpload, removeFile } = useUploadStore()
+  const isActive = upload.status === 'pending' || upload.status === 'uploading' || upload.status === 'paused'
   const isProcessing = upload.status === 'processing'
-  const showProgress = isUploading || isProcessing
+  const showProgress = isActive || isProcessing
 
   const progressValue = isProcessing ? upload.processingProgress : upload.progress
 
@@ -115,7 +119,7 @@ function UploadItem({ upload }: { upload: UploadFile }) {
             <div
               className={cn(
                 'h-full rounded-full transition-all duration-300',
-                isProcessing ? 'bg-amber-400' : 'bg-accent',
+                isProcessing ? 'bg-amber-400' : upload.status === 'paused' ? 'bg-amber-400' : 'bg-accent',
               )}
               style={{ width: `${progressValue}%` }}
             />
@@ -127,6 +131,16 @@ function UploadItem({ upload }: { upload: UploadFile }) {
           {upload.status === 'uploading' && (
             <span className="text-[11px] text-text-secondary">
               Uploading {upload.progress}%
+            </span>
+          )}
+          {upload.status === 'paused' && upload.pauseReason === 'manual' && (
+            <span className="text-[11px] text-amber-400">
+              Paused at {upload.progress}% &middot; click resume to continue
+            </span>
+          )}
+          {upload.status === 'paused' && upload.pauseReason === 'retrying' && (
+            <span className="text-[11px] text-amber-400 truncate">
+              {upload.error ?? 'Connection interrupted — retrying…'}
             </span>
           )}
           {upload.status === 'processing' && (
@@ -147,7 +161,34 @@ function UploadItem({ upload }: { upload: UploadFile }) {
 
       {/* Actions */}
       <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-        {isUploading && (
+        {upload.status === 'uploading' && (
+          <button
+            onClick={() => pauseUpload(upload.id)}
+            className="h-6 w-6 flex items-center justify-center rounded text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+            title="Pause upload"
+          >
+            <Pause className="h-3.5 w-3.5" />
+          </button>
+        )}
+        {upload.status === 'paused' && upload.pauseReason === 'manual' && (
+          <button
+            onClick={() => resumeUpload(upload.id)}
+            className="h-6 w-6 flex items-center justify-center rounded text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+            title="Resume upload"
+          >
+            <Play className="h-3.5 w-3.5" />
+          </button>
+        )}
+        {upload.status === 'paused' && upload.pauseReason === 'retrying' && (
+          <button
+            onClick={() => pauseUpload(upload.id)}
+            className="h-6 w-6 flex items-center justify-center rounded text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+            title="Pause upload"
+          >
+            <Pause className="h-3.5 w-3.5" />
+          </button>
+        )}
+        {isActive && (
           <button
             onClick={() => cancelUpload(upload.id)}
             className="h-6 w-6 flex items-center justify-center rounded text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
@@ -221,7 +262,7 @@ export function UploadsPanel() {
 
   const counts = {
     all: files.length,
-    active: files.filter((f) => f.status === 'pending' || f.status === 'uploading' || f.status === 'processing').length,
+    active: files.filter((f) => f.status === 'pending' || f.status === 'uploading' || f.status === 'paused' || f.status === 'processing').length,
     complete: files.filter((f) => f.status === 'complete').length,
     failed: files.filter((f) => f.status === 'failed' || f.status === 'cancelled').length,
   }

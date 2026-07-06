@@ -5,8 +5,13 @@ import type { AssetResponse } from '@/types'
 
 const CHUNK_SIZE = 10 * 1024 * 1024 // 10 MB
 const HISTORY_PAGE_SIZE = 20
+// Backoff schedule for transient part failures (dropped wifi, locked screen,
+// brief S3 hiccups). Caps at 15s and keeps retrying indefinitely as long as
+// the tab stays open — a genuinely dead connection just keeps showing
+// "retrying" rather than failing the whole upload outright.
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000]
 
-export type UploadStatus = 'pending' | 'uploading' | 'processing' | 'complete' | 'failed' | 'cancelled'
+export type UploadStatus = 'pending' | 'uploading' | 'paused' | 'processing' | 'complete' | 'failed' | 'cancelled'
 
 export interface UploadFile {
   id: string
@@ -20,6 +25,11 @@ export interface UploadFile {
   processingProgress: number
   status: UploadStatus
   error?: string
+  // Why the upload is currently paused — 'manual' means the user clicked
+  // Pause and it stays paused until they click Resume; 'retrying' means a
+  // part failed transiently and it will keep auto-retrying in the
+  // background without any action needed.
+  pauseReason?: 'manual' | 'retrying'
   assetId?: string
   versionId?: string
   uploadId?: string
@@ -43,6 +53,214 @@ interface VersionInitiateResponse {
 // AbortControllers for cancellation
 const abortControllers: Record<string, AbortController> = {}
 
+// Manual pause/resume signalling — module-level so it survives independent
+// of any single React render, same pattern as abortControllers above.
+const manualPauseFlags: Record<string, boolean> = {}
+const manualPauseWaiters: Record<string, (() => void) | undefined> = {}
+
+function retryDelay(attempt: number): number {
+  return RETRY_DELAYS_MS[Math.min(attempt - 1, RETRY_DELAYS_MS.length - 1)]
+}
+
+// Like a normal sleep, but rejects immediately if the upload is cancelled
+// mid-wait instead of finishing the delay first.
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('Upload cancelled', 'AbortError'))
+      return
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new DOMException('Upload cancelled', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+// Blocks until resumeUpload() is called for this id, or the upload is
+// cancelled. Re-checked in a loop so a pause -> resume -> pause sequence
+// during the same await is handled correctly.
+async function waitWhileManuallyPaused(id: string, signal: AbortSignal): Promise<void> {
+  while (manualPauseFlags[id]) {
+    if (signal.aborted) throw new DOMException('Upload cancelled', 'AbortError')
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        manualPauseWaiters[id] = undefined
+        reject(new DOMException('Upload cancelled', 'AbortError'))
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      manualPauseWaiters[id] = () => {
+        signal.removeEventListener('abort', onAbort)
+        resolve()
+      }
+    })
+  }
+}
+
+// Checkpoint called between parts and between retry attempts. If a manual
+// pause is active it reflects that in the store, blocks until resumed, then
+// flips the status back to 'uploading'. A no-op (returns immediately) when
+// nothing is paused.
+async function checkAndWaitManualPause(
+  id: string,
+  controller: AbortController,
+  updateFile: (fileId: string, patch: Partial<UploadFile>) => void,
+): Promise<void> {
+  if (!manualPauseFlags[id]) return
+  updateFile(id, { status: 'paused', pauseReason: 'manual', error: undefined })
+  await waitWhileManuallyPaused(id, controller.signal)
+  updateFile(id, { status: 'uploading', pauseReason: undefined })
+}
+
+async function uploadOnePart(
+  s3_key: string,
+  upload_id: string,
+  partNumber: number,
+  chunk: Blob,
+  signal: AbortSignal,
+): Promise<string> {
+  const { presigned_url } = await api.post<{ presigned_url: string }>('/upload/presign-part', {
+    s3_key,
+    upload_id,
+    part_number: partNumber,
+  })
+  const putResponse = await fetch(presigned_url, {
+    method: 'PUT',
+    body: chunk,
+    signal,
+  })
+  if (!putResponse.ok) {
+    throw new Error(`Part ${partNumber} failed: ${putResponse.statusText}`)
+  }
+  return putResponse.headers.get('ETag') ?? ''
+}
+
+function isMediaFile(file: File): boolean {
+  return (
+    file.type.startsWith('video/') ||
+    file.type.startsWith('audio/') ||
+    file.type.startsWith('image/') ||
+    file.type === 'movie/x-braw' ||
+    file.type === 'movie/x-r3d' ||
+    file.type === 'movie/x-arriraw' ||
+    file.type === 'application/mxf' ||
+    file.type === 'application/octet-stream' ||
+    file.type === 'application/x-matroska' ||
+    file.type === '' ||
+    file.name.match(/\.(mxf|mov|mts|m2ts|braw|r3d|ari|dng|cine|dpx|exr|mkv|prores)$/i) !== null
+  )
+}
+
+// Shared chunked-upload driver used by both startUpload and
+// startVersionUpload. Handles: part-by-part upload with progress, manual
+// pause/resume (via manualPauseFlags), and automatic retry-with-backoff on
+// transient part failures (dropped wifi, locked screen, brief S3 hiccups) —
+// none of which aborts the underlying S3 multipart upload, so already
+// uploaded parts are never thrown away for anything short of an explicit
+// cancel.
+async function runChunkedUpload(params: {
+  id: string
+  file: File
+  controller: AbortController
+  updateFile: (fileId: string, patch: Partial<UploadFile>) => void
+  initiate: () => Promise<InitiateResponse | VersionInitiateResponse>
+}): Promise<void> {
+  const { id, file, controller, updateFile, initiate } = params
+
+  let upload_id: string | undefined
+  let s3_key: string | undefined
+  let version_id: string | undefined
+  let asset_id: string | undefined
+
+  try {
+    updateFile(id, { status: 'uploading' })
+
+    const initRes = await initiate()
+    upload_id = initRes.upload_id
+    s3_key = initRes.s3_key
+    version_id = initRes.version_id
+    asset_id = initRes.asset_id
+
+    updateFile(id, { uploadId: upload_id, assetId: asset_id, versionId: version_id })
+
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+    const parts: Array<{ PartNumber: number; ETag: string }> = []
+
+    for (let partNumber = 1; partNumber <= totalChunks; partNumber++) {
+      await checkAndWaitManualPause(id, controller, updateFile)
+      if (controller.signal.aborted) throw new DOMException('Upload cancelled', 'AbortError')
+
+      const start = (partNumber - 1) * CHUNK_SIZE
+      const end = Math.min(start + CHUNK_SIZE, file.size)
+      const chunk = file.slice(start, end)
+
+      let etag: string | null = null
+      let attempt = 0
+      while (etag === null) {
+        await checkAndWaitManualPause(id, controller, updateFile)
+        if (controller.signal.aborted) throw new DOMException('Upload cancelled', 'AbortError')
+
+        try {
+          etag = await uploadOnePart(s3_key, upload_id, partNumber, chunk, controller.signal)
+        } catch (err) {
+          if (controller.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
+            throw err
+          }
+          attempt++
+          updateFile(id, {
+            status: 'paused',
+            pauseReason: 'retrying',
+            error: `Connection interrupted — retrying (attempt ${attempt})…`,
+          })
+          await abortableSleep(retryDelay(attempt), controller.signal)
+          // Honors a manual pause requested while we were backing off, and
+          // otherwise flips status back to 'uploading' before the next try.
+          await checkAndWaitManualPause(id, controller, updateFile)
+          updateFile(id, { status: 'uploading', pauseReason: undefined, error: undefined })
+        }
+      }
+
+      parts.push({ PartNumber: partNumber, ETag: etag })
+      updateFile(id, { progress: Math.round((partNumber / totalChunks) * 95) })
+    }
+
+    await api.post('/upload/complete', {
+      s3_key,
+      upload_id,
+      asset_id,
+      version_id,
+      parts,
+    })
+
+    if (isMediaFile(file)) {
+      updateFile(id, { progress: 100, status: 'processing', processingProgress: 0 })
+    } else {
+      updateFile(id, { progress: 100, status: 'complete' })
+    }
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      updateFile(id, { status: 'cancelled', progress: 0, pauseReason: undefined })
+    } else {
+      const message = err instanceof Error ? err.message : 'Upload failed'
+      updateFile(id, { status: 'failed', error: message, pauseReason: undefined })
+    }
+    // Notify backend so the version is marked failed (not stuck at uploading).
+    // This ensures post-refresh history shows the item in "Failed", not "Active".
+    if (upload_id && s3_key && version_id) {
+      api.post('/upload/abort', { s3_key, upload_id, version_id }).catch(() => {})
+    }
+  } finally {
+    delete abortControllers[id]
+    delete manualPauseFlags[id]
+    delete manualPauseWaiters[id]
+  }
+}
+
 interface UploadStore {
   files: UploadFile[]
   panelOpen: boolean
@@ -55,6 +273,8 @@ interface UploadStore {
   startUpload: (file: File, projectId: string, assetName: string, projectName?: string, folderId?: string | null) => string
   startVersionUpload: (file: File, assetId: string, assetName: string, projectId: string) => string
   cancelUpload: (fileId: string) => void
+  pauseUpload: (fileId: string) => void
+  resumeUpload: (fileId: string) => void
   removeFile: (fileId: string) => void
   clearCompleted: () => void
   fetchHistory: () => Promise<void>
@@ -148,103 +368,24 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
       }))
     }
 
-    // Start async upload
-    ;(async () => {
-      const controller = new AbortController()
-      abortControllers[id] = controller
+    const controller = new AbortController()
+    abortControllers[id] = controller
 
-      // Track initiate response fields so catch block can call /upload/abort
-      let upload_id: string | undefined
-      let s3_key: string | undefined
-      let version_id: string | undefined
-
-      try {
-        updateFile(id, { status: 'uploading' })
-
-        const initRes = await api.post<InitiateResponse>(
-          '/upload/initiate',
-          {
-            project_id: projectId,
-            asset_name: assetName,
-            original_filename: file.name,
-            file_size_bytes: file.size,
-            mime_type: file.type,
-            folder_id: folderId ?? null,
-          },
-        )
-        upload_id = initRes.upload_id
-        s3_key = initRes.s3_key
-        version_id = initRes.version_id
-        const asset_id = initRes.asset_id
-
-        updateFile(id, { uploadId: upload_id, assetId: asset_id, versionId: version_id })
-
-        const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
-        const parts: Array<{ PartNumber: number; ETag: string }> = []
-
-        for (let partNumber = 1; partNumber <= totalChunks; partNumber++) {
-          if (controller.signal.aborted) {
-            throw new DOMException('Upload cancelled', 'AbortError')
-          }
-
-          const start = (partNumber - 1) * CHUNK_SIZE
-          const end = Math.min(start + CHUNK_SIZE, file.size)
-          const chunk = file.slice(start, end)
-
-          const { presigned_url } = await api.post<{ presigned_url: string }>('/upload/presign-part', {
-            s3_key,
-            upload_id,
-            part_number: partNumber,
-          })
-
-          const putResponse = await fetch(presigned_url, {
-            method: 'PUT',
-            body: chunk,
-            signal: controller.signal,
-          })
-
-          if (!putResponse.ok) {
-            throw new Error(`Part ${partNumber} failed: ${putResponse.statusText}`)
-          }
-
-          const etag = putResponse.headers.get('ETag') ?? ''
-          parts.push({ PartNumber: partNumber, ETag: etag })
-
-          updateFile(id, { progress: Math.round((partNumber / totalChunks) * 95) })
-        }
-
-        await api.post('/upload/complete', {
-          s3_key,
-          upload_id,
-          asset_id,
-          version_id,
-          parts,
-        })
-
-        // Upload done — backend now processes (transcode/convert).
-        // For non-processable types (or if SSE isn't wired), mark complete directly.
-        const isMedia = file.type.startsWith('video/') || file.type.startsWith('audio/') || file.type.startsWith('image/') || file.type === 'movie/x-braw' || file.type === 'movie/x-r3d' || file.type === 'movie/x-arriraw' || file.type === 'application/mxf' || file.type === 'application/octet-stream' || file.type === 'application/x-matroska' || file.type === '' || file.name.match(/\.(mxf|mov|mts|m2ts|braw|r3d|ari|dng|cine|dpx|exr|mkv|prores)$/i) !== null
-        if (isMedia) {
-          updateFile(id, { progress: 100, status: 'processing', processingProgress: 0 })
-        } else {
-          updateFile(id, { progress: 100, status: 'complete' })
-        }
-      } catch (err) {
-        if (err instanceof DOMException && err.name === 'AbortError') {
-          updateFile(id, { status: 'cancelled', progress: 0 })
-        } else {
-          const message = err instanceof Error ? err.message : 'Upload failed'
-          updateFile(id, { status: 'failed', error: message })
-        }
-        // Notify backend so the version is marked failed (not stuck at uploading).
-        // This ensures post-refresh history shows the item in "Failed", not "Active".
-        if (upload_id && s3_key && version_id) {
-          api.post('/upload/abort', { s3_key, upload_id, version_id }).catch(() => {})
-        }
-      } finally {
-        delete abortControllers[id]
-      }
-    })()
+    void runChunkedUpload({
+      id,
+      file,
+      controller,
+      updateFile,
+      initiate: () =>
+        api.post<InitiateResponse>('/upload/initiate', {
+          project_id: projectId,
+          asset_name: assetName,
+          original_filename: file.name,
+          file_size_bytes: file.size,
+          mime_type: file.type,
+          folder_id: folderId ?? null,
+        }),
+    })
 
     return id
   },
@@ -270,60 +411,23 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
       set((s) => ({ files: s.files.map((f) => (f.id === fileId ? { ...f, ...patch } : f)) }))
     }
 
-    ;(async () => {
-      const controller = new AbortController()
-      abortControllers[id] = controller
-      let upload_id: string | undefined
-      let s3_key: string | undefined
-      let version_id: string | undefined
-      try {
-        updateFile(id, { status: 'uploading' })
-        const initRes = await api.post<VersionInitiateResponse>(
-          `/assets/${assetId}/versions`,
-          {
-            project_id: projectId,
-            asset_name: assetName,
-            original_filename: file.name,
-            file_size_bytes: file.size,
-            mime_type: file.type,
-          },
-        )
-        upload_id = initRes.upload_id
-        s3_key = initRes.s3_key
-        version_id = initRes.version_id
-        updateFile(id, { uploadId: upload_id, versionId: version_id })
+    const controller = new AbortController()
+    abortControllers[id] = controller
 
-        const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
-        const parts: Array<{ PartNumber: number; ETag: string }> = []
-        for (let partNumber = 1; partNumber <= totalChunks; partNumber++) {
-          if (controller.signal.aborted) throw new DOMException('Upload cancelled', 'AbortError')
-          const start = (partNumber - 1) * CHUNK_SIZE
-          const chunk = file.slice(start, Math.min(start + CHUNK_SIZE, file.size))
-          const { presigned_url } = await api.post<{ presigned_url: string }>('/upload/presign-part', {
-            s3_key, upload_id, part_number: partNumber,
-          })
-          const putResponse = await fetch(presigned_url, { method: 'PUT', body: chunk, signal: controller.signal })
-          if (!putResponse.ok) throw new Error(`Part ${partNumber} failed: ${putResponse.statusText}`)
-          parts.push({ PartNumber: partNumber, ETag: putResponse.headers.get('ETag') ?? '' })
-          updateFile(id, { progress: Math.round((partNumber / totalChunks) * 95) })
-        }
-
-        await api.post('/upload/complete', { s3_key, upload_id, asset_id: assetId, version_id, parts })
-        const isMedia = file.type.startsWith('video/') || file.type.startsWith('audio/') || file.type.startsWith('image/') || file.type === 'movie/x-braw' || file.type === 'movie/x-r3d' || file.type === 'movie/x-arriraw' || file.type === 'application/mxf' || file.type === 'application/octet-stream' || file.type === 'application/x-matroska' || file.type === '' || file.name.match(/\.(mxf|mov|mts|m2ts|braw|r3d|ari|dng|cine|dpx|exr|mkv|prores)$/i) !== null
-        updateFile(id, { progress: 100, status: isMedia ? 'processing' : 'complete', processingProgress: 0 })
-      } catch (err) {
-        if (err instanceof DOMException && err.name === 'AbortError') {
-          updateFile(id, { status: 'cancelled', progress: 0 })
-        } else {
-          updateFile(id, { status: 'failed', error: err instanceof Error ? err.message : 'Upload failed' })
-        }
-        if (upload_id && s3_key && version_id) {
-          api.post('/upload/abort', { s3_key, upload_id, version_id }).catch(() => {})
-        }
-      } finally {
-        delete abortControllers[id]
-      }
-    })()
+    void runChunkedUpload({
+      id,
+      file,
+      controller,
+      updateFile,
+      initiate: () =>
+        api.post<VersionInitiateResponse>(`/assets/${assetId}/versions`, {
+          project_id: projectId,
+          asset_name: assetName,
+          original_filename: file.name,
+          file_size_bytes: file.size,
+          mime_type: file.type,
+        }),
+    })
 
     return id
   },
@@ -332,7 +436,32 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
     abortControllers[fileId]?.abort()
     set((s) => ({
       files: s.files.map((f) =>
-        f.id === fileId ? { ...f, status: 'cancelled' as const, progress: 0 } : f,
+        f.id === fileId ? { ...f, status: 'cancelled' as const, progress: 0, pauseReason: undefined } : f,
+      ),
+    }))
+  },
+
+  pauseUpload: (fileId) => {
+    manualPauseFlags[fileId] = true
+    set((s) => ({
+      files: s.files.map((f) =>
+        f.id === fileId && (f.status === 'uploading' || (f.status === 'paused' && f.pauseReason === 'retrying'))
+          ? { ...f, status: 'paused' as const, pauseReason: 'manual' as const, error: undefined }
+          : f,
+      ),
+    }))
+  },
+
+  resumeUpload: (fileId) => {
+    manualPauseFlags[fileId] = false
+    const wake = manualPauseWaiters[fileId]
+    manualPauseWaiters[fileId] = undefined
+    wake?.()
+    set((s) => ({
+      files: s.files.map((f) =>
+        f.id === fileId && f.status === 'paused' && f.pauseReason === 'manual'
+          ? { ...f, status: 'uploading' as const, pauseReason: undefined }
+          : f,
       ),
     }))
   },
@@ -440,8 +569,10 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
 export const useUploadStore = create<UploadStore>()(
   persist(storeCreator, {
     name: 'ff-uploads',
-    // Only persist failed/cancelled items — in-progress uploads can't be resumed
-    // and successful ones are fetched from the API history on panel open.
+    // Only persist failed/cancelled items — in-progress (including paused)
+    // uploads can't survive a page reload since the underlying File object
+    // is lost, and successful ones are fetched from the API history on
+    // panel open.
     partialize: (state: UploadStore) => ({
       files: state.files.filter(
         (f: UploadFile) => f.status === 'failed' || f.status === 'cancelled',
