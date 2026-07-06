@@ -13,6 +13,7 @@ class ProjectUpdate(BaseModel):
     description: str | None = None
     is_public: bool | None = None
     storage_limit_bytes: int | None = None
+    ratings_visible_to_all: bool | None = None
 
 class ProjectResponse(BaseModel):
     id: uuid.UUID
@@ -31,6 +32,7 @@ class ProjectResponse(BaseModel):
     storage_bytes: int = 0
     storage_limit_bytes: int | None = None
     member_count: int = 0
+    ratings_visible_to_all: bool = False
 
 class ProjectMemberResponse(BaseModel):
     id: uuid.UUID

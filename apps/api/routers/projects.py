@@ -149,7 +149,16 @@ def get_project(project_id: uuid.UUID, db: Session = Depends(get_db), current_us
 @router.patch("/{project_id}", response_model=ProjectResponse)
 def update_project(project_id: uuid.UUID, body: ProjectUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     project = _get_project(db, project_id)
-    _require_project_owner(db, project_id, current_user)
+    fields_set = body.model_fields_set
+
+    # ratings_visible_to_all is the one field a superadmin can toggle even if
+    # they aren't a project member/owner — everything else still requires the
+    # strict project-owner check below, unchanged from before.
+    if fields_set - {"ratings_visible_to_all"}:
+        _require_project_owner(db, project_id, current_user)
+    if "ratings_visible_to_all" in fields_set and not current_user.is_superadmin:
+        _require_project_owner(db, project_id, current_user)
+
     if body.name is not None:
         project.name = body.name
     if body.description is not None:
@@ -158,6 +167,8 @@ def update_project(project_id: uuid.UUID, body: ProjectUpdate, db: Session = Dep
         project.is_public = body.is_public
     if body.storage_limit_bytes is not None:
         project.storage_limit_bytes = body.storage_limit_bytes
+    if body.ratings_visible_to_all is not None:
+        project.ratings_visible_to_all = body.ratings_visible_to_all
     db.commit()
     db.refresh(project)
     resp = ProjectResponse.model_validate(project)

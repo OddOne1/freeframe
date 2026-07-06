@@ -3,7 +3,7 @@
 import * as React from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import * as Switch from '@radix-ui/react-switch'
-import { X, ImagePlus, Globe, Lock } from 'lucide-react'
+import { X, ImagePlus, Globe, Lock, Star } from 'lucide-react'
 import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { getGradientForProject } from '@/lib/gradient-utils'
 import { api } from '@/lib/api'
@@ -29,6 +29,8 @@ export function ProjectSettingsDialog({
   const [posterPreview, setPosterPreview] = React.useState<string | null>(resolveApiMediaUrl(project.poster_url))
   const [posterFile, setPosterFile] = React.useState<File | null>(null)
   const [saving, setSaving] = React.useState(false)
+  const [ratingsVisible, setRatingsVisible] = React.useState(project.ratings_visible_to_all ?? false)
+  const [savingRatingsVisible, setSavingRatingsVisible] = React.useState(false)
   const [storageLimitGB, setStorageLimitGB] = React.useState<string>(
     project.storage_limit_bytes ? String(Math.round(project.storage_limit_bytes / (1024 ** 3))) : ''
   )
@@ -40,6 +42,7 @@ export function ProjectSettingsDialog({
     setDescription(project.description || '')
     setStorageLimitGB(project.storage_limit_bytes ? String(Math.round(project.storage_limit_bytes / (1024 ** 3))) : '')
     setIsPublic(project.is_public ?? false)
+    setRatingsVisible(project.ratings_visible_to_all ?? false)
     setPosterPreview(resolveApiMediaUrl(project.poster_url))
     setPosterFile(null)
   }, [project])
@@ -49,6 +52,20 @@ export function ProjectSettingsDialog({
     if (!file) return
     setPosterFile(file)
     setPosterPreview(URL.createObjectURL(file))
+  }
+
+  const handleToggleRatingsVisible = async (next: boolean) => {
+    const previous = ratingsVisible
+    setRatingsVisible(next)
+    setSavingRatingsVisible(true)
+    try {
+      await api.patch(`/projects/${project.id}`, { ratings_visible_to_all: next })
+      onUpdated()
+    } catch {
+      setRatingsVisible(previous)
+    } finally {
+      setSavingRatingsVisible(false)
+    }
   }
 
   const handleSave = async () => {
@@ -191,6 +208,47 @@ export function ProjectSettingsDialog({
                 </div>
               </div>
 
+              {/* Ratings visibility — owner/superadmin only setting, saves
+                  immediately on toggle rather than waiting for the main Save
+                  button (see handleToggleRatingsVisible). */}
+              <div className="rounded-xl border border-border bg-bg-tertiary/50 p-4">
+                <div className="flex items-start gap-3">
+                  <div className={cn(
+                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg mt-0.5',
+                    ratingsVisible ? 'bg-accent/10 text-accent' : 'bg-bg-tertiary text-text-tertiary',
+                  )}>
+                    <Star className="h-4.5 w-4.5" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-text-primary">
+                        Show ratings to everyone
+                      </span>
+                      <Switch.Root
+                        checked={ratingsVisible}
+                        onCheckedChange={handleToggleRatingsVisible}
+                        disabled={savingRatingsVisible}
+                        className={cn(
+                          'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+                          ratingsVisible ? 'bg-accent' : 'bg-bg-tertiary',
+                        )}
+                      >
+                        <Switch.Thumb className={cn(
+                          'pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+                          ratingsVisible ? 'translate-x-[18px]' : 'translate-x-0.5',
+                          'mt-0.5',
+                        )} />
+                      </Switch.Root>
+                    </div>
+                    <p className="text-xs text-text-tertiary mt-0.5">
+                      {ratingsVisible
+                        ? 'Everyone can see the overall rating and who voted. Off by default — only you and superadmins see it otherwise.'
+                        : 'Only you and superadmins see the overall rating and voter breakdown. Everyone else only sees their own vote.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               {/* Storage limit */}
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-text-tertiary uppercase tracking-wider">Storage Limit (GB)</label>
@@ -222,4 +280,3 @@ export function ProjectSettingsDialog({
     </Dialog.Root>
   )
 }
-

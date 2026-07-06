@@ -15,7 +15,7 @@ from ..models.activity import Mention, Notification, NotificationType
 from ..models.vote import Vote
 from ..schemas.asset import AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, VoteToggleResponse, VoteRequest
 from ..schemas.notification import AssignmentUpdate
-from ..services.permissions import require_project_role, require_asset_access, can_access_asset, is_public_project, get_project_member
+from ..services.permissions import require_project_role, require_asset_access, can_access_asset, is_public_project, get_project_member, can_see_rating_aggregate
 from ..services.s3_service import build_download_filename
 from .hls_proxy import create_hls_token, proxy_url_for
 from ..schemas.upload import InitiateUploadRequest, InitiateUploadResponse, ALLOWED_MIME_TYPES, MAX_FILE_SIZE_BYTES, mime_to_asset_type
@@ -24,7 +24,7 @@ from .folders import _get_descendant_ids as _get_descendant_folder_ids
 
 router = APIRouter(tags=["assets"])
 
-def _build_asset_response(asset: Asset, db: Session, current_user_id: uuid.UUID | None = None) -> AssetResponse:
+def _build_asset_response(asset: Asset, db: Session, current_user: User | None = None) -> AssetResponse:
     """Build AssetResponse with latest version and its files."""
     latest_version = db.query(AssetVersion).filter(
         AssetVersion.asset_id == asset.id,
@@ -49,22 +49,33 @@ def _build_asset_response(asset: Asset, db: Session, current_user_id: uuid.UUID 
     resp.latest_version = version_response
     resp.thumbnail_url = thumbnail_url
     avg_row = db.query(func.avg(Vote.stars), func.count(Vote.id)).filter(Vote.asset_id == asset.id).first()
-    resp.avg_rating = round(float(avg_row[0]), 2) if avg_row and avg_row[0] is not None else None
-    resp.rating_count = int(avg_row[1]) if avg_row else 0
-    if current_user_id is not None:
+    avg_rating = round(float(avg_row[0]), 2) if avg_row and avg_row[0] is not None else None
+    rating_count = int(avg_row[1]) if avg_row else 0
+    if current_user is not None:
         my_vote = db.query(Vote).filter(
-            Vote.asset_id == asset.id, Vote.user_id == current_user_id,
+            Vote.asset_id == asset.id, Vote.user_id == current_user.id,
         ).first()
         resp.my_rating = my_vote.stars if my_vote else None
+        # Only owners/superadmins (or everyone, if the project opted in) see the
+        # aggregate — everyone else only ever sees their own vote above.
+        if can_see_rating_aggregate(db, asset.project_id, current_user):
+            resp.avg_rating = avg_rating
+            resp.rating_count = rating_count
+        else:
+            resp.avg_rating = None
+            resp.rating_count = 0
     else:
         resp.my_rating = None
+        resp.avg_rating = None
+        resp.rating_count = 0
     return resp
 
-def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user_id: uuid.UUID | None = None) -> list[AssetResponse]:
+def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user: User | None = None) -> list[AssetResponse]:
     """Build AssetResponse list with bulk-loaded versions and files (no N+1)."""
     if not assets:
         return []
 
+    current_user_id = current_user.id if current_user is not None else None
     asset_ids = [a.id for a in assets]
 
     # Bulk load latest version per asset using a subquery
@@ -109,6 +120,34 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user_i
         ).all()
         my_ratings = {row[0]: row[1] for row in my_votes}
 
+    # Rating-visibility gating: this batch may span multiple projects (e.g. the
+    # "my assets" feed), so bulk-fetch project settings + this user's
+    # memberships for every distinct project represented, rather than querying
+    # per asset.
+    project_ids = list({a.project_id for a in assets})
+    ratings_visible_by_project: dict = {}
+    owner_project_ids: set = set()
+    if current_user is not None and not current_user.is_superadmin and project_ids:
+        for pid, visible in db.query(Project.id, Project.ratings_visible_to_all).filter(Project.id.in_(project_ids)).all():
+            ratings_visible_by_project[pid] = visible
+        owner_project_ids = {
+            row[0] for row in db.query(ProjectMember.project_id).filter(
+                ProjectMember.project_id.in_(project_ids),
+                ProjectMember.user_id == current_user.id,
+                ProjectMember.role == ProjectRole.owner,
+                ProjectMember.deleted_at.is_(None),
+            ).all()
+        }
+
+    def _can_see_aggregate(project_id: uuid.UUID) -> bool:
+        if current_user is None:
+            return False
+        if current_user.is_superadmin:
+            return True
+        if project_id in owner_project_ids:
+            return True
+        return ratings_visible_by_project.get(project_id, False)
+
     result = []
     for asset in assets:
         version = version_by_asset.get(asset.id)
@@ -128,8 +167,12 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user_i
         asset_resp = AssetResponse.model_validate(asset)
         asset_resp.latest_version = version_response
         asset_resp.thumbnail_url = thumbnail_url
-        asset_resp.avg_rating = avg_ratings.get(asset.id)
-        asset_resp.rating_count = rating_counts.get(asset.id, 0)
+        if _can_see_aggregate(asset.project_id):
+            asset_resp.avg_rating = avg_ratings.get(asset.id)
+            asset_resp.rating_count = rating_counts.get(asset.id, 0)
+        else:
+            asset_resp.avg_rating = None
+            asset_resp.rating_count = 0
         asset_resp.my_rating = my_ratings.get(asset.id)
         result.append(asset_resp)
     return result
@@ -188,7 +231,7 @@ def list_assets(
             )
             assets = [a for a in assets if a.id in usable or a.id not in has_any_version]
 
-    return _build_asset_responses_bulk(assets, db, current_user.id)
+    return _build_asset_responses_bulk(assets, db, current_user)
 
 @router.get("/assets/{asset_id}", response_model=AssetResponse)
 def get_asset(
@@ -200,7 +243,7 @@ def get_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     require_asset_access(db, asset, current_user)
-    return _build_asset_response(asset, db, current_user.id)
+    return _build_asset_response(asset, db, current_user)
 
 @router.patch("/assets/{asset_id}", response_model=AssetResponse)
 def update_asset(
@@ -222,7 +265,7 @@ def update_asset(
         setattr(asset, field, value)
     db.commit()
     db.refresh(asset)
-    return _build_asset_response(asset, db, current_user.id)
+    return _build_asset_response(asset, db, current_user)
 
 @router.delete("/assets/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_asset(
@@ -407,7 +450,7 @@ def update_assignment(
 
     db.commit()
     db.refresh(asset)
-    return _build_asset_response(asset, db, current_user.id)
+    return _build_asset_response(asset, db, current_user)
 
 @router.get("/assets/{asset_id}/assignment")
 def get_assignment(
@@ -459,6 +502,9 @@ def rate_asset(
     avg_row = db.query(func.avg(Vote.stars), func.count(Vote.id)).filter(Vote.asset_id == asset_id).first()
     avg_rating = round(float(avg_row[0]), 2) if avg_row and avg_row[0] is not None else None
     rating_count = int(avg_row[1]) if avg_row else 0
+    if not can_see_rating_aggregate(db, asset.project_id, current_user):
+        avg_rating = None
+        rating_count = 0
     return VoteToggleResponse(avg_rating=avg_rating, rating_count=rating_count, my_rating=my_rating)
 
 @router.get("/assets/{asset_id}/votes")
@@ -467,11 +513,19 @@ def list_votes(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List who voted on an asset (name + avatar + stars), newest first."""
+    """List who voted on an asset (name + avatar + stars), newest first.
+
+    Only owners/superadmins (or everyone, if the project opted in) get the
+    full breakdown — everyone else gets an empty list, matching the nulled-out
+    avg_rating/rating_count they see on the asset itself.
+    """
     asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     require_asset_access(db, asset, current_user)
+
+    if not can_see_rating_aggregate(db, asset.project_id, current_user):
+        return []
 
     votes = db.query(Vote).filter(Vote.asset_id == asset_id).order_by(Vote.created_at.desc()).all()
     user_ids = [v.user_id for v in votes]

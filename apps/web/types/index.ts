@@ -92,6 +92,7 @@ export interface Project {
   storage_limit_bytes?: number | null;
   member_count?: number;
   role?: string | null;
+  ratings_visible_to_all?: boolean;
 }
 
 export interface ProjectMember {

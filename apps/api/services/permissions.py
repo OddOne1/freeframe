@@ -45,6 +45,24 @@ def require_project_role(
     return member
 
 
+def can_see_rating_aggregate(db: Session, project_id: uuid.UUID, user: User) -> bool:
+    """Whether `user` can see the aggregate rating (average, vote count, and the
+    per-voter breakdown) for assets in this project, as opposed to only their
+    own vote.
+
+    Project owners and global superadmins always can. Everyone else only sees
+    the aggregate once the project owner opts in via
+    `Project.ratings_visible_to_all` — otherwise they only see their own rating.
+    """
+    if user.is_superadmin:
+        return True
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if project is not None and project.ratings_visible_to_all:
+        return True
+    member = get_project_member(db, project_id, user.id)
+    return member is not None and member.role == ProjectRole.owner
+
+
 # ── Asset-level ────────────────────────────────────────────────────────────────
 
 def is_public_project(db: Session, project_id: uuid.UUID) -> bool:
