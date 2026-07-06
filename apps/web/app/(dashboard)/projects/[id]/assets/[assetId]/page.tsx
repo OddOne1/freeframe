@@ -668,27 +668,32 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                       )}
                     </div>
 
-                    {/* Rating + per-voter breakdown */}
-                    <div className="py-2 border-b border-border/60">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
-                          <Star className="h-3.5 w-3.5" />
-                          Rating
-                        </span>
-                        <div className="flex items-center gap-1.5">
-                          <StarRating
-                            value={myRating}
-                            onChange={canVote ? handleRate : undefined}
-                            readOnly={!canVote}
-                            size="sm"
-                          />
-                          {ratingCount > 0 && (
-                            <span className="text-xs text-text-secondary tabular-nums">{avgRating?.toFixed(1)}</span>
-                          )}
+                    {/* Rating + per-voter breakdown — hidden entirely for users
+                        with no access at all (e.g. viewers); reviewers still
+                        see their own vote (canVote) but never the aggregate,
+                        which stays gated behind ratingCount from the backend. */}
+                    {(canVote || ratingCount > 0) && (
+                      <div className="py-2 border-b border-border/60">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
+                            <Star className="h-3.5 w-3.5" />
+                            Rating
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <StarRating
+                              value={myRating}
+                              onChange={canVote ? handleRate : undefined}
+                              readOnly={!canVote}
+                              size="sm"
+                            />
+                            {ratingCount > 0 && (
+                              <span className="text-xs text-text-secondary tabular-nums">{avgRating?.toFixed(1)}</span>
+                            )}
+                          </div>
                         </div>
+                        {ratingCount > 0 && <VoteBreakdown voters={voters ?? []} />}
                       </div>
-                      {ratingCount > 0 && <VoteBreakdown voters={voters ?? []} />}
-                    </div>
+                    )}
 
                     {currentVersion && (
                       <FieldRow icon={GitBranch} label="Version">v{currentVersion.version_number}</FieldRow>
