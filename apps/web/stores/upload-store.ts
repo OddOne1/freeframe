@@ -467,7 +467,19 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
   },
 
   removeFile: (fileId) => {
+    const target = get().files.find((f) => f.id === fileId)
     set((s) => ({ files: s.files.filter((f) => f.id !== fileId) }))
+    // A failed/cancelled upload already has a real asset+version row on the
+    // backend (created by /upload/initiate before any bytes transfer), so
+    // just dropping it from local state isn't enough — fetchHistory() would
+    // fetch it right back from /me/assets on the next panel open or page
+    // reload. Soft-delete it the same way the asset browser's own delete
+    // does, so it actually disappears. Completed uploads are deliberately
+    // excluded: those are real, finished assets the user still wants —
+    // "Remove" there should only clear this panel's view, not delete their file.
+    if (target?.assetId && (target.status === 'failed' || target.status === 'cancelled')) {
+      api.delete(`/assets/${target.assetId}`).catch(() => {})
+    }
   },
 
   clearCompleted: () => {
