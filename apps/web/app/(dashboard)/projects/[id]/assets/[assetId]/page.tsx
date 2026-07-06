@@ -22,7 +22,7 @@ import { useReviewStore } from '@/stores/review-store'
 import { useAuthStore } from '@/stores/auth-store'
 import { useComments } from '@/hooks/use-comments'
 import type { CommentWithReplies } from '@/hooks/use-comments'
-import { api } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
 import { useUploadStore } from '@/stores/upload-store'
 import { useBreadcrumbStore } from '@/stores/breadcrumb-store'
 import {
@@ -208,6 +208,12 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const canVote = currentRole !== 'viewer'
   const canEditStatus = currentRole === 'owner' || currentRole === 'editor'
   const canArchive = user?.is_superadmin ?? false
+  // Who can manually restart a stuck/failed version — the person who
+  // uploaded it, the project owner, or a superadmin. Not opened up to
+  // editors in general since it dispatches a real transcode job.
+  const canRetryProcessing = Boolean(
+    currentVersion && (user?.is_superadmin || currentRole === 'owner' || currentVersion.created_by === user?.id),
+  )
 
   const [statusOverride, setStatusOverride] = useState<AssetStatus | null>(null)
   useEffect(() => {
@@ -245,6 +251,26 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
       setRatingState(result)
     } catch {
       // no-op — leave state as-is on failure
+    }
+  }
+
+  // Manual restart for a version stuck in 'processing' or that ended
+  // 'failed' — see the backend endpoint for the elapsed-time guard against
+  // double-dispatching a still-running transcode.
+  const [retryingVersion, setRetryingVersion] = useState(false)
+  const [retryError, setRetryError] = useState<string | null>(null)
+
+  async function handleRetryProcessing() {
+    if (!asset || !currentVersion) return
+    setRetryingVersion(true)
+    setRetryError(null)
+    try {
+      await api.post(`/assets/${asset.id}/versions/${currentVersion.id}/retry-processing`, {})
+      await refetchVersions()
+    } catch (err) {
+      setRetryError(err instanceof ApiError ? err.detail : 'Failed to restart processing')
+    } finally {
+      setRetryingVersion(false)
     }
   }
 
@@ -367,6 +393,11 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const versionProcessing =
     currentVersion?.processing_status === 'processing' ||
     currentVersion?.processing_status === 'uploading'
+  // Past this, a legitimately-running transcode is very unlikely to still
+  // be mid-flight — matches STUCK_PROCESSING_THRESHOLD_SECONDS server-side.
+  const versionStuckProcessing =
+    currentVersion?.processing_status === 'processing' &&
+    Date.now() - new Date(currentVersion.created_at).getTime() > 30 * 60 * 1000
 
   const renderMediaViewer = () => {
     if (!currentVersion || !versionReady) {
@@ -384,6 +415,21 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                     This may take a few minutes depending on file size.
                   </p>
                 </div>
+                {versionStuckProcessing && canRetryProcessing && (
+                  <div className="flex flex-col items-center gap-2">
+                    <p className="text-xs text-text-tertiary">
+                      Taking much longer than usual? The worker may have died mid-task.
+                    </p>
+                    <button
+                      onClick={handleRetryProcessing}
+                      disabled={retryingVersion}
+                      className="text-xs font-medium text-accent hover:underline disabled:opacity-50"
+                    >
+                      {retryingVersion ? 'Restarting…' : 'Restart processing'}
+                    </button>
+                    {retryError && <p className="text-xs text-status-error">{retryError}</p>}
+                  </div>
+                )}
               </>
             ) : currentVersion?.processing_status === 'failed' ? (
               <>
@@ -393,9 +439,21 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                 <div>
                   <p className="text-sm font-medium text-text-primary">Processing failed</p>
                   <p className="text-xs text-text-tertiary mt-1">
-                    Try uploading a new version of this asset.
+                    Try uploading a new version of this asset{canRetryProcessing ? ', or restart processing on this one' : ''}.
                   </p>
                 </div>
+                {canRetryProcessing && (
+                  <div className="flex flex-col items-center gap-2">
+                    <button
+                      onClick={handleRetryProcessing}
+                      disabled={retryingVersion}
+                      className="text-xs font-medium text-accent hover:underline disabled:opacity-50"
+                    >
+                      {retryingVersion ? 'Restarting…' : 'Restart processing'}
+                    </button>
+                    {retryError && <p className="text-xs text-status-error">{retryError}</p>}
+                  </div>
+                )}
               </>
             ) : (
               <>

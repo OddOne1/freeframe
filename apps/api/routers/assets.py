@@ -24,6 +24,14 @@ from .folders import _get_descendant_ids as _get_descendant_folder_ids
 
 router = APIRouter(tags=["assets"])
 
+# A version stuck in "processing" gets a manual retry option once it's been
+# running longer than this — long enough that a legitimately-running
+# transcode of a large file is very unlikely to still be mid-flight, short
+# enough that a genuinely stuck upload isn't stranded for hours. There's no
+# per-job heartbeat yet to check against directly, so this elapsed-time
+# check is a stand-in for "the Celery worker probably died mid-task".
+STUCK_PROCESSING_THRESHOLD_SECONDS = 30 * 60
+
 def _build_asset_response(asset: Asset, db: Session, current_user: User | None = None) -> AssetResponse:
     """Build AssetResponse with latest version and its files."""
     latest_version = db.query(AssetVersion).filter(
@@ -425,6 +433,71 @@ def initiate_new_version(
         asset_id=asset_id,
         version_id=version.id,
     )
+
+@router.post("/assets/{asset_id}/versions/{version_id}/retry-processing", response_model=AssetVersionResponse)
+def retry_version_processing(
+    asset_id: uuid.UUID,
+    version_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Manually re-dispatch transcoding for a version that ended in 'failed',
+    or one stuck in 'processing' because the Celery worker died mid-task
+    (there's no automatic detection or requeue for that today).
+
+    Restricted to the person who uploaded this version, the project owner,
+    or a superadmin — not editors/reviewers in general, since this dispatches
+    a real transcode job.
+    """
+    asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    version = db.query(AssetVersion).filter(
+        AssetVersion.id == version_id,
+        AssetVersion.asset_id == asset_id,
+        AssetVersion.deleted_at.is_(None),
+    ).first()
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    is_uploader = version.created_by == current_user.id
+    is_owner = False
+    if not is_uploader and not current_user.is_superadmin:
+        member = get_project_member(db, asset.project_id, current_user.id)
+        is_owner = member is not None and member.role == ProjectRole.owner
+    if not (is_uploader or is_owner or current_user.is_superadmin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the uploader, the project owner, or an admin can restart processing",
+        )
+
+    if version.processing_status == ProcessingStatus.processing:
+        # Guard against dispatching a second, concurrent transcode job for a
+        # version that's still legitimately running — both jobs would write
+        # to the same deterministic S3 output prefix. See
+        # STUCK_PROCESSING_THRESHOLD_SECONDS above.
+        elapsed = datetime.now(timezone.utc) - version.created_at
+        if elapsed.total_seconds() < STUCK_PROCESSING_THRESHOLD_SECONDS:
+            raise HTTPException(
+                status_code=409,
+                detail="Still within the normal processing window — wait a bit longer before retrying.",
+            )
+    elif version.processing_status != ProcessingStatus.failed:
+        raise HTTPException(status_code=409, detail="Only failed or stuck-processing versions can be retried")
+
+    version.processing_status = ProcessingStatus.processing
+    db.commit()
+    db.refresh(version)
+
+    from ..tasks.transcode_tasks import process_asset
+    from ..tasks.celery_app import send_task_safe
+    send_task_safe(process_asset, str(asset_id), str(version_id))
+
+    files = db.query(MediaFile).filter(MediaFile.version_id == version.id).all()
+    vr = AssetVersionResponse.model_validate(version)
+    vr.files = [MediaFileResponse.model_validate(f) for f in files]
+    return vr
 
 @router.patch("/assets/{asset_id}/assignment", response_model=AssetResponse)
 def update_assignment(
