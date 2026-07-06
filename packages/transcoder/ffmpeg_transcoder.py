@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 import boto3
 from botocore.config import Config
-from .base import BaseTranscoder, TranscodeJob, TranscodeResult, VideoMetadata
+from .base import BaseTranscoder, TranscodeJob, TranscodeResult, VideoMetadata, parse_ffprobe_metadata
 
 
 class FFmpegTranscoder(BaseTranscoder):
@@ -78,12 +78,21 @@ class FFmpegTranscoder(BaseTranscoder):
         input_url = self._get_presigned_url(job.input_s3_key, expires_in=7200)
 
         try:
-            # 1. Get metadata via streaming (no download)
-            cmd = [
+            # 1. Probe metadata via streaming (no download) — feeds both the
+            # Fields tab technical_metadata persisted onto MediaFile below,
+            # and (indirectly) confirms the input is readable before we
+            # commit to a full transcode.
+            probe_cmd = [
                 "ffprobe", "-v", "quiet", "-print_format", "json",
-                "-show_streams", "-select_streams", "v:0", input_url,
+                "-show_streams", "-show_format", input_url,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=120)
+            probed: dict = {}
+            if probe_result.returncode == 0 and probe_result.stdout:
+                try:
+                    probed = parse_ffprobe_metadata(json.loads(probe_result.stdout))
+                except (json.JSONDecodeError, KeyError):
+                    probed = {}
 
             # 3. Build quality ladder based on available qualities
             QUALITY_MAP = {
@@ -167,10 +176,19 @@ class FFmpegTranscoder(BaseTranscoder):
                     ExtraArgs={"ContentType": "image/jpeg", "CacheControl": "max-age=86400"},
                 )
 
+            dims = {
+                k: probed.pop(k, None)
+                for k in ("width", "height", "duration_seconds", "fps")
+            }
             return TranscodeResult(
                 success=True,
                 hls_prefix=job.output_s3_prefix,
                 thumbnail_keys=[thumbnail_key],
+                width=dims["width"],
+                height=dims["height"],
+                duration_seconds=dims["duration_seconds"],
+                fps=dims["fps"],
+                technical_metadata=probed,
             )
 
         except Exception as e:

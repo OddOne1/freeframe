@@ -101,6 +101,16 @@ def _process_video(db, asset, version, media_file, s3, output_prefix):
     media_file.s3_key_processed = result.hls_prefix
     if result.thumbnail_keys:
         media_file.s3_key_thumbnail = result.thumbnail_keys[0]
+    if result.width is not None:
+        media_file.width = result.width
+    if result.height is not None:
+        media_file.height = result.height
+    if result.duration_seconds is not None:
+        media_file.duration_seconds = result.duration_seconds
+    if result.fps is not None:
+        media_file.fps = result.fps
+    if result.technical_metadata:
+        media_file.technical_metadata = result.technical_metadata
     db.flush()
 
 
@@ -110,6 +120,10 @@ def _process_audio(db, asset, version, media_file, s3, output_prefix):
     media_file.s3_key_processed = result.get("mp3_key")
     if result.get("waveform_key"):
         media_file.s3_key_thumbnail = result["waveform_key"]
+    if result.get("duration_seconds") is not None:
+        media_file.duration_seconds = result["duration_seconds"]
+    if result.get("technical_metadata"):
+        media_file.technical_metadata = result["technical_metadata"]
     db.flush()
 
 
@@ -118,6 +132,12 @@ def _process_image(db, asset, version, media_file, s3, output_prefix):
     result = process_image(s3, settings.s3_bucket, media_file.s3_key_raw, output_prefix)
     media_file.s3_key_processed = result.get("webp_key")
     media_file.s3_key_thumbnail = result.get("thumbnail_key")
+    if result.get("width") is not None:
+        media_file.width = result["width"]
+    if result.get("height") is not None:
+        media_file.height = result["height"]
+    if result.get("technical_metadata"):
+        media_file.technical_metadata = result["technical_metadata"]
     db.flush()
 
 

@@ -84,6 +84,13 @@ class MediaFile(Base):
     duration_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     fps: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     sequence_order: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Codec/color/bitrate details from ffprobe — shape varies by file_type, so
+    # JSONB rather than one column per possible field. See
+    # packages/transcoder for what gets written into it. Keys currently used:
+    # video_codec, video_bit_rate, visual_bit_depth, alpha_channel,
+    # color_space, dynamic_range, audio_codec, audio_bit_rate,
+    # audio_bit_depth, audio_channels, audio_sample_rate.
+    technical_metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class CarouselItem(Base):

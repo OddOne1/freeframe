@@ -20,6 +20,7 @@ class MediaFileResponse(BaseModel):
     duration_seconds: Optional[float]
     fps: Optional[float]
     sequence_order: Optional[int]
+    technical_metadata: Optional[dict] = None
     model_config = {"from_attributes": True}
 
 class AssetVersionResponse(BaseModel):
