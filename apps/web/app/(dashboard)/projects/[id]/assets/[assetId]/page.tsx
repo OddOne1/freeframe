@@ -40,19 +40,19 @@ import {
   Star,
   GitBranch,
   Activity,
-  MessageSquare,
+    MessageSquare,
   Clock,
   HardDrive,
-  Maximize2,
   Timer,
   Gauge,
   File as FileIcon,
   User as UserIcon,
+  Pencil,
 } from 'lucide-react'
 import Link from 'next/link'
 import { cn, formatBytes, formatRelativeTime, formatTime } from '@/lib/utils'
 import { usePageTitle } from '@/hooks/use-page-title'
-import type { Project, AssetResponse, ProjectMember, FolderTreeNode, AssetStatus, User } from '@/types'
+import type { Project, AssetResponse, ProjectMember, FolderTreeNode, AssetStatus, User, TechnicalMetadata } from '@/types'
 
 interface VoteEntry {
   user_id: string
@@ -127,6 +127,126 @@ function VoteBreakdown({ voters }: { voters: VoteEntry[] }) {
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+  )
+}
+
+function formatBitrate(bps?: number | null): string | null {
+  if (!bps) return null
+  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`
+  if (bps >= 1_000) return `${Math.round(bps / 1_000)} kbps`
+  return `${bps} bps`
+}
+
+function formatSampleRate(hz?: number | null): string | null {
+  if (!hz) return null
+  return `${(hz / 1000).toFixed(1)} kHz`
+}
+
+const TECHNICAL_METADATA_FIELDS: Array<{
+  key: keyof TechnicalMetadata
+  label: string
+  format?: (v: any) => string
+}> = [
+  { key: 'video_codec', label: 'Video codec' },
+  { key: 'video_bit_rate', label: 'Video bitrate', format: (v) => formatBitrate(v) ?? String(v) },
+  { key: 'visual_bit_depth', label: 'Bit depth', format: (v) => `${v}-bit` },
+  { key: 'alpha_channel', label: 'Alpha channel', format: (v) => (v ? 'Yes' : 'No') },
+  { key: 'color_space', label: 'Color space' },
+  { key: 'dynamic_range', label: 'Dynamic range' },
+  { key: 'audio_codec', label: 'Audio codec' },
+  { key: 'audio_bit_rate', label: 'Audio bitrate', format: (v) => formatBitrate(v) ?? String(v) },
+  { key: 'audio_bit_depth', label: 'Audio bit depth', format: (v) => `${v}-bit` },
+  { key: 'audio_channels', label: 'Audio channels' },
+  { key: 'audio_sample_rate', label: 'Audio sample rate', format: (v) => formatSampleRate(v) ?? String(v) },
+]
+
+function TechnicalMetadataList({ metadata }: { metadata: TechnicalMetadata }) {
+  const rows = TECHNICAL_METADATA_FIELDS
+    .filter((f) => metadata[f.key] !== undefined && metadata[f.key] !== null)
+    .map((f) => ({
+      label: f.label,
+      value: f.format ? f.format(metadata[f.key]) : String(metadata[f.key]),
+    }))
+
+  if (rows.length === 0) return null
+
+  return (
+    <div className="mt-1.5 rounded-md border border-border/60 divide-y divide-border/60">
+      {rows.map((r) => (
+        <div key={r.label} className="flex items-center justify-between gap-2 px-2.5 py-1.5">
+          <span className="text-xs text-text-tertiary">{r.label}</span>
+          <span className="text-xs text-text-primary font-medium">{r.value}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Inline rename control for the Fields tab header — same optimistic-update
+// shape as handleStatusChange (parent owns the state/API call; this is
+// presentational). Falls back to a plain label when the viewer can't edit.
+function EditableAssetName({
+  name,
+  canEdit,
+  onSave,
+}: {
+  name: string
+  canEdit: boolean
+  onSave: (newName: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(name)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    setDraft(name)
+  }, [name])
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus()
+  }, [editing])
+
+  function commit() {
+    setEditing(false)
+    const trimmed = draft.trim()
+    if (trimmed && trimmed !== name) {
+      onSave(trimmed)
+    } else {
+      setDraft(name)
+    }
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit()
+          if (e.key === 'Escape') {
+            setDraft(name)
+            setEditing(false)
+          }
+        }}
+        className="flex-1 min-w-0 bg-transparent border-b border-border text-sm font-medium text-text-primary focus:outline-none"
+      />
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      disabled={!canEdit}
+      onClick={() => canEdit && setEditing(true)}
+      className={cn('group flex items-center gap-1.5 min-w-0 text-left', canEdit && 'cursor-text')}
+    >
+      <span className="text-sm font-medium text-text-primary truncate">{name}</span>
+      {canEdit && (
+        <Pencil className="h-3 w-3 text-text-tertiary opacity-0 group-hover:opacity-100 shrink-0" />
+      )}
+    </button>
   )
 }
 
@@ -232,6 +352,32 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     }
   }
 
+  // Asset name override — same optimistic-update shape as statusOverride
+  // above. Gated by canEditStatus: renaming is an asset-mutation action,
+  // same permission bar already used for status changes in this file.
+  const [nameOverride, setNameOverride] = useState<string | null>(null)
+  useEffect(() => {
+    setNameOverride(null)
+  }, [asset?.id])
+  const displayName = nameOverride ?? asset?.name
+
+  async function handleRenameAsset(newName: string) {
+    if (!asset) return
+    const previous = displayName
+    setNameOverride(newName)
+    try {
+      await api.patch(`/assets/${asset.id}`, { name: newName })
+    } catch {
+      setNameOverride(previous ?? null)
+    }
+  }
+
+  // Expand/collapse for the full technical_metadata list in the Fields tab
+  const [showAllFields, setShowAllFields] = useState(false)
+  useEffect(() => {
+    setShowAllFields(false)
+  }, [asset?.id])
+
   // Rating state — overrides the value embedded in `asset` once the user rates it
   const [ratingState, setRatingState] = useState<{ avg_rating: number | null; rating_count: number; my_rating: number | null } | null>(null)
   useEffect(() => {
@@ -305,6 +451,15 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const commentCount = countAllComments(comments)
   const primaryFile = currentVersion?.files?.[0]
   const totalFileSize = (currentVersion?.files ?? []).reduce((sum, f) => sum + (f.file_size_bytes || 0), 0)
+
+  // Condensed resolution/codec/bitrate line under the header name — only
+  // populates once ffprobe metadata exists (older assets predate the column).
+  const tm = primaryFile?.technical_metadata
+  const summaryParts = [
+    primaryFile?.width != null && primaryFile?.height != null ? `${primaryFile.width}×${primaryFile.height}` : null,
+    tm?.video_codec ?? tm?.audio_codec ?? null,
+    formatBitrate(tm?.video_bit_rate ?? tm?.audio_bit_rate),
+  ].filter(Boolean) as string[]
 
   // Deep-link to a specific comment from notification (?commentId=...)
   // Runs once after comments are loaded — seeks to timecode, focuses comment, shows annotation
@@ -698,13 +853,25 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                       assetType={asset.asset_type}
                       onSubmit={handleSubmitComment}
                       annotationData={annotationData}
-                    />
+                  />
                   )}
                 </>
               ) : (
                 <div className="flex-1 overflow-y-auto p-4">
                   <div>
-                    <FieldRow icon={FileText} label="Name">{asset.name}</FieldRow>
+                    <div className="pb-3 mb-1 border-b border-border/60">
+                      <div className="flex items-center gap-2">
+                        <FileText className="h-3.5 w-3.5 text-text-tertiary shrink-0" />
+                        <EditableAssetName
+                          name={displayName ?? ''}
+                          canEdit={canEditStatus}
+                          onSave={handleRenameAsset}
+                        />
+                      </div>
+                      {summaryParts.length > 0 && (
+                        <p className="mt-1 pl-5 text-2xs text-text-tertiary">{summaryParts.join(' · ')}</p>
+                      )}
+                    </div>
                     <FieldRow icon={Tag} label="Type">
                       <span className="capitalize">{asset.asset_type.replace('_', ' ')}</span>
                     </FieldRow>
@@ -712,9 +879,9 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                     {/* Status — same control as the toolbar, compact */}
                     <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60">
                       <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
-                        <CircleDot className="h-3.5 w-3.5" />
+                      <CircleDot className="h-3.5 w-3.5" />
                         Status
-                      </span>
+                    </span>
                       {displayStatus && (
                         <StatusDropdown
                           status={displayStatus}
@@ -723,34 +890,34 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                           canArchive={canArchive}
                           className={canEditStatus ? 'h-7 px-2 text-2xs bg-transparent border-border' : 'h-6 px-2'}
                         />
-                      )}
+                    )}
                     </div>
 
                     {/* Rating + per-voter breakdown — hidden entirely for users
-                        with no access at all (e.g. viewers); reviewers still
-                        see their own vote (canVote) but never the aggregate,
-                        which stays gated behind ratingCount from the backend. */}
+                      with no access at all (e.g. viewers); reviewers still
+                      see their own vote (canVote) but never the aggregate,
+                      which stays gated behind ratingCount from the backend. */}
                     {(canVote || ratingCount > 0) && (
                       <div className="py-2 border-b border-border/60">
                         <div className="flex items-center justify-between gap-3">
                           <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
-                            <Star className="h-3.5 w-3.5" />
+                          <Star className="h-3.5 w-3.5" />
                             Rating
-                          </span>
+                        </span>
                           <div className="flex items-center gap-1.5">
                             <StarRating
                               value={myRating}
                               onChange={canVote ? handleRate : undefined}
-                              readOnly={!canVote}
-                              size="sm"
-                            />
+                            readOnly={!canVote}
+                            size="sm"
+                          />
                             {ratingCount > 0 && (
                               <span className="text-xs text-text-secondary tabular-nums">{avgRating?.toFixed(1)}</span>
-                            )}
-                          </div>
+                          )}
                         </div>
-                        {ratingCount > 0 && <VoteBreakdown voters={voters ?? []} />}
-                      </div>
+                        </div>
+                      {ratingCount > 0 && <VoteBreakdown voters={voters ?? []} />}
+                    </div>
                     )}
 
                     {currentVersion && (
@@ -763,10 +930,10 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                           currentVersion.processing_status === 'ready' && 'text-status-success',
                           currentVersion.processing_status === 'processing' && 'text-status-warning',
                           currentVersion.processing_status === 'failed' && 'text-status-error',
-                          currentVersion.processing_status === 'uploading' && 'text-text-tertiary',
-                        )}>
+                        currentVersion.processing_status === 'uploading' && 'text-text-tertiary',
+                      )}>
                           {currentVersion.processing_status}
-                        </span>
+                      </span>
                       </FieldRow>
                     )}
                     <FieldRow icon={MessageSquare} label="Comments">{commentCount}</FieldRow>
@@ -774,9 +941,6 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                     <FieldRow icon={UserIcon} label="Uploaded by">{uploaderName ?? '—'}</FieldRow>
                     {totalFileSize > 0 && (
                       <FieldRow icon={HardDrive} label="File size">{formatBytes(totalFileSize)}</FieldRow>
-                    )}
-                    {primaryFile?.width != null && primaryFile?.height != null && (
-                      <FieldRow icon={Maximize2} label="Resolution">{primaryFile.width}×{primaryFile.height}</FieldRow>
                     )}
                     {primaryFile?.duration_seconds != null && (
                       <FieldRow icon={Timer} label="Duration">{formatTime(primaryFile.duration_seconds)}</FieldRow>
@@ -787,6 +951,21 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                     {primaryFile?.original_filename && (
                       <FieldRow icon={FileIcon} label="Source filename">{primaryFile.original_filename}</FieldRow>
                     )}
+
+                    {primaryFile?.technical_metadata &&
+                      Object.values(primaryFile.technical_metadata).some((v) => v !== undefined && v !== null) && (
+                        <div className="pt-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowAllFields((v) => !v)}
+                            className="w-full flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors"
+                          >
+                            <span>{showAllFields ? 'Hide' : 'Show'} all fields</span>
+                            <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', showAllFields && 'rotate-180')} />
+                          </button>
+                          {showAllFields && <TechnicalMetadataList metadata={primaryFile.technical_metadata} />}
+                        </div>
+                      )}
                   </div>
                 </div>
               )}
@@ -799,7 +978,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
 }
 
 export default function ReviewPage({
-  params,
+     params,
 }: {
   params: { id: string; assetId: string }
 }) {
