@@ -145,6 +145,23 @@ export interface AssetResponse extends Asset {
   thumbnail_url: string | null;
 }
 
+/** Subset of ffprobe fields captured by parse_ffprobe_metadata() (packages/transcoder/base.py).
+ *  Keys are simply omitted server-side when ffprobe doesn't report them, so every field here
+ *  is optional rather than nullable. */
+export interface TechnicalMetadata {
+  video_codec?: string;
+  video_bit_rate?: number;
+  visual_bit_depth?: number;
+  alpha_channel?: boolean;
+  color_space?: string;
+  dynamic_range?: string;
+  audio_codec?: string;
+  audio_bit_rate?: number;
+  audio_bit_depth?: number;
+  audio_channels?: number;
+  audio_sample_rate?: number;
+}
+
 export interface MediaFile {
   id: string;
   version_id: string;
@@ -160,6 +177,7 @@ export interface MediaFile {
   duration_seconds: number | null;
   fps: number | null;
   sequence_order: number | null;
+  technical_metadata: TechnicalMetadata | null;
   created_at: string;
 }
 
