@@ -427,7 +427,7 @@ export default function ProjectDetailPage() {
             was tuned so its bottom edge lands on the same pixel as the
             toolbar's, giving one continuous divider across the sidebar and
             main content instead of two independent, differently-sized rows). */}
-        <div className="h-[43px] shrink-0 flex items-center justify-between px-5 border-b border-border">
+        <div className="mt-3 h-[43px] shrink-0 flex items-center justify-between px-5 border-b border-border">
           <span className="text-2xs font-semibold text-text-tertiary uppercase tracking-wider">
             Assets
           </span>
