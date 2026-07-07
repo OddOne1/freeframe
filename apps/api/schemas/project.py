@@ -38,9 +38,13 @@ class ProjectResponse(BaseModel):
 class AdminProjectResponse(ProjectResponse):
     """ProjectResponse plus owner identity, used only by the superadmin
     project-overview dashboard (which lists projects the admin isn't
-    necessarily a member of, so plain `role` is always None there)."""
+    necessarily a member of, so plain `role` is always None there).
+    `current_user_role` is the viewing admin's own membership on this
+    project (None if they aren't a member) — it drives the Join & View
+    / Leave toggle and whether the project name is clickable."""
     owner_name: str | None = None
     owner_email: str | None = None
+    current_user_role: ProjectRole | None = None
 
 class TransferOwnershipRequest(BaseModel):
     new_owner_id: uuid.UUID

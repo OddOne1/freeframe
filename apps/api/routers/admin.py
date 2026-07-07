@@ -161,6 +161,14 @@ def _archiver_is_superadmin(db: Session, project: Project) -> bool:
     archiver = db.query(User).filter(User.id == project.archived_by).first()
     return bool(archiver and archiver.is_superadmin)
 
+def _current_user_role(db: Session, project_id: uuid.UUID, user_id: uuid.UUID):
+    membership = db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.user_id == user_id,
+        ProjectMember.deleted_at.is_(None),
+    ).first()
+    return membership.role if membership else None
+
 @router.get("/projects", response_model=list[AdminProjectResponse])
 def list_all_projects(
     db: Session = Depends(get_db),
@@ -206,6 +214,15 @@ def list_all_projects(
         superadmin_archiver_ids = {
             u.id for u in db.query(User).filter(User.id.in_(archiver_ids), User.is_superadmin == True).all()
         }
+    my_memberships = dict(
+        db.query(ProjectMember.project_id, ProjectMember.role)
+        .filter(
+            ProjectMember.project_id.in_(project_ids),
+            ProjectMember.user_id == current_user.id,
+            ProjectMember.deleted_at.is_(None),
+        )
+        .all()
+    )
 
     result = []
     for p in projects:
@@ -214,6 +231,7 @@ def list_all_projects(
         resp.storage_bytes = storage_map.get(p.id, 0)
         resp.member_count = member_counts.get(p.id, 0)
         resp.archived_by_is_superadmin = p.archived_by in superadmin_archiver_ids
+        resp.current_user_role = my_memberships.get(p.id)
         _apply_project_stats(db, resp, p, owners)
         result.append(resp)
     return result
@@ -248,6 +266,7 @@ def admin_update_project(
 
     resp = AdminProjectResponse.model_validate(project)
     resp.archived_by_is_superadmin = _archiver_is_superadmin(db, project)
+    resp.current_user_role = _current_user_role(db, project.id, current_user.id)
     owners = {project.created_by: db.query(User).filter(User.id == project.created_by).first()}
     _apply_project_stats(db, resp, project, owners)
     return resp
@@ -294,16 +313,63 @@ def admin_join_project(
     ).first()
     if existing:
         existing.deleted_at = None
+        joined_role = existing.role
     else:
         db.add(ProjectMember(
             project_id=project_id, user_id=current_user.id,
             role=ProjectRole.viewer, invited_by=current_user.id,
         ))
+        joined_role = ProjectRole.viewer
     db.commit()
     db.refresh(project)
 
     resp = AdminProjectResponse.model_validate(project)
     resp.archived_by_is_superadmin = _archiver_is_superadmin(db, project)
+    resp.current_user_role = joined_role
+    owners = {project.created_by: db.query(User).filter(User.id == project.created_by).first()}
+    _apply_project_stats(db, resp, project, owners)
+    return resp
+
+@router.post("/projects/{project_id}/leave", response_model=AdminProjectResponse)
+def admin_leave_project(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Undo the self-join from admin_join_project — lets a superadmin who
+    peeked into a project (via Join & View) remove themselves again.
+    Scoped to viewer-role memberships only: if the superadmin has a real
+    editor/reviewer/owner membership on this project (actual
+    collaboration, not just a peek), this endpoint refuses — that kind of
+    membership should be managed from the project's own Members panel,
+    not one-clicked away from the admin table. Only accessible by
+    admins."""
+    _require_superadmin(current_user)
+
+    project = db.query(Project).filter(Project.id == project_id, Project.deleted_at.is_(None)).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    membership = db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.user_id == current_user.id,
+        ProjectMember.deleted_at.is_(None),
+    ).first()
+    if not membership:
+        raise HTTPException(status_code=404, detail="You are not a member of this project")
+    if membership.role != ProjectRole.viewer:
+        raise HTTPException(
+            status_code=400,
+            detail="This is a real project membership, not a Join & View peek — manage it from the project's Members panel instead.",
+        )
+
+    membership.deleted_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(project)
+
+    resp = AdminProjectResponse.model_validate(project)
+    resp.archived_by_is_superadmin = _archiver_is_superadmin(db, project)
+    resp.current_user_role = None
     owners = {project.created_by: db.query(User).filter(User.id == project.created_by).first()}
     _apply_project_stats(db, resp, project, owners)
     return resp
@@ -353,5 +419,6 @@ def admin_transfer_ownership(
 
     resp = AdminProjectResponse.model_validate(project)
     resp.archived_by_is_superadmin = _archiver_is_superadmin(db, project)
+    resp.current_user_role = _current_user_role(db, project.id, current_user.id)
     _apply_project_stats(db, resp, project, {new_owner.id: new_owner})
     return resp

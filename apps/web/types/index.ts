@@ -123,6 +123,7 @@ export interface AdminUser extends User {
 export interface AdminProject extends Project {
   owner_name: string | null;
   owner_email: string | null;
+  current_user_role?: ProjectRole | null;
 }
 
 // ─── Asset & Media Entities ───────────────────────────────────────────────────
