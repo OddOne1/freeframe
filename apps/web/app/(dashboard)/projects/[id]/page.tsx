@@ -633,13 +633,17 @@ export default function ProjectDetailPage() {
         {/* Spacer */}
         <div className="flex-1" />
 
-       {/* Storage indicator */}
+       {/* Storage indicator — fixed height (89px) to match the global rail's
+           bottom section (user avatar + collapse button, also 89px in its
+           collapsed state), so the border-t line here lines up with the
+           rail's border-t line at the same distance from the viewport
+           bottom. */}
         {(() => {
           const used = project?.storage_bytes ?? 0;
           const limit = project?.storage_limit_bytes ?? null;
           if (limit === null) {
             return (
-              <div className="border-t border-border shrink-0 p-2 space-y-1">
+              <div className="h-[89px] border-t border-border shrink-0 p-2 space-y-1">
                 <div className="flex flex-col gap-1 px-2.5 py-1.5">
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-medium text-text-secondary">Storage</span>
@@ -656,7 +660,7 @@ export default function ProjectDetailPage() {
           const isCritical = pct >= 90;
           const isWarning = pct >= 80;
           return (
-            <div className="border-t border-border shrink-0 p-2 space-y-1">
+            <div className="h-[89px] border-t border-border shrink-0 p-2 space-y-1">
               <div className="flex flex-col gap-1 px-2.5 py-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-medium text-text-secondary">Storage</span>
