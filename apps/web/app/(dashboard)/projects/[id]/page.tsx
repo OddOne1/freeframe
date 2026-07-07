@@ -421,27 +421,32 @@ export default function ProjectDetailPage() {
     <div className="flex h-full flex-col lg:flex-row overflow-hidden">
       {/* ─── Left Sidebar (Frame.io style) ──────────────────────────────── */}
       <div className="hidden lg:flex w-72 flex-col border-r border-border bg-bg-secondary shrink-0">
-        {/* Assets section */}
-        <div className="p-3 space-y-0.5">
-          <div className="flex items-center justify-between px-2 mb-1">
-            <span className="text-2xs font-semibold text-text-tertiary uppercase tracking-wider">
-              Assets
-            </span>
-            {canCreateFolder && (
-              <button
-                className="text-text-tertiary hover:text-text-primary transition-colors"
-                onClick={() => {
-                  setFolderDialogParentId(currentFolderId);
-                  setFolderDialogOpen(true);
-                }}
-                title="New folder"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
+        {/* Assets section header — fixed height (43px) + border-b so this line
+            lines up exactly with the main content Navigator Bar's border-b
+            (both rows start 12px below the global header; this row's height
+            was tuned so its bottom edge lands on the same pixel as the
+            toolbar's, giving one continuous divider across the sidebar and
+            main content instead of two independent, differently-sized rows). */}
+        <div className="h-[43px] shrink-0 flex items-center justify-between px-5 border-b border-border">
+          <span className="text-2xs font-semibold text-text-tertiary uppercase tracking-wider">
+            Assets
+          </span>
+          {canCreateFolder && (
+            <button
+              className="text-text-tertiary hover:text-text-primary transition-colors"
+              onClick={() => {
+                setFolderDialogParentId(currentFolderId);
+                setFolderDialogOpen(true);
+              }}
+              title="New folder"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
 
-          {/* Project folder tree */}
+        {/* Project folder tree */}
+        <div className="p-3 space-y-0.5">
           <FolderTree
             tree={tree}
             projectName={project?.name || "Project"}
