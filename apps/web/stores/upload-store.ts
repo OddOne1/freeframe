@@ -268,6 +268,11 @@ interface UploadStore {
   historyHasMore: boolean
   historyLoading: boolean
   historySkip: number
+  // asset ids the user has explicitly dismissed from the panel - persisted
+  // so a ready/complete upload doesn't reappear on the next fetchHistory()
+  // call (e.g. after a reload). The underlying asset is never touched —
+  // it's still a real, finished file the user kept, just no longer shown here.
+  dismissedHistoryIds: string[]
   setPanelOpen: (open: boolean) => void
   togglePanel: () => void
   startUpload: (file: File, projectId: string, assetName: string, projectName?: string, folderId?: string | null) => string
@@ -307,10 +312,15 @@ function mimeFromAssetType(assetType: string): string {
   }
 }
 
-function mergeHistoryAssets(existing: UploadFile[], assets: AssetResponse[]): UploadFile[] {
+function mergeHistoryAssets(
+  existing: UploadFile[],
+  assets: AssetResponse[],
+  dismissedIds: string[],
+): UploadFile[] {
   const existingAssetIds = new Set(existing.map((f) => f.assetId).filter(Boolean))
+  const dismissed = new Set(dismissedIds)
   const newFiles: UploadFile[] = assets
-    .filter((a) => a.latest_version && !existingAssetIds.has(a.id))
+    .filter((a) => a.latest_version && !existingAssetIds.has(a.id) && !dismissed.has(a.id))
     .map((a) => {
       const v = a.latest_version!
       const file = v.files?.[0]
@@ -339,6 +349,7 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
   historyHasMore: true,
   historyLoading: false,
   historySkip: 0,
+  dismissedHistoryIds: [],
 
   setPanelOpen: (open) => set({ panelOpen: open }),
   togglePanel: () => set((s) => ({ panelOpen: !s.panelOpen })),
@@ -474,16 +485,27 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
     // just dropping it from local state isn't enough — fetchHistory() would
     // fetch it right back from /me/assets on the next panel open or page
     // reload. Soft-delete it the same way the asset browser's own delete
-    // does, so it actually disappears. Completed uploads are deliberately
-    // excluded: those are real, finished assets the user still wants —
-    // "Remove" there should only clear this panel's view, not delete their file.
+    // does, so it actually disappears.
     if (target?.assetId && (target.status === 'failed' || target.status === 'cancelled')) {
       api.delete(`/assets/${target.assetId}`).catch(() => {})
+    } else if (target?.assetId && target.status === 'complete') {
+      // Ready/finished upload — the asset itself stays untouched (the user
+      // still wants the file), but remember it was dismissed so fetchHistory()
+      // doesn't pull it right back in on the next panel open or page reload.
+      set((s) => ({
+        dismissedHistoryIds: s.dismissedHistoryIds.includes(target.assetId!)
+          ? s.dismissedHistoryIds
+          : [...s.dismissedHistoryIds, target.assetId!],
+      }))
     }
   },
 
   clearCompleted: () => {
-    set((s) => ({ files: s.files.filter((f) => f.status !== 'complete') }))
+    const completedIds = get().files.filter((f) => f.status === 'complete' && f.assetId).map((f) => f.assetId!)
+    set((s) => ({
+      files: s.files.filter((f) => f.status !== 'complete'),
+      dismissedHistoryIds: Array.from(new Set([...s.dismissedHistoryIds, ...completedIds])),
+    }))
   },
 
   fetchHistory: async () => {
@@ -491,7 +513,7 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
     set({ historyLoading: true })
     try {
       const assets = await api.get<AssetResponse[]>(`/me/assets?skip=0&limit=${HISTORY_PAGE_SIZE}`)
-      const merged = mergeHistoryAssets(get().files, assets)
+      const merged = mergeHistoryAssets(get().files, assets, get().dismissedHistoryIds)
       set({
         historyLoaded: true,
         historyLoading: false,
@@ -510,7 +532,7 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
     set({ historyLoading: true })
     try {
       const assets = await api.get<AssetResponse[]>(`/me/assets?skip=${historySkip}&limit=${HISTORY_PAGE_SIZE}`)
-      const merged = mergeHistoryAssets(get().files, assets)
+      const merged = mergeHistoryAssets(get().files, assets, get().dismissedHistoryIds)
       set((s) => ({
         historyLoading: false,
         historySkip: s.historySkip + HISTORY_PAGE_SIZE,
@@ -584,11 +606,13 @@ export const useUploadStore = create<UploadStore>()(
     // Only persist failed/cancelled items — in-progress (including paused)
     // uploads can't survive a page reload since the underlying File object
     // is lost, and successful ones are fetched from the API history on
-    // panel open.
+    // panel open. dismissedHistoryIds is also persisted so a dismissal
+    // survives a reload too.
     partialize: (state: UploadStore) => ({
       files: state.files.filter(
         (f: UploadFile) => f.status === 'failed' || f.status === 'cancelled',
       ),
+      dismissedHistoryIds: state.dismissedHistoryIds,
     }),
   }),
 )

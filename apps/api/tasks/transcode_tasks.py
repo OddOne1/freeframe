@@ -94,7 +94,14 @@ def _process_video(db, asset, version, media_file, s3, output_prefix):
         output_s3_prefix=output_prefix,
         qualities=["1080p", "720p", "360p"],
     )
-    result = _run_async(transcoder.transcode(job))
+
+    def _report_progress(percent: int) -> None:
+        _publish_event(str(asset.project_id), "transcode_progress", {
+            "asset_id": str(asset.id),
+            "percent": percent,
+        })
+
+    result = _run_async(transcoder.transcode(job, progress_callback=_report_progress))
     if not result.success:
         raise RuntimeError(f"Transcode failed: {result.error}")
 

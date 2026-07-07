@@ -1,7 +1,7 @@
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 @dataclass
 class TranscodeJob:
@@ -131,7 +131,11 @@ def parse_ffprobe_metadata(probe_data: dict) -> dict:
 
 class BaseTranscoder(ABC):
     @abstractmethod
-    async def transcode(self, job: TranscodeJob) -> TranscodeResult:
+    async def transcode(
+        self,
+        job: TranscodeJob,
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> TranscodeResult:
         pass
 
     @abstractmethod

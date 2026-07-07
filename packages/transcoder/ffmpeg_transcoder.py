@@ -4,8 +4,9 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 import boto3
 from botocore.config import Config
 from .base import BaseTranscoder, TranscodeJob, TranscodeResult, VideoMetadata, parse_ffprobe_metadata
@@ -66,7 +67,56 @@ class FFmpegTranscoder(BaseTranscoder):
         # Simplified waveform: just return peak data (full waveform extraction is complex)
         return {"samples": [], "peak": 1.0, "source": s3_key}
 
-    async def transcode(self, job: TranscodeJob) -> TranscodeResult:
+    @staticmethod
+    def _run_ffmpeg_with_progress(
+        cmd: list[str],
+        total_duration: float,
+        progress_callback: Optional[Callable[[int], None]],
+        timeout: int,
+    ) -> None:
+        """Run an ffmpeg command that already has `-progress pipe:1` appended,
+        streaming percent-complete to progress_callback as ffmpeg reports
+        out_time_ms= lines. Capped at 99% — the caller sets 100 only once the
+        HLS files are actually uploaded, so the bar can't lie about being done
+        while upload is still in flight. Falls back to no callbacks (transcode
+        still completes normally) when total_duration is 0/unknown."""
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
+        )
+        deadline = time.monotonic() + timeout
+        last_reported = -1
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                if time.monotonic() > deadline:
+                    process.kill()
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                line = line.strip()
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                if key == "out_time_ms" and total_duration > 0 and progress_callback:
+                    try:
+                        out_seconds = int(value) / 1_000_000
+                    except ValueError:
+                        continue
+                    percent = max(0, min(99, int((out_seconds / total_duration) * 100)))
+                    if percent != last_reported:
+                        last_reported = percent
+                        progress_callback(percent)
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, cmd)
+
+    async def transcode(
+        self,
+        job: TranscodeJob,
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> TranscodeResult:
         """
         Transcode video using streaming input from S3.
         FFmpeg reads directly from presigned URL - no full download needed.
@@ -145,8 +195,14 @@ class FFmpegTranscoder(BaseTranscoder):
             for q in qualities:
                 (hls_dir / q).mkdir(exist_ok=True)
 
-            # Timeout scales with expected duration - 4 hours for very large files
-            subprocess.run(ffmpeg_cmd, check=True, capture_output=True, timeout=14400)
+            ffmpeg_cmd += ["-progress", "pipe:1", "-nostats"]
+
+            # Timeout scales with expected duration - 4 hours for very large files.
+            # Streamed via Popen (see _run_ffmpeg_with_progress) instead of a single
+            # blocking subprocess.run, so real percent-complete can be reported while
+            # the transcode is still running rather than only success/failure at the end.
+            total_duration = probed.get("duration_seconds") or 0
+            self._run_ffmpeg_with_progress(ffmpeg_cmd, total_duration, progress_callback, timeout=14400)
 
             # 4. Upload HLS files to S3
             uploaded_keys = []
