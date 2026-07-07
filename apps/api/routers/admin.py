@@ -269,6 +269,45 @@ def admin_delete_project(
     project.deleted_at = datetime.now(timezone.utc)
     db.commit()
 
+@router.post("/projects/{project_id}/join", response_model=AdminProjectResponse)
+def admin_join_project(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Let a superadmin add themselves to a project as a viewer, so they
+    can inspect its contents. Superadmins can see every project's
+    metadata/stats via GET /admin/projects regardless of membership, but
+    viewing actual assets still goes through the normal membership check
+    in projects.py — this is the deliberate privacy boundary: admin
+    powers over a project (rename/delete/archive/transfer) don't imply
+    content access. Only accessible by admins."""
+    _require_superadmin(current_user)
+
+    project = db.query(Project).filter(Project.id == project_id, Project.deleted_at.is_(None)).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    existing = db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.user_id == current_user.id,
+    ).first()
+    if existing:
+        existing.deleted_at = None
+    else:
+        db.add(ProjectMember(
+            project_id=project_id, user_id=current_user.id,
+            role=ProjectRole.viewer, invited_by=current_user.id,
+        ))
+    db.commit()
+    db.refresh(project)
+
+    resp = AdminProjectResponse.model_validate(project)
+    resp.archived_by_is_superadmin = _archiver_is_superadmin(db, project)
+    owners = {project.created_by: db.query(User).filter(User.id == project.created_by).first()}
+    _apply_project_stats(db, resp, project, owners)
+    return resp
+
 @router.post("/projects/{project_id}/transfer-ownership", response_model=AdminProjectResponse)
 def admin_transfer_ownership(
     project_id: uuid.UUID,

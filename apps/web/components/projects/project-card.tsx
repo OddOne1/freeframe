@@ -3,11 +3,14 @@
 import * as React from 'react'
 import Link from 'next/link'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { MoreHorizontal, ImagePlus, Settings, Trash2, Globe, Lock } from 'lucide-react'
+import { MoreHorizontal, ImagePlus, Settings, Trash2, Globe, Lock, Users, ArrowRightLeft, Archive, ArchiveRestore } from 'lucide-react'
 import { cn, formatRelativeTime, formatBytes, resolveApiMediaUrl } from '@/lib/utils'
 import { getGradientForProject } from '@/lib/gradient-utils'
 import { api } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth-store'
 import { ProjectSettingsDialog } from './project-settings-dialog'
+import { ProjectMembersDialog } from './project-members-dialog'
+import { TransferOwnershipDialog } from './transfer-ownership-dialog'
 import type { Project } from '@/types'
 
 interface ProjectCardProps {
@@ -25,10 +28,23 @@ export function ProjectCard({
   className,
   onMutate,
 }: ProjectCardProps) {
+  const { user } = useAuthStore()
   const gradient = getGradientForProject(project.id)
   const assetCount = project.asset_count ?? 0
   const [settingsOpen, setSettingsOpen] = React.useState(false)
+  const [membersOpen, setMembersOpen] = React.useState(false)
+  const [transferOpen, setTransferOpen] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
+  const [archiving, setArchiving] = React.useState(false)
+
+  // "Project Admin" = anyone with role=owner membership on this project.
+  // "Owner" (singular, the crown) = project.created_by. Every Project
+  // Admin can manage settings/members/archive; only the Owner (or a
+  // superadmin) can delete outright or transfer the crown away.
+  const isProjectAdmin = isOwner || project.role === 'owner'
+  const isTrueOwner = !!user && project.created_by === user.id
+  const canDelete = isTrueOwner || !!user?.is_superadmin
+  const isArchived = !!project.archived_at
 
   const handleDelete = async () => {
     if (!confirm(`Delete "${project.name}"? This action cannot be undone.`)) return
@@ -40,6 +56,18 @@ export function ProjectCard({
       // silently fail
     } finally {
       setDeleting(false)
+    }
+  }
+
+  const handleArchiveToggle = async () => {
+    setArchiving(true)
+    try {
+      await api.post(`/projects/${project.id}/${isArchived ? 'reactivate' : 'archive'}`)
+      onMutate?.()
+    } catch {
+      // silently fail
+    } finally {
+      setArchiving(false)
     }
   }
 
@@ -88,6 +116,12 @@ export function ProjectCard({
                   Public
                 </span>
               )}
+              {isArchived && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-black/30 backdrop-blur-sm px-2 py-0.5 text-[10px] font-medium text-white/90">
+                  <Archive className="h-2.5 w-2.5" />
+                  Archived
+                </span>
+              )}
               {showRole && project.role && project.role !== 'owner' && (
                 <span className="inline-flex items-center rounded-full bg-black/30 backdrop-blur-sm px-2 py-0.5 text-[10px] font-medium text-white/90 capitalize">
                   {project.role}
@@ -107,7 +141,7 @@ export function ProjectCard({
         </Link>
 
         {/* Context menu trigger */}
-        {(isOwner || project.role === 'owner') && (
+        {isProjectAdmin && (
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button
@@ -136,16 +170,52 @@ export function ProjectCard({
                   Project Settings
                 </DropdownMenu.Item>
 
-                <DropdownMenu.Separator className="my-1 h-px bg-border" />
-
                 <DropdownMenu.Item
-                  className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-status-error hover:bg-status-error/10 cursor-pointer outline-none transition-colors"
-                  onSelect={handleDelete}
-                  disabled={deleting}
+                  className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
+                  onSelect={() => setMembersOpen(true)}
                 >
-                  <Trash2 className="h-4 w-4" />
-                  Delete
+                  <Users className="h-4 w-4 text-text-tertiary" />
+                  Manage Members
                 </DropdownMenu.Item>
+
+                {isTrueOwner && (
+                  <DropdownMenu.Item
+                    className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
+                    onSelect={() => setTransferOpen(true)}
+                  >
+                    <ArrowRightLeft className="h-4 w-4 text-text-tertiary" />
+                    Transfer Ownership
+                  </DropdownMenu.Item>
+                )}
+
+                {(!isArchived || isTrueOwner || user?.is_superadmin) && (
+                  <DropdownMenu.Item
+                    className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
+                    onSelect={handleArchiveToggle}
+                    disabled={archiving}
+                  >
+                    {isArchived ? (
+                      <ArchiveRestore className="h-4 w-4 text-text-tertiary" />
+                    ) : (
+                      <Archive className="h-4 w-4 text-text-tertiary" />
+                    )}
+                    {isArchived ? 'Reactivate' : 'Archive'}
+                  </DropdownMenu.Item>
+                )}
+
+                {canDelete && (
+                  <>
+                    <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                    <DropdownMenu.Item
+                      className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-status-error hover:bg-status-error/10 cursor-pointer outline-none transition-colors"
+                      onSelect={handleDelete}
+                      disabled={deleting}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete
+                    </DropdownMenu.Item>
+                  </>
+                )}
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
@@ -159,6 +229,23 @@ export function ProjectCard({
         onOpenChange={setSettingsOpen}
         onUpdated={() => onMutate?.()}
       />
+
+      <ProjectMembersDialog
+        open={membersOpen}
+        onOpenChange={setMembersOpen}
+        projectId={project.id}
+        projectName={project.name}
+      />
+
+      {isTrueOwner && (
+        <TransferOwnershipDialog
+          projectId={project.id}
+          projectName={project.name}
+          open={transferOpen}
+          onOpenChange={setTransferOpen}
+          onTransferred={() => onMutate?.()}
+        />
+      )}
     </>
   )
 }

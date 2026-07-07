@@ -93,6 +93,9 @@ export interface Project {
   member_count?: number;
   role?: string | null;
   ratings_visible_to_all?: boolean;
+  archived_at?: string | null;
+  archived_by?: string | null;
+  archived_by_is_superadmin?: boolean;
 }
 
 export interface ProjectMember {
