@@ -63,11 +63,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         collapsed ? 'w-[52px]' : 'w-[220px]',
       )}
     >
-      {/* Logo — click to go home */}
+      {/* Logo — click to go home. h-11 (44px) to match the global Header
+          bar's height (also h-11) so the border-b line here lines up with
+          the Header's border-b across the whole app. */}
       <Link
         href="/projects"
         className={cn(
-          'flex h-12 items-center shrink-0 border-b border-border hover:bg-bg-hover/60 transition-colors',
+          'flex h-11 items-center shrink-0 border-b border-border hover:bg-bg-hover/60 transition-colors',
           collapsed ? 'justify-center px-0' : 'px-4 gap-2.5',
         )}
         title="Go to Projects"
