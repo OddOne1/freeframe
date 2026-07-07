@@ -1,6 +1,7 @@
 from pydantic import BaseModel, EmailStr
 import uuid
 from ..models.user import UserStatus
+from ..models.project import ProjectRole
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -32,6 +33,19 @@ class UserResponse(BaseModel):
     preferences: dict = {}
 
     model_config = {"from_attributes": True}
+
+class AdminUserProjectSummary(BaseModel):
+    project_id: uuid.UUID
+    project_name: str
+    role: ProjectRole
+
+    model_config = {"from_attributes": True}
+
+class AdminUserResponse(UserResponse):
+    """UserResponse plus a per-project role summary, used only by the
+    superadmin user-management dashboard so it can group users and show
+    per-project roles without a separate round-trip per user."""
+    projects: list[AdminUserProjectSummary] = []
 
 class InviteRequest(BaseModel):
     email: EmailStr
@@ -71,4 +85,3 @@ class UpdateUserRoleRequest(BaseModel):
 
 class DeactivateUserRequest(BaseModel):
     user_id: uuid.UUID
-

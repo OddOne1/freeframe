@@ -34,6 +34,16 @@ class ProjectResponse(BaseModel):
     member_count: int = 0
     ratings_visible_to_all: bool = False
 
+class AdminProjectResponse(ProjectResponse):
+    """ProjectResponse plus owner identity, used only by the superadmin
+    project-overview dashboard (which lists projects the admin isn't
+    necessarily a member of, so plain `role` is always None there)."""
+    owner_name: str | None = None
+    owner_email: str | None = None
+
+class TransferOwnershipRequest(BaseModel):
+    new_owner_id: uuid.UUID
+
 class ProjectMemberResponse(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID

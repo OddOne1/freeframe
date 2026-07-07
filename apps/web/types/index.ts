@@ -105,6 +105,23 @@ export interface ProjectMember {
   deleted_at: string | null;
 }
 
+// ─── Admin (superadmin-only dashboards) ────────────────────────────────────
+
+export interface AdminUserProjectSummary {
+  project_id: string;
+  project_name: string;
+  role: ProjectRole;
+}
+
+export interface AdminUser extends User {
+  projects: AdminUserProjectSummary[];
+}
+
+export interface AdminProject extends Project {
+  owner_name: string | null;
+  owner_email: string | null;
+}
+
 // ─── Asset & Media Entities ───────────────────────────────────────────────────
 
 export interface Asset {
