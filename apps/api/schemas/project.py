@@ -29,10 +29,11 @@ class ProjectResponse(BaseModel):
     member_count: int = 0
     role: ProjectRole | None = None
     model_config = {"from_attributes": True}
-    storage_bytes: int = 0
     storage_limit_bytes: int | None = None
-    member_count: int = 0
     ratings_visible_to_all: bool = False
+    archived_at: datetime | None = None
+    archived_by: uuid.UUID | None = None
+    archived_by_is_superadmin: bool = False
 
 class AdminProjectResponse(ProjectResponse):
     """ProjectResponse plus owner identity, used only by the superadmin

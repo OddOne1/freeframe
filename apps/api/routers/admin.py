@@ -155,6 +155,12 @@ def _apply_project_stats(db: Session, resp: AdminProjectResponse, project: Proje
     resp.owner_name = owner.name if owner else None
     resp.owner_email = owner.email if owner else None
 
+def _archiver_is_superadmin(db: Session, project: Project) -> bool:
+    if project.archived_by is None:
+        return False
+    archiver = db.query(User).filter(User.id == project.archived_by).first()
+    return bool(archiver and archiver.is_superadmin)
+
 @router.get("/projects", response_model=list[AdminProjectResponse])
 def list_all_projects(
     db: Session = Depends(get_db),
@@ -194,6 +200,12 @@ def list_all_projects(
     owners = {
         u.id: u for u in db.query(User).filter(User.id.in_([p.created_by for p in projects])).all()
     }
+    archiver_ids = {p.archived_by for p in projects if p.archived_by is not None}
+    superadmin_archiver_ids = set()
+    if archiver_ids:
+        superadmin_archiver_ids = {
+            u.id for u in db.query(User).filter(User.id.in_(archiver_ids), User.is_superadmin == True).all()
+        }
 
     result = []
     for p in projects:
@@ -201,6 +213,7 @@ def list_all_projects(
         resp.asset_count = asset_counts.get(p.id, 0)
         resp.storage_bytes = storage_map.get(p.id, 0)
         resp.member_count = member_counts.get(p.id, 0)
+        resp.archived_by_is_superadmin = p.archived_by in superadmin_archiver_ids
         _apply_project_stats(db, resp, p, owners)
         result.append(resp)
     return result
@@ -234,6 +247,7 @@ def admin_update_project(
     db.refresh(project)
 
     resp = AdminProjectResponse.model_validate(project)
+    resp.archived_by_is_superadmin = _archiver_is_superadmin(db, project)
     owners = {project.created_by: db.query(User).filter(User.id == project.created_by).first()}
     _apply_project_stats(db, resp, project, owners)
     return resp
@@ -262,10 +276,15 @@ def admin_transfer_ownership(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Transfer a project's ownership to a different user: demotes any
-    current owner-role members to editor, promotes (or adds) the target
-    user as owner, and updates Project.created_by. Only accessible by
-    admins."""
+    """Transfer a project's ownership to a different user, bypassing the
+    normal "target must already be a Project Admin" restriction on the
+    self-service version of this endpoint (projects.py) — admins may hand
+    the project to anyone, promoting/adding them as a Project Admin
+    (role=owner member) if needed. Unlike the old behavior, this does NOT
+    demote other existing Project Admins to editor: "Project Admin"
+    (role=owner) is a legitimate multi-person tier now, separate from the
+    single canonical Owner (Project.created_by) this endpoint moves.
+    Only accessible by admins."""
     _require_superadmin(current_user)
 
     project = db.query(Project).filter(Project.id == project_id, Project.deleted_at.is_(None)).first()
@@ -275,12 +294,6 @@ def admin_transfer_ownership(
     new_owner = db.query(User).filter(User.id == body.new_owner_id, User.deleted_at.is_(None)).first()
     if not new_owner:
         raise HTTPException(status_code=404, detail="Target user not found")
-
-    db.query(ProjectMember).filter(
-        ProjectMember.project_id == project_id,
-        ProjectMember.role == ProjectRole.owner,
-        ProjectMember.deleted_at.is_(None),
-    ).update({ProjectMember.role: ProjectRole.editor}, synchronize_session=False)
 
     membership = db.query(ProjectMember).filter(
         ProjectMember.project_id == project_id,
@@ -300,5 +313,6 @@ def admin_transfer_ownership(
     db.refresh(project)
 
     resp = AdminProjectResponse.model_validate(project)
+    resp.archived_by_is_superadmin = _archiver_is_superadmin(db, project)
     _apply_project_stats(db, resp, project, {new_owner.id: new_owner})
     return resp
