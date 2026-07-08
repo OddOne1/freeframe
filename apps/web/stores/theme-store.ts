@@ -5,6 +5,11 @@ export type Theme = 'dark' | 'light' | 'system'
 
 interface ThemeState {
   theme: Theme
+  /** Actual resolved theme ('system' collapsed to the OS preference). Use
+   *  this — not `theme` — for anything that needs to know dark vs. light
+   *  right now (e.g. picking a theme-specific logo). `theme` can be
+   *  'system', which is never strictly equal to 'dark' or 'light'. */
+  resolvedTheme: 'dark' | 'light'
   /** Apply theme locally only (no server save) — used by initializer */
   applyTheme: (theme: Theme) => void
   /** Set theme + save to server — used by settings page */
@@ -45,15 +50,16 @@ export const useThemeStore = create<ThemeState>()(
   persist(
     (set) => ({
       theme: 'dark',
+      resolvedTheme: 'dark',
 
       applyTheme: (theme) => {
         applyToDOM(theme)
-        set({ theme })
+        set({ theme, resolvedTheme: resolveTheme(theme) })
       },
 
       setTheme: (theme) => {
         applyToDOM(theme)
-        set({ theme })
+        set({ theme, resolvedTheme: resolveTheme(theme) })
         saveToServer(theme)
       },
 
@@ -61,7 +67,7 @@ export const useThemeStore = create<ThemeState>()(
         const serverTheme = preferences?.theme as Theme | undefined
         if (serverTheme && ['dark', 'light', 'system'].includes(serverTheme)) {
           applyToDOM(serverTheme)
-          set({ theme: serverTheme })
+          set({ theme: serverTheme, resolvedTheme: resolveTheme(serverTheme) })
         }
       },
     }),
@@ -69,7 +75,10 @@ export const useThemeStore = create<ThemeState>()(
       name: 'ff-theme',
       onRehydrateStorage: () => (state) => {
         // Apply theme as soon as localStorage is loaded (before React renders)
-        if (state) applyToDOM(state.theme)
+        if (state) {
+          applyToDOM(state.theme)
+          state.resolvedTheme = resolveTheme(state.theme)
+        }
       },
     },
   ),

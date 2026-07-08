@@ -103,7 +103,7 @@ export default function BrandingPage() {
     removeLogo,
     resetAll,
   } = useSiteSettings()
-  const { theme } = useThemeStore()
+  const { resolvedTheme } = useThemeStore()
 
   const [nameValue, setNameValue] = React.useState(orgName)
   const [nameSaved, setNameSaved] = React.useState(false)
@@ -176,7 +176,7 @@ export default function BrandingPage() {
   const hasCustomBranding = orgName !== 'FreeFrame' || logoDarkUrl !== null || logoLightUrl !== null
 
   // Which logo is active right now
-  const activeLogo = theme === 'light' ? (logoLightUrl ?? logoDarkUrl) : (logoDarkUrl ?? logoLightUrl)
+  const activeLogo = resolvedTheme === 'light' ? (logoLightUrl ?? logoDarkUrl) : (logoDarkUrl ?? logoLightUrl)
 
   return (
     <div className="p-6 max-w-2xl space-y-8">
@@ -265,7 +265,7 @@ export default function BrandingPage() {
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-text-primary">Preview</h2>
         <p className="text-xs text-text-tertiary -mt-1">
-          Currently showing the <strong>{theme === 'light' ? 'light' : 'dark'}</strong> theme logo.
+          Currently showing the <strong>{resolvedTheme === 'light' ? 'light' : 'dark'}</strong> theme logo.
         </p>
         <div className="rounded-lg border border-border bg-bg-secondary p-4 flex items-center gap-2.5">
           <div className="h-7 w-7 rounded-md overflow-hidden flex items-center justify-center bg-bg-tertiary shrink-0">

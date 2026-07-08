@@ -43,9 +43,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const { files: uploadFiles, togglePanel, panelOpen } = useUploadStore()
   const { unreadCount, fetchNotifications } = useNotificationStore()
   const { orgName, logoDarkUrl, logoLightUrl } = useSiteSettings()
-  const { theme } = useThemeStore()
-  // Pick logo based on resolved theme; fall back to the other if only one is set
-  const customLogo = theme === 'light'
+  const { resolvedTheme } = useThemeStore()
+    // Pick logo based on resolved theme; fall back to the other if only one is set.
+    // Uses resolvedTheme (not theme) because theme can be 'system', which never
+    // strictly equals 'light' — that bug pinned the logo to the dark variant
+    // whenever the user had 'system' selected instead of an explicit theme.
+  const customLogo = resolvedTheme === 'light'
     ? (logoLightUrl ?? logoDarkUrl)
     : (logoDarkUrl ?? logoLightUrl)
   const [notifOpen, setNotifOpen] = React.useState(false)
