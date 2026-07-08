@@ -10,9 +10,25 @@ export function ThemeInitializer() {
   const syncFromServer = useThemeStore((s) => s.syncFromServer)
   const user = useAuthStore((s) => s.user)
 
-  // Apply saved theme on mount (local only, no server save)
+  // Apply the persisted theme once Zustand's localStorage rehydration has
+  // actually finished. Calling `applyTheme` directly on mount (using the
+  // `theme` captured in this render's closure) races the async rehydration:
+  // if hydration lands after this effect runs, `theme` here is still the
+  // hardcoded 'dark' default, and `resolvedTheme` gets locked to 'dark' in
+  // React state even though the store's `theme` field later updates
+  // correctly — because this effect has an empty dep array and never
+  // re-fires. `persist.onFinishHydration` (and the `hasHydrated` check for
+  // when it's already done by the time we get here) sidesteps the race by
+  // reacting to the real hydration event instead of guessing at timing.
   useEffect(() => {
-    applyTheme(theme)
+    const applyFromState = (state: { theme: typeof theme }) => applyTheme(state.theme)
+
+    if (useThemeStore.persist.hasHydrated()) {
+      applyFromState(useThemeStore.getState())
+    }
+
+    const unsubscribe = useThemeStore.persist.onFinishHydration(applyFromState)
+    return unsubscribe
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync from server when user loads (server wins if it has a value)

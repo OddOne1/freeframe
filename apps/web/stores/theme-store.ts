@@ -73,12 +73,21 @@ export const useThemeStore = create<ThemeState>()(
     }),
     {
       name: 'ff-theme',
+      // Only persist the raw preference. `resolvedTheme` is derived from
+      // `theme` + the current OS preference and must never be persisted —
+      // a stale persisted value would silently override the freshly
+      // computed one on the next load, before anything gets a chance to
+      // recompute it.
+      partialize: (state) => ({ theme: state.theme }),
       onRehydrateStorage: () => (state) => {
-        // Apply theme as soon as localStorage is loaded (before React renders)
-        if (state) {
-          applyToDOM(state.theme)
-          state.resolvedTheme = resolveTheme(state.theme)
-        }
+        // Only safe to touch the DOM here — mutating `state.resolvedTheme`
+        // directly does NOT go through Zustand's `set()`, so it never
+        // notifies subscribed React components (they'd keep rendering the
+        // stale default 'dark' forever). Getting `resolvedTheme` correctly
+        // into React state is handled by ThemeInitializer via
+        // `persist.onFinishHydration`, which calls the real `applyTheme`
+        // action (backed by `set()`) once hydration has actually finished.
+        if (state) applyToDOM(state.theme)
       },
     },
   ),
