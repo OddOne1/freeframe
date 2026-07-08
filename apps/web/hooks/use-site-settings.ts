@@ -60,6 +60,31 @@ export function useSiteSettings() {
       org_name: 'FreeFrame',
       logo_dark_s3_key: null,
       logo_light_s3_key: null,
+      favicon_s3_key: null,
+    })
+    await mutate(updated, false)
+  }
+  async function uploadFavicon(file: File): Promise<void> {
+    const { upload_url, key } = await api.post<{ upload_url: string; key: string }>(
+      '/site-settings/favicon-upload',
+    )
+    const putResponse = await fetch(upload_url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/png' },
+      body: file,
+    })
+    if (!putResponse.ok) {
+      throw new Error(`Favicon upload failed: ${putResponse.statusText}`)
+    }
+    const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
+      favicon_s3_key: key,
+    })
+    await mutate(updated, false)
+  }
+
+  async function removeFavicon(): Promise<void> {
+    const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
+      favicon_s3_key: null,
     })
     await mutate(updated, false)
   }
@@ -74,9 +99,12 @@ export function useSiteSettings() {
     // frontend origin instead of the FastAPI backend and 404s.
     logoDarkUrl: resolveApiMediaUrl(data?.logo_dark_url ?? null),
     logoLightUrl: resolveApiMediaUrl(data?.logo_light_url ?? null),
+    faviconUrl: resolveApiMediaUrl(data?.favicon_url ?? null),
     updateOrgName,
     uploadLogo,
     removeLogo,
+    uploadFavicon,
+    removeFavicon,
     resetAll,
   }
 }

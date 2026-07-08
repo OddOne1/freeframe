@@ -17,6 +17,8 @@ function LogoUploadSlot({
   onUpload,
   onRemove,
   previewBg,
+  accept = 'image/png,image/jpeg,image/svg+xml,image/webp',
+  hint = 'PNG, JPG, SVG or WebP · Max 2 MB',
 }: {
   label: string
   description: string
@@ -25,6 +27,8 @@ function LogoUploadSlot({
   onUpload: (file: File) => void
   onRemove: () => void
   previewBg: string
+  accept?: string
+  hint?: string
 }) {
   const fileInputRef = React.useRef<HTMLInputElement>(null)
 
@@ -59,7 +63,7 @@ function LogoUploadSlot({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/svg+xml,image/webp"
+            accept={accept}
             className="hidden"
             onChange={handleFile}
           />
@@ -85,7 +89,7 @@ function LogoUploadSlot({
             </Button>
           )}
         </div>
-        <p className="text-2xs text-text-tertiary mt-2">PNG, JPG, SVG or WebP · Max 2 MB</p>
+        <p className="text-2xs text-text-tertiary mt-2">{hint}</p>
       </div>
     </div>
   )
@@ -98,9 +102,12 @@ export default function BrandingPage() {
     orgName,
     logoDarkUrl,
     logoLightUrl,
+    faviconUrl,
     updateOrgName,
     uploadLogo,
     removeLogo,
+    uploadFavicon,
+    removeFavicon,
     resetAll,
   } = useSiteSettings()
   const { resolvedTheme } = useThemeStore()
@@ -109,6 +116,7 @@ export default function BrandingPage() {
   const [nameSaved, setNameSaved] = React.useState(false)
   const [savingName, setSavingName] = React.useState(false)
   const [uploadingSide, setUploadingSide] = React.useState<'dark' | 'light' | null>(null)
+  const [uploadingFavicon, setUploadingFavicon] = React.useState(false)
   const [resetting, setResetting] = React.useState(false)
 
   React.useEffect(() => { setNameValue(orgName) }, [orgName])
@@ -157,6 +165,25 @@ export default function BrandingPage() {
     }
   }
 
+  async function handleFaviconUpload(file: File) {
+    setUploadingFavicon(true)
+    try {
+      await uploadFavicon(file)
+    } catch {
+      // no-op — upload failed, slot just stays as it was
+    } finally {
+      setUploadingFavicon(false)
+    }
+  }
+
+  async function handleFaviconRemove() {
+    try {
+      await removeFavicon()
+    } catch {
+      // no-op
+    }
+  }
+
   async function handleReset() {
     setResetting(true)
     try {
@@ -173,7 +200,7 @@ export default function BrandingPage() {
     return null
   }
 
-  const hasCustomBranding = orgName !== 'FreeFrame' || logoDarkUrl !== null || logoLightUrl !== null
+  const hasCustomBranding = orgName !== 'FreeFrame' || logoDarkUrl !== null || logoLightUrl !== null || faviconUrl !== null
 
   // Which logo is active right now
   const activeLogo = resolvedTheme === 'light' ? (logoLightUrl ?? logoDarkUrl) : (logoDarkUrl ?? logoLightUrl)
@@ -259,6 +286,25 @@ export default function BrandingPage() {
             previewBg="bg-white"
           />
         </div>
+      </section>
+
+      {/* Favicon */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-text-primary">Favicon</h2>
+        <p className="text-xs text-text-tertiary -mt-1">
+          Shown in the browser tab. Use a square image — it's scaled down automatically.
+        </p>
+        <LogoUploadSlot
+          label="Favicon"
+          description="Shown in the browser tab for everyone in this workspace."
+          logoUrl={faviconUrl}
+          uploading={uploadingFavicon}
+          onUpload={handleFaviconUpload}
+          onRemove={handleFaviconRemove}
+          previewBg="bg-bg-tertiary"
+          accept="image/png"
+          hint="PNG only · Max 2 MB"
+        />
       </section>
 
       {/* Live preview */}
