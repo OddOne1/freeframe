@@ -205,9 +205,6 @@ export function deriveThemeTokens(
     out.textInverse = overrides.accentForeground
   }
 
-  if (overrides.navBg) {
-    out.navBorder = adjustLightness(overrides.navBg, isDarkColor(overrides.navBg) ? 8 : -8)
-  }
 
   return out
 }
