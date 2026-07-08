@@ -120,12 +120,12 @@ export function LoginForm() {
         code: codeStr,
       })
 
+      setTokens(res.access_token, res.refresh_token)
+
       if (res.needs_password) {
-        setStep('password')
+              setStep('password')
       } else {
-        setTokens(res.access_token, res.refresh_token)
         await useAuthStore.getState().fetchUser()
-        const user = useAuthStore.getState().user
         router.replace('/projects')
       }
     } catch (err) {
