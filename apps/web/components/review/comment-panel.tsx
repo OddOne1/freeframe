@@ -329,7 +329,7 @@ function InlineReplyInput({
           <button
             onClick={handleSubmit}
             disabled={!body.trim() || submitting}
-            className="h-7 w-7 flex items-center justify-center rounded-full bg-accent text-text-inverse hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="h-7 w-7 flex items-center justify-center rounded-full bg-accent text-accent-foreground hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <Send className="h-3.5 w-3.5" />
           </button>
@@ -1012,7 +1012,7 @@ export function CommentPanel({
                     )}
                   >
                     {filters[key] && (
-                      <Check className="h-3 w-3 text-text-inverse" />
+                      <Check className="h-3 w-3 text-accent-foreground" />
                     )}
                   </div>
                 </button>

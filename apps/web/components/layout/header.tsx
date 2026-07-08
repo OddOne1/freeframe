@@ -60,7 +60,13 @@ export function Header({ onSearchOpen }: HeaderProps) {
   const breadcrumbs = [...urlCrumbs, ...extraCrumbs.map((c) => ({ label: c.label, href: c.href ?? '' }))]
 
   return (
-    <header className="sticky top-0 z-20 flex h-11 items-center justify-between border-b border-border bg-bg-primary/90 backdrop-blur-sm px-4">
+    // Navy chrome test (#193B80) — solid bg-nav-bg / border-nav-border instead of
+    // the theme-driven bg-bg-primary, so this bar stays navy in both dark and
+    // light theme. All text/icons below use text-nav-text (the "text on blue"
+    // color) at varying opacity for hierarchy instead of the usual
+    // text-primary/secondary/tertiary tokens, since those aren't tuned for
+    // contrast against navy.
+    <header className="sticky top-0 z-20 flex h-11 items-center justify-between border-b border-nav-border bg-nav-bg px-4">
       {/* Breadcrumbs */}
       <nav className="flex items-center gap-1 text-[13px]">
         {breadcrumbs.map((crumb, index) => {
@@ -68,19 +74,19 @@ export function Header({ onSearchOpen }: HeaderProps) {
           return (
             <React.Fragment key={`${crumb.href}-${index}`}>
               {index > 0 && (
-                <ChevronRight className="h-3 w-3 text-text-tertiary" />
+                <ChevronRight className="h-3 w-3 text-nav-text/40" />
               )}
               {isLast ? (
-                <span className="font-medium text-text-primary">{crumb.label}</span>
+                <span className="font-medium text-nav-text">{crumb.label}</span>
               ) : crumb.href ? (
                 <Link
                   href={crumb.href}
-                  className="text-text-tertiary hover:text-text-secondary transition-colors"
+                  className="text-nav-text/70 hover:text-nav-text transition-colors"
                 >
                   {crumb.label}
                 </Link>
               ) : (
-                <span className="text-text-tertiary">{crumb.label}</span>
+                <span className="text-nav-text/70">{crumb.label}</span>
               )}
             </React.Fragment>
           )
@@ -92,11 +98,11 @@ export function Header({ onSearchOpen }: HeaderProps) {
         {/* Search trigger */}
         <button
           onClick={onSearchOpen}
-          className="flex items-center gap-1.5 rounded-md border border-border bg-bg-secondary/60 px-2.5 py-1 text-xs text-text-tertiary hover:border-border-focus hover:text-text-secondary transition-colors"
+          className="flex items-center gap-1.5 rounded-md border border-nav-border bg-white/5 px-2.5 py-1 text-xs text-nav-text/70 hover:border-nav-text/50 hover:text-nav-text transition-colors"
         >
           <Search className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Search</span>
-          <kbd className="hidden sm:inline-flex items-center gap-0.5 rounded border border-border bg-bg-tertiary/50 px-1 py-0.5 font-mono text-[10px] text-text-tertiary">
+          <kbd className="hidden sm:inline-flex items-center gap-0.5 rounded border border-nav-border bg-white/10 px-1 py-0.5 font-mono text-[10px] text-nav-text/70">
             <span>⌘</span>K
           </kbd>
         </button>
@@ -108,8 +114,8 @@ export function Header({ onSearchOpen }: HeaderProps) {
             className={cn(
               'flex h-7 w-7 items-center justify-center rounded-md transition-colors',
               rightPanelOpen
-                ? 'text-accent bg-accent-muted'
-                : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary',
+                ? 'text-accent-foreground bg-white/15'
+                : 'text-nav-text/60 hover:bg-white/10 hover:text-nav-text',
             )}
             title={rightPanelOpen ? 'Hide panel' : 'Show panel'}
           >

@@ -2,6 +2,18 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Chrome color — top bar + left nav rail. Theme-invariant on purpose: these
+   two components stay navy regardless of dark/light theme (per design test
+   request). --nav-border is a lighter navy than --nav-bg so divider lines
+   inside/around the bars stay visible instead of vanishing into a flat
+   navy fill. --nav-text is the "text on blue" color for everything drawn
+   on these two components. */
+:root {
+  --nav-bg: #193b80;
+  --nav-border: #214fab;
+  --nav-text: #f2ecda;
+}
+
 :root,
 [data-theme="dark"] {
   /* Background — dark theme */
@@ -14,7 +26,7 @@
   /* Borders */
   --border-primary: #2e2e3a;
   --border-secondary: #222230;
-  --border-focus: #5b8def;
+  --border-focus: #2353b3;
 
   /* Text */
   --text-primary: #eaeaed;
@@ -22,10 +34,12 @@
   --text-tertiary: #5e5e6e;
   --text-inverse: #0d0d10;
 
-  /* Accent — blue */
-  --accent: #5b8def;
-  --accent-hover: #7aa3f5;
-  --accent-muted: #253556;
+  /* Accent — navy (#193B80 test palette) */
+  --accent: #193b80;
+  --accent-hover: #2353b3;
+  --accent-muted: #16233b;
+  /* Text drawn on top of --accent-colored surfaces (buttons, badges, etc). */
+  --accent-foreground: #f2ecda;
 
   /* Status */
   --status-success: #34d399;
@@ -50,24 +64,27 @@
 }
 
 [data-theme="light"] {
-  --bg-primary: #ffffff;
-  --bg-secondary: #f8f8fa;
-  --bg-tertiary: #f0f0f4;
-  --bg-elevated: #ffffff;
-  --bg-hover: #eaeaef;
+  /* Background — light theme, ivory palette (#F2ECDA base) instead of white */
+  --bg-primary: #f2ecda;
+  --bg-secondary: #eee6cf;
+  --bg-tertiary: #e9dec0;
+  --bg-elevated: #f5f1e3;
+  --bg-hover: #e3d7b0;
 
-  --border-primary: #e0e0e6;
-  --border-secondary: #d0d0d8;
-  --border-focus: #4a7de8;
+  --border-primary: #e0cf9a;
+  --border-secondary: #dbc78b;
+  --border-focus: #2353b3;
 
   --text-primary: #1a1a2e;
   --text-secondary: #5a5a6e;
   --text-tertiary: #8a8a9e;
   --text-inverse: #ffffff;
 
-  --accent: #4a7de8;
-  --accent-hover: #3a6dd8;
-  --accent-muted: #e8eef8;
+  /* Accent — navy (#193B80 test palette), same hue as dark theme */
+  --accent: #193b80;
+  --accent-hover: #2353b3;
+  --accent-muted: #e5eaf5;
+  --accent-foreground: #f2ecda;
 
   --status-success: #16a34a;
   --status-warning: #ca8a04;

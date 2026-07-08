@@ -31,6 +31,12 @@ const config: Config = {
           DEFAULT: 'var(--accent)',
           hover: 'var(--accent-hover)',
           muted: 'var(--accent-muted)',
+          foreground: 'var(--accent-foreground)',
+        },
+        nav: {
+          bg: 'var(--nav-bg)',
+          border: 'var(--nav-border)',
+          text: 'var(--nav-text)',
         },
         status: {
           success: 'var(--status-success)',

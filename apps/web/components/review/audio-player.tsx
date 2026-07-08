@@ -135,7 +135,7 @@ export function AudioPlayer({ asset, version, comments = [], className }: AudioP
 
     const cssVars = getComputedStyle(document.documentElement)
     const waveColor = cssVars.getPropertyValue('--text-tertiary').trim() || '#5e5e6e'
-    const accentColor = cssVars.getPropertyValue('--accent').trim() || '#5b8def'
+    const accentColor = cssVars.getPropertyValue('--accent').trim() || '#193b80'
 
     const ws = WaveSurfer.create({
       container: waveformRef.current,

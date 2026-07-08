@@ -58,8 +58,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     <>
     <aside
       className={cn(
-        'fixed left-0 top-0 z-30 flex h-screen flex-col border-r border-border',
-        'bg-bg-secondary transition-[width] duration-200 overflow-hidden',
+        'fixed left-0 top-0 z-30 flex h-screen flex-col border-r border-nav-border',
+        // Navy chrome test (#193B80) — theme-invariant, see globals.css --nav-bg.
+        'bg-nav-bg transition-[width] duration-200 overflow-hidden',
         collapsed ? 'w-[52px]' : 'w-[220px]',
       )}
     >
@@ -69,7 +70,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <Link
         href="/projects"
         className={cn(
-          'flex h-11 items-center shrink-0 border-b border-border hover:bg-bg-hover/60 transition-colors',
+          'flex h-11 items-center shrink-0 border-b border-nav-border hover:bg-white/10 transition-colors',
           collapsed ? 'justify-center px-0' : 'px-4 gap-2.5',
         )}
         title="Go to Projects"
@@ -99,7 +100,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           </>
         )}
         {!collapsed && (
-          <span className="text-sm font-semibold text-text-primary tracking-tight">
+          <span className="text-sm font-semibold text-nav-text tracking-tight">
             {orgName}
           </span>
         )}
@@ -120,8 +121,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 'group relative flex items-center rounded-md transition-colors duration-100',
                 collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9',
                 isActive
-                  ? 'bg-bg-hover text-text-primary'
-                  : 'text-text-secondary hover:bg-bg-hover/60 hover:text-text-primary',
+                  ? 'bg-white/15 text-nav-text'
+                  : 'text-nav-text/60 hover:bg-white/10 hover:text-nav-text',
               )}
               title={collapsed ? item.label : undefined}
             >
@@ -142,8 +143,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             'group relative flex w-full items-center rounded-md transition-colors duration-100',
             collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9',
             notifOpen
-              ? 'bg-bg-hover text-text-primary'
-              : 'text-text-secondary hover:bg-bg-hover/60 hover:text-text-primary',
+              ? 'bg-white/15 text-nav-text'
+              : 'text-nav-text/60 hover:bg-white/10 hover:text-nav-text',
           )}
           title={collapsed ? 'Notifications' : undefined}
         >
@@ -169,15 +170,15 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             'group relative flex w-full items-center rounded-md transition-colors duration-100',
             collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9',
             panelOpen
-              ? 'bg-bg-hover text-text-primary'
-              : 'text-text-secondary hover:bg-bg-hover/60 hover:text-text-primary',
+              ? 'bg-white/15 text-nav-text'
+              : 'text-nav-text/60 hover:bg-white/10 hover:text-nav-text',
           )}
           title={collapsed ? 'Uploads' : undefined}
         >
           <div className="relative shrink-0">
             <Upload className="h-[18px] w-[18px]" strokeWidth={panelOpen ? 2 : 1.5} />
             {activeUploads > 0 && (
-              <span className="absolute -top-1 -right-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-0.5 text-[9px] font-bold text-white">
+              <span className="absolute -top-1 -right-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-nav-text px-0.5 text-[9px] font-bold text-nav-bg">
                 {activeUploads}
               </span>
             )}
@@ -191,13 +192,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       </nav>
 
       {/* Bottom section */}
-      <div className="border-t border-border p-2 space-y-1 shrink-0">
+      <div className="border-t border-nav-border p-2 space-y-1 shrink-0">
         {/* User dropdown */}
         <DropdownMenu.Root>
           <DropdownMenu.Trigger asChild>
             <button
               className={cn(
-                'flex w-full items-center rounded-md text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors',
+                'flex w-full items-center rounded-md text-nav-text/60 hover:bg-white/10 hover:text-nav-text transition-colors',
                 collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2 py-1.5',
               )}
               title={collapsed ? (user?.name ?? 'Account') : undefined}
@@ -209,10 +210,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               />
               {!collapsed && (
                 <div className="flex flex-col items-start overflow-hidden min-w-0">
-                  <span className="truncate text-[13px] font-medium text-text-primary leading-tight w-full text-left">
+                  <span className="truncate text-[13px] font-medium text-nav-text leading-tight w-full text-left">
                     {user?.name ?? 'User'}
                   </span>
-                  <span className="truncate text-[10px] text-text-tertiary leading-tight w-full text-left">
+                  <span className="truncate text-[10px] text-nav-text/50 leading-tight w-full text-left">
                     {user?.email ?? ''}
                   </span>
                 </div>
@@ -261,7 +262,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         <button
           onClick={onToggle}
           className={cn(
-            'flex w-full items-center rounded-md text-text-tertiary hover:bg-bg-hover hover:text-text-secondary transition-colors',
+            'flex w-full items-center rounded-md text-nav-text/50 hover:bg-white/10 hover:text-nav-text transition-colors',
             collapsed ? 'justify-center h-8 w-8 mx-auto' : 'gap-2 px-2.5 h-8',
           )}
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
