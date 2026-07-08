@@ -53,7 +53,7 @@ export default function DashboardLayout({
       <main
         className={cn(
           "flex flex-1 flex-col overflow-hidden transition-[margin] duration-200 ease-spring",
-          sidebarCollapsed ? "ml-[52px]" : "ml-[220px]",
+          sidebarCollapsed ? "ml-[52px]" : "ml-[192px]",
         )}
       >
         {!isAssetViewer && <Header onSearchOpen={() => setCommandOpen(true)} />}

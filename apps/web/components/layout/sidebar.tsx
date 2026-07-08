@@ -64,7 +64,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         'fixed left-0 top-0 z-30 flex h-screen flex-col border-r border-nav-border',
         // Navy chrome test (#193B80) — theme-invariant, see globals.css --nav-bg.
         'bg-nav-bg transition-[width] duration-200 overflow-hidden',
-        collapsed ? 'w-[52px]' : 'w-[220px]',
+        collapsed ? 'w-[52px]' : 'w-[192px]',
       )}
     >
       {/* Logo — click to go home. h-11 (44px) to match the global Header
