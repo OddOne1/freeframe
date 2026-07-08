@@ -150,6 +150,7 @@ export function AvatarCropper({ file, open, onOpenChange, onCropped, saving }: A
                   className="absolute top-1/2 left-1/2 select-none"
                   style={{
                     width: displayW || undefined,
+                    maxWidth: 'none',
                     height: displayH || undefined,
                     transform: `translate(calc(-50% + ${offset.x}px), calc(-50% + ${offset.y}px))`,
                   }}
