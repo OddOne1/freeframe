@@ -27,7 +27,7 @@ def get_avatar_upload_url(
     /users/{id} with the returned avatar_url once the S3 upload succeeds.
     """
     key = f"avatars/{current_user.id}/{uuid.uuid4()}.webp"
-    upload_url = s3_service.get_s3_client().generate_presigned_url(
+    upload_url = s3_service._get_presign_client().generate_presigned_url(
         "put_object",
         Params={
             "Bucket": settings.s3_bucket,

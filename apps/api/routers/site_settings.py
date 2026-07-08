@@ -98,7 +98,7 @@ def get_site_logo_upload_url(
         raise HTTPException(status_code=400, detail="side must be 'dark' or 'light'")
 
     key = f"site-settings/logo-{side}/{uuid.uuid4()}.webp"
-    upload_url = s3_service.get_s3_client().generate_presigned_url(
+    upload_url = s3_service._get_presign_client().generate_presigned_url(
         "put_object",
         Params={
             "Bucket": settings.s3_bucket,
