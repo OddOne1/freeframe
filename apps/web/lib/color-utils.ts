@@ -1,10 +1,21 @@
 /**
  * Color math + token derivation for the per-theme custom color feature
- * (Branding settings -> Theme colors). A superadmin picks 9 "base" colors per
- * theme; everything else in globals.css (bg-tertiary, accent-hover, etc.) is
- * derived from those 9 via the HSL math below, mirroring the relationships
- * already present in FreeFrame's original hand-tuned palette (see git commit
- * d70f67c6, the last commit before the navy/ivory test).
+ * (Branding settings -> Theme colors). A superadmin picks from 9 "base"
+ * colors per theme; everything else in globals.css (bg-tertiary,
+ * accent-hover, etc.) is derived from those 9 via the HSL math below,
+ * mirroring the relationships already present in FreeFrame's original
+ * hand-tuned palette (see git commit d70f67c6, the last commit before the
+ * navy/ivory test).
+ *
+ * IMPORTANT: derivation and CSS output are both *sparse*. Only base tokens
+ * the user actually picked get emitted, plus the specific derived tokens
+ * that depend on them. Untouched tokens are omitted entirely from the
+ * generated <style> block so they keep resolving through globals.css's own
+ * var() chain (e.g. --nav-border: var(--border-primary)) instead of being
+ * frozen to a snapshot value. Without this, customizing just "Accent" would
+ * force nav-border to a fixed hex computed from nav-bg's *default*, and a
+ * later change to "Border" would have no visible effect on the nav rail --
+ * exactly the bug reported after the first version of this feature shipped.
  */
 
 export interface ThemeColorTokens {
@@ -149,30 +160,56 @@ export function mix(hexA: string, hexB: string, weight: number): string {
 }
 
 /**
- * Expands 9 base tokens into the full ~19-token set globals.css expects.
- * Derivation rules mirror the deltas visible in FreeFrame's original
- * hand-tuned palette (e.g. accent-hover lightens on dark themes, darkens on
- * light ones; accent-muted is the accent blended 85% into the background).
+ * Expands whichever base tokens the user has actually overridden into their
+ * dependent derived tokens (bg-tertiary, accent-hover, nav-border, etc).
+ * Returns ONLY the overridden bases plus the derived tokens whose direct
+ * dependency was touched -- everything else is omitted so it keeps
+ * resolving through globals.css's own var() chain. `defaults` is used only
+ * to decide dark-vs-light derivation direction (via bgPrimary) when the
+ * user hasn't touched bgPrimary itself, and as a blend anchor for
+ * text-tertiary / accent-muted -- it never leaks into an *emitted* value
+ * for a token the user didn't touch.
  */
-export function deriveThemeTokens(base: ThemeColorTokens): FullThemeTokens {
-  const dark = isDarkColor(base.bgPrimary)
-  const navDark = isDarkColor(base.navBg)
+export function deriveThemeTokens(
+  overrides: Partial<ThemeColorTokens>,
+  defaults: ThemeColorTokens,
+): Partial<FullThemeTokens> {
+  const bgPrimaryForMath = overrides.bgPrimary ?? defaults.bgPrimary
+  const dark = isDarkColor(bgPrimaryForMath)
   const bgStep = dark ? 4 : -2
   const hoverStep = dark ? 8 : -7
 
-  return {
-    ...base,
-    bgTertiary: adjustLightness(base.bgSecondary, bgStep),
-    bgElevated: adjustLightness(base.bgSecondary, bgStep * 1.75),
-    bgHover: adjustLightness(base.bgSecondary, bgStep * 2.5),
-    borderSecondary: adjustLightness(base.borderPrimary, -5),
-    borderFocus: adjustLightness(base.accent, hoverStep),
-    textTertiary: mix(base.textSecondary, base.bgPrimary, 0.35),
-    textInverse: base.accentForeground,
-    accentHover: adjustLightness(base.accent, hoverStep),
-    accentMuted: mix(base.accent, base.bgPrimary, 0.85),
-    navBorder: adjustLightness(base.navBg, navDark ? 8 : -8),
+  const out: Partial<FullThemeTokens> = { ...overrides }
+
+  if (overrides.bgSecondary) {
+    out.bgTertiary = adjustLightness(overrides.bgSecondary, bgStep)
+    out.bgElevated = adjustLightness(overrides.bgSecondary, bgStep * 1.75)
+    out.bgHover = adjustLightness(overrides.bgSecondary, bgStep * 2.5)
   }
+
+  if (overrides.borderPrimary) {
+    out.borderSecondary = adjustLightness(overrides.borderPrimary, -5)
+  }
+
+  if (overrides.accent) {
+    out.accentHover = adjustLightness(overrides.accent, hoverStep)
+    out.accentMuted = mix(overrides.accent, bgPrimaryForMath, 0.85)
+    out.borderFocus = adjustLightness(overrides.accent, hoverStep)
+  }
+
+  if (overrides.textSecondary) {
+    out.textTertiary = mix(overrides.textSecondary, bgPrimaryForMath, 0.35)
+  }
+
+  if (overrides.accentForeground) {
+    out.textInverse = overrides.accentForeground
+  }
+
+  if (overrides.navBg) {
+    out.navBorder = adjustLightness(overrides.navBg, isDarkColor(overrides.navBg) ? 8 : -8)
+  }
+
+  return out
 }
 
 const CSS_VAR_NAMES: Record<keyof FullThemeTokens, string> = {
@@ -197,11 +234,17 @@ const CSS_VAR_NAMES: Record<keyof FullThemeTokens, string> = {
   navText: '--nav-text',
 }
 
-/** Builds a `selector { --var: value; ... }` CSS block for one theme's full token set. */
-export function buildCssText(tokens: FullThemeTokens, selector: string): string {
-  const lines = (Object.keys(CSS_VAR_NAMES) as (keyof FullThemeTokens)[])
-    .map((key) => `  ${CSS_VAR_NAMES[key]}: ${tokens[key]};`)
-    .join('\n')
+/**
+ * Builds a `selector { --var: value; ... }` CSS block containing only the
+ * tokens present in `tokens` -- anything omitted is left for globals.css's
+ * own defaults / var() chain to resolve. Returns an empty string if nothing
+ * is set (selector block would otherwise be empty).
+ */
+export function buildCssText(tokens: Partial<FullThemeTokens>, selector: string): string {
+  const keys = (Object.keys(CSS_VAR_NAMES) as (keyof FullThemeTokens)[]).filter(
+    (key) => tokens[key] !== undefined,
+  )
+  if (keys.length === 0) return ''
+  const lines = keys.map((key) => `  ${CSS_VAR_NAMES[key]}: ${tokens[key]};`).join('\n')
   return `${selector} {\n${lines}\n}\n`
 }
-

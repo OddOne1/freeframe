@@ -19,6 +19,7 @@ import { Avatar } from "@/components/shared/avatar";
 import { EmptyState } from "@/components/shared/empty-state";
 import { useAuthStore } from "@/stores/auth-store";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import type {
   UserStatus,
   AdminUser,
@@ -285,9 +286,9 @@ function UserProjects({ projects }: { projects: AdminUserProjectSummary[] }) {
 
 // ─── Page ─────────────────────────────────────────────────────────────────
 // Project management (rename/archive/delete/transfer/all-projects) lives
-// on the main /projects page now — every Project Admin already manages
-// their own projects there, and superadmins get an "All Projects (Admin)"
-// section appended to that same page. This page is Users-only.
+// on the superadmin-only /settings/projects tab now -- every Project Admin
+// already manages their own projects on /projects, and superadmins get the
+// full "All Projects" table there instead. This page is Users-only.
 
 export default function AdminPage() {
   const { user, isSuperAdmin } = useAuthStore();
@@ -471,11 +472,11 @@ export default function AdminPage() {
             Admin Dashboard
           </h1>
           <p className="text-sm text-text-secondary">
-            Manage platform users. Project management lives on the{" "}
-            <a href="/projects" className="text-accent hover:underline">
-              Projects
-            </a>{" "}
-            page.
+              Manage platform users. Project management lives on the{" "}
+              <Link href="/settings/projects" className="text-accent hover:underline">
+                Projects
+              </Link>{" "}
+              page.
           </p>
         </div>
       </div>

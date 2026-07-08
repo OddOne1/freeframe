@@ -18,6 +18,12 @@ const STYLE_ID = 'custom-theme-colors'
  * own defaults (the original FreeFrame palette) untouched when nothing is
  * customized -- this is purely additive, no custom colors means no style
  * tag at all.
+ *
+ * deriveThemeTokens() only expands the tokens the user actually overrode
+ * (see color-utils.ts) -- e.g. picking a custom Accent emits --accent,
+ * --accent-hover, --accent-muted and --border-focus, but leaves --nav-border
+ * untouched so it keeps tracking --border-primary live via globals.css's own
+ * var() chain instead of being frozen to a stale snapshot.
  */
 export function ThemeColorsInitializer() {
   const { themeColors } = useSiteSettings()
@@ -38,12 +44,10 @@ export function ThemeColorsInitializer() {
 
     let css = ''
     if (themeColors.dark) {
-      const merged = { ...DEFAULT_DARK_TOKENS, ...themeColors.dark }
-      css += buildCssText(deriveThemeTokens(merged), '[data-theme="dark"]')
+      css += buildCssText(deriveThemeTokens(themeColors.dark, DEFAULT_DARK_TOKENS), '[data-theme="dark"]')
     }
     if (themeColors.light) {
-      const merged = { ...DEFAULT_LIGHT_TOKENS, ...themeColors.light }
-      css += buildCssText(deriveThemeTokens(merged), '[data-theme="light"]')
+      css += buildCssText(deriveThemeTokens(themeColors.light, DEFAULT_LIGHT_TOKENS), '[data-theme="light"]')
     }
     styleEl.textContent = css
   }, [themeColors])
