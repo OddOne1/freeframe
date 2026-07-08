@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import String, DateTime, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 try:
@@ -20,4 +20,6 @@ class SiteSettings(Base):
     org_name: Mapped[str] = mapped_column(String, nullable=False, server_default="FreeFrame")
     logo_dark_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
     logo_light_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
+        favicon_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
+            theme_colors: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())

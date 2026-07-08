@@ -11,6 +11,7 @@ from ..schemas.site_settings import (
     SiteSettingsResponse,
     SiteSettingsUpdate,
     SiteLogoUploadResponse,
+    SiteFaviconUploadResponse,
 )
 from ..services import s3_service
 from .hls_proxy import proxy_url_for
@@ -43,13 +44,19 @@ def _to_response(site_settings: SiteSettings) -> SiteSettingsResponse:
             logo_light_url = proxy_url_for(site_settings.logo_light_s3_key)
         except Exception:
             logo_light_url = None
+    favicon_url = None
+    if site_settings.favicon_s3_key:
+        try:
+            favicon_url = proxy_url_for(site_settings.favicon_s3_key)
+        except Exception:
+            favicon_url = None
     return SiteSettingsResponse(
         org_name=site_settings.org_name,
         logo_dark_url=logo_dark_url,
         logo_light_url=logo_light_url,
+        favicon_url=favicon_url,
+        theme_colors=site_settings.theme_colors,
     )
-
-
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @router.get("/site-settings", response_model=SiteSettingsResponse)
@@ -108,3 +115,29 @@ def get_site_logo_upload_url(
         ExpiresIn=3600,
     )
     return SiteLogoUploadResponse(upload_url=upload_url, key=key)
+@router.post(
+    "/site-settings/favicon-upload",
+    response_model=SiteFaviconUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def get_site_favicon_upload_url(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not current_user.is_superadmin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can update site settings",
+        )
+
+    key = f"site-settings/favicon-{uuid.uuid4()}.png"
+    upload_url = s3_service._get_presign_client().generate_presigned_url(
+        "put_object",
+        Params={
+            "Bucket": settings.s3_bucket,
+            "Key": key,
+            "ContentType": "image/png",
+        },
+        ExpiresIn=3600,
+    )
+    return SiteFaviconUploadResponse(upload_url=upload_url, key=key)
