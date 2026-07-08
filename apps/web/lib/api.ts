@@ -35,21 +35,22 @@ async function request<T>(
     return headers
   }
 
-  const execute = async (token: string | null): Promise<Response> => {}
+  const execute = async (token: string | null): Promise<Response> => {
     return fetch(`${API_URL}${path}`, {
-      method,
-      headers: buildHeaders(token),
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+    method,
+    cache: 'no-store',
+    headers: buildHeaders(token),
+    body: body !== undefined ? JSON.stringify(body) : undefined,
     })
-  }
+      }
 
-  let token = getAccessToken()
-  let response = await execute(token)
+        let token = getAccessToken()
+          let response = await execute(token)
 
-  // On 401, attempt a token refresh and retry once
-  if (response.status === 401) {
-    const newToken = await refreshAccessToken()
-    if (newToken) {
+            // On 401, attempt a token refresh and retry once
+              if (response.status === 401) {
+                  const newToken = await refreshAccessToken()    
+                  if (newToken) {
       response = await execute(newToken)
     }
   }
