@@ -8,6 +8,11 @@ import { useSiteSettings } from '@/hooks/use-site-settings'
 import { useThemeStore } from '@/stores/theme-store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import {
+  DEFAULT_LIGHT_TOKENS,
+  DEFAULT_DARK_TOKENS,
+  type ThemeColorTokens,
+} from '@/lib/color-utils'
 
 function LogoUploadSlot({
   label,
@@ -95,6 +100,72 @@ function LogoUploadSlot({
   )
 }
 
+const COLOR_TOKEN_FIELDS: { key: keyof ThemeColorTokens; label: string }[] = [
+  { key: 'bgPrimary', label: 'Background' },
+  { key: 'bgSecondary', label: 'Background (secondary)' },
+  { key: 'textPrimary', label: 'Text' },
+  { key: 'textSecondary', label: 'Text (secondary)' },
+  { key: 'borderPrimary', label: 'Border' },
+  { key: 'accent', label: 'Accent' },
+  { key: 'accentForeground', label: 'Text on accent' },
+  { key: 'navBg', label: 'Nav background' },
+  { key: 'navText', label: 'Nav text' },
+]
+
+function ThemeColorEditor({
+  label,
+  icon: Icon,
+  defaults,
+  overrides,
+  onChange,
+  onReset,
+}: {
+  label: string
+  icon: React.ElementType
+  defaults: ThemeColorTokens
+  overrides: Partial<ThemeColorTokens> | null
+  onChange: (key: keyof ThemeColorTokens, value: string) => void
+  onReset: () => void
+}) {
+  const isCustom = overrides !== null && Object.keys(overrides).length > 0
+  const values: ThemeColorTokens = { ...defaults, ...overrides }
+
+  return (
+    <div className="rounded-lg border border-border bg-bg-secondary p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Icon className="h-3.5 w-3.5 text-text-tertiary" />
+          <span className="text-xs font-medium text-text-secondary uppercase tracking-wider">{label}</span>
+        </div>
+        {isCustom && (
+          <button
+            onClick={onReset}
+            className="text-2xs text-text-tertiary hover:text-status-error transition-colors"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+      <div className="space-y-2">
+        {COLOR_TOKEN_FIELDS.map(({ key, label: fieldLabel }) => (
+          <div key={key} className="flex items-center justify-between gap-2">
+            <span className="text-xs text-text-secondary">{fieldLabel}</span>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="color"
+                value={values[key]}
+                onChange={(e) => onChange(key, e.target.value)}
+                className="h-6 w-6 rounded border border-border cursor-pointer bg-transparent p-0"
+              />
+              <span className="text-2xs font-mono text-text-tertiary w-14">{values[key]}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function BrandingPage() {
   const { user, isSuperAdmin } = useAuthStore()
   const router = useRouter()
@@ -103,11 +174,14 @@ export default function BrandingPage() {
     logoDarkUrl,
     logoLightUrl,
     faviconUrl,
+    themeColors,
     updateOrgName,
     uploadLogo,
     removeLogo,
     uploadFavicon,
     removeFavicon,
+    updateThemeColors,
+    resetThemeColors,
     resetAll,
   } = useSiteSettings()
   const { resolvedTheme } = useThemeStore()
@@ -184,6 +258,22 @@ export default function BrandingPage() {
     }
   }
 
+  async function handleColorChange(theme: 'light' | 'dark', key: keyof ThemeColorTokens, value: string) {
+    try {
+      await updateThemeColors(theme, { [key]: value })
+    } catch {
+      // no-op
+    }
+  }
+
+  async function handleColorReset(theme: 'light' | 'dark') {
+    try {
+      await resetThemeColors(theme)
+    } catch {
+      // no-op
+    }
+  }
+
   async function handleReset() {
     setResetting(true)
     try {
@@ -200,7 +290,8 @@ export default function BrandingPage() {
     return null
   }
 
-  const hasCustomBranding = orgName !== 'FreeFrame' || logoDarkUrl !== null || logoLightUrl !== null || faviconUrl !== null
+  const hasCustomBranding =
+    orgName !== 'FreeFrame' || logoDarkUrl !== null || logoLightUrl !== null || faviconUrl !== null || themeColors !== null
 
   // Which logo is active right now
   const activeLogo = resolvedTheme === 'light' ? (logoLightUrl ?? logoDarkUrl) : (logoDarkUrl ?? logoLightUrl)
@@ -213,7 +304,7 @@ export default function BrandingPage() {
         </div>
         <div>
           <h1 className="text-lg font-semibold text-text-primary">Branding</h1>
-          <p className="text-sm text-text-secondary">Customize your workspace name and logo</p>
+          <p className="text-sm text-text-secondary">Customize your workspace name, logo, and colors</p>
         </div>
       </div>
 
@@ -305,6 +396,33 @@ export default function BrandingPage() {
           accept="image/png"
           hint="PNG only · Max 2 MB"
         />
+      </section>
+
+      {/* Theme colors — light + dark side by side on desktop, stacked on mobile */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-text-primary">Theme colors</h2>
+        <p className="text-xs text-text-tertiary -mt-1">
+          Customize the background, text, accent, and nav colors for each theme independently. A theme with no
+          custom colors keeps FreeFrame's original palette.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <ThemeColorEditor
+            label="Light theme"
+            icon={Sun}
+            defaults={DEFAULT_LIGHT_TOKENS}
+            overrides={themeColors?.light ?? null}
+            onChange={(key, value) => handleColorChange('light', key, value)}
+            onReset={() => handleColorReset('light')}
+          />
+          <ThemeColorEditor
+            label="Dark theme"
+            icon={Moon}
+            defaults={DEFAULT_DARK_TOKENS}
+            overrides={themeColors?.dark ?? null}
+            onChange={(key, value) => handleColorChange('dark', key, value)}
+            onReset={() => handleColorReset('dark')}
+          />
+        </div>
       </section>
 
       {/* Live preview */}

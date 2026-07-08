@@ -62,7 +62,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     <aside
       className={cn(
         'fixed left-0 top-0 z-30 flex h-screen flex-col border-r border-nav-border',
-        // Navy chrome test (#193B80) — theme-invariant, see globals.css --nav-bg.
+        // bg-nav-bg defaults to the same token as the rest of the theme (see
+        // globals.css) but can be overridden per theme in Branding settings ->
+        // Theme colors.
         'bg-nav-bg transition-[width] duration-200 overflow-hidden',
         collapsed ? 'w-[52px]' : 'w-[192px]',
       )}
@@ -73,7 +75,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <Link
         href="/projects"
         className={cn(
-          'flex h-11 items-center shrink-0 border-b border-nav-border hover:bg-white/10 transition-colors',
+          'flex h-11 items-center shrink-0 border-b border-nav-border hover:bg-nav-text/10 transition-colors',
           collapsed ? 'justify-center px-0' : 'px-4 gap-2.5',
         )}
         title="Go to Projects"
@@ -124,8 +126,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 'group relative flex items-center rounded-md transition-colors duration-100',
                 collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9',
                 isActive
-                  ? 'bg-white/15 text-nav-text'
-                  : 'text-nav-text/60 hover:bg-white/10 hover:text-nav-text',
+                  ? 'bg-nav-text/15 text-nav-text'
+                  : 'text-nav-text/60 hover:bg-nav-text/10 hover:text-nav-text',
               )}
               title={collapsed ? item.label : undefined}
             >
@@ -146,8 +148,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             'group relative flex w-full items-center rounded-md transition-colors duration-100',
             collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9',
             notifOpen
-              ? 'bg-white/15 text-nav-text'
-              : 'text-nav-text/60 hover:bg-white/10 hover:text-nav-text',
+              ? 'bg-nav-text/15 text-nav-text'
+              : 'text-nav-text/60 hover:bg-nav-text/10 hover:text-nav-text',
           )}
           title={collapsed ? 'Notifications' : undefined}
         >
@@ -173,8 +175,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             'group relative flex w-full items-center rounded-md transition-colors duration-100',
             collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9',
             panelOpen
-              ? 'bg-white/15 text-nav-text'
-              : 'text-nav-text/60 hover:bg-white/10 hover:text-nav-text',
+              ? 'bg-nav-text/15 text-nav-text'
+              : 'text-nav-text/60 hover:bg-nav-text/10 hover:text-nav-text',
           )}
           title={collapsed ? 'Uploads' : undefined}
         >
@@ -201,7 +203,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <DropdownMenu.Trigger asChild>
             <button
               className={cn(
-                'flex w-full items-center rounded-md text-nav-text/60 hover:bg-white/10 hover:text-nav-text transition-colors',
+                'flex w-full items-center rounded-md text-nav-text/60 hover:bg-nav-text/10 hover:text-nav-text transition-colors',
                 collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2 py-1.5',
               )}
               title={collapsed ? (user?.name ?? 'Account') : undefined}
@@ -265,7 +267,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         <button
           onClick={onToggle}
           className={cn(
-            'flex w-full items-center rounded-md text-nav-text/50 hover:bg-white/10 hover:text-nav-text transition-colors',
+            'flex w-full items-center rounded-md text-nav-text/50 hover:bg-nav-text/10 hover:text-nav-text transition-colors',
             collapsed ? 'justify-center h-8 w-8 mx-auto' : 'gap-2 px-2.5 h-8',
           )}
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}

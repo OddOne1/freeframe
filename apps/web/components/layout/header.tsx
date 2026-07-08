@@ -60,12 +60,11 @@ export function Header({ onSearchOpen }: HeaderProps) {
   const breadcrumbs = [...urlCrumbs, ...extraCrumbs.map((c) => ({ label: c.label, href: c.href ?? '' }))]
 
   return (
-    // Navy chrome test (#193B80) — solid bg-nav-bg / border-nav-border instead of
-    // the theme-driven bg-bg-primary, so this bar stays navy in both dark and
-    // light theme. All text/icons below use text-nav-text (the "text on blue"
-    // color) at varying opacity for hierarchy instead of the usual
-    // text-primary/secondary/tertiary tokens, since those aren't tuned for
-    // contrast against navy.
+    // Chrome color (top bar). bg-nav-bg / border-nav-border / text-nav-text
+    // default to the same tokens as the rest of the theme (see globals.css)
+    // but can be overridden per theme in Branding settings -> Theme colors.
+    // Hover/active tints use nav-text at low opacity rather than a hardcoded
+    // white so they still read correctly if nav-bg ends up light-colored.
     <header className="sticky top-0 z-20 flex h-11 items-center justify-between border-b border-nav-border bg-nav-bg px-4">
       {/* Breadcrumbs */}
       <nav className="flex items-center gap-1 text-[13px]">
@@ -98,11 +97,11 @@ export function Header({ onSearchOpen }: HeaderProps) {
         {/* Search trigger */}
         <button
           onClick={onSearchOpen}
-          className="flex items-center gap-1.5 rounded-md border border-nav-border bg-white/5 px-2.5 py-1 text-xs text-nav-text/70 hover:border-nav-text/50 hover:text-nav-text transition-colors"
+          className="flex items-center gap-1.5 rounded-md border border-nav-border bg-nav-text/5 px-2.5 py-1 text-xs text-nav-text/70 hover:border-nav-text/50 hover:text-nav-text transition-colors"
         >
           <Search className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Search</span>
-          <kbd className="hidden sm:inline-flex items-center gap-0.5 rounded border border-nav-border bg-white/10 px-1 py-0.5 font-mono text-[10px] text-nav-text/70">
+          <kbd className="hidden sm:inline-flex items-center gap-0.5 rounded border border-nav-border bg-nav-text/10 px-1 py-0.5 font-mono text-[10px] text-nav-text/70">
             <span>⌘</span>K
           </kbd>
         </button>
@@ -114,8 +113,8 @@ export function Header({ onSearchOpen }: HeaderProps) {
             className={cn(
               'flex h-7 w-7 items-center justify-center rounded-md transition-colors',
               rightPanelOpen
-                ? 'text-accent-foreground bg-white/15'
-                : 'text-nav-text/60 hover:bg-white/10 hover:text-nav-text',
+                ? 'text-accent-foreground bg-nav-text/15'
+                : 'text-nav-text/60 hover:bg-nav-text/10 hover:text-nav-text',
             )}
             title={rightPanelOpen ? 'Hide panel' : 'Show panel'}
           >

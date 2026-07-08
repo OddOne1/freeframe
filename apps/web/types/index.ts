@@ -1,3 +1,5 @@
+import type { ThemeColorsPayload } from '@/lib/color-utils'
+
 // ─── Enums ───────────────────────────────────────────────────────────────────
 
 export type AssetType = "image" | "image_carousel" | "audio" | "video";
@@ -568,6 +570,6 @@ export interface SiteSettingsResponse {
   org_name: string;
   logo_dark_url: string | null;
   favicon_url: string | null;
-  theme_colors: Record<string, string> | null;
+  theme_colors: ThemeColorsPayload | null;
   logo_light_url: string | null;
 }

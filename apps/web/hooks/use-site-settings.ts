@@ -3,11 +3,13 @@
 import useSWR from 'swr'
 import { api } from '@/lib/api'
 import { resolveApiMediaUrl } from '@/lib/utils'
+import type { ThemeColorTokens } from '@/lib/color-utils'
 import type { SiteSettingsResponse } from '@/types'
 
 const SITE_SETTINGS_KEY = '/site-settings'
 
 type LogoSide = 'dark' | 'light'
+type ColorTheme = 'light' | 'dark'
 
 /**
  * Site-wide branding settings (org name + per-theme logo), shared across the
@@ -55,15 +57,6 @@ export function useSiteSettings() {
     await mutate(updated, false)
   }
 
-  async function resetAll(): Promise<void> {
-    const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
-      org_name: 'FreeFrame',
-      logo_dark_s3_key: null,
-      logo_light_s3_key: null,
-      favicon_s3_key: null,
-    })
-    await mutate(updated, false)
-  }
   async function uploadFavicon(file: File): Promise<void> {
     const { upload_url, key } = await api.post<{ upload_url: string; key: string }>(
       '/site-settings/favicon-upload',
@@ -89,6 +82,46 @@ export function useSiteSettings() {
     await mutate(updated, false)
   }
 
+  /** Merges a partial set of base-token overrides into one theme's custom colors. */
+  async function updateThemeColors(theme: ColorTheme, tokens: Partial<ThemeColorTokens>): Promise<void> {
+    const current = data?.theme_colors ?? {}
+    const updatedColors = {
+      ...current,
+      [theme]: { ...(current[theme] ?? {}), ...tokens },
+    }
+    const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
+      theme_colors: updatedColors,
+    })
+    await mutate(updated, false)
+  }
+
+  /** Clears one theme's custom colors (falls back to the original palette), or both if no theme is given. */
+  async function resetThemeColors(theme?: ColorTheme): Promise<void> {
+    let updatedColors: Record<string, unknown> | null
+    if (!theme) {
+      updatedColors = null
+    } else {
+      const current = { ...(data?.theme_colors ?? {}) }
+      delete current[theme]
+      updatedColors = Object.keys(current).length > 0 ? current : null
+    }
+    const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
+      theme_colors: updatedColors,
+    })
+    await mutate(updated, false)
+  }
+
+  async function resetAll(): Promise<void> {
+    const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
+      org_name: 'FreeFrame',
+      logo_dark_s3_key: null,
+      logo_light_s3_key: null,
+      favicon_s3_key: null,
+      theme_colors: null,
+    })
+    await mutate(updated, false)
+  }
+
   return {
     isLoading,
     orgName: data?.org_name ?? 'FreeFrame',
@@ -100,11 +133,14 @@ export function useSiteSettings() {
     logoDarkUrl: resolveApiMediaUrl(data?.logo_dark_url ?? null),
     logoLightUrl: resolveApiMediaUrl(data?.logo_light_url ?? null),
     faviconUrl: resolveApiMediaUrl(data?.favicon_url ?? null),
+    themeColors: data?.theme_colors ?? null,
     updateOrgName,
     uploadLogo,
     removeLogo,
     uploadFavicon,
     removeFavicon,
+    updateThemeColors,
+    resetThemeColors,
     resetAll,
   }
 }
