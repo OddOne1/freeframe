@@ -1,12 +1,13 @@
 'use client'
 
 import * as React from 'react'
-import { User } from 'lucide-react'
+import { User, Camera } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Avatar } from '@/components/shared/avatar'
+import { AvatarCropper } from '@/components/shared/avatar-cropper'
 
 export default function ProfilePage() {
   const { user, fetchUser } = useAuthStore()
@@ -22,6 +23,11 @@ export default function ProfilePage() {
   const [isSavingPassword, setIsSavingPassword] = React.useState(false)
   const [passwordError, setPasswordError] = React.useState('')
   const [passwordSuccess, setPasswordSuccess] = React.useState(false)
+  const [avatarFile, setAvatarFile] = React.useState<File | null>(null)
+  const [cropperOpen, setCropperOpen] = React.useState(false)
+  const [isSavingAvatar, setIsSavingAvatar] = React.useState(false)
+  const [avatarError, setAvatarError] = React.useState('')
+  const avatarInputRef = React.useRef<HTMLInputElement>(null)
 
   // Sync name when user loads
   React.useEffect(() => {
@@ -50,7 +56,39 @@ export default function ProfilePage() {
     }
   }
 
-  async function handlePasswordSave(e: React.FormEvent) {
+  function handleAvatarFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+  const f = e.target.files?.[0]
+  e.target.value = ''
+  if (!f) return
+  setAvatarError('')
+  setAvatarFile(f)
+  setCropperOpen(true)
+}
+
+async function handleAvatarCropped(blob: Blob) {
+  setIsSavingAvatar(true)
+  setAvatarError('')
+  try {
+    const { upload_url, avatar_url } = await api.post<{ upload_url: string; key: string; avatar_url: string }>(
+      '/users/me/avatar-upload',
+    )
+    await fetch(upload_url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/webp' },
+      body: blob,
+    })
+    await api.patch(`/users/${user?.id}`, { avatar_url })
+    await fetchUser()
+    setCropperOpen(false)
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Failed to save avatar'
+    setAvatarError(message)
+  } finally {
+    setIsSavingAvatar(false)
+  }
+}
+
+async function handlePasswordSave(e: React.FormEvent) {
     e.preventDefault()
     setPasswordError('')
     setPasswordSuccess(false)
@@ -108,14 +146,20 @@ export default function ProfilePage() {
         </h2>
 
         <div className="flex items-center gap-4">
+          <button type="button" onClick={() => avatarInputRef.current?.click()} className="group relative inline-flex shrink-0 rounded-full">
           <Avatar src={user?.avatar_url} name={user?.name} size="lg" />
+          <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+          <Camera className="h-4 w-4 text-white" />
+          </span>
+          </button>
+          <input ref={avatarInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarFileSelected} />
           <div>
-            <p className="text-sm font-medium text-text-primary">
-              {user?.name ?? 'Loading...'}
-            </p>
-            <p className="text-xs text-text-tertiary">{user?.email ?? ''}</p>
+          <p className="text-sm font-medium text-text-primary">{user?.name ?? 'Loading...'}</p>
+          <p className="text-xs text-text-tertiary">{user?.email ?? ''}</p>
+          {avatarError && <p className="mt-1 text-xs text-status-error">{avatarError}</p>}
           </div>
-        </div>
+          </div>
+          <AvatarCropper file={avatarFile} open={cropperOpen} onOpenChange={setCropperOpen} onCropped={handleAvatarCropped} saving={isSavingAvatar} />
 
         <form onSubmit={handleProfileSave} className="space-y-4">
           <div className="space-y-1.5">

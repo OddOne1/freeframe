@@ -34,6 +34,19 @@ class UserResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+class AvatarUploadResponse(BaseModel):
+    """Presigned upload target for a user's avatar, plus the final URL to
+    PATCH back onto the user record once the upload completes. avatar_url
+    here is a long-lived (~5yr) proxy URL, not a raw S3 key — the avatar_url
+    column on User is a plain stored string with no separate resolution
+    step at read time (unlike SiteSettings' logo keys), so the long expiry
+    keeps it valid without needing to be re-resolved on every request.
+    """
+    upload_url: str
+    key: str
+    avatar_url: str
+
+
 class AdminUserProjectSummary(BaseModel):
     project_id: uuid.UUID
     project_name: str

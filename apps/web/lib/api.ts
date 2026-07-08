@@ -35,7 +35,7 @@ async function request<T>(
     return headers
   }
 
-  const execute = async (token: string | null): Promise<Response> => {
+  const execute = async (token: string | null): Promise<Response> => {}
     return fetch(`${API_URL}${path}`, {
       method,
       headers: buildHeaders(token),

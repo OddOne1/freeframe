@@ -4,15 +4,42 @@ import uuid
 import secrets
 from datetime import datetime, timezone, timedelta
 from ..database import get_db
-from ..schemas.auth import UserResponse, InviteRequest, UpdateProfileRequest
+from ..schemas.auth import UserResponse, InviteRequest, UpdateProfileRequest, AvatarUploadResponse
 from ..models.user import User, UserStatus
+from ..services import s3_service
 from ..middleware.auth import get_current_user
 from ..services.auth_service import hash_password, get_user_by_email
 from ..tasks.email_tasks import send_invite_email
 from ..tasks.celery_app import send_task_safe
 from ..config import settings
+from .hls_proxy import proxy_url_for
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+@router.post("/me/avatar-upload", response_model=AvatarUploadResponse, status_code=status.HTTP_201_CREATED)
+def get_avatar_upload_url(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Presigned upload target for the caller's own avatar. The client
+    crops/downsizes the image to a small square WebP itself before
+    uploading (we don't re-process it server-side), then PATCHes
+    /users/{id} with the returned avatar_url once the S3 upload succeeds.
+    """
+    key = f"avatars/{current_user.id}/{uuid.uuid4()}.webp"
+    upload_url = s3_service.get_s3_client().generate_presigned_url(
+        "put_object",
+        Params={
+            "Bucket": settings.s3_bucket,
+            "Key": key,
+            "ContentType": "image/webp",
+        },
+        ExpiresIn=3600,
+    )
+    # ~5 years — avatar_url is stored as a plain string with no re-resolution
+    # at read time, so this needs to outlive normal token lifetimes.
+    avatar_url = proxy_url_for(key, expires_hours=24 * 365 * 5)
+    return AvatarUploadResponse(upload_url=upload_url, key=key, avatar_url=avatar_url)
 
 @router.get("", response_model=list[UserResponse])
 def get_users_batch(

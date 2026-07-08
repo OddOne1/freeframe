@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import * as RadixAvatar from '@radix-ui/react-avatar'
-import { cn } from '@/lib/utils'
+import { cn, resolveApiMediaUrl } from '@/lib/utils'
 
 type AvatarSize = 'sm' | 'md' | 'lg'
 
@@ -27,6 +27,8 @@ function getInitials(name?: string | null): string {
 }
 
 export function Avatar({ src, name, size = 'md', className }: AvatarProps) {
+// Relative /stream/... proxy paths need an absolute API URL to render in <img>.
+const resolvedSrc = resolveApiMediaUrl(src)
   return (
     <RadixAvatar.Root
       className={cn(
@@ -35,9 +37,9 @@ export function Avatar({ src, name, size = 'md', className }: AvatarProps) {
         className,
       )}
     >
-      {src && (
+      {resolvedSrc && (
         <RadixAvatar.Image
-          src={src}
+          src={resolvedSrc}
           alt={name ?? 'Avatar'}
           className="h-full w-full object-cover"
         />
