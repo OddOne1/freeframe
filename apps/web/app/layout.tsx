@@ -14,10 +14,37 @@ const dmSans = DM_Sans({
   preload: true,
 });
 
-export const metadata: Metadata = {
-  title: "FreeFrame",
-  description: "Collaborative media review and approval platform",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const base: Metadata = {
+    title: "FreeFrame",
+    description: "Collaborative media review and approval platform",
+  };
+
+  // Fetched server-side so the favicon is already correct in the very
+  // first HTML response -- no client-side swap, no flash of the default,
+  // and every visitor (not just the browser tab that uploaded it) sees it
+  // immediately. See favicon-initializer.tsx for the live-update companion
+  // (keeps an already-open tab in sync right after a superadmin uploads a
+  // new one, without needing a full reload).
+  try {
+    const internalUrl = process.env.API_INTERNAL_URL || "http://localhost:8000";
+    const res = await fetch(internalUrl + "/site-settings", {
+      next: { revalidate: 60 },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.favicon_url) {
+        const publicPrefix = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+        base.icons = { icon: publicPrefix + data.favicon_url};
+      }
+    }
+  } catch {
+    // Backend unreachable at render time -- fall back to no custom favicon
+    // rather than failing the whole page render.
+  }
+
+  return base;
+}
 
 export const viewport: Viewport = {
   width: "device-width",
