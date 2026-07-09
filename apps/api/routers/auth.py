@@ -85,7 +85,7 @@ def send_magic_code(body: SendMagicCodeRequest, db: Session = Depends(get_db)):
         message="Magic code sent to your email",
         email=body.email,
     )
-    @router.post("/verify-magic-code", response_model=TokenResponse, dependencies=[Depends(rate_limit("verify_magic_code", 10, 600))])
+@router.post("/verify-magic-code", response_model=TokenResponse, dependencies=[Depends(rate_limit("verify_magic_code", 10, 600))])
 def verify_magic_code(body: VerifyMagicCodeRequest, db: Session = Depends(get_db)):
     """
     Verify magic code and return tokens.
