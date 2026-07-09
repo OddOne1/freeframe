@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
 import { User, Camera } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
 import { api } from '@/lib/api'
@@ -19,13 +20,15 @@ export default function ProfilePage() {
   const [profileError, setProfileError] = React.useState('')
   const [profileSuccess, setProfileSuccess] = React.useState(false)
 
-    const [pwStep, setPwStep] = React.useState<'idle' | 'code' | 'password'>('idle')
-    const [pwCode, setPwCode] = React.useState('')
-    const [newPassword, setNewPassword] = React.useState('')
+  const [newPassword, setNewPassword] = React.useState('')
   const [confirmPassword, setConfirmPassword] = React.useState('')
   const [isSavingPassword, setIsSavingPassword] = React.useState(false)
   const [passwordError, setPasswordError] = React.useState('')
   const [passwordSuccess, setPasswordSuccess] = React.useState(false)
+  const [pwCodeDialogOpen, setPwCodeDialogOpen] = React.useState(false)
+  const [pwCode, setPwCode] = React.useState('')
+  const [codeError, setCodeError] = React.useState('')
+  const [isVerifyingCode, setIsVerifyingCode] = React.useState(false)
   const [avatarFile, setAvatarFile] = React.useState<File | null>(null)
   const [cropperOpen, setCropperOpen] = React.useState(false)
   const [isSavingAvatar, setIsSavingAvatar] = React.useState(false)
@@ -47,7 +50,7 @@ export default function ProfilePage() {
     }
     setIsSavingProfile(true)
     try {
-      await api.patch(`/users/${user?.id}`, { name: name.trim() })
+      await api.patch('/users/' + user?.id, { name: name.trim() })
       await fetchUser()
       setProfileSuccess(true)
       setTimeout(() => setProfileSuccess(false), 3000)
@@ -80,7 +83,7 @@ async function handleAvatarCropped(blob: Blob) {
       headers: { 'Content-Type': 'image/webp' },
       body: blob,
     })
-    await api.patch(`/users/${user?.id}`, { avatar_url })
+    await api.patch('/users/' + user?.id, { avatar_url })
     await fetchUser()
     setCropperOpen(false)
   } catch (err: unknown) {
@@ -91,41 +94,6 @@ async function handleAvatarCropped(blob: Blob) {
   }
 }
 
-  async function handleSendPasswordCode() {
-    setPasswordError('')
-    setIsSavingPassword(true)
-    try {
-      await api.post('/auth/send-magic-code', { email: user?.email })
-      setPwStep('code')
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to send code'
-      setPasswordError(message)
-    } finally {
-      setIsSavingPassword(false)
-    }
-  }
-    async function handleVerifyPasswordCode(e: React.FormEvent) {
-    e.preventDefault()
-    setPasswordError('')
-    if (pwCode.length < 6) {
-      setPasswordError('Enter the 6-digit code')
-      return
-    }
-    setIsSavingPassword(true)
-    try {
-      const res = await api.post<VerifyCodeResponse>('/auth/verify-magic-code', {
-        email: user?.email,
-        code: pwCode,
-      })
-            setTokens(res.access_token, res.refresh_token)
-      setPwStep('password')
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Invalid or expired code'
-      setPasswordError(message)
-    } finally {
-      setIsSavingPassword(false)
-    }
-  }
   async function handlePasswordSave(e: React.FormEvent) {
     e.preventDefault()
     setPasswordError('')
@@ -139,22 +107,41 @@ async function handleAvatarCropped(blob: Blob) {
     }
     setIsSavingPassword(true)
     try {
-      await api.post('/auth/set-password', {
-        email: user?.email,
-        code: pwCode,
-        password: newPassword,
-      })
-            setNewPassword('')
-      setConfirmPassword('')
-      setPwCode('')
-      setPwStep('idle')
-      setPasswordSuccess(true)
-      setTimeout(() => setPasswordSuccess(false), 3000)
+      await api.post('/auth/send-magic-code', { email: user?.email, purpose: 'password_reset' })
+      setPwCodeDialogOpen(true)
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to set password'
+      const message = err instanceof Error ? err.message : 'Failed to send verification code'
       setPasswordError(message)
     } finally {
       setIsSavingPassword(false)
+    }
+  }
+
+  async function handleConfirmPasswordCode() {
+    setCodeError('')
+    if (pwCode.length < 6) {
+      setCodeError('Enter the 6-digit code')
+      return
+    }
+    setIsVerifyingCode(true)
+    try {
+      const res = await api.post<VerifyCodeResponse>('/auth/verify-magic-code', {
+        email: user?.email,
+        code: pwCode,
+      })
+      setTokens(res.access_token, res.refresh_token)
+      await api.post('/auth/set-password', { password: newPassword })
+      setPwCodeDialogOpen(false)
+      setPwCode('')
+      setNewPassword('')
+      setConfirmPassword('')
+      setPasswordSuccess(true)
+      setTimeout(() => setPasswordSuccess(false), 3000)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Invalid or expired code'
+      setCodeError(message)
+    } finally {
+      setIsVerifyingCode(false)
     }
   }
 
@@ -241,26 +228,6 @@ async function handleAvatarCropped(blob: Blob) {
           Change Password
         </h2>
 
-      {pwStep === 'idle' && (
-              <div className="space-y-4">
-          <p className="text-xs text-text-secondary">We will email you a verification code to confirm it is you before setting a new password.</p>
-          {passwordError && <p className="text-xs text-status-error">{passwordError}</p>}
-          <Button type="button" variant="secondary" size="sm" loading={isSavingPassword} onClick={handleSendPasswordCode}>Send verification code</Button>
-        </div>
-      )}
-
-      {pwStep === 'code' && (
-        <form onSubmit={handleVerifyPasswordCode} className="space-y-4">
-          <div className="space-y-1.5">
-            <label htmlFor="pwCode" className="text-xs font-medium text-text-secondary">Verification Code</label>
-            <Input id="pwCode" type="text" value={pwCode} onChange={(e) => setPwCode(e.target.value)} placeholder="6-digit code" />
-          </div>
-          {passwordError && <p className="text-xs text-status-error">{passwordError}</p>}
-          <Button type="submit" variant="secondary" size="sm" loading={isSavingPassword}>Verify code</Button>
-        </form>
-      )}
-      
-      {pwStep === 'password' && (
         <form onSubmit={handlePasswordSave} className="space-y-4">
           <div className="space-y-1.5">
             <label htmlFor="newPassword" className="text-xs font-medium text-text-secondary">New Password</label>
@@ -271,13 +238,30 @@ async function handleAvatarCropped(blob: Blob) {
             <Input id="confirmPassword" type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="Repeat new password" />
           </div>
           {passwordError && <p className="text-xs text-status-error">{passwordError}</p>}
-          <Button type="submit" variant="secondary" size="sm" loading={isSavingPassword}>Set new password</Button>
+          {passwordSuccess && <p className="text-xs text-status-success">Password changed successfully.</p>}
+          <Button type="submit" variant="secondary" size="sm" loading={isSavingPassword}>Save Password</Button>
         </form>
-      )}
+      </section>
 
-      {passwordSuccess && (
-        <p className="text-xs text-status-success">Password changed successfully.</p>
-      )}
-    </section></div>
+      <Dialog.Root open={pwCodeDialogOpen} onOpenChange={setPwCodeDialogOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary shadow-xl p-6">
+            <Dialog.Title className="text-sm font-semibold text-text-primary">Confirm password change</Dialog.Title>
+            <Dialog.Description className="mt-1.5 text-sm text-text-tertiary leading-relaxed">
+              We emailed a verification code to {user?.email}. Enter it below to finish changing your password. If you did not request this, ignore the email and your password will stay the same.
+            </Dialog.Description>
+            <div className="mt-4 space-y-1.5">
+              <Input value={pwCode} onChange={(e) => setPwCode(e.target.value)} placeholder="6-digit code" />
+              {codeError && <p className="text-xs text-status-error">{codeError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-2 mt-5">
+              <Button variant="secondary" size="sm" onClick={() => setPwCodeDialogOpen(false)} disabled={isVerifyingCode}>Cancel</Button>
+              <Button variant="primary" size="sm" onClick={handleConfirmPasswordCode} loading={isVerifyingCode}>Confirm</Button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+    </div>
   )
 }
