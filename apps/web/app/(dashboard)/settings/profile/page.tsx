@@ -8,6 +8,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Avatar } from '@/components/shared/avatar'
 import { AvatarCropper } from '@/components/shared/avatar-cropper'
+import { setTokens } from '@/lib/auth'
+import type { VerifyCodeResponse } from '@/types'
 
 export default function ProfilePage() {
   const { user, fetchUser } = useAuthStore()
@@ -17,8 +19,9 @@ export default function ProfilePage() {
   const [profileError, setProfileError] = React.useState('')
   const [profileSuccess, setProfileSuccess] = React.useState(false)
 
-  const [currentPassword, setCurrentPassword] = React.useState('')
-  const [newPassword, setNewPassword] = React.useState('')
+    const [pwStep, setPwStep] = React.useState<'idle' | 'code' | 'password'>('idle')
+    const [pwCode, setPwCode] = React.useState('')
+    const [newPassword, setNewPassword] = React.useState('')
   const [confirmPassword, setConfirmPassword] = React.useState('')
   const [isSavingPassword, setIsSavingPassword] = React.useState(false)
   const [passwordError, setPasswordError] = React.useState('')
@@ -88,15 +91,44 @@ async function handleAvatarCropped(blob: Blob) {
   }
 }
 
-async function handlePasswordSave(e: React.FormEvent) {
+  async function handleSendPasswordCode() {
+    setPasswordError('')
+    setIsSavingPassword(true)
+    try {
+      await api.post('/auth/send-magic-code', { email: user?.email })
+      setPwStep('code')
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to send code'
+      setPasswordError(message)
+    } finally {
+      setIsSavingPassword(false)
+    }
+  }
+    async function handleVerifyPasswordCode(e: React.FormEvent) {
     e.preventDefault()
     setPasswordError('')
-    setPasswordSuccess(false)
-
-    if (!currentPassword || !newPassword || !confirmPassword) {
-      setPasswordError('All fields are required')
+    if (pwCode.length < 6) {
+      setPasswordError('Enter the 6-digit code')
       return
     }
+    setIsSavingPassword(true)
+    try {
+      const res = await api.post<VerifyCodeResponse>('/auth/verify-magic-code', {
+        email: user?.email,
+        code: pwCode,
+      })
+            setTokens(res.access_token, res.refresh_token)
+      setPwStep('password')
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Invalid or expired code'
+      setPasswordError(message)
+    } finally {
+      setIsSavingPassword(false)
+    }
+  }
+  async function handlePasswordSave(e: React.FormEvent) {
+    e.preventDefault()
+    setPasswordError('')
     if (newPassword.length < 8) {
       setPasswordError('Password must be at least 8 characters')
       return
@@ -105,20 +137,21 @@ async function handlePasswordSave(e: React.FormEvent) {
       setPasswordError('Passwords do not match')
       return
     }
-
     setIsSavingPassword(true)
     try {
-      await api.patch('/auth/change-password', {
-        current_password: currentPassword,
-        new_password: newPassword,
+      await api.post('/auth/set-password', {
+        email: user?.email,
+        code: pwCode,
+        password: newPassword,
       })
-      setCurrentPassword('')
-      setNewPassword('')
+            setNewPassword('')
       setConfirmPassword('')
+      setPwCode('')
+      setPwStep('idle')
       setPasswordSuccess(true)
       setTimeout(() => setPasswordSuccess(false), 3000)
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to change password'
+      const message = err instanceof Error ? err.message : 'Failed to set password'
       setPasswordError(message)
     } finally {
       setIsSavingPassword(false)
@@ -208,63 +241,43 @@ async function handlePasswordSave(e: React.FormEvent) {
           Change Password
         </h2>
 
+      {pwStep === 'idle' && (
+              <div className="space-y-4">
+          <p className="text-xs text-text-secondary">We will email you a verification code to confirm it is you before setting a new password.</p>
+          {passwordError && <p className="text-xs text-status-error">{passwordError}</p>}
+          <Button type="button" variant="secondary" size="sm" loading={isSavingPassword} onClick={handleSendPasswordCode}>Send verification code</Button>
+        </div>
+      )}
+
+      {pwStep === 'code' && (
+        <form onSubmit={handleVerifyPasswordCode} className="space-y-4">
+          <div className="space-y-1.5">
+            <label htmlFor="pwCode" className="text-xs font-medium text-text-secondary">Verification Code</label>
+            <Input id="pwCode" type="text" value={pwCode} onChange={(e) => setPwCode(e.target.value)} placeholder="6-digit code" />
+          </div>
+          {passwordError && <p className="text-xs text-status-error">{passwordError}</p>}
+          <Button type="submit" variant="secondary" size="sm" loading={isSavingPassword}>Verify code</Button>
+        </form>
+      )}
+      
+      {pwStep === 'password' && (
         <form onSubmit={handlePasswordSave} className="space-y-4">
           <div className="space-y-1.5">
-            <label htmlFor="currentPassword" className="text-xs font-medium text-text-secondary">
-              Current Password
-            </label>
-            <Input
-              id="currentPassword"
-              type="password"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-              placeholder="Enter current password"
-            />
+            <label htmlFor="newPassword" className="text-xs font-medium text-text-secondary">New Password</label>
+            <Input id="newPassword" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Min 8 characters" />
           </div>
-
           <div className="space-y-1.5">
-            <label htmlFor="newPassword" className="text-xs font-medium text-text-secondary">
-              New Password
-            </label>
-            <Input
-              id="newPassword"
-              type="password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="Min 8 characters"
-            />
+            <label htmlFor="confirmPassword" className="text-xs font-medium text-text-secondary">Confirm New Password</label>
+            <Input id="confirmPassword" type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="Repeat new password" />
           </div>
-
-          <div className="space-y-1.5">
-            <label htmlFor="confirmPassword" className="text-xs font-medium text-text-secondary">
-              Confirm New Password
-            </label>
-            <Input
-              id="confirmPassword"
-              type="password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder="Repeat new password"
-            />
-          </div>
-
-          {passwordError && (
-            <p className="text-xs text-status-error">{passwordError}</p>
-          )}
-          {passwordSuccess && (
-            <p className="text-xs text-status-success">Password changed successfully.</p>
-          )}
-
-          <Button
-            type="submit"
-            variant="secondary"
-            size="sm"
-            loading={isSavingPassword}
-          >
-            Change Password
-          </Button>
+          {passwordError && <p className="text-xs text-status-error">{passwordError}</p>}
+          <Button type="submit" variant="secondary" size="sm" loading={isSavingPassword}>Set new password</Button>
         </form>
-      </section>
-    </div>
+      )}
+
+      {passwordSuccess && (
+        <p className="text-xs text-status-success">Password changed successfully.</p>
+      )}
+    </section></div>
   )
 }
