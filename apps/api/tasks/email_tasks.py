@@ -38,18 +38,28 @@ def _send_email(to_email: str, subject: str, html_body: str, text_body: Optional
 # ============================================================================
 
 @shared_task(bind=True, queue="email_high", max_retries=3, default_retry_delay=30)
-def send_magic_code_email(self, to_email: str, code: str, expiry_minutes: int = 10):
+def send_magic_code_email(self, to_email: str, code: str, expiry_minutes: int = 10, purpose: str = "login", contact_url: Optional[str] = None):
     """Send magic code email - high priority, immediate delivery."""
     try:
-        subject = f"Your FreeFrame login code: {code}"
-        html_body = render_template(
-            "email/magic_code.html",
-            subject=subject,
-            code=code,
-            expiry_minutes=expiry_minutes,
-        )
-        text_body = f"Your FreeFrame login code is: {code}. This code expires in {expiry_minutes} minutes."
-        
+        if purpose == "password_reset":
+            subject = f"Password reset code: {code}"
+            html_body = render_template(
+                "email/password_reset_code.html",
+                subject=subject,
+                code=code,
+                expiry_minutes=expiry_minutes,
+                contact_url=contact_url or "",
+            )
+            text_body = f"Someone requested a password reset on your FreeFrame account. Your code is: {code}. If this was not you, contact your admin. This code expires in {expiry_minutes} minutes."
+        else:
+            subject = f"Your FreeFrame login code: {code}"
+            html_body = render_template(
+                "email/magic_code.html",
+                subject=subject,
+                code=code,
+                expiry_minutes=expiry_minutes,
+            )
+            text_body = f"Your FreeFrame login code is: {code}. This code expires in {expiry_minutes} minutes."        
         success = _send_email(to_email, subject, html_body, text_body)
         if not success:
             raise Exception("Email sending failed")

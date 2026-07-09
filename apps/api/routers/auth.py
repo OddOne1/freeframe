@@ -4,6 +4,7 @@ import uuid
 import secrets
 from datetime import datetime, timedelta, timezone
 from ..database import get_db
+from ..config import settings
 from ..schemas.auth import (
     RegisterRequest, LoginRequest, TokenResponse,
     RefreshRequest, UserResponse, InviteRequest,
@@ -44,40 +45,47 @@ def send_magic_code(body: SendMagicCodeRequest, db: Session = Depends(get_db)):
     - If user doesn't exist: create pending user and send code
     """
     user = get_user_by_email(db, body.email)
-    
+
     if not user:
+        if body.purpose == "password_reset":
+            # Don't reveal whether this email has an account, and don't
+            # create a phantom pending user for a reset that can never
+            # complete.
+            return SendMagicCodeResponse(
+                message="If that email has an account, a code has been sent",
+                email=body.email,
+            )
         # Check if this is the first user (becomes super admin)
         user_count = db.query(User).filter(User.deleted_at.is_(None)).count()
         is_first_user = user_count == 0
-        
+
         # Create new user in pending_verification status
         user = User(
             email=body.email,
-            name=body.email.split("@")[0],  # Temporary name from email
+            name=body.email.split("@")[0],
             status=UserStatus.pending_verification,
             email_verified=False,
-            is_superadmin=is_first_user,  # First user becomes super admin
+            is_superadmin=is_first_user,
         )
         db.add(user)
         db.commit()
-    
+        
     # Generate and store magic code in Redis
     code = generate_magic_code()
     store_magic_code(body.email, code)
 
     # Queue email via Celery (async)
     try:
-        send_task_safe(send_magic_code_email, body.email, code, MAGIC_CODE_EXPIRY_MINUTES)
+        contact_url = settings.frontend_url + "/settings/contact"
+        send_task_safe(send_magic_code_email, body.email, code, MAGIC_CODE_EXPIRY_MINUTES, body.purpose, contact_url)
     except Exception:
         pass  # Email delivery is best-effort; code is already in Redis
-    
+
     return SendMagicCodeResponse(
         message="Magic code sent to your email",
         email=body.email,
     )
-
-
-@router.post("/verify-magic-code", response_model=TokenResponse, dependencies=[Depends(rate_limit("verify_magic_code", 10, 600))])
+    @router.post("/verify-magic-code", response_model=TokenResponse, dependencies=[Depends(rate_limit("verify_magic_code", 10, 600))])
 def verify_magic_code(body: VerifyMagicCodeRequest, db: Session = Depends(get_db)):
     """
     Verify magic code and return tokens.

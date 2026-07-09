@@ -67,6 +67,7 @@ class InviteRequest(BaseModel):
 # Magic code flow
 class SendMagicCodeRequest(BaseModel):
     email: EmailStr
+    purpose: str = "login"
 
 class SendMagicCodeResponse(BaseModel):
     message: str
