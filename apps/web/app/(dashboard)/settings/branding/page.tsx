@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import { useRouter } from 'next/navigation'
-import { Palette, Upload, X, Check, RotateCcw, Moon, Sun, Loader2 } from 'lucide-react'
+import { Palette, Upload, X, Check, RotateCcw, Moon, Sun, LogIn, Loader2 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
 import { useSiteSettings } from '@/hooks/use-site-settings'
 import { useThemeStore } from '@/stores/theme-store'
@@ -166,6 +166,8 @@ function ThemeColorEditor({
   )
 }
 
+type UploadSlot = 'dark' | 'light' | 'login'
+
 export default function BrandingPage() {
   const { user, isSuperAdmin } = useAuthStore()
   const router = useRouter()
@@ -173,6 +175,7 @@ export default function BrandingPage() {
     orgName,
     logoDarkUrl,
     logoLightUrl,
+    logoLoginUrl,
     faviconUrl,
     themeColors,
     updateOrgName,
@@ -189,7 +192,7 @@ export default function BrandingPage() {
   const [nameValue, setNameValue] = React.useState(orgName)
   const [nameSaved, setNameSaved] = React.useState(false)
   const [savingName, setSavingName] = React.useState(false)
-  const [uploadingSide, setUploadingSide] = React.useState<'dark' | 'light' | null>(null)
+  const [uploadingSide, setUploadingSide] = React.useState<UploadSlot | null>(null)
   const [uploadingFavicon, setUploadingFavicon] = React.useState(false)
   const [resetting, setResetting] = React.useState(false)
 
@@ -220,7 +223,7 @@ export default function BrandingPage() {
     }
   }
 
-  async function handleUpload(side: 'dark' | 'light', file: File) {
+  async function handleUpload(side: UploadSlot, file: File) {
     setUploadingSide(side)
     try {
       await uploadLogo(side, file)
@@ -231,7 +234,7 @@ export default function BrandingPage() {
     }
   }
 
-  async function handleRemove(side: 'dark' | 'light') {
+  async function handleRemove(side: UploadSlot) {
     try {
       await removeLogo(side)
     } catch {
@@ -291,7 +294,12 @@ export default function BrandingPage() {
   }
 
   const hasCustomBranding =
-    orgName !== 'FreeFrame' || logoDarkUrl !== null || logoLightUrl !== null || faviconUrl !== null || themeColors !== null
+    orgName !== 'FreeFrame' ||
+    logoDarkUrl !== null ||
+    logoLightUrl !== null ||
+    logoLoginUrl !== null ||
+    faviconUrl !== null ||
+    themeColors !== null
 
   // Which logo is active right now
   const activeLogo = resolvedTheme === 'light' ? (logoLightUrl ?? logoDarkUrl) : (logoDarkUrl ?? logoLightUrl)
@@ -377,6 +385,27 @@ export default function BrandingPage() {
             previewBg="bg-white"
           />
         </div>
+      </section>
+
+      {/* Login page logo */}
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <LogIn className="h-3.5 w-3.5 text-text-tertiary" />
+          <h2 className="text-sm font-semibold text-text-primary">Login page logo</h2>
+        </div>
+        <p className="text-xs text-text-tertiary -mt-1">
+          Shown above the sign-in form, before anyone is logged in. Falls back to the default FreeFrame logo
+          when not set.
+        </p>
+        <LogoUploadSlot
+          label="Login page logo"
+          description="Shown on the sign-in and password-setup screens."
+          logoUrl={logoLoginUrl}
+          uploading={uploadingSide === 'login'}
+          onUpload={(file) => handleUpload('login', file)}
+          onRemove={() => handleRemove('login')}
+          previewBg="bg-zinc-900"
+        />
       </section>
 
       {/* Favicon */}

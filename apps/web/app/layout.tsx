@@ -34,8 +34,20 @@ export async function generateMetadata(): Promise<Metadata> {
     if (res.ok) {
       const data = await res.json();
       if (data.favicon_url) {
-        const publicPrefix = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-        base.icons = { icon: publicPrefix + data.favicon_url};
+        // NEXT_PUBLIC_API_URL is only guaranteed to exist at *build* time
+        // (it gets inlined into the client bundle). Docker multi-stage
+        // builds do not carry ENV values into the runner stage, so relying
+        // on process.env here at request time used to silently fall back
+        // to "http://localhost:8000" -- pointing every visitor's browser at
+        // their own machine instead of the real API, which meant the
+        // favicon link in the SSR'd HTML was never actually reachable. The
+        // runner stage in Dockerfile.prod now redeclares
+        // NEXT_PUBLIC_API_URL=/api explicitly so this resolves correctly,
+        // but "/api" is hardcoded as the fallback too since that relative
+        // path (routed by Traefik to the api container) is the only value
+        // this has ever been set to in this deployment.
+        const publicPrefix = process.env.NEXT_PUBLIC_API_URL || "/api";
+        base.icons = { icon: publicPrefix + data.favicon_url };
       }
     }
   } catch {
@@ -60,14 +72,14 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        {/* Inline script to apply theme BEFORE paint — prevents flash */}
+        {/* Inline script to apply theme BEFORE paint -- prevents flash */}
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var d=JSON.parse(localStorage.getItem('ff-theme')||'{}');var t=d.state&&d.state.theme||'dark';if(t==='system'){t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','dark')}})()`,
+            __html: "(function(){try{var d=JSON.parse(localStorage.getItem('ff-theme')||'{}');var t=d.state&&d.state.theme||'dark';if(t==='system'){t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','dark')}})()",
           }}
         />
       </head>
-      <body className={`${dmSans.variable} font-sans antialiased`}>
+      <body className={dmSans.variable + " font-sans antialiased"}>
         <ThemeInitializer />
         <FaviconInitializer />
         <ThemeColorsInitializer />

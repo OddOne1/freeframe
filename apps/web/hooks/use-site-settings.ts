@@ -8,8 +8,14 @@ import type { SiteSettingsResponse } from '@/types'
 
 const SITE_SETTINGS_KEY = '/site-settings'
 
-type LogoSide = 'dark' | 'light'
+type LogoSide = 'dark' | 'light' | 'login'
 type ColorTheme = 'light' | 'dark'
+
+const LOGO_FIELD: Record<LogoSide, string> = {
+  dark: 'logo_dark_s3_key',
+  light: 'logo_light_s3_key',
+  login: 'logo_login_s3_key',
+}
 
 /**
  * Site-wide branding settings (org name + per-theme logo), shared across the
@@ -42,17 +48,15 @@ export function useSiteSettings() {
     if (!putResponse.ok) {
       throw new Error(`Logo upload failed: ${putResponse.statusText}`)
     }
-    const field = side === 'dark' ? 'logo_dark_s3_key' : 'logo_light_s3_key'
     const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
-      [field]: key,
+      [LOGO_FIELD[side]]: key,
     })
     await mutate(updated, false)
   }
 
   async function removeLogo(side: LogoSide): Promise<void> {
-    const field = side === 'dark' ? 'logo_dark_s3_key' : 'logo_light_s3_key'
     const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
-      [field]: null,
+      [LOGO_FIELD[side]]: null,
     })
     await mutate(updated, false)
   }
@@ -116,6 +120,7 @@ export function useSiteSettings() {
       org_name: 'FreeFrame',
       logo_dark_s3_key: null,
       logo_light_s3_key: null,
+      logo_login_s3_key: null,
       favicon_s3_key: null,
       theme_colors: null,
     })
@@ -132,6 +137,7 @@ export function useSiteSettings() {
     // frontend origin instead of the FastAPI backend and 404s.
     logoDarkUrl: resolveApiMediaUrl(data?.logo_dark_url ?? null),
     logoLightUrl: resolveApiMediaUrl(data?.logo_light_url ?? null),
+    logoLoginUrl: resolveApiMediaUrl(data?.logo_login_url ?? null),
     faviconUrl: resolveApiMediaUrl(data?.favicon_url ?? null),
     themeColors: data?.theme_colors ?? null,
     updateOrgName,

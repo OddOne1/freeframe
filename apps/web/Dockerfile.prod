@@ -26,6 +26,17 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
+# Docker multi-stage builds do NOT carry ENV values across stages -- the
+# NEXT_PUBLIC_API_URL set in the builder stage above only existed during
+# "pnpm build" (to get inlined into the client JS bundle). Server-side code
+# that runs at request time in THIS stage (e.g. generateMetadata in
+# app/layout.tsx) reads process.env fresh, so without redeclaring it here
+# that lookup returned undefined and silently fell back to a hardcoded
+# "http://localhost:8000" default -- which pointed every visitor's browser
+# at their own machine instead of the real API, breaking the SSR favicon
+# fix (and the same pattern would break any other future SSR fetch that
+# needs the public API prefix).
+ENV NEXT_PUBLIC_API_URL=/api
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs

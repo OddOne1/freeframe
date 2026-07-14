@@ -566,4 +566,7 @@ export interface SiteSettingsResponse {
   org_name: string;
   logo_dark_url: string | null;
   logo_light_url: string | null;
+  logo_login_url: string | null;
+  favicon_url: string | null;
+  theme_colors: Record<string, unknown> | null;
 }
