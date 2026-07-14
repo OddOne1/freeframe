@@ -15,7 +15,7 @@ from ..schemas.auth import (
 from ..services.auth_service import (
     hash_password, verify_password,
     create_access_token, create_refresh_token, decode_token,
-    get_user_by_email, get_user_by_id,
+    get_user_by_email, get_user_by_id, split_full_name,
 )
 from ..services.redis_service import (
     generate_magic_code, store_magic_code, verify_magic_code as redis_verify_magic_code,
@@ -62,7 +62,7 @@ def send_magic_code(body: SendMagicCodeRequest, db: Session = Depends(get_db)):
         # Create new user in pending_verification status
         user = User(
             email=body.email,
-            name=body.email.split("@")[0],
+            last_name=body.email.split("@")[0],
             status=UserStatus.pending_verification,
             email_verified=False,
             is_superadmin=is_first_user,
@@ -190,9 +190,11 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
     """Register with email + password (legacy, prefer magic code flow)."""
     if get_user_by_email(db, body.email):
         raise HTTPException(status_code=400, detail="Email already registered")
+    first_name, last_name = split_full_name(body.name)
     user = User(
         email=body.email,
-        name=body.name,
+        first_name=first_name,
+        last_name=last_name,
         password_hash=hash_password(body.password),
         status=UserStatus.active,
         email_verified=False,  # Not verified until magic code

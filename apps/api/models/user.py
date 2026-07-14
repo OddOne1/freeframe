@@ -20,7 +20,8 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    first_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    last_name: Mapped[str] = mapped_column(String(255), nullable=False)
     avatar_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[UserStatus] = mapped_column(Enum(UserStatus), default=UserStatus.active)
@@ -31,6 +32,19 @@ class User(Base):
     preferences: Mapped[dict] = mapped_column(JSON, nullable=False, server_default='{}')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def name(self) -> str:
+        """Computed full name, kept for backward compatibility with code
+        that still reads .name (email templates, admin listings, JWT
+        helpers). This is NOT a queryable column anymore -- anything that
+        used to filter with User.name.ilike(...) must filter on
+        first_name/last_name directly instead (see routers/users.py
+        search_users).
+        """
+        if self.first_name:
+            return f"{self.first_name} {self.last_name}"
+        return self.last_name
 
 class GuestUser(Base):
     __tablename__ = "guest_users"

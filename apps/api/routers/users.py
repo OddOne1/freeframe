@@ -8,7 +8,7 @@ from ..schemas.auth import UserResponse, InviteRequest, UpdateProfileRequest, Av
 from ..models.user import User, UserStatus
 from ..services import s3_service
 from ..middleware.auth import get_current_user
-from ..services.auth_service import hash_password, get_user_by_email
+from ..services.auth_service import hash_password, get_user_by_email, split_full_name
 from ..tasks.email_tasks import send_invite_email
 from ..tasks.celery_app import send_task_safe
 from ..config import settings
@@ -27,7 +27,7 @@ def get_avatar_upload_url(
     /users/{id} with the returned avatar_url once the S3 upload succeeds.
     """
     key = f"avatars/{current_user.id}/{uuid.uuid4()}.webp"
-    upload_url = s3_service._get_presign_client().generate_presigned_url(
+    upload_url = s3_service.get_s3_client().generate_presigned_url(
         "put_object",
         Params={
             "Bucket": settings.s3_bucket,
@@ -68,7 +68,7 @@ def search_users(
     pattern = f"%{q}%"
     users = db.query(User).filter(
         User.deleted_at.is_(None),
-        (User.name.ilike(pattern) | User.email.ilike(pattern)),
+        (User.first_name.ilike(pattern) | User.last_name.ilike(pattern) | User.email.ilike(pattern)),
     ).limit(10).all()
     return users
 
@@ -87,9 +87,11 @@ def invite_user(body: InviteRequest, db: Session = Depends(get_db), current_user
     invite_token = secrets.token_urlsafe(48)
     invite_expires = datetime.now(timezone.utc) + timedelta(days=7)
     
+    first_name, last_name = split_full_name(body.name)
     user = User(
         email=body.email,
-        name=body.name,
+        first_name=first_name,
+        last_name=last_name,
         status=UserStatus.pending_invite,
         invite_token=invite_token,
         invite_token_expires_at=invite_expires,
@@ -112,8 +114,13 @@ def update_user(user_id: uuid.UUID, body: UpdateProfileRequest, db: Session = De
     user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    if body.name is not None:
-        user.name = body.name.strip()
+    if body.first_name is not None:
+        user.first_name = body.first_name.strip() or None
+    if body.last_name is not None:
+        stripped_last_name = body.last_name.strip()
+        if not stripped_last_name:
+            raise HTTPException(status_code=400, detail="Last name cannot be empty")
+        user.last_name = stripped_last_name
     if body.avatar_url is not None:
         user.avatar_url = body.avatar_url
     db.commit()

@@ -25,6 +25,8 @@ class UserResponse(BaseModel):
     id: uuid.UUID
     email: str
     name: str
+    first_name: str | None
+    last_name: str
     avatar_url: str | None
     status: UserStatus
     email_verified: bool = False
@@ -37,7 +39,7 @@ class UserResponse(BaseModel):
 class AvatarUploadResponse(BaseModel):
     """Presigned upload target for a user's avatar, plus the final URL to
     PATCH back onto the user record once the upload completes. avatar_url
-    here is a long-lived (~5yr) proxy URL, not a raw S3 key — the avatar_url
+    here is a long-lived (~5yr) proxy URL, not a raw S3 key -- the avatar_url
     column on User is a plain stored string with no separate resolution
     step at read time (unlike SiteSettings' logo keys), so the long expiry
     keeps it valid without needing to be re-resolved on every request.
@@ -91,7 +93,8 @@ class InviteInfoResponse(BaseModel):
     org_name: str | None = None
 
 class UpdateProfileRequest(BaseModel):
-    name: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
     avatar_url: str | None = None
 
 class UpdateUserRoleRequest(BaseModel):
