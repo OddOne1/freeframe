@@ -94,6 +94,9 @@ export interface Project {
   storage_limit_bytes?: number | null;
   member_count?: number;
   role?: string | null;
+  archived_at?: string | null;
+  archived_by?: string | null;
+  archived_by_is_superadmin?: boolean;
   ratings_visible_to_all?: boolean;
 }
 
@@ -122,6 +125,7 @@ export interface AdminUser extends User {
 export interface AdminProject extends Project {
   owner_name: string | null;
   owner_email: string | null;
+  current_user_role?: string | null;
 }
 
 // ─── Asset & Media Entities ───────────────────────────────────────────────────
