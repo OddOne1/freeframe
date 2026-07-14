@@ -1,5 +1,3 @@
-import type { ThemeColorsPayload } from '@/lib/color-utils'
-
 // ─── Enums ───────────────────────────────────────────────────────────────────
 
 export type AssetType = "image" | "image_carousel" | "audio" | "video";
@@ -49,6 +47,8 @@ export interface User {
   id: string;
   email: string;
   name: string;
+  first_name: string | null;
+  last_name: string;
   avatar_url: string | null;
   status: UserStatus;
   is_superadmin: boolean;
@@ -95,9 +95,6 @@ export interface Project {
   member_count?: number;
   role?: string | null;
   ratings_visible_to_all?: boolean;
-  archived_at?: string | null;
-  archived_by?: string | null;
-  archived_by_is_superadmin?: boolean;
 }
 
 export interface ProjectMember {
@@ -125,7 +122,6 @@ export interface AdminUser extends User {
 export interface AdminProject extends Project {
   owner_name: string | null;
   owner_email: string | null;
-  current_user_role?: ProjectRole | null;
 }
 
 // ─── Asset & Media Entities ───────────────────────────────────────────────────
@@ -569,7 +565,5 @@ export interface AuthTokens {
 export interface SiteSettingsResponse {
   org_name: string;
   logo_dark_url: string | null;
-  favicon_url: string | null;
-  theme_colors: ThemeColorsPayload | null;
   logo_light_url: string | null;
 }

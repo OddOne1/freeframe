@@ -15,7 +15,8 @@ import type { VerifyCodeResponse } from '@/types'
 export default function ProfilePage() {
   const { user, fetchUser } = useAuthStore()
 
-  const [name, setName] = React.useState(user?.name ?? '')
+  const [firstName, setFirstName] = React.useState(user?.first_name ?? '')
+  const [lastName, setLastName] = React.useState(user?.last_name ?? '')
   const [isSavingProfile, setIsSavingProfile] = React.useState(false)
   const [profileError, setProfileError] = React.useState('')
   const [profileSuccess, setProfileSuccess] = React.useState(false)
@@ -35,22 +36,26 @@ export default function ProfilePage() {
   const [avatarError, setAvatarError] = React.useState('')
   const avatarInputRef = React.useRef<HTMLInputElement>(null)
 
-  // Sync name when user loads
+  // Sync name fields when user loads
   React.useEffect(() => {
-    if (user?.name) setName(user.name)
-  }, [user?.name])
+    if (user?.first_name !== undefined) setFirstName(user.first_name ?? '')
+    if (user?.last_name) setLastName(user.last_name)
+  }, [user?.first_name, user?.last_name])
 
   async function handleProfileSave(e: React.FormEvent) {
     e.preventDefault()
     setProfileError('')
     setProfileSuccess(false)
-    if (!name.trim()) {
-      setProfileError('Name is required')
+    if (!lastName.trim()) {
+      setProfileError('Last name is required')
       return
     }
     setIsSavingProfile(true)
     try {
-      await api.patch('/users/' + user?.id, { name: name.trim() })
+      await api.patch('/users/' + user?.id, {
+        first_name: firstName.trim() || null,
+        last_name: lastName.trim(),
+      })
       await fetchUser()
       setProfileSuccess(true)
       setTimeout(() => setProfileSuccess(false), 3000)
@@ -167,7 +172,7 @@ async function handleAvatarCropped(blob: Blob) {
 
         <div className="flex items-center gap-4">
           <button type="button" onClick={() => avatarInputRef.current?.click()} className="group relative inline-flex shrink-0 rounded-full">
-          <Avatar src={user?.avatar_url} name={user?.name} size="lg" />
+          <Avatar src={user?.avatar_url} name={user?.name} colorSeed={user?.id} size="lg" />
           <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
           <Camera className="h-4 w-4 text-white" />
           </span>
@@ -182,16 +187,30 @@ async function handleAvatarCropped(blob: Blob) {
           <AvatarCropper file={avatarFile} open={cropperOpen} onOpenChange={setCropperOpen} onCropped={handleAvatarCropped} saving={isSavingAvatar} />
 
         <form onSubmit={handleProfileSave} className="space-y-4">
-          <div className="space-y-1.5">
-            <label htmlFor="name" className="text-xs font-medium text-text-secondary">
-              Full Name
-            </label>
-            <Input
-              id="name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Your name"
-            />
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label htmlFor="firstName" className="text-xs font-medium text-text-secondary">
+                First Name
+              </label>
+              <Input
+                id="firstName"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                placeholder="Optional"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label htmlFor="lastName" className="text-xs font-medium text-text-secondary">
+                Last Name
+              </label>
+              <Input
+                id="lastName"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                placeholder="Required"
+              />
+            </div>
           </div>
 
           <div className="space-y-1.5">

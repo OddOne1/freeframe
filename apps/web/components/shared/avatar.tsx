@@ -9,6 +9,11 @@ type AvatarSize = 'sm' | 'md' | 'lg'
 interface AvatarProps {
   src?: string | null
   name?: string | null
+  /** Stable identifier (e.g. user id) used to derive a consistent fallback
+   *  color. Falls back to name if not provided -- either way the same
+   *  person always gets the same color; it is not re-randomized on every
+   *  render or page reload. */
+  colorSeed?: string | null
   size?: AvatarSize
   className?: string
 }
@@ -26,16 +31,32 @@ function getInitials(name?: string | null): string {
   return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase()
 }
 
-export function Avatar({ src, name, size = 'md', className }: AvatarProps) {
+/** Deterministic hash -> HSL color. The same seed always produces the same
+ *  color, so a person's avatar color stays consistent across sessions
+ *  instead of changing on every reload. */
+function colorForSeed(seed: string): string {
+  let hash = 0
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash << 5) - hash + seed.charCodeAt(i)
+    hash |= 0
+  }
+  const hue = Math.abs(hash) % 360
+  return 'hsl(' + hue + ', 58%, 45%)'
+}
+
+export function Avatar({ src, name, colorSeed, size = 'md', className }: AvatarProps) {
 // Relative /stream/... proxy paths need an absolute API URL to render in <img>.
 const resolvedSrc = resolveApiMediaUrl(src)
+const seed = colorSeed || name || '?'
+const fallbackColor = colorForSeed(seed)
   return (
     <RadixAvatar.Root
       className={cn(
-        'relative inline-flex items-center justify-center rounded-full overflow-hidden bg-accent-muted shrink-0',
+        'relative inline-flex items-center justify-center rounded-full overflow-hidden shrink-0',
         sizeClasses[size],
         className,
       )}
+      style={resolvedSrc ? undefined : { backgroundColor: fallbackColor }}
     >
       {resolvedSrc && (
         <RadixAvatar.Image
@@ -45,7 +66,7 @@ const resolvedSrc = resolveApiMediaUrl(src)
         />
       )}
       <RadixAvatar.Fallback
-        className="flex h-full w-full items-center justify-center font-medium text-accent"
+        className="flex h-full w-full items-center justify-center font-medium text-white"
         delayMs={0}
       >
         {getInitials(name)}
