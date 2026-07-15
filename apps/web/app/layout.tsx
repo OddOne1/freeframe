@@ -26,6 +26,20 @@ export async function generateMetadata(): Promise<Metadata> {
   // immediately. See favicon-initializer.tsx for the live-update companion
   // (keeps an already-open tab in sync right after a superadmin uploads a
   // new one, without needing a full reload).
+  //
+  // icons is now ALWAYS set explicitly (custom favicon_url when present,
+  // otherwise the bundled default at /logo-icon.png) rather than only when
+  // a custom one exists. Previously, when no custom favicon was set, this
+  // fell through to Next's file-based app/favicon.ico convention icon --
+  // but that file-convention icon ALWAYS renders its own
+  // <link rel="icon" sizes="32x32"> regardless of what generateMetadata
+  // sets, so it kept coexisting alongside the dynamic one even after a
+  // custom favicon WAS uploaded. Safari picks the sizes="32x32" one over
+  // the size-less dynamic one, so it kept showing the old default forever,
+  // no matter what the SSR or client-side code did. app/favicon.ico has
+  // been deleted from the repo for exactly this reason -- generateMetadata
+  // is now the single source of truth for the tab icon, full stop.
+  let iconHref = "/logo-icon.png";
   try {
     const internalUrl = process.env.API_INTERNAL_URL || "http://localhost:8000";
     const res = await fetch(internalUrl + "/site-settings", {
@@ -47,13 +61,14 @@ export async function generateMetadata(): Promise<Metadata> {
         // path (routed by Traefik to the api container) is the only value
         // this has ever been set to in this deployment.
         const publicPrefix = process.env.NEXT_PUBLIC_API_URL || "/api";
-        base.icons = { icon: publicPrefix + data.favicon_url };
+        iconHref = publicPrefix + data.favicon_url;
       }
     }
   } catch {
-    // Backend unreachable at render time -- fall back to no custom favicon
-    // rather than failing the whole page render.
+    // Backend unreachable at render time -- fall back to the bundled
+    // default icon rather than failing the whole page render.
   }
+  base.icons = { icon: iconHref };
 
   return base;
 }
