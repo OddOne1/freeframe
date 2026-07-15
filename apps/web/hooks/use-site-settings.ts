@@ -36,21 +36,20 @@ export function useSiteSettings() {
     await mutate(updated, false)
   }
 
+  // Uploaded straight through the API (see apps/api/routers/site_settings.py
+  // ::upload_site_logo) rather than a presigned browser->S3 PUT -- AIStor is
+  // only reachable over plain HTTP on the LAN, so a direct presigned URL
+  // handed to this https:// page gets blocked as mixed content in browsers
+  // without an override already set for this origin. One request now does
+  // the upload and persists the *_s3_key server-side, instead of
+  // upload-URL + PUT + PATCH.
   async function uploadLogo(side: LogoSide, file: File): Promise<void> {
-    const { upload_url, key } = await api.post<{ upload_url: string; key: string }>(
-      `/site-settings/logo-upload?side=${side}`,
+    const formData = new FormData()
+    formData.append('file', file)
+    const updated = await api.upload<SiteSettingsResponse>(
+            `/site-settings/logo-upload?side=${side}`,
+      formData,
     )
-    const putResponse = await fetch(upload_url, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'image/webp' },
-      body: file,
-    })
-    if (!putResponse.ok) {
-      throw new Error(`Logo upload failed: ${putResponse.statusText}`)
-    }
-    const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
-      [LOGO_FIELD[side]]: key,
-    })
     await mutate(updated, false)
   }
 
@@ -62,20 +61,9 @@ export function useSiteSettings() {
   }
 
   async function uploadFavicon(file: File): Promise<void> {
-    const { upload_url, key } = await api.post<{ upload_url: string; key: string }>(
-      '/site-settings/favicon-upload',
-    )
-    const putResponse = await fetch(upload_url, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'image/png' },
-      body: file,
-    })
-    if (!putResponse.ok) {
-      throw new Error(`Favicon upload failed: ${putResponse.statusText}`)
-    }
-    const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
-      favicon_s3_key: key,
-    })
+    const formData = new FormData()
+    formData.append('file', file)
+    const updated = await api.upload<SiteSettingsResponse>('/site-settings/favicon-upload', formData)
     await mutate(updated, false)
   }
 

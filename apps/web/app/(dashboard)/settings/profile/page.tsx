@@ -80,15 +80,17 @@ async function handleAvatarCropped(blob: Blob) {
   setIsSavingAvatar(true)
   setAvatarError('')
   try {
-    const { upload_url, avatar_url } = await api.post<{ upload_url: string; key: string; avatar_url: string }>(
-      '/users/me/avatar-upload',
-    )
-    await fetch(upload_url, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'image/webp' },
-      body: blob,
-    })
-    await api.patch('/users/' + user?.id, { avatar_url })
+    // Uploaded straight through the API (matches the project-poster
+    // upload pattern in project-settings-dialog.tsx) rather than a
+    // presigned browser->S3 PUT -- see apps/api/routers/users.py::
+    // upload_avatar for why: a direct presigned URL to AIStor's LAN-only
+    // HTTP endpoint gets blocked as mixed content on this HTTPS page in
+    // any browser without an override already set, which is what broke
+    // this in Safari. One request now does the upload and persists
+    // avatar_url server-side, instead of upload-URL + PUT + PATCH.
+    const formData = new FormData()
+    formData.append('file', blob, 'avatar.webp')
+    await api.upload('/users/me/avatar', formData)
     await fetchUser()
     setCropperOpen(false)
   } catch (err: unknown) {

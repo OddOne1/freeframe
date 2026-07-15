@@ -20,12 +20,3 @@ class SiteSettingsUpdate(BaseModel):
     logo_login_s3_key: Optional[str] = None
     favicon_s3_key: Optional[str] = None
     theme_colors: Optional[Dict[str, Any]] = None
-
-
-class SiteLogoUploadResponse(BaseModel):
-    upload_url: str
-    key: str
-
-class SiteFaviconUploadResponse(BaseModel):
-    upload_url: str
-    key: str

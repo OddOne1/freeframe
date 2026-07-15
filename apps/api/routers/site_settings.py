@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -10,12 +10,9 @@ from ..models.site_settings import SiteSettings
 from ..schemas.site_settings import (
     SiteSettingsResponse,
     SiteSettingsUpdate,
-    SiteLogoUploadResponse,
-    SiteFaviconUploadResponse,
 )
 from ..services import s3_service
 from .hls_proxy import proxy_url_for
-from ..config import settings
 
 router = APIRouter(tags=["site-settings"])
 
@@ -95,14 +92,24 @@ def update_site_settings(
 
 @router.post(
     "/site-settings/logo-upload",
-    response_model=SiteLogoUploadResponse,
-    status_code=status.HTTP_201_CREATED,
+    response_model=SiteSettingsResponse,
+    status_code=status.HTTP_200_OK,
 )
-def get_site_logo_upload_url(
+async def upload_site_logo(
     side: str,
+    file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Upload one of the site-wide logos (dark/light/login) and persist it
+    in the same request.
+
+    Uploaded straight through this API container rather than a presigned
+    browser->S3 PUT -- see users.py::upload_avatar for the full reasoning:
+    AIStor is only reachable over plain HTTP on the LAN, so a direct
+    presigned URL handed to an https:// page gets blocked as mixed content
+    in browsers without an override already set for this origin.
+    """
     if not current_user.is_superadmin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -111,40 +118,43 @@ def get_site_logo_upload_url(
     if side not in ("dark", "light", "login"):
         raise HTTPException(status_code=400, detail="side must be 'dark', 'light', or 'login'")
 
+    body = await file.read()
     key = f"site-settings/logo-{side}/{uuid.uuid4()}.webp"
-    upload_url = s3_service._get_presign_client().generate_presigned_url(
-        "put_object",
-        Params={
-            "Bucket": settings.s3_bucket,
-            "Key": key,
-            "ContentType": "image/webp",
-        },
-        ExpiresIn=3600,
-    )
-    return SiteLogoUploadResponse(upload_url=upload_url, key=key)
+    s3_service.put_object(key, body, content_type="image/webp", cache_control="max-age=86400")
+
+    site_settings = _get_or_create_settings(db)
+    setattr(site_settings, f"logo_{side}_s3_key", key)
+    db.commit()
+    db.refresh(site_settings)
+    return _to_response(site_settings)
+
+
 @router.post(
     "/site-settings/favicon-upload",
-    response_model=SiteFaviconUploadResponse,
-    status_code=status.HTTP_201_CREATED,
+    response_model=SiteSettingsResponse,
+    status_code=status.HTTP_200_OK,
 )
-def get_site_favicon_upload_url(
+async def upload_site_favicon(
+    file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Upload the site-wide favicon and persist it in the same request.
+    See upload_site_logo above for why this proxies through the API
+    instead of a presigned browser->S3 PUT.
+    """
     if not current_user.is_superadmin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can update site settings",
         )
 
+    body = await file.read()
     key = f"site-settings/favicon-{uuid.uuid4()}.png"
-    upload_url = s3_service._get_presign_client().generate_presigned_url(
-        "put_object",
-        Params={
-            "Bucket": settings.s3_bucket,
-            "Key": key,
-            "ContentType": "image/png",
-        },
-        ExpiresIn=3600,
-    )
-    return SiteFaviconUploadResponse(upload_url=upload_url, key=key)
+    s3_service.put_object(key, body, content_type="image/png", cache_control="max-age=86400")
+
+    site_settings = _get_or_create_settings(db)
+    site_settings.favicon_s3_key = key
+    db.commit()
+    db.refresh(site_settings)
+    return _to_response(site_settings)

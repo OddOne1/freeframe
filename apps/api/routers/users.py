@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 import uuid
 import secrets
 from datetime import datetime, timezone, timedelta
 from ..database import get_db
-from ..schemas.auth import UserResponse, InviteRequest, UpdateProfileRequest, AvatarUploadResponse
+from ..schemas.auth import UserResponse, InviteRequest, UpdateProfileRequest
 from ..models.user import User, UserStatus
 from ..services import s3_service
 from ..middleware.auth import get_current_user
@@ -16,30 +16,37 @@ from .hls_proxy import proxy_url_for
 
 router = APIRouter(prefix="/users", tags=["users"])
 
-@router.post("/me/avatar-upload", response_model=AvatarUploadResponse, status_code=status.HTTP_201_CREATED)
-def get_avatar_upload_url(
+@router.post("/me/avatar", response_model=UserResponse, status_code=status.HTTP_200_OK)
+async def upload_avatar(
+    file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Presigned upload target for the caller's own avatar. The client
-    crops/downsizes the image to a small square WebP itself before
-    uploading (we don't re-process it server-side), then PATCHes
-    /users/{id} with the returned avatar_url once the S3 upload succeeds.
+    """Upload the caller's own avatar. The client crops/downsizes the image
+    to a small square WebP itself before uploading -- we don't re-process
+    it server-side.
+
+    Uploaded straight through this API container rather than a presigned
+    browser->S3 PUT. AIStor is only reachable over plain HTTP on the LAN,
+    so handing the browser a direct http://192.168.x.x presigned URL from
+    an https:// page gets blocked as mixed content / a CORS preflight
+    failure in any browser without an insecure-content override already
+    set for this origin -- which is exactly what broke this in Safari.
+    Proxying the bytes through here instead matches how every *read*
+    already works (see hls_proxy.py's module docstring): the bucket never
+    needs to be reachable from outside the Docker/LAN network, for uploads
+    either.
     """
+    body = await file.read()
     key = f"avatars/{current_user.id}/{uuid.uuid4()}.webp"
-    upload_url = s3_service.get_s3_client().generate_presigned_url(
-        "put_object",
-        Params={
-            "Bucket": settings.s3_bucket,
-            "Key": key,
-            "ContentType": "image/webp",
-        },
-        ExpiresIn=3600,
-    )
-    # ~5 years — avatar_url is stored as a plain string with no re-resolution
-    # at read time, so this needs to outlive normal token lifetimes.
-    avatar_url = proxy_url_for(key, expires_hours=24 * 365 * 5)
-    return AvatarUploadResponse(upload_url=upload_url, key=key, avatar_url=avatar_url)
+    s3_service.put_object(key, body, content_type="image/webp", cache_control="max-age=86400")
+    # ~5 years -- avatar_url is stored as a plain string with no separate
+    # resolution step at read time, so this needs to outlive normal token
+    # lifetimes.
+    current_user.avatar_url = proxy_url_for(key, expires_hours=24 * 365 * 5)
+    db.commit()
+    db.refresh(current_user)
+    return current_user
 
 @router.get("", response_model=list[UserResponse])
 def get_users_batch(
