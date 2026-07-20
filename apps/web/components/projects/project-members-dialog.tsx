@@ -27,14 +27,19 @@ interface MemberWithUser {
   user: User
 }
 
+// 'owner' is deliberately excluded -- it's unique per project (the crown)
+// and can only move via the Transfer Ownership flow, never this dropdown.
 const ROLES: { value: ProjectRole; label: string; description: string }[] = [
-  { value: 'owner', label: 'Full Access', description: 'Can manage all resources within the project' },
+  { value: 'admin', label: 'Manager', description: 'Can manage all resources within the project' },
   { value: 'editor', label: 'Edit & Share', description: 'Can manage resources, download, and share' },
   { value: 'reviewer', label: 'Comment Only', description: 'Can view and comment on the relevant resources' },
   { value: 'viewer', label: 'View Only', description: 'Can view the relevant resources' },
 ]
 
+const OWNER_LABEL = 'Full Access'
+
 function roleLabelFor(role: ProjectRole) {
+  if (role === 'owner') return OWNER_LABEL
   return ROLES.find((r) => r.value === role)?.label ?? role
 }
 

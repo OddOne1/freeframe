@@ -16,6 +16,7 @@ class ProjectType(str, PyEnum):
 
 class ProjectRole(str, PyEnum):
     owner = "owner"
+    admin = "admin"
     editor = "editor"
     reviewer = "reviewer"
     viewer = "viewer"
@@ -26,7 +27,14 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
     project_type: Mapped[ProjectType] = mapped_column(Enum(ProjectType), default=ProjectType.personal)
-    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    # Historical "who created this" pointer only -- NOT kept in sync with
+    # current ownership (see ProjectMember.role == owner, unique per
+    # project). Nullable + SET NULL so a deleted creator doesn't block.
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # Snapshot of the creator's identity at creation time, so it survives
+    # the User row being deleted/deactivated. Set once, never updated.
+    created_by_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_by_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     poster_s3_key: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     ratings_visible_to_all: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")

@@ -10,7 +10,7 @@ export type OrgRole = "owner" | "admin" | "member";
 
 export type TeamRole = "lead" | "member";
 
-export type ProjectRole = "owner" | "editor" | "reviewer" | "viewer";
+export type ProjectRole = "owner" | "admin" | "editor" | "reviewer" | "viewer";
 
 export type ProjectType = "personal" | "team";
 

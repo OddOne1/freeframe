@@ -16,7 +16,6 @@ import type { Project } from '@/types'
 interface ProjectCardProps {
   project: Project
   showRole?: boolean
-  isOwner?: boolean
   className?: string
   onMutate?: () => void
 }
@@ -24,7 +23,6 @@ interface ProjectCardProps {
 export function ProjectCard({
   project,
   showRole,
-  isOwner,
   className,
   onMutate,
 }: ProjectCardProps) {
@@ -37,12 +35,14 @@ export function ProjectCard({
   const [deleting, setDeleting] = React.useState(false)
   const [archiving, setArchiving] = React.useState(false)
 
-  // "Project Admin" = anyone with role=owner membership on this project.
-  // "Owner" (singular, the crown) = project.created_by. Every Project
-  // Admin can manage settings/members/archive; only the Owner (or a
-  // superadmin) can delete outright or transfer the crown away.
-  const isProjectAdmin = isOwner || project.role === 'owner'
-  const isTrueOwner = !!user && project.created_by === user.id
+  // "Project Admin" = anyone with role=owner or role=admin membership on
+  // this project. "Owner" (singular, the crown) = role=owner specifically,
+  // unique per project -- project.created_by is a frozen creation-time
+  // snapshot now, not the current owner, so it can't be used here. Every
+  // Project Admin can manage settings/members/archive; only the Owner (or
+  // a superadmin) can delete outright or transfer the crown away.
+  const isProjectAdmin = project.role === 'owner' || project.role === 'admin'
+  const isTrueOwner = project.role === 'owner'
   const canDelete = isTrueOwner || !!user?.is_superadmin
   const isArchived = !!project.archived_at
 
@@ -124,7 +124,7 @@ export function ProjectCard({
               )}
               {showRole && project.role && project.role !== 'owner' && (
                 <span className="inline-flex items-center rounded-full bg-black/30 backdrop-blur-sm px-2 py-0.5 text-[10px] font-medium text-white/90 capitalize">
-                  {project.role}
+                  {project.role === 'admin' ? 'Manager' : project.role}
                 </span>
               )}
             </div>

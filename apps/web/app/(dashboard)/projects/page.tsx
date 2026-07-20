@@ -20,7 +20,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ProjectCard } from "@/components/projects/project-card";
 import { EmptyState } from "@/components/shared/empty-state";
-import { useAuthStore } from "@/stores/auth-store";
 import { usePageTitle } from "@/hooks/use-page-title";
 import type { Project, ProjectType } from "@/types";
 
@@ -42,13 +41,15 @@ function ProjectListRow({
   const roleName =
     project.role === "owner"
       ? "Owner"
-      : project.role === "editor"
-        ? "Editor"
-        : project.role === "reviewer"
-          ? "Reviewer"
-          : project.role === "viewer"
-            ? "Viewer"
-            : "Member";
+      : project.role === "admin"
+        ? "Manager"
+        : project.role === "editor"
+          ? "Editor"
+          : project.role === "reviewer"
+            ? "Reviewer"
+            : project.role === "viewer"
+              ? "Viewer"
+              : "Member";
 
   return (
     <a
@@ -108,7 +109,6 @@ function ProjectSection({
   onNewProject,
   showNewButton,
   showRole,
-  userId,
   onMutate,
 }: {
   title: string;
@@ -119,7 +119,6 @@ function ProjectSection({
   onNewProject?: () => void;
   showNewButton?: boolean;
   showRole?: boolean;
-  userId?: string;
   onMutate?: () => void;
 }) {
   if (projects.length === 0 && !showNewButton) {
@@ -160,7 +159,6 @@ function ProjectSection({
               key={project.id}
               project={project}
               showRole={showRole}
-              isOwner={!!userId && project.created_by === userId}
               onMutate={onMutate}
             />
           ))}
@@ -207,7 +205,6 @@ function ProjectSection({
 export default function ProjectsPage() {
   usePageTitle("Projects");
   const router = useRouter();
-  const { user } = useAuthStore();
   const [viewMode, setViewMode] = React.useState<ViewMode>("grid");
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [isCreating, setIsCreating] = React.useState(false);
@@ -429,7 +426,6 @@ export default function ProjectsPage() {
             emptyMessage="You haven't created any projects yet."
             onNewProject={() => setDialogOpen(true)}
             showNewButton
-            userId={user?.id}
             onMutate={() => mutateProjects()}
           />
           {sharedProjects.length > 0 && (
@@ -440,7 +436,6 @@ export default function ProjectsPage() {
               viewMode={viewMode}
               emptyMessage=""
               showRole
-              userId={user?.id}
               onMutate={() => mutateProjects()}
             />
           )}
@@ -451,7 +446,6 @@ export default function ProjectsPage() {
               projects={publicProjects}
               viewMode={viewMode}
               emptyMessage=""
-              userId={user?.id}
               onMutate={() => mutateProjects()}
             />
           )}

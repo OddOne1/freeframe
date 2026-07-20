@@ -384,12 +384,13 @@ def admin_transfer_ownership(
     """Transfer a project's ownership to a different user, bypassing the
     normal "target must already be a Project Admin" restriction on the
     self-service version of this endpoint (projects.py) — admins may hand
-    the project to anyone, promoting/adding them as a Project Admin
-    (role=owner member) if needed. Unlike the old behavior, this does NOT
-    demote other existing Project Admins to editor: "Project Admin"
-    (role=owner) is a legitimate multi-person tier now, separate from the
-    single canonical Owner (Project.created_by) this endpoint moves.
-    Only accessible by admins."""
+    the project to anyone, promoting/adding them if needed. role=owner is
+    unique per project (see the partial index in add_project_admin_role),
+    so this demotes whichever member currently holds it to admin before
+    promoting the target — unlike role=admin, which stays a legitimate
+    multi-person tier untouched by this. Does not touch
+    Project.created_by, which is a frozen creation-time snapshot, not the
+    current owner. Only accessible by admins."""
     _require_superadmin(current_user)
 
     project = db.query(Project).filter(Project.id == project_id, Project.deleted_at.is_(None)).first()
@@ -399,6 +400,14 @@ def admin_transfer_ownership(
     new_owner = db.query(User).filter(User.id == body.new_owner_id, User.deleted_at.is_(None)).first()
     if not new_owner:
         raise HTTPException(status_code=404, detail="Target user not found")
+
+    current_owner_membership = db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.role == ProjectRole.owner,
+        ProjectMember.deleted_at.is_(None),
+    ).first()
+    if current_owner_membership and current_owner_membership.user_id != body.new_owner_id:
+        current_owner_membership.role = ProjectRole.admin
 
     membership = db.query(ProjectMember).filter(
         ProjectMember.project_id == project_id,
@@ -413,7 +422,6 @@ def admin_transfer_ownership(
             role=ProjectRole.owner, invited_by=current_user.id,
         ))
 
-    project.created_by = body.new_owner_id
     db.commit()
     db.refresh(project)
 

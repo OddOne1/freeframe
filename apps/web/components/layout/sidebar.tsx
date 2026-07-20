@@ -18,6 +18,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { useUploadStore } from '@/stores/upload-store'
 import { useNotificationStore } from '@/stores/notification-store'
 import { useSiteSettings } from '@/hooks/use-site-settings'
+import { useHasProjectPrivilege } from '@/hooks/use-project-privilege'
 import { useThemeStore } from '@/stores/theme-store'
 import { Avatar } from '@/components/shared/avatar'
 import { NotificationDrawer } from './notification-drawer'
@@ -39,10 +40,11 @@ interface SidebarProps {
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const pathname = usePathname()
-  const { user, logout } = useAuthStore()
+  const { user, isSuperAdmin, logout } = useAuthStore()
   const { files: uploadFiles, togglePanel, panelOpen } = useUploadStore()
   const { unreadCount, fetchNotifications } = useNotificationStore()
   const { orgName, logoDarkUrl, logoLightUrl } = useSiteSettings()
+  const hasSettingsAccess = useHasProjectPrivilege()
   const { resolvedTheme } = useThemeStore()
     // Pick logo based on resolved theme; fall back to the other if only one is set.
     // Uses resolvedTheme (not theme) because theme can be 'system', which never
@@ -242,15 +244,22 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                   Profile
                 </Link>
               </DropdownMenu.Item>
-              <DropdownMenu.Item asChild>
-                <Link
-                  href="/settings/admin"
-                  className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-[13px] text-text-secondary hover:bg-bg-hover hover:text-text-primary focus:outline-none"
-                >
-                  <Settings className="h-4 w-4" />
-                  Settings
-                </Link>
-              </DropdownMenu.Item>
+              {hasSettingsAccess && (
+                <DropdownMenu.Item asChild>
+                  {/* Non-superadmins only ever reach this branch via an
+                      owner/admin project role, and /settings/admin bounces
+                      anyone who isn't a superadmin straight back out -- send
+                      them to Profile instead until Settings > Projects has a
+                      non-superadmin view of its own. */}
+                  <Link
+                    href={isSuperAdmin ? '/settings/admin' : '/settings/profile'}
+                    className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-[13px] text-text-secondary hover:bg-bg-hover hover:text-text-primary focus:outline-none"
+                  >
+                    <Settings className="h-4 w-4" />
+                    Settings
+                  </Link>
+                </DropdownMenu.Item>
+              )}
               <DropdownMenu.Separator className="my-1 h-px bg-border" />
               <DropdownMenu.Item
                 onSelect={logout}

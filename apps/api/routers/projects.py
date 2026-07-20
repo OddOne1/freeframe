@@ -34,16 +34,30 @@ def _require_project_owner(db: Session, project_id: uuid.UUID, user: User) -> Pr
         ProjectMember.user_id == user.id,
         ProjectMember.deleted_at.is_(None),
     ).first()
-    if not member or member.role != ProjectRole.owner:
+    if not member or member.role not in (ProjectRole.owner, ProjectRole.admin):
         raise HTTPException(status_code=403, detail="Project owner access required")
     return member
 
-def _require_true_owner_or_superadmin(project: Project, user: User) -> None:
-    """Stricter than _require_project_owner: only the single canonical
-    owner (project.created_by — a Project Admin who holds the crown) or a
-    superadmin may do this, not just any Project Admin (role=owner
-    member). Used for delete."""
-    if project.created_by != user.id and not user.is_superadmin:
+def _get_true_owner_member(db: Session, project_id: uuid.UUID) -> ProjectMember | None:
+    """The single ProjectMember holding role=owner for this project (unique,
+    enforced by a partial index) -- the current true owner. Not the same as
+    project.created_by, which is a frozen "who created this" snapshot and no
+    longer moves on transfer."""
+    return db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.role == ProjectRole.owner,
+        ProjectMember.deleted_at.is_(None),
+    ).first()
+
+def _require_true_owner_or_superadmin(db: Session, project_id: uuid.UUID, user: User) -> None:
+    """Stricter than _require_project_owner: only the current true owner
+    (the ProjectMember holding role=owner) or a superadmin may do this, not
+    just any Project Admin (role=owner or admin member). Used for delete
+    and as the actor-side check for self-service transfer-ownership."""
+    if user.is_superadmin:
+        return
+    owner_member = _get_true_owner_member(db, project_id)
+    if not owner_member or owner_member.user_id != user.id:
         raise HTTPException(status_code=403, detail="Only the project owner or a superadmin can do this")
 
 def _project_visible_to(project: Project, user: User, archiver_is_superadmin: bool) -> bool:
@@ -67,6 +81,8 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db), current_u
         description=body.description,
         project_type=body.project_type,
         created_by=current_user.id,
+        created_by_name=current_user.name,
+        created_by_email=current_user.email,
     )
     db.add(project)
     db.flush()
@@ -226,11 +242,11 @@ def update_project(project_id: uuid.UUID, body: ProjectUpdate, db: Session = Dep
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_project(project_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Permanent (soft) delete. Unlike other project-management actions,
-    this is NOT open to every Project Admin (role=owner member) — only the
-    true owner (project.created_by) or a superadmin. Project Admins who
-    want a reversible option should use archive instead."""
+    this is NOT open to every Project Admin (role=owner or admin member) —
+    only the current true owner (role=owner) or a superadmin. Project
+    Admins who want a reversible option should use archive instead."""
     project = _get_project(db, project_id)
-    _require_true_owner_or_superadmin(project, current_user)
+    _require_true_owner_or_superadmin(db, project_id, current_user)
     project.deleted_at = datetime.now(timezone.utc)
     db.commit()
 
@@ -256,6 +272,8 @@ def list_project_members(project_id: uuid.UUID, db: Session = Depends(get_db), c
 def add_project_member(project_id: uuid.UUID, body: AddProjectMemberRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _get_project(db, project_id)
     _require_project_owner(db, project_id, current_user)
+    if body.role == ProjectRole.owner:
+        raise HTTPException(status_code=400, detail="Use Transfer Ownership to make someone the project owner")
     existing = db.query(ProjectMember).filter(ProjectMember.project_id == project_id, ProjectMember.user_id == body.user_id).first()
     if existing:
         if existing.deleted_at is None:
@@ -289,13 +307,17 @@ def add_project_member(project_id: uuid.UUID, body: AddProjectMemberRequest, db:
 
 @router.patch("/{project_id}/members/{user_id}", response_model=ProjectMemberResponse)
 def update_project_member(project_id: uuid.UUID, user_id: uuid.UUID, body: UpdateProjectMemberRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    project = _get_project(db, project_id)
+    _get_project(db, project_id)
     _require_project_owner(db, project_id, current_user)
-    if user_id == project.created_by and body.role != ProjectRole.owner:
-        raise HTTPException(status_code=400, detail="Transfer ownership before demoting the project owner")
     member = db.query(ProjectMember).filter(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id, ProjectMember.deleted_at.is_(None)).first()
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
+    # role=owner is unique per project (see _get_true_owner_member) -- can
+    # only move via Transfer Ownership, never a direct role edit here.
+    if member.role == ProjectRole.owner and body.role != ProjectRole.owner:
+        raise HTTPException(status_code=400, detail="Transfer ownership before demoting the project owner")
+    if body.role == ProjectRole.owner and member.role != ProjectRole.owner:
+        raise HTTPException(status_code=400, detail="Use Transfer Ownership to make someone the project owner")
     member.role = body.role
     db.commit()
     db.refresh(member)
@@ -303,13 +325,13 @@ def update_project_member(project_id: uuid.UUID, user_id: uuid.UUID, body: Updat
 
 @router.delete("/{project_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_project_member(project_id: uuid.UUID, user_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    project = _get_project(db, project_id)
+    _get_project(db, project_id)
     _require_project_owner(db, project_id, current_user)
-    if user_id == project.created_by:
-        raise HTTPException(status_code=400, detail="Transfer ownership before removing the project owner")
     member = db.query(ProjectMember).filter(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id, ProjectMember.deleted_at.is_(None)).first()
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
+    if member.role == ProjectRole.owner:
+        raise HTTPException(status_code=400, detail="Transfer ownership before removing the project owner")
     member.deleted_at = datetime.now(timezone.utc)
     db.commit()
 
@@ -317,9 +339,9 @@ def remove_project_member(project_id: uuid.UUID, user_id: uuid.UUID, db: Session
 
 @router.post("/{project_id}/archive", response_model=ProjectResponse)
 def archive_project(project_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """Reversible alternative to delete. Any Project Admin (role=owner
-    member) or a superadmin can archive; see _project_visible_to for who
-    can still see/reactivate it afterward."""
+    """Reversible alternative to delete. Any Project Admin (role=owner or
+    admin member) or a superadmin can archive; see _project_visible_to for
+    who can still see/reactivate it afterward."""
     project = _get_project(db, project_id)
     if not current_user.is_superadmin:
         _require_project_owner(db, project_id, current_user)
@@ -364,27 +386,33 @@ def reactivate_project(project_id: uuid.UUID, db: Session = Depends(get_db), cur
 
 @router.post("/{project_id}/transfer-ownership", response_model=ProjectResponse)
 def transfer_project_ownership(project_id: uuid.UUID, body: TransferOwnershipRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """Self-service transfer, only for the true owner, only to an
-    existing Project Admin (role=owner member) on this project. Does not
-    touch anyone's ProjectMember.role — both the old and new true owner
-    remain Project Admins. Superadmins use the separate admin-bypass
-    endpoint in admin.py, which can promote/add anyone."""
-    project = _get_project(db, project_id)
-    if project.created_by != current_user.id:
-        raise HTTPException(status_code=403, detail="Only the current owner can transfer ownership")
+    """Self-service transfer, only for the current true owner (the
+    ProjectMember holding role=owner), only to an existing admin-tier
+    Project Admin (role=admin member) on this project. Flips
+    ProjectMember.role on both sides -- the old owner becomes admin, the
+    target becomes owner -- rather than touching project.created_by, which
+    is a frozen creation-time snapshot and no longer tracks current
+    ownership. Superadmins use the separate admin-bypass endpoint in
+    admin.py, which can promote/add anyone regardless of current role."""
+    _get_project(db, project_id)
+    _require_true_owner_or_superadmin(db, project_id, current_user)
+    owner_member = _get_true_owner_member(db, project_id)
+    if not owner_member:
+        raise HTTPException(status_code=400, detail="This project has no current owner to transfer from")
 
     target_member = db.query(ProjectMember).filter(
         ProjectMember.project_id == project_id,
         ProjectMember.user_id == body.new_owner_id,
-        ProjectMember.role == ProjectRole.owner,
+        ProjectMember.role == ProjectRole.admin,
         ProjectMember.deleted_at.is_(None),
     ).first()
     if not target_member:
         raise HTTPException(status_code=400, detail="Target must already be a Project Admin on this project — promote them first")
 
-    project.created_by = body.new_owner_id
+    owner_member.role = ProjectRole.admin
+    target_member.role = ProjectRole.owner
     db.commit()
-    db.refresh(project)
+    project = _get_project(db, project_id)
     resp = ProjectResponse.model_validate(project)
     resp.poster_url = _resolve_poster_url(project)
     return resp

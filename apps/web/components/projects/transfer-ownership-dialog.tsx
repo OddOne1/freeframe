@@ -50,7 +50,7 @@ export function TransferOwnershipDialog({
         const rawMembers = await api.get<{ user_id: string; role: ProjectRole }[]>(
           `/projects/${projectId}/members`,
         )
-        const owners = rawMembers.filter((m) => m.role === 'owner')
+        const owners = rawMembers.filter((m) => m.role === 'admin')
         if (owners.length === 0) {
           setAdmins([])
           return
@@ -98,18 +98,18 @@ export function TransferOwnershipDialog({
             Transfer Ownership
           </Dialog.Title>
           <Dialog.Description className="mt-1 text-sm text-text-secondary">
-            Hand &quot;{projectName}&quot; to another Project Admin. You&apos;ll remain a Project
-            Admin, just not the owner.
+            Hand &quot;{projectName}&quot; to a Manager. You&apos;ll remain a Manager, just not
+            the owner.
           </Dialog.Description>
 
           <div className="mt-4 space-y-1 max-h-56 overflow-y-auto">
             {loading ? (
               <p className="text-xs text-text-tertiary py-4 text-center">
-                Loading Project Admins…
+                Loading Managers…
               </p>
             ) : admins.length === 0 ? (
               <p className="text-xs text-text-tertiary py-4 text-center">
-                No other Project Admins yet. Give someone Full Access in Members first.
+                No other Managers yet. Give someone Manager access in Members first.
               </p>
             ) : (
               admins.map((m) => (
