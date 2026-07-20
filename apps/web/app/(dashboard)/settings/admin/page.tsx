@@ -12,6 +12,7 @@ import {
   Check,
   FolderKanban,
   Search,
+  ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -286,6 +287,75 @@ function UserProjects({ projects }: { projects: AdminUserProjectSummary[] }) {
   );
 }
 
+// ─── User group block: independent bordered table per group, collapsible ──
+
+const USER_TABLE_COLUMNS = [
+  { key: "user", label: "User", align: "left" as const },
+  { key: "projects", label: "Projects", align: "left" as const },
+  { key: "role", label: "Role", align: "left" as const },
+  { key: "status", label: "Status", align: "left" as const },
+  { key: "joined", label: "Joined", align: "left" as const },
+  { key: "actions", label: "Actions", align: "right" as const },
+];
+
+function UserGroupBlock({
+  title,
+  users,
+  collapsed,
+  onToggle,
+  renderRow,
+}: {
+  title: string;
+  users: AdminUser[];
+  collapsed: boolean;
+  onToggle: () => void;
+  renderRow: (u: AdminUser) => React.ReactNode;
+}) {
+  if (users.length === 0) return null;
+
+  return (
+    <div className="rounded-lg border border-border bg-bg-secondary overflow-x-auto">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        className="flex w-full items-center gap-2 bg-bg-tertiary/60 px-4 py-2 text-left transition-colors hover:bg-bg-tertiary"
+      >
+        <ChevronDown
+          className={cn(
+            "h-3.5 w-3.5 shrink-0 text-text-tertiary transition-transform",
+            collapsed && "-rotate-90",
+          )}
+        />
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
+          {title} ({users.length})
+        </span>
+      </button>
+
+      {!collapsed && (
+        <table className="w-full text-sm min-w-[760px]">
+          <thead>
+            <tr className="border-b border-t border-border bg-bg-tertiary">
+              {USER_TABLE_COLUMNS.map((col) => (
+                <th
+                  key={col.key}
+                  className={cn(
+                    "px-4 py-2.5 text-xs font-medium text-text-tertiary",
+                    col.align === "right" ? "text-right" : "text-left",
+                  )}
+                >
+                  {col.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>{users.map(renderRow)}</tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────
 // Project management (rename/archive/delete/transfer/all-projects) lives
 // on the superadmin-only /settings/projects tab now -- every Project Admin
@@ -359,6 +429,8 @@ export default function AdminPage() {
   const [sortBy, setSortBy] = React.useState<"name" | "email" | "status">(
     "name",
   );
+  const [adminsCollapsed, setAdminsCollapsed] = React.useState(false);
+  const [membersCollapsed, setMembersCollapsed] = React.useState(false);
 
   const filteredUsers = React.useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -568,55 +640,21 @@ export default function AdminPage() {
             />
           </div>
         ) : (
-          <div className="rounded-lg border border-border bg-bg-secondary overflow-x-auto">
-            <table className="w-full text-sm min-w-[760px]">
-              <thead>
-                <tr className="border-b border-border bg-bg-tertiary">
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">
-                    User
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">
-                    Projects
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">
-                    Role
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">
-                    Status
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">
-                    Joined
-                  </th>
-                  <th className="px-4 py-2.5 text-right text-xs font-medium text-text-tertiary">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {admins.length > 0 && (
-                  <tr className="bg-bg-tertiary/60">
-                    <td
-                      colSpan={6}
-                      className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary"
-                    >
-                      Admins ({admins.length})
-                    </td>
-                  </tr>
-                )}
-                {admins.map(renderRow)}
-                {members.length > 0 && (
-                  <tr className="bg-bg-tertiary/60">
-                    <td
-                      colSpan={6}
-                      className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary"
-                    >
-                      Members ({members.length})
-                    </td>
-                  </tr>
-                )}
-                {members.map(renderRow)}
-              </tbody>
-            </table>
+          <div className="space-y-4">
+            <UserGroupBlock
+              title="Admins"
+              users={admins}
+              collapsed={adminsCollapsed}
+              onToggle={() => setAdminsCollapsed((c) => !c)}
+              renderRow={renderRow}
+            />
+            <UserGroupBlock
+              title="Members"
+              users={members}
+              collapsed={membersCollapsed}
+              onToggle={() => setMembersCollapsed((c) => !c)}
+              renderRow={renderRow}
+            />
           </div>
         )}
       </section>
