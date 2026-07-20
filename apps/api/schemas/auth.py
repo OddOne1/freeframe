@@ -35,6 +35,7 @@ class UserResponse(BaseModel):
     invite_token: str | None = None
     preferences: dict = {}
     created_at: datetime
+    storage_limit_bytes: int | None = None
 
     model_config = {"from_attributes": True}
 

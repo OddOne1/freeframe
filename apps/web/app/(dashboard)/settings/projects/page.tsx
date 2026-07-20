@@ -17,7 +17,7 @@ import {
   LogIn,
   LogOut,
 } from "lucide-react";
-import { formatBytes } from "@/lib/utils";
+import { cn, formatBytes } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,7 +25,8 @@ import { Avatar } from "@/components/shared/avatar";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/shared/empty-state";
 import { useAuthStore } from "@/stores/auth-store";
-import type { AdminProject, User } from "@/types";
+import { useHasProjectPrivilege } from "@/hooks/use-project-privilege";
+import type { AdminProject, Project, User } from "@/types";
 
 // Superadmins see every project ever created, including ones they don't
 // belong to, with owner identity and stats. They can rename/archive/
@@ -263,19 +264,293 @@ function AdminTransferOwnershipDialog({
   );
 }
 
+// ─── Non-superadmin view: "your" projects only ─────────────────────────────
+// Superuser/admin/owner-tier viewers get a scoped-down version of this tab --
+// only projects they own or manage, plus their personal storage allocation.
+// No org-wide table, no rename/delete/transfer-to-anyone -- those stay
+// exclusive to the superadmin branch above.
+
+const GB = 1024 ** 3;
+
+function StorageUsageCircle({ percent }: { percent: number | null }) {
+  const size = 72;
+  const stroke = 7;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const clamped = percent === null ? 0 : Math.min(100, Math.max(0, percent));
+  const offset = circumference * (1 - clamped / 100);
+  // Status color only, reserved for this exact meaning -- never reused as a
+  // generic accent. Paired with the numeric label below, not color alone.
+  const colorClass =
+    percent === null
+      ? "text-text-tertiary"
+      : percent >= 90
+        ? "text-status-error"
+        : percent >= 70
+          ? "text-status-warning"
+          : "text-status-success";
+
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          strokeWidth={stroke}
+          className="stroke-border"
+        />
+        {percent !== null && (
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={offset}
+            className={cn("transition-all duration-300", colorClass)}
+          />
+        )}
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className="text-xs font-semibold text-text-primary">
+          {percent === null ? "∞" : `${Math.round(percent)}%`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function EditableStorageLimit({
+  project,
+  otherAllocatedBytes,
+  personalTotalBytes,
+  onSaved,
+}: {
+  project: Project;
+  otherAllocatedBytes: number;
+  personalTotalBytes: number | null;
+  onSaved: () => void;
+}) {
+  const [value, setValue] = React.useState(
+    project.storage_limit_bytes ? String(Math.round(project.storage_limit_bytes / GB)) : "",
+  );
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  const handleSave = async () => {
+    setError("");
+    const trimmed = value.trim();
+    if (trimmed && (Number.isNaN(parseFloat(trimmed)) || parseFloat(trimmed) <= 0)) {
+      setError("Enter a positive number, or leave empty for unlimited.");
+      return;
+    }
+    const bytes = trimmed ? Math.round(parseFloat(trimmed) * GB) : null;
+    // Mirrors _check_owner_storage_allocation server-side (routers/projects.py)
+    // so the UI can reject before the round-trip -- the server still
+    // re-validates, this is purely a faster/clearer error for the common case.
+    if (bytes !== null && personalTotalBytes !== null) {
+      const projected = otherAllocatedBytes + bytes;
+      if (projected > personalTotalBytes) {
+        setError(
+          `Exceeds your ${formatBytes(personalTotalBytes)} total by ${formatBytes(projected - personalTotalBytes)}.`,
+        );
+        return;
+      }
+    }
+    setSaving(true);
+    try {
+      await api.patch(`/projects/${project.id}`, { storage_limit_bytes: bytes });
+      onSaved();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to update storage limit");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1.5">
+        <input
+          type="number"
+          min="1"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="Unlimited"
+          className="w-20 rounded-md border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus"
+        />
+        <span className="text-[10px] text-text-tertiary">GB</span>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleSave}
+          loading={saving}
+          className="h-6 px-2 text-xs"
+        >
+          Save
+        </Button>
+      </div>
+      {error && <p className="max-w-[220px] text-[10px] text-status-error">{error}</p>}
+    </div>
+  );
+}
+
+function OwnedProjectsView() {
+  const { user } = useAuthStore();
+  const { data: projects, isLoading } = useSWR<Project[]>("/projects", () =>
+    api.get<Project[]>("/projects"),
+  );
+
+  const managedProjects = React.useMemo(
+    () => (projects ?? []).filter((p) => p.role === "owner" || p.role === "admin"),
+    [projects],
+  );
+  const ownedProjects = React.useMemo(
+    () => managedProjects.filter((p) => p.role === "owner"),
+    [managedProjects],
+  );
+
+  // NULL (unlimited) sibling projects contribute 0 to this sum rather than
+  // being unbounded -- same simplification as the backend's SQL SUM, kept
+  // consistent on purpose so the client-side check below never disagrees
+  // with the server.
+  const allocatedBytes = React.useMemo(
+    () => ownedProjects.reduce((sum, p) => sum + (p.storage_limit_bytes ?? 0), 0),
+    [ownedProjects],
+  );
+  const usedBytes = React.useMemo(
+    () => ownedProjects.reduce((sum, p) => sum + (p.storage_bytes ?? 0), 0),
+    [ownedProjects],
+  );
+  const personalTotalBytes = user?.storage_limit_bytes ?? null;
+  const percentUsed =
+    personalTotalBytes === null ? null : personalTotalBytes > 0 ? (usedBytes / personalTotalBytes) * 100 : 100;
+
+  const refresh = () => mutate("/projects");
+
+  return (
+    <div className="p-6 space-y-6">
+      <div>
+        <h1 className="text-lg font-semibold text-text-primary">Your Projects</h1>
+        <p className="mt-0.5 text-sm text-text-tertiary">
+          Projects you own or manage. Storage limits only apply to projects
+          you own -- contact a superadmin to raise your total.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-5 rounded-lg border border-border bg-bg-secondary p-4">
+        <StorageUsageCircle percent={percentUsed} />
+        <div className="space-y-1 text-sm">
+          <p className="text-text-primary">
+            <span className="font-semibold">{formatBytes(usedBytes)}</span> used of{" "}
+            {personalTotalBytes !== null ? formatBytes(personalTotalBytes) : "an unlimited"} total
+          </p>
+          <p className="text-text-tertiary">
+            {formatBytes(allocatedBytes)} allocated across {ownedProjects.length} owned project
+            {ownedProjects.length !== 1 ? "s" : ""}
+          </p>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-12 animate-pulse rounded-lg bg-bg-tertiary" />
+          ))}
+        </div>
+      ) : managedProjects.length === 0 ? (
+        <div className="rounded-lg border border-border bg-bg-secondary">
+          <EmptyState
+            icon={FolderKanban}
+            title="No projects"
+            description="Projects you own or manage will appear here."
+          />
+        </div>
+      ) : (
+        <div className="rounded-lg border border-border bg-bg-secondary overflow-x-auto">
+          <table className="w-full text-sm min-w-[640px]">
+            <thead>
+              <tr className="border-b border-border bg-bg-tertiary">
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Project</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Role</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Used</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Storage Limit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {managedProjects.map((p) => (
+                <tr
+                  key={p.id}
+                  className="border-b border-border last:border-0 hover:bg-bg-tertiary transition-colors"
+                >
+                  <td className="px-4 py-3">
+                    <Link
+                      href={`/projects/${p.id}`}
+                      className="block max-w-[220px] truncate text-sm font-medium text-text-primary hover:underline"
+                    >
+                      {p.name}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="text-xs text-text-secondary">
+                      {p.role === "admin" ? "Manager" : "Owner"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-text-secondary">{formatBytes(p.storage_bytes ?? 0)}</td>
+                  <td className="px-4 py-3">
+                    {p.role === "owner" ? (
+                      <EditableStorageLimit
+                        project={p}
+                        otherAllocatedBytes={allocatedBytes - (p.storage_limit_bytes ?? 0)}
+                        personalTotalBytes={personalTotalBytes}
+                        onSaved={refresh}
+                      />
+                    ) : (
+                      <span className="text-xs italic text-text-tertiary">
+                        {p.storage_limit_bytes ? formatBytes(p.storage_limit_bytes) : "Unlimited"} (owner-managed)
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SettingsProjectsPage() {
   const router = useRouter();
   const { user, isSuperAdmin } = useAuthStore();
+  const hasProjectPrivilege = useHasProjectPrivilege();
   const { data: projectsResp, isLoading } = useSWR<AdminProject[]>(
     isSuperAdmin ? "/admin/projects" : null,
     () => api.get<AdminProject[]>("/admin/projects"),
   );
+  // Same "/projects" key useHasProjectPrivilege fetches internally and
+  // OwnedProjectsView fetches for its table -- SWR dedupes all three into
+  // one request. This is here only so this component can see isLoading:
+  // useHasProjectPrivilege briefly returns false for a genuinely privileged
+  // non-superadmin while that fetch is still in flight, and gating the
+  // redirect below on that raw boolean would bounce them to "/" before it
+  // resolves.
+  const { isLoading: privilegeCheckLoading } = useSWR<Project[]>(
+    user && !isSuperAdmin ? "/projects" : null,
+    () => api.get<Project[]>("/projects"),
+  );
 
   React.useEffect(() => {
-    if (user && !isSuperAdmin) {
-      router.replace("/");
-    }
-  }, [user, isSuperAdmin, router]);
+    if (!user) return;
+    if (isSuperAdmin || hasProjectPrivilege || privilegeCheckLoading) return;
+    router.replace("/");
+  }, [user, isSuperAdmin, hasProjectPrivilege, privilegeCheckLoading, router]);
 
   const [renameTarget, setRenameTarget] = React.useState<AdminProject | null>(null);
   const [transferTarget, setTransferTarget] = React.useState<AdminProject | null>(null);
@@ -328,7 +603,14 @@ export default function SettingsProjectsPage() {
     }
   };
 
+  if (!isSuperAdmin && hasProjectPrivilege) {
+    return <OwnedProjectsView />;
+  }
+
   if (!isSuperAdmin) {
+    // Either confirmed no access (redirect effect above is on its way) or
+    // the privilege check is still in flight -- either way there's nothing
+    // useful to render yet.
     return null;
   }
 

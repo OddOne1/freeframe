@@ -247,12 +247,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               {hasSettingsAccess && (
                 <DropdownMenu.Item asChild>
                   {/* Non-superadmins only ever reach this branch via an
-                      owner/admin project role, and /settings/admin bounces
-                      anyone who isn't a superadmin straight back out -- send
-                      them to Profile instead until Settings > Projects has a
-                      non-superadmin view of its own. */}
+                      owner/admin project role -- /settings/admin is
+                      superadmin-only and would bounce them straight back
+                      out, so send them to their own Settings > Projects
+                      view instead. */}
                   <Link
-                    href={isSuperAdmin ? '/settings/admin' : '/settings/profile'}
+                    href={isSuperAdmin ? '/settings/admin' : '/settings/projects'}
                     className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-[13px] text-text-secondary hover:bg-bg-hover hover:text-text-primary focus:outline-none"
                   >
                     <Settings className="h-4 w-4" />

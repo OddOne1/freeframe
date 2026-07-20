@@ -6,12 +6,16 @@ import { usePathname } from 'next/navigation'
 import { User, Bell, Shield, Palette, Brush, FolderKanban } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
+import { useHasProjectPrivilege } from '@/hooks/use-project-privilege'
 
 interface SettingsNavItem {
   href: string
   label: string
   icon: React.ElementType
   adminOnly?: boolean
+  // Projects tab: visible to superadmins AND superuser/admin/owner on at
+  // least one project (its own non-superadmin branch), not admin-only.
+  projectPrivilegeOnly?: boolean
 }
 
 const settingsNavItems: SettingsNavItem[] = [
@@ -19,7 +23,7 @@ const settingsNavItems: SettingsNavItem[] = [
   { href: '/settings/appearance', label: 'Appearance', icon: Palette },
   { href: '/settings/notifications', label: 'Notifications', icon: Bell },
   { href: '/settings/branding', label: 'Branding', icon: Brush, adminOnly: true },
-  { href: '/settings/projects', label: 'Projects', icon: FolderKanban, adminOnly: true },
+  { href: '/settings/projects', label: 'Projects', icon: FolderKanban, projectPrivilegeOnly: true },
   { href: '/settings/admin', label: 'Admin', icon: Shield, adminOnly: true },
 ]
 
@@ -30,6 +34,7 @@ export default function SettingsLayout({
 }) {
   const pathname = usePathname()
   const { user, isSuperAdmin } = useAuthStore()
+  const hasProjectPrivilege = useHasProjectPrivilege()
 
   return (
     <div className="flex h-full">
@@ -46,6 +51,7 @@ export default function SettingsLayout({
           {settingsNavItems.map((item) => {
             // Hide admin-only items from non-admins
             if (item.adminOnly && !isSuperAdmin) return null
+            if (item.projectPrivilegeOnly && !hasProjectPrivilege) return null
 
             const isActive = pathname === item.href || pathname?.startsWith(item.href + '/')
             const Icon = item.icon

@@ -59,6 +59,7 @@ export interface User {
   preferences: Record<string, unknown>;
   created_at: string;
   deleted_at: string | null;
+  storage_limit_bytes?: number | null;
 }
 
 export interface Team {
