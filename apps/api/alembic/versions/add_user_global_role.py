@@ -27,7 +27,7 @@ def upgrade():
 
     op.execute("""
         UPDATE users
-        SET role = CASE WHEN is_superadmin THEN 'superadmin' ELSE 'superuser' END
+        SET role = (CASE WHEN is_superadmin THEN 'superadmin' ELSE 'superuser' END)::userglobalrole
     """)
 
     op.drop_column('users', 'is_superadmin')
