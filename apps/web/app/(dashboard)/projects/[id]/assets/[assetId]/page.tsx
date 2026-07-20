@@ -262,7 +262,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const searchParams = useSearchParams()
   const { asset, versions, isLoading, refetchComments, refetchVersions } = useReview()
   const { currentVersion, isDrawingMode, focusedCommentId, seekTo, setFocusedCommentId, setActiveAnnotation } = useReviewStore()
-  const { user } = useAuthStore()
+  const { user, isSuperAdmin } = useAuthStore()
   const startVersionUpload = useUploadStore((s) => s.startVersionUpload)
   const versionFileInputRef = useRef<HTMLInputElement>(null)
   const setExtraCrumbs = useBreadcrumbStore((s) => s.setExtraCrumbs)
@@ -327,12 +327,12 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const canComment = currentRole !== 'viewer'
   const canVote = currentRole !== 'viewer'
   const canEditStatus = currentRole === 'owner' || currentRole === 'editor'
-  const canArchive = user?.is_superadmin ?? false
+  const canArchive = isSuperAdmin
   // Who can manually restart a stuck/failed version — the person who
   // uploaded it, the project owner, or a superadmin. Not opened up to
   // editors in general since it dispatches a real transcode job.
   const canRetryProcessing = Boolean(
-    currentVersion && (user?.is_superadmin || currentRole === 'owner' || currentVersion.created_by === user?.id),
+    currentVersion && (isSuperAdmin || currentRole === 'owner' || currentVersion.created_by === user?.id),
   )
 
   const [statusOverride, setStatusOverride] = useState<AssetStatus | null>(null)

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
 
 from ..database import get_db
-from ..models.user import User, UserStatus
+from ..models.user import User, UserStatus, UserGlobalRole
 from ..services.auth_service import hash_password, create_access_token, create_refresh_token
 from ..schemas.auth import TokenResponse
 from ..middleware.rate_limit import rate_limit
@@ -36,7 +36,7 @@ class SetupCompleteResponse(BaseModel):
 def _has_superadmin(db: Session) -> bool:
     """Check if any superadmin exists in the system."""
     return db.query(User).filter(
-        User.is_superadmin == True,
+        User.role == UserGlobalRole.superadmin,
         User.deleted_at.is_(None),
     ).first() is not None
 
@@ -85,7 +85,7 @@ def create_superadmin(body: CreateSuperAdminRequest, db: Session = Depends(get_d
         name=body.name,
         password_hash=hash_password(body.password),
         status=UserStatus.active,
-        is_superadmin=True,
+        role=UserGlobalRole.superadmin,
         email_verified=True,  # Skip verification for initial setup
     )
     db.add(user)

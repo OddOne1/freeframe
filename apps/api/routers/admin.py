@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from ..database import get_db
 from ..middleware.auth import get_current_user
-from ..models.user import User, UserStatus
+from ..models.user import User, UserStatus, UserGlobalRole
 from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.asset import Asset, AssetVersion, MediaFile
 from ..schemas.auth import UserResponse, UpdateUserRoleRequest, AdminUserResponse, AdminUserProjectSummary
@@ -18,7 +18,7 @@ from .hls_proxy import proxy_url_for
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 def _require_superadmin(current_user: User) -> None:
-    if not current_user.is_superadmin:
+    if current_user.role != UserGlobalRole.superadmin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can access this endpoint"
@@ -72,7 +72,7 @@ def deactivate_user(
     current_user: User = Depends(get_current_user),
 ):
     """Deactivate a user. Admins cannot deactivate themselves."""
-    if not current_user.is_superadmin:
+    if current_user.role != UserGlobalRole.superadmin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can deactivate users"
@@ -101,7 +101,7 @@ def reactivate_user(
     current_user: User = Depends(get_current_user),
 ):
     """Reactivate a deactivated user. Only accessible by admins."""
-    if not current_user.is_superadmin:
+    if current_user.role != UserGlobalRole.superadmin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can reactivate users"
@@ -124,7 +124,7 @@ def update_user_role(
     current_user: User = Depends(get_current_user),
 ):
     """Promote or demote a user to/from admin role. Only accessible by admins."""
-    if not current_user.is_superadmin:
+    if current_user.role != UserGlobalRole.superadmin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can change user roles"
@@ -141,7 +141,11 @@ def update_user_role(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    user.is_superadmin = body.is_admin
+    # This toggle predates the 3-tier role model (task 11) and stays
+    # binary -- "Remove Admin" lands on superuser, not user, so it never
+    # silently strips someone's existing ability to create/own projects.
+    # Demoting all the way to 'user' has no UI yet; not this endpoint's job.
+    user.role = UserGlobalRole.superadmin if body.is_admin else UserGlobalRole.superuser
     db.commit()
     db.refresh(user)
     return user
@@ -159,7 +163,7 @@ def _archiver_is_superadmin(db: Session, project: Project) -> bool:
     if project.archived_by is None:
         return False
     archiver = db.query(User).filter(User.id == project.archived_by).first()
-    return bool(archiver and archiver.is_superadmin)
+    return bool(archiver and archiver.role == UserGlobalRole.superadmin)
 
 def _current_user_role(db: Session, project_id: uuid.UUID, user_id: uuid.UUID):
     membership = db.query(ProjectMember).filter(
@@ -212,7 +216,7 @@ def list_all_projects(
     superadmin_archiver_ids = set()
     if archiver_ids:
         superadmin_archiver_ids = {
-            u.id for u in db.query(User).filter(User.id.in_(archiver_ids), User.is_superadmin == True).all()
+            u.id for u in db.query(User).filter(User.id.in_(archiver_ids), User.role == UserGlobalRole.superadmin).all()
         }
     my_memberships = dict(
         db.query(ProjectMember.project_id, ProjectMember.role)
@@ -400,6 +404,8 @@ def admin_transfer_ownership(
     new_owner = db.query(User).filter(User.id == body.new_owner_id, User.deleted_at.is_(None)).first()
     if not new_owner:
         raise HTTPException(status_code=404, detail="Target user not found")
+    if new_owner.role == UserGlobalRole.user:
+        raise HTTPException(status_code=400, detail="This account's tier doesn't allow project ownership")
 
     current_owner_membership = db.query(ProjectMember).filter(
         ProjectMember.project_id == project_id,

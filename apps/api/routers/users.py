@@ -5,7 +5,7 @@ import secrets
 from datetime import datetime, timezone, timedelta
 from ..database import get_db
 from ..schemas.auth import UserResponse, InviteRequest, UpdateProfileRequest
-from ..models.user import User, UserStatus
+from ..models.user import User, UserStatus, UserGlobalRole
 from ..services import s3_service
 from ..middleware.auth import get_current_user
 from ..services.auth_service import hash_password, get_user_by_email, split_full_name
@@ -81,12 +81,20 @@ def search_users(
 
 
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
-    if not current_user.is_superadmin:
+    if current_user.role != UserGlobalRole.superadmin:
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
+def require_superuser(current_user: User = Depends(get_current_user)) -> User:
+    """Superuser-or-above -- looser than require_admin. Only for endpoints
+    explicitly opened up to superusers (task 11); everything else that
+    used to gate on is_superadmin stays on require_admin."""
+    if current_user.role == UserGlobalRole.user:
+        raise HTTPException(status_code=403, detail="Superuser access required")
+    return current_user
+
 @router.post("/invite", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def invite_user(body: InviteRequest, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+def invite_user(body: InviteRequest, db: Session = Depends(get_db), current_user: User = Depends(require_superuser)):
     if get_user_by_email(db, body.email):
         raise HTTPException(status_code=400, detail="Email already registered")
     
@@ -116,7 +124,7 @@ def invite_user(body: InviteRequest, db: Session = Depends(get_db), current_user
 @router.patch("/{user_id}", response_model=UserResponse)
 def update_user(user_id: uuid.UUID, body: UpdateProfileRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Update user profile. Users can update their own profile."""
-    if current_user.id != user_id and not current_user.is_superadmin:
+    if current_user.id != user_id and current_user.role != UserGlobalRole.superadmin:
         raise HTTPException(status_code=403, detail="Can only update your own profile")
     user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
     if not user:

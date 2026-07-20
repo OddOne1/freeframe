@@ -13,6 +13,7 @@ import {
   Users,
   Share2,
   Globe,
+  UserPlus,
 } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -21,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { ProjectCard } from "@/components/projects/project-card";
 import { EmptyState } from "@/components/shared/empty-state";
 import { usePageTitle } from "@/hooks/use-page-title";
+import { useAuthStore } from "@/stores/auth-store";
 import type { Project, ProjectType } from "@/types";
 
 type ViewMode = "grid" | "list";
@@ -202,9 +204,98 @@ function ProjectSection({
   );
 }
 
+/** Single-invite entry point for superusers-or-above (task 11) -- the
+ * bulk dialog in Settings > Admin stays superadmin-only and separate. */
+function InviteUserDialog() {
+  const [open, setOpen] = React.useState(false);
+  const [name, setName] = React.useState("");
+  const [email, setEmail] = React.useState("");
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      await api.post("/users/invite", { email, name });
+      setOpen(false);
+      setName("");
+      setEmail("");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to send invite");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Dialog.Root
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) setError("");
+      }}
+    >
+      <Dialog.Trigger asChild>
+        <Button variant="secondary" size="sm">
+          <UserPlus className="h-4 w-4" />
+          Invite
+        </Button>
+      </Dialog.Trigger>
+
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary p-6 shadow-xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+          <Dialog.Close className="absolute right-4 top-4 text-text-tertiary hover:text-text-primary transition-colors">
+            <X className="h-4 w-4" />
+          </Dialog.Close>
+
+          <Dialog.Title className="text-base font-semibold text-text-primary">
+            Invite a user
+          </Dialog.Title>
+          <Dialog.Description className="mt-1 text-sm text-text-secondary">
+            They&apos;ll get an email invite to join.
+          </Dialog.Description>
+
+          <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+            <Input
+              label="Name"
+              placeholder="Jane Doe"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+            />
+            <Input
+              label="Email"
+              type="email"
+              placeholder="jane@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+            {error && <p className="text-sm text-status-error">{error}</p>}
+            <div className="flex justify-end gap-2 pt-2">
+              <Dialog.Close asChild>
+                <Button type="button" variant="secondary" size="sm">
+                  Cancel
+                </Button>
+              </Dialog.Close>
+              <Button type="submit" size="sm" loading={loading}>
+                Send invite
+              </Button>
+            </div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 export default function ProjectsPage() {
   usePageTitle("Projects");
   const router = useRouter();
+  const { isSuperuserOrAbove } = useAuthStore();
   const [viewMode, setViewMode] = React.useState<ViewMode>("grid");
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [isCreating, setIsCreating] = React.useState(false);
@@ -314,6 +405,8 @@ export default function ProjectsPage() {
             </button>
           </div>
 
+          {isSuperuserOrAbove && <InviteUserDialog />}
+
           <Dialog.Root
             open={dialogOpen}
             onOpenChange={(open) => {
@@ -321,12 +414,14 @@ export default function ProjectsPage() {
               if (!open) resetForm();
             }}
           >
-            <Dialog.Trigger asChild>
-              <Button size="sm">
-                <Plus className="h-4 w-4" />
-                New Project
-              </Button>
-            </Dialog.Trigger>
+            {isSuperuserOrAbove && (
+              <Dialog.Trigger asChild>
+                <Button size="sm">
+                  <Plus className="h-4 w-4" />
+                  New Project
+                </Button>
+              </Dialog.Trigger>
+            )}
 
             <Dialog.Portal>
               <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />

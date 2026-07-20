@@ -21,7 +21,7 @@ const mockUser: User = {
   name: 'Test User',
   avatar_url: null,
   status: 'active',
-  is_superadmin: false,
+  role: 'superuser',
   email_verified: true,
   preferences: {},
   created_at: '2024-01-01T00:00:00Z',
@@ -36,6 +36,7 @@ describe('Auth store', () => {
       user: null,
       isAuthenticated: false,
       isSuperAdmin: false,
+      isSuperuserOrAbove: false,
       isLoading: false,
     })
   })
@@ -45,6 +46,7 @@ describe('Auth store', () => {
     expect(state.user).toBeNull()
     expect(state.isAuthenticated).toBe(false)
     expect(state.isSuperAdmin).toBe(false)
+    expect(state.isSuperuserOrAbove).toBe(false)
     expect(state.isLoading).toBe(false)
   })
 
@@ -54,22 +56,32 @@ describe('Auth store', () => {
     expect(state.user).toEqual(mockUser)
     expect(state.isAuthenticated).toBe(true)
     expect(state.isSuperAdmin).toBe(false)
+    expect(state.isSuperuserOrAbove).toBe(true)
   })
 
   it('setUser sets isSuperAdmin when user is super admin', () => {
-    const adminUser = { ...mockUser, is_superadmin: true }
+    const adminUser = { ...mockUser, role: 'superadmin' as const }
     useAuthStore.getState().setUser(adminUser)
     expect(useAuthStore.getState().isSuperAdmin).toBe(true)
+    expect(useAuthStore.getState().isSuperuserOrAbove).toBe(true)
+  })
+
+  it('setUser sets isSuperuserOrAbove false for the bottom user tier', () => {
+    const bottomTierUser = { ...mockUser, role: 'user' as const }
+    useAuthStore.getState().setUser(bottomTierUser)
+    expect(useAuthStore.getState().isSuperAdmin).toBe(false)
+    expect(useAuthStore.getState().isSuperuserOrAbove).toBe(false)
   })
 
   it('logout clears state and calls clearTokens', () => {
-    useAuthStore.setState({ user: mockUser, isAuthenticated: true, isSuperAdmin: false })
+    useAuthStore.setState({ user: mockUser, isAuthenticated: true, isSuperAdmin: false, isSuperuserOrAbove: true })
     useAuthStore.getState().logout()
 
     const state = useAuthStore.getState()
     expect(state.user).toBeNull()
     expect(state.isAuthenticated).toBe(false)
     expect(state.isSuperAdmin).toBe(false)
+    expect(state.isSuperuserOrAbove).toBe(false)
     expect(clearTokens).toHaveBeenCalledOnce()
   })
 

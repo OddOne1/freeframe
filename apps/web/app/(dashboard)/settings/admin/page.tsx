@@ -356,14 +356,14 @@ export default function AdminPage() {
   const admins = React.useMemo(
     () =>
       (usersResp ?? [])
-        .filter((u) => u.is_superadmin)
+        .filter((u) => u.role === "superadmin")
         .sort((a, b) => a.name.localeCompare(b.name)),
     [usersResp],
   );
   const members = React.useMemo(
     () =>
       (usersResp ?? [])
-        .filter((u) => !u.is_superadmin)
+        .filter((u) => u.role !== "superadmin")
         .sort((a, b) => a.name.localeCompare(b.name)),
     [usersResp],
   );
@@ -392,7 +392,7 @@ export default function AdminPage() {
         <UserProjects projects={u.projects} />
       </td>
       <td className="px-4 py-3">
-        {u.is_superadmin ? (
+        {u.role === "superadmin" ? (
           <span className="inline-flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">
             <Shield className="h-3 w-3" />
             Admin
@@ -430,9 +430,9 @@ export default function AdminPage() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => handleToggleAdmin(u.id, u.is_superadmin)}
+              onClick={() => handleToggleAdmin(u.id, u.role === "superadmin")}
             >
-              {u.is_superadmin ? "Remove Admin" : "Make Admin"}
+              {u.role === "superadmin" ? "Remove Admin" : "Make Admin"}
             </Button>
           )}
           {u.id !== user?.id && u.status === "active" ? (

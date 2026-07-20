@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..middleware.auth import get_current_user
-from ..models.user import User
+from ..models.user import User, UserGlobalRole
 from ..models.site_settings import SiteSettings
 from ..schemas.site_settings import (
     SiteSettingsResponse,
@@ -75,7 +75,7 @@ def update_site_settings(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not current_user.is_superadmin:
+    if current_user.role != UserGlobalRole.superadmin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can update site settings",
@@ -110,7 +110,7 @@ async def upload_site_logo(
     presigned URL handed to an https:// page gets blocked as mixed content
     in browsers without an override already set for this origin.
     """
-    if not current_user.is_superadmin:
+    if current_user.role != UserGlobalRole.superadmin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can update site settings",
@@ -143,7 +143,7 @@ async def upload_site_favicon(
     See upload_site_logo above for why this proxies through the API
     instead of a presigned browser->S3 PUT.
     """
-    if not current_user.is_superadmin:
+    if current_user.role != UserGlobalRole.superadmin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can update site settings",

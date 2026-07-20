@@ -39,7 +39,7 @@ def _make_user(
     We use a fake password hash so this function works even when the local
     bcrypt installation is incompatible with passlib.
     """
-    from apps.api.models.user import UserStatus
+    from apps.api.models.user import UserStatus, UserGlobalRole
 
     u = MagicMock()
     u.id = user_id or uuid.uuid4()
@@ -51,7 +51,12 @@ def _make_user(
     u.avatar_url = None
     u.created_at = datetime.now(timezone.utc)
     u.deleted_at = None
-    u.is_superadmin = False
+    # Matches pre-task-11 is_superadmin=False semantics (unrestricted
+    # except admin-only endpoints) -- 'user' is the new, more restrictive
+    # bottom tier that only applies to brand-new accounts going forward,
+    # not what existing non-admin test fixtures should default to.
+    u.role = UserGlobalRole.superuser
+    u.storage_limit_bytes = 200 * 1024 ** 3
     u.email_verified = False
     u.preferences = {}
     u.invite_token = None

@@ -26,7 +26,7 @@ export function ProjectCard({
   className,
   onMutate,
 }: ProjectCardProps) {
-  const { user } = useAuthStore()
+  const { isSuperAdmin } = useAuthStore()
   const gradient = getGradientForProject(project.id)
   const assetCount = project.asset_count ?? 0
   const [settingsOpen, setSettingsOpen] = React.useState(false)
@@ -43,7 +43,7 @@ export function ProjectCard({
   // a superadmin) can delete outright or transfer the crown away.
   const isProjectAdmin = project.role === 'owner' || project.role === 'admin'
   const isTrueOwner = project.role === 'owner'
-  const canDelete = isTrueOwner || !!user?.is_superadmin
+  const canDelete = isTrueOwner || isSuperAdmin
   const isArchived = !!project.archived_at
 
   const handleDelete = async () => {
@@ -188,7 +188,7 @@ export function ProjectCard({
                   </DropdownMenu.Item>
                 )}
 
-                {(!isArchived || isTrueOwner || user?.is_superadmin) && (
+                {(!isArchived || isTrueOwner || isSuperAdmin) && (
                   <DropdownMenu.Item
                     className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
                     onSelect={handleArchiveToggle}

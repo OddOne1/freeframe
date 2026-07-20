@@ -41,12 +41,12 @@ class SetupGuardMiddleware(BaseHTTPMiddleware):
         # Check if setup is done (query DB once, then cache)
         try:
             from ..database import SessionLocal
-            from ..models.user import User
+            from ..models.user import User, UserGlobalRole
 
             db = SessionLocal()
             try:
                 has_admin = db.query(User).filter(
-                    User.is_superadmin == True,
+                    User.role == UserGlobalRole.superadmin,
                     User.deleted_at.is_(None),
                 ).first() is not None
             finally:

@@ -1,7 +1,7 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 import uuid
-from ..models.user import User
+from ..models.user import User, UserGlobalRole
 from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.asset import Asset
 from ..models.share import AssetShare, ShareLink, SharePermission
@@ -57,7 +57,7 @@ def can_see_rating_aggregate(db: Session, project_id: uuid.UUID, user: User) -> 
     - Reviewer ("Comment Only") / viewer ("View Only") / non-members: never —
       they only ever see their own vote, regardless of the toggle.
     """
-    if user.is_superadmin:
+    if user.role == UserGlobalRole.superadmin:
         return True
     member = get_project_member(db, project_id, user.id)
     if member is None:

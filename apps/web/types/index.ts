@@ -12,6 +12,8 @@ export type TeamRole = "lead" | "member";
 
 export type ProjectRole = "owner" | "admin" | "editor" | "reviewer" | "viewer";
 
+export type UserGlobalRole = "superadmin" | "superuser" | "user";
+
 export type ProjectType = "personal" | "team";
 
 export type SharePermission = "view" | "comment" | "approve";
@@ -51,7 +53,7 @@ export interface User {
   last_name: string;
   avatar_url: string | null;
   status: UserStatus;
-  is_superadmin: boolean;
+  role: UserGlobalRole;
   email_verified: boolean;
   invite_token?: string | null;
   preferences: Record<string, unknown>;

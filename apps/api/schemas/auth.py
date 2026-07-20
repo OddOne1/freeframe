@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr
 import uuid
-from ..models.user import UserStatus
+from ..models.user import UserStatus, UserGlobalRole
 from ..models.project import ProjectRole
 
 class RegisterRequest(BaseModel):
@@ -30,7 +30,7 @@ class UserResponse(BaseModel):
     avatar_url: str | None
     status: UserStatus
     email_verified: bool = False
-    is_superadmin: bool = False
+    role: UserGlobalRole = UserGlobalRole.user
     invite_token: str | None = None
     preferences: dict = {}
 

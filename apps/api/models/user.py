@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional
-from sqlalchemy import String, Enum, DateTime, JSON, func
+from sqlalchemy import String, Enum, DateTime, JSON, BigInteger, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 try:
@@ -16,6 +16,11 @@ class UserStatus(str, PyEnum):
     pending_invite = "pending_invite"
     pending_verification = "pending_verification"
 
+class UserGlobalRole(str, PyEnum):
+    superadmin = "superadmin"
+    superuser = "superuser"
+    user = "user"
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -25,7 +30,8 @@ class User(Base):
     avatar_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[UserStatus] = mapped_column(Enum(UserStatus), default=UserStatus.active)
-    is_superadmin: Mapped[bool] = mapped_column(default=False)
+    role: Mapped[UserGlobalRole] = mapped_column(Enum(UserGlobalRole), default=UserGlobalRole.user, server_default='user')
+    storage_limit_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     email_verified: Mapped[bool] = mapped_column(default=False)
     invite_token: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     invite_token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

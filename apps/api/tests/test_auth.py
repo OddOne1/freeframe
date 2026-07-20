@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-from apps.api.models.user import UserStatus
+from apps.api.models.user import UserStatus, UserGlobalRole
 
 
 _FAKE_HASH = "$2b$12$fakehashforteststhatisnotrealatall00000000000000000000"
@@ -49,7 +49,7 @@ def test_register_success(client, mock_db):
         obj.deleted_at = None
         obj.avatar_url = None
         obj.status = UserStatus.active
-        obj.is_superadmin = False
+        obj.role = UserGlobalRole.user
         obj.email_verified = False
         obj.preferences = {}
         obj.invite_token = None

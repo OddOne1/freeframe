@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from ..database import get_db
 from ..middleware.auth import get_current_user
-from ..models.user import User
+from ..models.user import User, UserGlobalRole
 from ..models.asset import Asset, AssetVersion, MediaFile, AssetType, AssetStatus, FileType, ProcessingStatus
 from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.share import AssetShare
@@ -137,7 +137,7 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user: 
     ratings_visible_by_project: dict = {}
     owner_project_ids: set = set()
     editor_project_ids: set = set()
-    if current_user is not None and not current_user.is_superadmin and project_ids:
+    if current_user is not None and current_user.role != UserGlobalRole.superadmin and project_ids:
         for pid, visible in db.query(Project.id, Project.ratings_visible_to_all).filter(Project.id.in_(project_ids)).all():
             ratings_visible_by_project[pid] = visible
         member_rows = db.query(ProjectMember.project_id, ProjectMember.role).filter(
@@ -151,7 +151,7 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user: 
     def _can_see_aggregate(project_id: uuid.UUID) -> bool:
         if current_user is None:
             return False
-        if current_user.is_superadmin:
+        if current_user.role == UserGlobalRole.superadmin:
             return True
         if project_id in owner_project_ids:
             return True
@@ -267,7 +267,7 @@ def update_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     require_project_role(db, asset.project_id, current_user, ProjectRole.editor)
-    if "status" in body.model_fields_set and body.status == AssetStatus.archived and not current_user.is_superadmin:
+    if "status" in body.model_fields_set and body.status == AssetStatus.archived and current_user.role != UserGlobalRole.superadmin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can archive assets",
@@ -463,10 +463,10 @@ def retry_version_processing(
 
     is_uploader = version.created_by == current_user.id
     is_owner = False
-    if not is_uploader and not current_user.is_superadmin:
+    if not is_uploader and current_user.role != UserGlobalRole.superadmin:
         member = get_project_member(db, asset.project_id, current_user.id)
         is_owner = member is not None and member.role == ProjectRole.owner
-    if not (is_uploader or is_owner or current_user.is_superadmin):
+    if not (is_uploader or is_owner or current_user.role == UserGlobalRole.superadmin):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the uploader, the project owner, or an admin can restart processing",

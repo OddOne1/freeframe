@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from ..database import get_db
 from ..middleware.auth import get_current_user
-from ..models.user import User
+from ..models.user import User, UserGlobalRole
 from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.asset import Asset, AssetVersion, MediaFile
 from ..schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse, ProjectMemberResponse, AddProjectMemberRequest, UpdateProjectMemberRequest, TransferOwnershipRequest
@@ -54,7 +54,7 @@ def _require_true_owner_or_superadmin(db: Session, project_id: uuid.UUID, user: 
     (the ProjectMember holding role=owner) or a superadmin may do this, not
     just any Project Admin (role=owner or admin member). Used for delete
     and as the actor-side check for self-service transfer-ownership."""
-    if user.is_superadmin:
+    if user.role == UserGlobalRole.superadmin:
         return
     owner_member = _get_true_owner_member(db, project_id)
     if not owner_member or owner_member.user_id != user.id:
@@ -68,7 +68,7 @@ def _project_visible_to(project: Project, user: User, archiver_is_superadmin: bo
     stores archived_by as a bare user id)."""
     if project.archived_at is None:
         return True
-    if user.is_superadmin:
+    if user.role == UserGlobalRole.superadmin:
         return True
     if archiver_is_superadmin:
         return False
@@ -76,6 +76,8 @@ def _project_visible_to(project: Project, user: User, archiver_is_superadmin: bo
 
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 def create_project(body: ProjectCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.role == UserGlobalRole.user:
+        raise HTTPException(status_code=403, detail="Your account can't create projects -- ask a superadmin to upgrade your access")
     project = Project(
         name=body.name,
         description=body.description,
@@ -122,7 +124,7 @@ def list_projects(db: Session = Depends(get_db), current_user: User = Depends(ge
     superadmin_archiver_ids = set()
     if archiver_ids:
         superadmin_archiver_ids = {
-            u.id for u in db.query(User).filter(User.id.in_(archiver_ids), User.is_superadmin == True).all()
+            u.id for u in db.query(User).filter(User.id.in_(archiver_ids), User.role == UserGlobalRole.superadmin).all()
         }
     projects = [
         p for p in projects
@@ -187,7 +189,7 @@ def get_project(project_id: uuid.UUID, db: Session = Depends(get_db), current_us
     archiver_is_superadmin = False
     if project.archived_by is not None:
         archiver = db.query(User).filter(User.id == project.archived_by).first()
-        archiver_is_superadmin = bool(archiver and archiver.is_superadmin)
+        archiver_is_superadmin = bool(archiver and archiver.role == UserGlobalRole.superadmin)
     if not _project_visible_to(project, current_user, archiver_is_superadmin):
         raise HTTPException(status_code=403, detail="This project has been archived")
 
@@ -210,6 +212,36 @@ def get_project(project_id: uuid.UUID, db: Session = Depends(get_db), current_us
     ).scalar() or 0
     return resp
 
+def _check_owner_storage_allocation(db: Session, project_id: uuid.UUID, new_limit: int) -> None:
+    """The project's true owner has a personal storage_limit_bytes budget
+    (task 12) -- the sum of storage_limit_bytes across every project they
+    currently own (excluding this one) plus new_limit can't exceed it. No
+    personal limit (NULL) means unlimited, so nothing to enforce. A NULL
+    (unlimited) sibling project contributes 0 to the sum rather than being
+    treated as unbounded -- SQL SUM skips NULLs; the spec doesn't say how
+    to handle that combination so this is the literal reading, not a
+    considered decision."""
+    owner_member = _get_true_owner_member(db, project_id)
+    if not owner_member:
+        return
+    owner = db.query(User).filter(User.id == owner_member.user_id).first()
+    if not owner or owner.storage_limit_bytes is None:
+        return
+    allocated_elsewhere = db.query(func.coalesce(func.sum(Project.storage_limit_bytes), 0)).join(
+        ProjectMember, ProjectMember.project_id == Project.id
+    ).filter(
+        ProjectMember.user_id == owner.id,
+        ProjectMember.role == ProjectRole.owner,
+        ProjectMember.deleted_at.is_(None),
+        Project.deleted_at.is_(None),
+        Project.id != project_id,
+    ).scalar() or 0
+    if allocated_elsewhere + new_limit > owner.storage_limit_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="This would exceed the project owner's total storage limit",
+        )
+
 @router.patch("/{project_id}", response_model=ProjectResponse)
 def update_project(project_id: uuid.UUID, body: ProjectUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     project = _get_project(db, project_id)
@@ -220,7 +252,7 @@ def update_project(project_id: uuid.UUID, body: ProjectUpdate, db: Session = Dep
     # strict project-owner check below, unchanged from before.
     if fields_set - {"ratings_visible_to_all"}:
         _require_project_owner(db, project_id, current_user)
-    if "ratings_visible_to_all" in fields_set and not current_user.is_superadmin:
+    if "ratings_visible_to_all" in fields_set and current_user.role != UserGlobalRole.superadmin:
         _require_project_owner(db, project_id, current_user)
 
     if body.name is not None:
@@ -230,6 +262,8 @@ def update_project(project_id: uuid.UUID, body: ProjectUpdate, db: Session = Dep
     if body.is_public is not None:
         project.is_public = body.is_public
     if body.storage_limit_bytes is not None:
+        if current_user.role != UserGlobalRole.superadmin:
+            _check_owner_storage_allocation(db, project_id, body.storage_limit_bytes)
         project.storage_limit_bytes = body.storage_limit_bytes
     if body.ratings_visible_to_all is not None:
         project.ratings_visible_to_all = body.ratings_visible_to_all
@@ -343,7 +377,7 @@ def archive_project(project_id: uuid.UUID, db: Session = Depends(get_db), curren
     admin member) or a superadmin can archive; see _project_visible_to for
     who can still see/reactivate it afterward."""
     project = _get_project(db, project_id)
-    if not current_user.is_superadmin:
+    if current_user.role != UserGlobalRole.superadmin:
         _require_project_owner(db, project_id, current_user)
     if project.archived_at is not None:
         raise HTTPException(status_code=400, detail="Project is already archived")
@@ -353,7 +387,7 @@ def archive_project(project_id: uuid.UUID, db: Session = Depends(get_db), curren
     db.refresh(project)
     resp = ProjectResponse.model_validate(project)
     resp.poster_url = _resolve_poster_url(project)
-    resp.archived_by_is_superadmin = current_user.is_superadmin
+    resp.archived_by_is_superadmin = current_user.role == UserGlobalRole.superadmin
     return resp
 
 @router.post("/{project_id}/reactivate", response_model=ProjectResponse)
@@ -370,9 +404,9 @@ def reactivate_project(project_id: uuid.UUID, db: Session = Depends(get_db), cur
     archiver_is_superadmin = False
     if project.archived_by is not None:
         archiver = db.query(User).filter(User.id == project.archived_by).first()
-        archiver_is_superadmin = bool(archiver and archiver.is_superadmin)
+        archiver_is_superadmin = bool(archiver and archiver.role == UserGlobalRole.superadmin)
 
-    if not current_user.is_superadmin:
+    if current_user.role != UserGlobalRole.superadmin:
         if archiver_is_superadmin or project.created_by != current_user.id:
             raise HTTPException(status_code=403, detail="Only a superadmin can reactivate this project")
 
@@ -408,6 +442,10 @@ def transfer_project_ownership(project_id: uuid.UUID, body: TransferOwnershipReq
     ).first()
     if not target_member:
         raise HTTPException(status_code=400, detail="Target must already be a Project Admin on this project — promote them first")
+
+    target_user = db.query(User).filter(User.id == body.new_owner_id).first()
+    if not target_user or target_user.role == UserGlobalRole.user:
+        raise HTTPException(status_code=400, detail="This account's tier doesn't allow project ownership")
 
     owner_member.role = ProjectRole.admin
     target_member.role = ProjectRole.owner
