@@ -3,15 +3,23 @@
 import * as React from 'react'
 import Link from 'next/link'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { MoreHorizontal, ImagePlus, Settings, Trash2, Globe, Lock, Users, ArrowRightLeft, Archive, ArchiveRestore } from 'lucide-react'
+import { MoreHorizontal, ImagePlus, Settings, Trash2, Globe, Lock, Users, ArrowRightLeft, Archive, ArchiveRestore, ChevronDown } from 'lucide-react'
 import { cn, formatRelativeTime, formatBytes, resolveApiMediaUrl } from '@/lib/utils'
 import { getGradientForProject } from '@/lib/gradient-utils'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
+import { Avatar } from '@/components/shared/avatar'
 import { ProjectSettingsDialog } from './project-settings-dialog'
 import { ProjectMembersDialog } from './project-members-dialog'
 import { TransferOwnershipDialog } from './transfer-ownership-dialog'
-import type { Project } from '@/types'
+import type { Project, ProjectRole, User } from '@/types'
+
+interface MemberWithUser {
+  id: string
+  user_id: string
+  role: ProjectRole
+  user: User
+}
 
 interface ProjectCardProps {
   project: Project
@@ -34,6 +42,9 @@ export function ProjectCard({
   const [transferOpen, setTransferOpen] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
   const [archiving, setArchiving] = React.useState(false)
+  const [membersExpanded, setMembersExpanded] = React.useState(false)
+  const [expandedMembers, setExpandedMembers] = React.useState<MemberWithUser[]>([])
+  const [expandedMembersLoading, setExpandedMembersLoading] = React.useState(false)
 
   // "Project Admin" = anyone with role=owner or role=admin membership on
   // this project. "Owner" (singular, the crown) = role=owner specifically,
@@ -45,6 +56,40 @@ export function ProjectCard({
   const isTrueOwner = project.role === 'owner'
   const canDelete = isTrueOwner || isSuperAdmin
   const isArchived = !!project.archived_at
+  // Same population as the "..." menu (isProjectAdmin), plus superadmins --
+  // who can see this card without necessarily being a member of it (e.g. a
+  // public project they haven't joined), so isProjectAdmin alone would miss
+  // them.
+  const canViewMembers = isSuperAdmin || isProjectAdmin
+
+  const fetchExpandedMembers = React.useCallback(async () => {
+    setExpandedMembersLoading(true)
+    try {
+      const rawMembers = await api.get<{ id: string; user_id: string; role: ProjectRole }[]>(
+        `/projects/${project.id}/members`,
+      )
+      if (rawMembers.length === 0) {
+        setExpandedMembers([])
+        return
+      }
+      const userIds = rawMembers.map((m) => m.user_id)
+      const users = await api.get<User[]>(`/users?ids=${userIds.join(',')}`)
+      const userMap = new Map(users.map((u) => [u.id, u]))
+      setExpandedMembers(
+        rawMembers
+          .filter((m) => userMap.has(m.user_id))
+          .map((m) => ({ ...m, user: userMap.get(m.user_id)! })),
+      )
+    } catch {
+      setExpandedMembers([])
+    } finally {
+      setExpandedMembersLoading(false)
+    }
+  }, [project.id])
+
+  React.useEffect(() => {
+    if (membersExpanded) fetchExpandedMembers()
+  }, [membersExpanded, fetchExpandedMembers])
 
   const handleDelete = async () => {
     if (!confirm(`Delete "${project.name}"? This action cannot be undone.`)) return
@@ -73,10 +118,14 @@ export function ProjectCard({
 
   return (
     <>
-      <div className={cn('group relative', className)}>
+      <div className={className}>
+      <div className="group relative">
         <Link
           href={`/projects/${project.id}`}
-          className="block rounded-xl overflow-hidden bg-bg-secondary border border-border hover:border-accent/40 transition-all duration-200 hover:shadow-lg hover:shadow-black/10"
+          className={cn(
+            'block overflow-hidden bg-bg-secondary border border-border hover:border-accent/40 transition-all duration-200 hover:shadow-lg hover:shadow-black/10',
+            canViewMembers ? 'rounded-t-xl' : 'rounded-xl',
+          )}
         >
           {/* Square poster area */}
           <div className="relative aspect-square w-full overflow-hidden">
@@ -220,6 +269,48 @@ export function ProjectCard({
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
         )}
+      </div>
+
+      {canViewMembers && (
+        <div className="rounded-b-xl border border-t-0 border-border bg-bg-secondary overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setMembersExpanded((v) => !v)}
+            className="flex w-full items-center justify-between gap-2 px-3 py-2 text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              <Users className="h-3 w-3" />
+              Members
+              {typeof project.member_count === 'number' ? ` (${project.member_count})` : ''}
+            </span>
+            <ChevronDown
+              className={cn('h-3.5 w-3.5 transition-transform', membersExpanded && 'rotate-180')}
+            />
+          </button>
+
+          {membersExpanded && (
+            <div className="border-t border-border px-3 pb-2.5 pt-2 space-y-1.5 max-h-40 overflow-y-auto">
+              {expandedMembersLoading ? (
+                <p className="py-1 text-xs text-text-tertiary">Loading…</p>
+              ) : expandedMembers.length === 0 ? (
+                <p className="py-1 text-xs text-text-tertiary">No members</p>
+              ) : (
+                expandedMembers.map((m) => (
+                  <div key={m.id} className="flex items-center gap-2">
+                    <Avatar src={m.user.avatar_url} name={m.user.name} size="sm" />
+                    <span className="min-w-0 flex-1 truncate text-xs text-text-primary">
+                      {m.user.name}
+                    </span>
+                    <span className="shrink-0 text-[10px] capitalize text-text-tertiary">
+                      {m.role === 'admin' ? 'Manager' : m.role}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      )}
       </div>
 
       {/* Project Settings Dialog */}

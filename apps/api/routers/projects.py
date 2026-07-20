@@ -287,13 +287,15 @@ def delete_project(project_id: uuid.UUID, db: Session = Depends(get_db), current
 @router.get("/{project_id}/members", response_model=list[ProjectMemberResponse])
 def list_project_members(project_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _get_project(db, project_id)
-    # Verify user is a member
+    # Verify user is a member -- except superadmins, who can inspect
+    # membership on any project (e.g. the card's expandable Members section
+    # for a public project they haven't joined).
     member = db.query(ProjectMember).filter(
         ProjectMember.project_id == project_id,
         ProjectMember.user_id == current_user.id,
         ProjectMember.deleted_at.is_(None),
     ).first()
-    if not member:
+    if not member and current_user.role != UserGlobalRole.superadmin:
         raise HTTPException(status_code=403, detail="Not a project member")
     
     members = db.query(ProjectMember).filter(
