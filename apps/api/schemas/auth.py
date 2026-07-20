@@ -1,5 +1,6 @@
 from pydantic import BaseModel, EmailStr
 import uuid
+from datetime import datetime
 from ..models.user import UserStatus, UserGlobalRole
 from ..models.project import ProjectRole
 
@@ -33,6 +34,7 @@ class UserResponse(BaseModel):
     role: UserGlobalRole = UserGlobalRole.user
     invite_token: str | None = None
     preferences: dict = {}
+    created_at: datetime
 
     model_config = {"from_attributes": True}
 

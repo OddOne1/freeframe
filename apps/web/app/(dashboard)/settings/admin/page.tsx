@@ -11,10 +11,12 @@ import {
   Link2,
   Check,
   FolderKanban,
+  Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/shared/avatar";
 import { EmptyState } from "@/components/shared/empty-state";
 import { useAuthStore } from "@/stores/auth-store";
@@ -353,19 +355,49 @@ export default function AdminPage() {
     }
   };
 
+  const [search, setSearch] = React.useState("");
+  const [sortBy, setSortBy] = React.useState<"name" | "email" | "status">(
+    "name",
+  );
+
+  const filteredUsers = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return usersResp ?? [];
+    return (usersResp ?? []).filter(
+      (u) =>
+        u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q),
+    );
+  }, [usersResp, search]);
+
+  const compareUsers = React.useCallback(
+    (a: AdminUser, b: AdminUser) => {
+      switch (sortBy) {
+        case "email":
+          return a.email.localeCompare(b.email);
+        case "status": {
+          // Active first, everything else (deactivated/pending/unverified)
+          // after -- ties broken by name so the order stays stable.
+          const rank = (u: AdminUser) => (u.status === "active" ? 0 : 1);
+          const diff = rank(a) - rank(b);
+          return diff !== 0 ? diff : a.name.localeCompare(b.name);
+        }
+        case "name":
+        default:
+          return a.name.localeCompare(b.name);
+      }
+    },
+    [sortBy],
+  );
+
+  // Grouping (task 2) stays intact -- search/sort (task 3) filter and order
+  // within each group, they don't collapse the admin/member split.
   const admins = React.useMemo(
-    () =>
-      (usersResp ?? [])
-        .filter((u) => u.role === "superadmin")
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    [usersResp],
+    () => filteredUsers.filter((u) => u.role === "superadmin").sort(compareUsers),
+    [filteredUsers, compareUsers],
   );
   const members = React.useMemo(
-    () =>
-      (usersResp ?? [])
-        .filter((u) => u.role !== "superadmin")
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    [usersResp],
+    () => filteredUsers.filter((u) => u.role !== "superadmin").sort(compareUsers),
+    [filteredUsers, compareUsers],
   );
 
   if (!isSuperAdmin) {
@@ -482,11 +514,32 @@ export default function AdminPage() {
       </div>
 
       <section className="space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-sm font-semibold text-text-primary">
             Platform Users
           </h2>
-          <BulkInviteDialog />
+          <div className="flex items-center gap-2">
+            <Input
+              icon={<Search className="h-3.5 w-3.5" />}
+              placeholder="Search by name or email"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-8 w-56 text-xs"
+            />
+            <select
+              value={sortBy}
+              onChange={(e) =>
+                setSortBy(e.target.value as "name" | "email" | "status")
+              }
+              className="h-8 rounded-md border border-border bg-bg-secondary px-2 text-xs text-text-primary focus:outline-none focus:border-border-focus"
+              aria-label="Sort users by"
+            >
+              <option value="name">Sort: Name</option>
+              <option value="email">Sort: Email</option>
+              <option value="status">Sort: Status</option>
+            </select>
+            <BulkInviteDialog />
+          </div>
         </div>
 
         {loadingUsers ? (
@@ -504,6 +557,14 @@ export default function AdminPage() {
               icon={Users}
               title="No users"
               description="Users will appear here once they register or are invited."
+            />
+          </div>
+        ) : admins.length === 0 && members.length === 0 ? (
+          <div className="rounded-lg border border-border bg-bg-secondary">
+            <EmptyState
+              icon={Search}
+              title="No matching users"
+              description="Try a different name or email."
             />
           </div>
         ) : (
