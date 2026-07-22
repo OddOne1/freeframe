@@ -568,7 +568,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   )
   const { data: assetMetadata } = useSWR<AssetMetadata[]>(
     asset ? `/assets/${asset.id}/metadata` : null,
-    () => api.get<AssetMetadata[]>(`/assets/${asset.id}/metadata`),
+    (key: string) => api.get<AssetMetadata[]>(key),
   )
   const [customValues, setCustomValues] = useState<Record<string, unknown>>({})
   useEffect(() => {
