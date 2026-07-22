@@ -26,10 +26,18 @@ def require_project_role(
 ) -> ProjectMember:
     """Require the user to have at least `minimum_role` on the project.
 
-    Role hierarchy (descending): owner > editor > reviewer > viewer
+    Role hierarchy (descending): owner == admin > editor > reviewer > viewer.
+    admin ("Manager") ranks equal to owner here -- no caller of this helper
+    ever requires ProjectRole.owner specifically (verified across
+    approvals.py, branding.py, folders.py, assets.py, upload.py,
+    metadata.py, share.py: every call site requires editor/reviewer/viewer
+    only), so this can't leak an owner-exclusive capability. Delete/transfer
+    stay owner-only via the separate _require_true_owner_or_superadmin
+    check in routers/projects.py, untouched by this.
     """
     ROLE_RANK = {
         ProjectRole.owner: 4,
+        ProjectRole.admin: 4,
         ProjectRole.editor: 3,
         ProjectRole.reviewer: 2,
         ProjectRole.viewer: 1,
