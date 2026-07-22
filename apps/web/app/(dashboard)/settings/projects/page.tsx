@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import useSWR, { mutate } from "swr";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Popover from "@radix-ui/react-popover";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   X,
   FolderKanban,
@@ -18,6 +19,9 @@ import {
   LogIn,
   LogOut,
   Users,
+  ChevronDown,
+  MoreHorizontal,
+  Settings,
 } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -28,6 +32,8 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/shared/empty-state";
 import { useAuthStore } from "@/stores/auth-store";
 import { useHasProjectPrivilege } from "@/hooks/use-project-privilege";
+import { ProjectSettingsDialog } from "@/components/projects/project-settings-dialog";
+import { TransferOwnershipDialog } from "@/components/projects/transfer-ownership-dialog";
 import type { AdminProject, Project, ProjectRole, User } from "@/types";
 
 interface MemberWithUser {
@@ -91,10 +97,11 @@ function ProjectMembersPopover({
       <Popover.Trigger asChild>
         <button
           type="button"
-          className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors"
+          className="flex items-center gap-1.5 rounded-md border border-border h-7 px-2 text-2xs text-text-primary hover:bg-bg-hover transition-colors"
         >
-          <Users className="h-3 w-3" />
+          <Users className="h-3 w-3 text-text-tertiary" />
           {typeof count === "number" ? count : "—"}
+          <ChevronDown className="h-3 w-3 text-text-tertiary shrink-0" />
         </button>
       </Popover.Trigger>
       <Popover.Portal>
@@ -535,6 +542,31 @@ function OwnedProjectsView() {
 
   const refresh = () => mutate("/projects");
 
+  const [settingsTarget, setSettingsTarget] = React.useState<Project | null>(null);
+  const [transferTarget, setTransferTarget] = React.useState<Project | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<Project | null>(null);
+  const [archiving, setArchiving] = React.useState<string | null>(null);
+
+  // Same template as handleArchiveToggle in the superadmin branch below,
+  // scoped to this view's own "/projects" SWR key instead of "/admin/projects".
+  const handleArchiveToggle = async (p: Project) => {
+    setArchiving(p.id);
+    try {
+      await api.post(`/projects/${p.id}/${p.archived_at ? "reactivate" : "archive"}`);
+      refresh();
+    } catch {
+      // silently fail
+    } finally {
+      setArchiving(null);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    await api.delete(`/projects/${deleteTarget.id}`);
+    refresh();
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div>
@@ -575,7 +607,7 @@ function OwnedProjectsView() {
         </div>
       ) : (
         <div className="rounded-lg border border-border bg-bg-secondary overflow-x-auto">
-          <table className="w-full text-sm min-w-[640px]">
+          <table className="w-full text-sm min-w-[720px]">
             <thead>
               <tr className="border-b border-border bg-bg-tertiary">
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Project</th>
@@ -583,6 +615,7 @@ function OwnedProjectsView() {
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Members</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Used</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Storage Limit</th>
+                <th className="px-4 py-2.5 text-right text-xs font-medium text-text-tertiary">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -622,12 +655,97 @@ function OwnedProjectsView() {
                       </span>
                     )}
                   </td>
+                  <td className="px-4 py-3 text-right">
+                    <DropdownMenu.Root>
+                      <DropdownMenu.Trigger asChild>
+                        <button
+                          type="button"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary hover:bg-bg-hover hover:text-text-primary transition-colors"
+                        >
+                          <MoreHorizontal className="h-4 w-4" />
+                        </button>
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Portal>
+                        <DropdownMenu.Content
+                          className="z-50 min-w-[180px] rounded-xl border border-border bg-bg-secondary p-1 shadow-xl"
+                          sideOffset={4}
+                          align="end"
+                        >
+                          <DropdownMenu.Item
+                            className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
+                            onSelect={() => setSettingsTarget(p)}
+                          >
+                            <Settings className="h-4 w-4 text-text-tertiary" />
+                            Project Settings
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Item
+                            className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
+                            onSelect={() => handleArchiveToggle(p)}
+                            disabled={archiving === p.id}
+                          >
+                            {p.archived_at ? (
+                              <ArchiveRestore className="h-4 w-4 text-text-tertiary" />
+                            ) : (
+                              <Archive className="h-4 w-4 text-text-tertiary" />
+                            )}
+                            {p.archived_at ? "Reactivate" : "Archive"}
+                          </DropdownMenu.Item>
+                          {p.role === "owner" && (
+                            <>
+                              <DropdownMenu.Item
+                                className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
+                                onSelect={() => setTransferTarget(p)}
+                              >
+                                <ArrowRightLeft className="h-4 w-4 text-text-tertiary" />
+                                Transfer Ownership
+                              </DropdownMenu.Item>
+                              <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                              <DropdownMenu.Item
+                                className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-status-error hover:bg-status-error/10 cursor-pointer outline-none transition-colors"
+                                onSelect={() => setDeleteTarget(p)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                                Delete
+                              </DropdownMenu.Item>
+                            </>
+                          )}
+                        </DropdownMenu.Content>
+                      </DropdownMenu.Portal>
+                    </DropdownMenu.Root>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
+
+      {settingsTarget && (
+        <ProjectSettingsDialog
+          project={settingsTarget}
+          open={!!settingsTarget}
+          onOpenChange={(o) => !o && setSettingsTarget(null)}
+          onUpdated={refresh}
+        />
+      )}
+      {transferTarget && (
+        <TransferOwnershipDialog
+          projectId={transferTarget.id}
+          projectName={transferTarget.name}
+          open={!!transferTarget}
+          onOpenChange={(o) => !o && setTransferTarget(null)}
+          onTransferred={refresh}
+        />
+      )}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => !o && setDeleteTarget(null)}
+        title={`Delete "${deleteTarget?.name ?? ""}"?`}
+        description="This soft-deletes the project and all its assets. Only a database restore can undo it. Consider Archive instead if you just want to disable it."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }
@@ -747,7 +865,7 @@ export default function SettingsProjectsPage() {
         </div>
       ) : (
         <div className="rounded-lg border border-border bg-bg-secondary overflow-x-auto">
-          <table className="w-full text-sm min-w-[900px]">
+          <table className="w-full text-sm min-w-[760px]">
             <thead>
               <tr className="border-b border-border bg-bg-tertiary">
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Project</th>
@@ -830,72 +948,78 @@ export default function SettingsProjectsPage() {
                     <td className="px-4 py-3 text-xs text-text-tertiary">
                       {p.created_at ? new Date(p.created_at).toLocaleDateString() : "—"}
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center justify-end gap-1">
-                        {!hasAccess ? (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleJoinAndView(p)}
-                            loading={joining === p.id}
-                            className="gap-1"
+                    <td className="px-4 py-3 text-right">
+                      <DropdownMenu.Root>
+                        <DropdownMenu.Trigger asChild>
+                          <button
+                            type="button"
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary hover:bg-bg-hover hover:text-text-primary transition-colors"
                           >
-                            <LogIn className="h-3.5 w-3.5" /> Join &amp; View
-                          </Button>
-                        ) : isPeekOnly ? (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleLeave(p)}
-                            loading={leaving === p.id}
-                            className="gap-1"
+                            <MoreHorizontal className="h-4 w-4" />
+                          </button>
+                        </DropdownMenu.Trigger>
+                        <DropdownMenu.Portal>
+                          <DropdownMenu.Content
+                            className="z-50 min-w-[180px] rounded-xl border border-border bg-bg-secondary p-1 shadow-xl"
+                            sideOffset={4}
+                            align="end"
                           >
-                            <LogOut className="h-3.5 w-3.5" /> Leave
-                          </Button>
-                        ) : (
-                          <span className="px-2 text-xs italic text-text-tertiary">
-                            Member
-                          </span>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setRenameTarget(p)}
-                          className="gap-1"
-                        >
-                          <Pencil className="h-3.5 w-3.5" /> Rename
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleArchiveToggle(p)}
-                          loading={archiving === p.id}
-                          className="gap-1"
-                        >
-                          {p.archived_at ? (
-                            <ArchiveRestore className="h-3.5 w-3.5" />
-                          ) : (
-                            <Archive className="h-3.5 w-3.5" />
-                          )}
-                          {p.archived_at ? "Reactivate" : "Archive"}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setTransferTarget(p)}
-                          className="gap-1"
-                        >
-                          <ArrowRightLeft className="h-3.5 w-3.5" /> Transfer
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setDeleteTarget(p)}
-                          className="gap-1 text-status-error hover:text-status-error"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" /> Delete
-                        </Button>
-                      </div>
+                            {!hasAccess ? (
+                              <DropdownMenu.Item
+                                className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
+                                onSelect={() => handleJoinAndView(p)}
+                                disabled={joining === p.id}
+                              >
+                                <LogIn className="h-4 w-4 text-text-tertiary" />
+                                Join &amp; View
+                              </DropdownMenu.Item>
+                            ) : isPeekOnly ? (
+                              <DropdownMenu.Item
+                                className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
+                                onSelect={() => handleLeave(p)}
+                                disabled={leaving === p.id}
+                              >
+                                <LogOut className="h-4 w-4 text-text-tertiary" />
+                                Leave
+                              </DropdownMenu.Item>
+                            ) : null}
+                            <DropdownMenu.Item
+                              className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
+                              onSelect={() => setRenameTarget(p)}
+                            >
+                              <Pencil className="h-4 w-4 text-text-tertiary" />
+                              Rename
+                            </DropdownMenu.Item>
+                            <DropdownMenu.Item
+                              className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
+                              onSelect={() => handleArchiveToggle(p)}
+                              disabled={archiving === p.id}
+                            >
+                              {p.archived_at ? (
+                                <ArchiveRestore className="h-4 w-4 text-text-tertiary" />
+                              ) : (
+                                <Archive className="h-4 w-4 text-text-tertiary" />
+                              )}
+                              {p.archived_at ? "Reactivate" : "Archive"}
+                            </DropdownMenu.Item>
+                            <DropdownMenu.Item
+                              className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
+                              onSelect={() => setTransferTarget(p)}
+                            >
+                              <ArrowRightLeft className="h-4 w-4 text-text-tertiary" />
+                              Transfer
+                            </DropdownMenu.Item>
+                            <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                            <DropdownMenu.Item
+                              className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-status-error hover:bg-status-error/10 cursor-pointer outline-none transition-colors"
+                              onSelect={() => setDeleteTarget(p)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              Delete
+                            </DropdownMenu.Item>
+                          </DropdownMenu.Content>
+                        </DropdownMenu.Portal>
+                      </DropdownMenu.Root>
                     </td>
                   </tr>
                 );
