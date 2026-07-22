@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import useSWR, { mutate } from "swr";
 import * as Dialog from "@radix-ui/react-dialog";
+import * as Popover from "@radix-ui/react-popover";
 import {
   X,
   FolderKanban,
@@ -16,6 +17,7 @@ import {
   ArchiveRestore,
   LogIn,
   LogOut,
+  Users,
 } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -26,7 +28,107 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/shared/empty-state";
 import { useAuthStore } from "@/stores/auth-store";
 import { useHasProjectPrivilege } from "@/hooks/use-project-privilege";
-import type { AdminProject, Project, User } from "@/types";
+import type { AdminProject, Project, ProjectRole, User } from "@/types";
+
+interface MemberWithUser {
+  id: string;
+  user_id: string;
+  role: ProjectRole;
+  user: User;
+}
+
+// Reused by both the superadmin "All Projects" table and the non-superadmin
+// "Your Projects" table (OwnedProjectsView) -- same lazy-fetch-on-expand
+// pattern as the (reverted) project-card.tsx version: GET
+// /projects/{id}/members, then GET /users?ids=... to hydrate names/avatars,
+// only once the popover is actually opened.
+function ProjectMembersPopover({
+  projectId,
+  count,
+}: {
+  projectId: string;
+  count?: number;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [members, setMembers] = React.useState<MemberWithUser[]>([]);
+  const [loading, setLoading] = React.useState(false);
+  const [fetched, setFetched] = React.useState(false);
+
+  const fetchMembers = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const rawMembers = await api.get<{ id: string; user_id: string; role: ProjectRole }[]>(
+        `/projects/${projectId}/members`,
+      );
+      if (rawMembers.length === 0) {
+        setMembers([]);
+        return;
+      }
+      const userIds = rawMembers.map((m) => m.user_id);
+      const users = await api.get<User[]>(`/users?ids=${userIds.join(",")}`);
+      const userMap = new Map(users.map((u) => [u.id, u]));
+      setMembers(
+        rawMembers
+          .filter((m) => userMap.has(m.user_id))
+          .map((m) => ({ ...m, user: userMap.get(m.user_id)! })),
+      );
+    } catch {
+      setMembers([]);
+    } finally {
+      setLoading(false);
+      setFetched(true);
+    }
+  }, [projectId]);
+
+  return (
+    <Popover.Root
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (o && !fetched) fetchMembers();
+      }}
+    >
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors"
+        >
+          <Users className="h-3 w-3" />
+          {typeof count === "number" ? count : "—"}
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          side="bottom"
+          align="start"
+          sideOffset={6}
+          className="z-50 w-60 max-h-72 overflow-y-auto rounded-lg border border-border bg-bg-elevated shadow-xl p-2 space-y-1"
+        >
+          {loading ? (
+            <p className="px-2 py-1.5 text-xs text-text-tertiary">Loading…</p>
+          ) : members.length === 0 ? (
+            <p className="px-2 py-1.5 text-xs text-text-tertiary">No members</p>
+          ) : (
+            members.map((m) => (
+              <div
+                key={m.id}
+                className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-bg-hover"
+              >
+                <Avatar src={m.user.avatar_url} name={m.user.name} size="sm" />
+                <span className="min-w-0 flex-1 truncate text-xs text-text-primary">
+                  {m.user.name}
+                </span>
+                <span className="shrink-0 text-[10px] capitalize text-text-tertiary">
+                  {m.role === "admin" ? "Manager" : m.role}
+                </span>
+              </div>
+            ))
+          )}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
 
 // Superadmins see every project ever created, including ones they don't
 // belong to, with owner identity and stats. They can rename/archive/
@@ -478,6 +580,7 @@ function OwnedProjectsView() {
               <tr className="border-b border-border bg-bg-tertiary">
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Project</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Role</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Members</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Used</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Storage Limit</th>
               </tr>
@@ -500,6 +603,9 @@ function OwnedProjectsView() {
                     <span className="text-xs text-text-secondary">
                       {p.role === "admin" ? "Manager" : "Owner"}
                     </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <ProjectMembersPopover projectId={p.id} count={p.member_count} />
                   </td>
                   <td className="px-4 py-3 text-text-secondary">{formatBytes(p.storage_bytes ?? 0)}</td>
                   <td className="px-4 py-3">
@@ -704,7 +810,9 @@ export default function SettingsProjectsPage() {
                         {p.owner_email ?? ""}
                       </p>
                     </td>
-                    <td className="px-4 py-3 text-text-secondary">{p.member_count}</td>
+                    <td className="px-4 py-3">
+                      <ProjectMembersPopover projectId={p.id} count={p.member_count} />
+                    </td>
                     <td className="px-4 py-3 text-text-secondary">{p.asset_count}</td>
                     <td className="px-4 py-3 text-text-secondary">
                       {formatBytes(p.storage_bytes ?? 0)}

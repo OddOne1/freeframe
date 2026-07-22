@@ -38,6 +38,24 @@ def _require_project_owner(db: Session, project_id: uuid.UUID, user: User) -> Pr
         raise HTTPException(status_code=403, detail="Project owner access required")
     return member
 
+def _require_project_member_manager(db: Session, project_id: uuid.UUID, user: User) -> ProjectMember:
+    """Gates add/update/remove_project_member specifically -- deliberately
+    NOT folded into _require_project_owner, which also gates 7 unrelated
+    endpoints (update_project, archive_project, poster upload/remove) that
+    should not get a superadmin bypass just because member-management needs
+    one. Allows the normal owner/admin member, OR a superadmin who has
+    joined this project (any active ProjectMember row, including a
+    viewer-level Join & View peek) -- superadmins can only manage members in
+    projects they've actually joined, not every project unconditionally."""
+    member = db.query(ProjectMember).filter(
+        ProjectMember.project_id == project_id,
+        ProjectMember.user_id == user.id,
+        ProjectMember.deleted_at.is_(None),
+    ).first()
+    if member and (member.role in (ProjectRole.owner, ProjectRole.admin) or user.role == UserGlobalRole.superadmin):
+        return member
+    raise HTTPException(status_code=403, detail="Project owner access required")
+
 def _get_true_owner_member(db: Session, project_id: uuid.UUID) -> ProjectMember | None:
     """The single ProjectMember holding role=owner for this project (unique,
     enforced by a partial index) -- the current true owner. Not the same as
@@ -307,7 +325,7 @@ def list_project_members(project_id: uuid.UUID, db: Session = Depends(get_db), c
 @router.post("/{project_id}/members", response_model=ProjectMemberResponse, status_code=status.HTTP_201_CREATED)
 def add_project_member(project_id: uuid.UUID, body: AddProjectMemberRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _get_project(db, project_id)
-    _require_project_owner(db, project_id, current_user)
+    _require_project_member_manager(db, project_id, current_user)
     if body.role == ProjectRole.owner:
         raise HTTPException(status_code=400, detail="Use Transfer Ownership to make someone the project owner")
     existing = db.query(ProjectMember).filter(ProjectMember.project_id == project_id, ProjectMember.user_id == body.user_id).first()
@@ -344,7 +362,7 @@ def add_project_member(project_id: uuid.UUID, body: AddProjectMemberRequest, db:
 @router.patch("/{project_id}/members/{user_id}", response_model=ProjectMemberResponse)
 def update_project_member(project_id: uuid.UUID, user_id: uuid.UUID, body: UpdateProjectMemberRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _get_project(db, project_id)
-    _require_project_owner(db, project_id, current_user)
+    _require_project_member_manager(db, project_id, current_user)
     member = db.query(ProjectMember).filter(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id, ProjectMember.deleted_at.is_(None)).first()
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
@@ -362,7 +380,7 @@ def update_project_member(project_id: uuid.UUID, user_id: uuid.UUID, body: Updat
 @router.delete("/{project_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_project_member(project_id: uuid.UUID, user_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _get_project(db, project_id)
-    _require_project_owner(db, project_id, current_user)
+    _require_project_member_manager(db, project_id, current_user)
     member = db.query(ProjectMember).filter(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id, ProjectMember.deleted_at.is_(None)).first()
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")

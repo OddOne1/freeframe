@@ -22,7 +22,6 @@ import { Avatar } from "@/components/shared/avatar";
 import { EmptyState } from "@/components/shared/empty-state";
 import { useAuthStore } from "@/stores/auth-store";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import type {
   UserStatus,
   AdminUser,
@@ -576,11 +575,7 @@ export default function AdminPage() {
             Admin Dashboard
           </h1>
           <p className="text-sm text-text-secondary">
-              Manage platform users. Project management lives on the{" "}
-              <Link href="/settings/projects" className="text-accent hover:underline">
-                Projects
-              </Link>{" "}
-              page.
+            Manage platform users.
           </p>
         </div>
       </div>
