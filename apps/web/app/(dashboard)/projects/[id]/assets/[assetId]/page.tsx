@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, type ElementType, type ReactNode } from 'react'
+import { useState, useEffect, useMemo, useRef, type ElementType, type ReactNode } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
@@ -15,6 +15,7 @@ import { AnnotationCanvas } from '@/components/review/annotation-canvas'
 import { AnnotationOverlay } from '@/components/review/annotation-overlay'
 import { CommentPanel } from '@/components/review/comment-panel'
 import { CommentInput } from '@/components/review/comment-input'
+import { CustomFieldInput } from '@/components/projects/asset-metadata'
 // ApprovalBar removed for now
 import { VersionSwitcher } from '@/components/review/version-switcher'
 import { ShareDialog } from '@/components/review/share-dialog'
@@ -48,11 +49,23 @@ import {
   File as FileIcon,
   User as UserIcon,
   Pencil,
+  CalendarDays,
+  X,
 } from 'lucide-react'
 import Link from 'next/link'
 import { cn, formatBytes, formatRelativeTime, formatTime } from '@/lib/utils'
 import { usePageTitle } from '@/hooks/use-page-title'
-import type { Project, AssetResponse, ProjectMember, FolderTreeNode, AssetStatus, User, TechnicalMetadata } from '@/types'
+import type {
+  Project,
+  AssetResponse,
+  ProjectMember,
+  FolderTreeNode,
+  AssetStatus,
+  User,
+  TechnicalMetadata,
+  MetadataField,
+  AssetMetadata,
+} from '@/types'
 
 interface VoteEntry {
   user_id: string
@@ -128,6 +141,80 @@ function VoteBreakdown({ voters }: { voters: VoteEntry[] }) {
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
   )
+}
+
+function AssigneePicker({
+  users,
+  value,
+  onChange,
+  disabled,
+}: {
+  users: User[]
+  value: string | null
+  onChange: (userId: string | null) => void
+  disabled: boolean
+}) {
+  const current = value ? users.find((u) => u.id === value) : null
+
+  if (disabled) {
+    return (
+      <span className="flex items-center gap-1.5 min-w-0">
+        {current && <Avatar src={current.avatar_url} name={current.name} size="sm" className="h-5 w-5" />}
+        <span className="text-xs text-text-primary font-medium truncate">{current?.name ?? '—'}</span>
+      </span>
+    )
+  }
+
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          className="flex items-center gap-1.5 min-w-0 rounded-md border border-border h-7 px-2 text-2xs text-text-primary hover:bg-bg-hover transition-colors"
+        >
+          {current ? (
+            <>
+              <Avatar src={current.avatar_url} name={current.name} size="sm" className="h-4 w-4" />
+              <span className="truncate max-w-[100px]">{current.name}</span>
+            </>
+          ) : (
+            <span className="text-text-tertiary">Unassigned</span>
+          )}
+          <ChevronDown className="h-3 w-3 text-text-tertiary shrink-0" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={4}
+          className="z-[100] w-56 max-h-72 overflow-y-auto rounded-lg border border-border bg-bg-elevated shadow-xl py-1"
+        >
+          <DropdownMenu.Item
+            onSelect={() => onChange(null)}
+            className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-text-secondary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
+          >
+            Unassigned
+          </DropdownMenu.Item>
+          {users.map((u) => (
+            <DropdownMenu.Item
+              key={u.id}
+              onSelect={() => onChange(u.id)}
+              className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
+            >
+              <Avatar src={u.avatar_url} name={u.name} size="sm" className="h-5 w-5" />
+              <span className="truncate">{u.name}</span>
+            </DropdownMenu.Item>
+          ))}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  )
+}
+
+function formatCustomFieldValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—'
+  if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : '—'
+  return String(value)
 }
 
 function formatBitrate(bps?: number | null): string | null {
@@ -322,6 +409,13 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     `/projects/${projectId}/members`,
     () => api.get<ProjectMember[]>(`/projects/${projectId}/members`),
   )
+  // Project member user records, for the assignee picker in the Fields tab
+  const memberIds = useMemo(() => (members ?? []).map((m) => m.user_id), [members])
+  const { data: memberUsers } = useSWR<User[]>(
+    memberIds.length > 0 ? `/users?ids=${memberIds.join(',')}` : null,
+    (key: string) => api.get<User[]>(key),
+  )
+
   const currentMember = members?.find((m) => m.user_id === user?.id)
   const currentRole = currentMember?.role ?? 'viewer'
   const canComment = currentRole !== 'viewer'
@@ -398,6 +492,108 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     } catch {
       // no-op — leave state as-is on failure
     }
+  }
+
+  // Due date / assignee / keywords — same optimistic-override shape as
+  // statusOverride/nameOverride above. `undefined` means "no override yet,
+  // defer to `asset`"; unlike statusOverride these fields can legitimately
+  // be null (unassigned/no due date), so `??` alone can't distinguish an
+  // explicit-null override from "no override" — hence the undefined sentinel.
+  const [dueDateOverride, setDueDateOverride] = useState<string | null | undefined>(undefined)
+  const [assigneeOverride, setAssigneeOverride] = useState<string | null | undefined>(undefined)
+  const [keywordsOverride, setKeywordsOverride] = useState<string[] | undefined>(undefined)
+  useEffect(() => {
+    setDueDateOverride(undefined)
+    setAssigneeOverride(undefined)
+    setKeywordsOverride(undefined)
+  }, [asset?.id])
+  const displayDueDate = dueDateOverride !== undefined ? dueDateOverride : (asset?.due_date ?? null)
+  const displayAssigneeId = assigneeOverride !== undefined ? assigneeOverride : (asset?.assignee_id ?? null)
+  const displayKeywords = keywordsOverride !== undefined ? keywordsOverride : (asset?.keywords ?? [])
+  const [keywordInput, setKeywordInput] = useState('')
+
+  async function handleDueDateChange(newDate: string) {
+    if (!asset) return
+    const previous = displayDueDate
+    const value = newDate || null
+    setDueDateOverride(value)
+    try {
+      await api.patch(`/assets/${asset.id}/assignment`, { due_date: value })
+    } catch {
+      setDueDateOverride(previous)
+    }
+  }
+
+  async function handleAssigneeChange(newAssigneeId: string | null) {
+    if (!asset) return
+    const previous = displayAssigneeId
+    setAssigneeOverride(newAssigneeId)
+    try {
+      await api.patch(`/assets/${asset.id}/assignment`, { assignee_id: newAssigneeId })
+    } catch {
+      setAssigneeOverride(previous)
+    }
+  }
+
+  async function saveKeywords(newKeywords: string[]) {
+    if (!asset) return
+    const previous = displayKeywords
+    setKeywordsOverride(newKeywords)
+    try {
+      await api.patch(`/assets/${asset.id}`, { keywords: newKeywords })
+    } catch {
+      setKeywordsOverride(previous)
+    }
+  }
+
+  function handleAddKeyword() {
+    const kw = keywordInput.trim()
+    if (kw && !displayKeywords.includes(kw)) {
+      saveKeywords([...displayKeywords, kw])
+      setKeywordInput('')
+    }
+  }
+
+  function handleRemoveKeyword(kw: string) {
+    saveKeywords(displayKeywords.filter((k) => k !== kw))
+  }
+
+  // Project-defined custom metadata fields (Settings-managed schema) + this
+  // asset's current values for them. Saved individually via PUT
+  // /assets/{id}/metadata, debounced per-field so free-text/number inputs
+  // don't fire a request per keystroke.
+  const { data: metadataFields } = useSWR<MetadataField[]>(
+    `/projects/${projectId}/metadata-fields`,
+    () => api.get<MetadataField[]>(`/projects/${projectId}/metadata-fields`),
+  )
+  const { data: assetMetadata } = useSWR<AssetMetadata[]>(
+    asset ? `/assets/${asset.id}/metadata` : null,
+    () => api.get<AssetMetadata[]>(`/assets/${asset.id}/metadata`),
+  )
+  const [customValues, setCustomValues] = useState<Record<string, unknown>>({})
+  useEffect(() => {
+    if (assetMetadata) {
+      const map: Record<string, unknown> = {}
+      for (const m of assetMetadata) map[m.field_id] = m.value
+      setCustomValues(map)
+    }
+  }, [assetMetadata])
+
+  const customFieldTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  useEffect(() => {
+    const timers = customFieldTimers.current
+    return () => {
+      Object.values(timers).forEach(clearTimeout)
+    }
+  }, [asset?.id])
+
+  function handleCustomFieldChange(fieldId: string, value: unknown) {
+    setCustomValues((prev) => ({ ...prev, [fieldId]: value }))
+    if (customFieldTimers.current[fieldId]) clearTimeout(customFieldTimers.current[fieldId])
+    customFieldTimers.current[fieldId] = setTimeout(() => {
+      if (!asset) return
+      api.put(`/assets/${asset.id}/metadata`, [{ field_id: fieldId, value }]).catch(() => {})
+    }, 600)
   }
 
   // Manual restart for a version stuck in 'processing' or that ended
@@ -920,6 +1116,94 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                     </div>
                     )}
 
+                    {/* Assignee */}
+                    <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60">
+                      <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
+                        <UserIcon className="h-3.5 w-3.5" />
+                        Assignee
+                      </span>
+                      <AssigneePicker
+                        users={memberUsers ?? []}
+                        value={displayAssigneeId}
+                        onChange={handleAssigneeChange}
+                        disabled={!canEditStatus}
+                      />
+                    </div>
+
+                    {/* Due date */}
+                    <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60">
+                      <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
+                        <CalendarDays className="h-3.5 w-3.5" />
+                        Due Date
+                      </span>
+                      {canEditStatus ? (
+                        <input
+                          type="date"
+                          value={displayDueDate ? displayDueDate.slice(0, 10) : ''}
+                          onChange={(e) => handleDueDateChange(e.target.value)}
+                          className="h-7 rounded-md border border-border bg-transparent px-2 text-2xs text-text-primary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
+                        />
+                      ) : (
+                        <span className="text-xs text-text-primary font-medium">
+                          {displayDueDate ? new Date(displayDueDate).toLocaleDateString() : '—'}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Keywords */}
+                    <div className="py-2 border-b border-border/60">
+                      <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0 mb-1.5">
+                        <Tag className="h-3.5 w-3.5" />
+                        Keywords
+                      </span>
+                      <div className="flex flex-wrap gap-1.5 mb-1.5">
+                        {displayKeywords.length === 0 && (
+                          <span className="text-xs text-text-primary">—</span>
+                        )}
+                        {displayKeywords.map((kw) => (
+                          <span
+                            key={kw}
+                            className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary border border-border px-2 py-0.5 text-2xs text-text-secondary"
+                          >
+                            {kw}
+                            {canEditStatus && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveKeyword(kw)}
+                                className="text-text-tertiary hover:text-text-primary transition-colors"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                      {canEditStatus && (
+                        <div className="flex gap-1.5">
+                          <input
+                            type="text"
+                            value={keywordInput}
+                            onChange={(e) => setKeywordInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault()
+                                handleAddKeyword()
+                              }
+                            }}
+                            placeholder="Add keyword..."
+                            className="flex h-7 flex-1 min-w-0 rounded-md border border-border bg-transparent px-2 text-2xs text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleAddKeyword}
+                            className="h-7 px-2 rounded-md border border-border text-2xs text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
+                          >
+                            Add
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
                     {currentVersion && (
                       <FieldRow icon={GitBranch} label="Version">v{currentVersion.version_number}</FieldRow>
                     )}
@@ -966,6 +1250,36 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                           {showAllFields && <TechnicalMetadataList metadata={primaryFile.technical_metadata} />}
                         </div>
                       )}
+
+                    {/* Custom project-defined fields */}
+                    {metadataFields && metadataFields.length > 0 && (
+                      <div className="pt-3 mt-2 border-t border-border">
+                        <p className="text-2xs font-medium text-text-tertiary uppercase tracking-wide mb-2">
+                          Custom Fields
+                        </p>
+                        <div className="space-y-3">
+                          {metadataFields.map((field) => (
+                            <div key={field.id} className="flex flex-col gap-1.5">
+                              <label className="text-xs text-text-secondary flex items-center gap-1">
+                                {field.name}
+                                {field.required && <span className="text-status-error">*</span>}
+                              </label>
+                              {canEditStatus ? (
+                                <CustomFieldInput
+                                  field={field}
+                                  value={customValues[field.id]}
+                                  onChange={(v) => handleCustomFieldChange(field.id, v)}
+                                />
+                              ) : (
+                                <span className="text-xs text-text-primary">
+                                  {formatCustomFieldValue(customValues[field.id])}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
