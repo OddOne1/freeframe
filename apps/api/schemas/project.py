@@ -20,7 +20,11 @@ class ProjectResponse(BaseModel):
     name: str
     description: str | None
     project_type: ProjectType
-    created_by: uuid.UUID
+    # Historical creator pointer -- can be None once the hard-delete path
+    # (task 1) is used; created_by_name/email (task 8) are the resilient
+    # display fields, not exposed here yet (Settings > Projects, task 9,
+    # doesn't consume them -- out of scope for this change).
+    created_by: uuid.UUID | None = None
     created_at: datetime
     poster_url: str | None = None
     is_public: bool = False

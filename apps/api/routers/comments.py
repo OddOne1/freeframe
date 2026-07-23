@@ -232,6 +232,7 @@ def create_comment(
         version_id=body.version_id,
         parent_id=body.parent_id,
         author_id=current_user.id,
+        author_name=current_user.name,
         timecode_start=body.timecode_start,
         timecode_end=body.timecode_end,
         body=body.body,
@@ -289,6 +290,7 @@ def reply_to_comment(
         version_id=parent.version_id,
         parent_id=comment_id,
         author_id=current_user.id,
+        author_name=current_user.name,
         body=body.body,
     )
     db.add(reply)
@@ -622,6 +624,7 @@ def guest_comment(
         version_id=version_id,
         parent_id=body.parent_id,
         author_id=author_id,
+        author_name=current_user.name if current_user else None,
         guest_author_id=guest_author_id,
         timecode_start=body.timecode_start,
         timecode_end=body.timecode_end,

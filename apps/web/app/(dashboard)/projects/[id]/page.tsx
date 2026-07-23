@@ -287,7 +287,11 @@ export default function ProjectDetailPage() {
   // Fetch user info for asset authors
   const authorIds = React.useMemo(() => {
     if (!assets) return [];
-    return Array.from(new Set(assets.map((a) => a.created_by)));
+    // created_by is null once the creator has been hard-deleted -- drop
+    // those rather than querying /users?ids=...,null,...
+    return Array.from(
+      new Set(assets.map((a) => a.created_by).filter((id): id is string => id !== null)),
+    );
   }, [assets]);
 
   const { data: authorUsers } = useSWR<User[]>(
@@ -1174,13 +1178,14 @@ export default function ProjectDetailPage() {
                           {formatRelativeTime(selectedAsset.created_at)}
                         </span>
                       </div>
-                      {authorNames[selectedAsset.created_by] && (
+                      {(selectedAsset.created_by_name || (selectedAsset.created_by && authorNames[selectedAsset.created_by])) && (
                         <div className="flex items-center justify-between">
                           <span className="text-xs text-text-tertiary">
                             Uploaded by
                           </span>
                           <span className="text-xs text-text-primary">
-                            {authorNames[selectedAsset.created_by]}
+                            {selectedAsset.created_by_name ||
+                              (selectedAsset.created_by && authorNames[selectedAsset.created_by])}
                           </span>
                         </div>
                       )}

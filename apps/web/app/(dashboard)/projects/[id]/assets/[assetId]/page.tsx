@@ -637,12 +637,14 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     (key: string) => api.get<VoteEntry[]>(key),
   )
 
-  // Uploader name for the Fields tab (asset.created_by is just a user id)
+  // Uploader name for the Fields tab (asset.created_by is just a user id --
+  // null once that user's been hard-deleted, in which case created_by_name,
+  // a frozen snapshot from creation time, is the only name left to show).
   const { data: uploaderUsers } = useSWR<User[]>(
-    asset ? `/users?ids=${asset.created_by}` : null,
+    asset?.created_by && !asset.created_by_name ? `/users?ids=${asset.created_by}` : null,
     (key: string) => api.get<User[]>(key),
   )
-  const uploaderName = uploaderUsers?.[0]?.name ?? null
+  const uploaderName = asset?.created_by_name ?? uploaderUsers?.[0]?.name ?? null
 
   const commentCount = countAllComments(comments)
   const primaryFile = currentVersion?.files?.[0]

@@ -84,7 +84,10 @@ export interface Project {
   id: string;
   name: string;
   description: string | null;
-  created_by: string;
+  // Historical creator pointer -- null once the creator has been hard-deleted
+  // (see backend task 1); created_by_name/email are the resilient display
+  // fields, not currently returned by this endpoint.
+  created_by: string | null;
   org_id?: string;
   project_type: ProjectType;
   team_id?: string | null;
@@ -125,6 +128,22 @@ export interface AdminUser extends User {
   projects: AdminUserProjectSummary[];
 }
 
+export interface PurgeUserOwnerCandidate {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export interface PurgeUserOwnedProject {
+  project_id: string;
+  project_name: string;
+  candidates: PurgeUserOwnerCandidate[];
+}
+
+export interface PurgeUserPreviewResponse {
+  owned_projects: PurgeUserOwnedProject[];
+}
+
 export interface AdminProject extends Project {
   owner_name: string | null;
   owner_email: string | null;
@@ -145,7 +164,10 @@ export interface Asset {
   folder_id: string | null;
   due_date: string | null;
   keywords: string[];
-  created_by: string;
+  // Null once the creator has been hard-deleted -- created_by_name is a
+  // frozen snapshot from creation time, survives that.
+  created_by: string | null;
+  created_by_name?: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -159,7 +181,8 @@ export interface AssetVersion {
   asset_id: string;
   version_number: number;
   processing_status: AssetVersionStatus;
-  created_by: string;
+  created_by: string | null;
+  created_by_name?: string | null;
   created_at: string;
   deleted_at: string | null;
   files?: MediaFile[];
@@ -241,6 +264,7 @@ export interface Comment {
   version_id: string;
   parent_id: string | null;
   author_id: string | null;
+  author_name?: string | null;
   guest_author_id: string | null;
   timecode_start: number | null;
   timecode_end: number | null;
@@ -502,7 +526,7 @@ export interface Folder {
   project_id: string
   parent_id: string | null
   name: string
-  created_by: string
+  created_by: string | null
   created_at: string
   updated_at: string
   item_count: number

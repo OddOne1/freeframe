@@ -164,6 +164,11 @@ def reactivate_user(user_id: uuid.UUID, db: Session = Depends(get_db), _: User =
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_user(user_id: uuid.UUID, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """Soft-delete only -- deleted_at is read distinctly from status across
+    auth (get_user_by_id), admin, and setup, so this endpoint's contract
+    stays exactly as it was. Permanent deletion is a separate action: see
+    POST /admin/users/{user_id}/purge (routers/admin.py), which is what the
+    admin dashboard's Delete button actually calls."""
     user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")

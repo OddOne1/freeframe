@@ -93,3 +93,24 @@ class UpdateUserRoleRequest(BaseModel):
 
 class DeactivateUserRequest(BaseModel):
     user_id: uuid.UUID
+
+# Permanent user deletion (superadmin-only, task 1 2026-07-23)
+class PurgeUserOwnerCandidate(BaseModel):
+    id: uuid.UUID
+    name: str
+    email: str
+
+class PurgeUserOwnedProject(BaseModel):
+    project_id: uuid.UUID
+    project_name: str
+    candidates: list[PurgeUserOwnerCandidate] = []
+
+class PurgeUserPreviewResponse(BaseModel):
+    owned_projects: list[PurgeUserOwnedProject] = []
+
+class PurgeUserRequest(BaseModel):
+    # project_id -> chosen new-owner user_id. Only needed for projects
+    # where purge-preview listed at least one Manager candidate -- when a
+    # project has none, the caller becomes owner automatically and no
+    # entry is required here for that project.
+    owner_assignments: dict[uuid.UUID, uuid.UUID] = {}

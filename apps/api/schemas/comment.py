@@ -96,6 +96,7 @@ class CommentResponse(BaseModel):
     version_id: uuid.UUID
     parent_id: Optional[uuid.UUID]
     author_id: Optional[uuid.UUID]
+    author_name: Optional[str] = None
     guest_author_id: Optional[uuid.UUID]
     timecode_start: Optional[float]
     timecode_end: Optional[float]

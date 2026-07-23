@@ -28,7 +28,8 @@ class AssetVersionResponse(BaseModel):
     asset_id: uuid.UUID
     version_number: int
     processing_status: ProcessingStatus
-    created_by: uuid.UUID
+    created_by: Optional[uuid.UUID] = None
+    created_by_name: Optional[str] = None
     created_at: datetime
     files: list[MediaFileResponse] = []
     model_config = {"from_attributes": True}
@@ -45,7 +46,8 @@ class AssetResponse(BaseModel):
     folder_id: Optional[uuid.UUID] = None
     due_date: Optional[datetime]
     keywords: Optional[list]
-    created_by: uuid.UUID
+    created_by: Optional[uuid.UUID] = None
+    created_by_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     latest_version: Optional[AssetVersionResponse] = None

@@ -364,7 +364,7 @@ export function AssetGrid({
                 projectId={projectId}
                 versionCount={versionCounts[asset.id]}
                 assignee={asset.assignee_id ? assignees[asset.assignee_id] : null}
-                authorName={authorNames[asset.created_by]}
+                authorName={asset.created_by_name ?? (asset.created_by ? authorNames[asset.created_by] : undefined)}
                 thumbnailUrl={thumbnails[asset.id]}
                 fileSize={fileSizes[asset.id] ?? null}
                 selected={selectedAssetIds.has(asset.id)}
@@ -526,7 +526,7 @@ export function AssetGrid({
             const assignee = asset.assignee_id ? assignees[asset.assignee_id] : null
             const fileSize = fileSizes[asset.id]
             const versionCount = versionCounts[asset.id]
-            const author = authorNames[asset.created_by]
+            const author = asset.created_by_name ?? (asset.created_by ? authorNames[asset.created_by] : undefined)
             const TypeIcon = assetTypeIcons[asset.asset_type] ?? ImageIcon
             return (
               <div

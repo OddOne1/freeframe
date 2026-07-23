@@ -66,6 +66,7 @@ def initiate_upload(
             name=body.asset_name,
             asset_type=asset_type,
             created_by=current_user.id,
+            created_by_name=current_user.name,
             folder_id=body.folder_id,
         )
         db.add(asset)
@@ -84,6 +85,7 @@ def initiate_upload(
         version_number=next_version_number,
         processing_status=ProcessingStatus.uploading,
         created_by=current_user.id,
+        created_by_name=current_user.name,
     )
     db.add(version)
     db.flush()

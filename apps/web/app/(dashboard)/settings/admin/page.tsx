@@ -27,6 +27,7 @@ import type {
   AdminUser,
   AdminUserProjectSummary,
   ProjectRole,
+  PurgeUserPreviewResponse,
 } from "@/types";
 
 // Above this many projects, a user's project list collapses into a hover
@@ -144,6 +145,218 @@ function BulkInviteDialog() {
               </Button>
             </div>
           </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+// ─── Delete confirmation dialog (task 1, 2026-07-23) ───────────────────────
+// Permanent, irreversible -- gated behind typing the literal text "DELETE".
+// Loads the owned-project handoff preview on open so the picker/notices are
+// visible before the superadmin can even reach the confirm field.
+
+function DeleteUserDialog({
+  targetUser,
+  currentUserName,
+  onDeleted,
+}: {
+  targetUser: AdminUser;
+  currentUserName: string;
+  onDeleted: () => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [preview, setPreview] = React.useState<PurgeUserPreviewResponse | null>(null);
+  const [loadingPreview, setLoadingPreview] = React.useState(false);
+  const [assignments, setAssignments] = React.useState<Record<string, string>>({});
+  const [confirmText, setConfirmText] = React.useState("");
+  const [submitting, setSubmitting] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  const loadPreview = React.useCallback(async () => {
+    setLoadingPreview(true);
+    setError("");
+    try {
+      const resp = await api.get<PurgeUserPreviewResponse>(
+        `/admin/users/${targetUser.id}/purge-preview`,
+      );
+      setPreview(resp);
+      // Pre-select only when there's exactly one candidate -- the Delete
+      // button below still requires an explicit click, so this never
+      // applies a choice silently.
+      const initial: Record<string, string> = {};
+      for (const p of resp.owned_projects) {
+        if (p.candidates.length === 1) initial[p.project_id] = p.candidates[0].id;
+      }
+      setAssignments(initial);
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error ? err.message : "Failed to load project ownership info",
+      );
+    } finally {
+      setLoadingPreview(false);
+    }
+  }, [targetUser.id]);
+
+  const handleOpenChange = (next: boolean) => {
+    setOpen(next);
+    if (next) {
+      setConfirmText("");
+      setError("");
+      setPreview(null);
+      setAssignments({});
+      loadPreview();
+    }
+  };
+
+  const projectsNeedingChoice = (preview?.owned_projects ?? []).filter(
+    (p) => p.candidates.length > 0,
+  );
+  const allChoicesMade = projectsNeedingChoice.every((p) => assignments[p.project_id]);
+  const canDelete =
+    confirmText === "DELETE" && !loadingPreview && !submitting && allChoicesMade;
+
+  const handleDelete = async () => {
+    if (!canDelete) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      await api.post(`/admin/users/${targetUser.id}/purge`, {
+        owner_assignments: assignments,
+      });
+      setOpen(false);
+      onDeleted();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to delete user");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog.Root open={open} onOpenChange={handleOpenChange}>
+      <Dialog.Trigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-status-error hover:text-status-error"
+        >
+          Delete
+        </Button>
+      </Dialog.Trigger>
+
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary p-6 shadow-xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+          <Dialog.Close className="absolute right-4 top-4 text-text-tertiary hover:text-text-primary transition-colors">
+            <X className="h-4 w-4" />
+          </Dialog.Close>
+
+          <Dialog.Title className="text-base font-semibold text-text-primary">
+            Delete {targetUser.name}
+          </Dialog.Title>
+          <Dialog.Description className="mt-1 text-sm text-text-secondary">
+            This permanently deletes the account and can&apos;t be undone.
+            Content other people built on top of theirs -- comments, replies,
+            approvals -- stays fully intact, re-attributed to a
+            &quot;Deleted user&quot; byline.
+          </Dialog.Description>
+
+          <div className="mt-4 space-y-4">
+            {loadingPreview ? (
+              <div className="h-12 animate-pulse rounded-lg bg-bg-tertiary" />
+            ) : (
+              preview &&
+              preview.owned_projects.length > 0 && (
+                <div className="space-y-3 rounded-lg border border-status-warning/30 bg-status-warning/5 p-3">
+                  <p className="text-xs font-medium text-text-primary">
+                    {targetUser.name} owns {preview.owned_projects.length}{" "}
+                    project{preview.owned_projects.length > 1 ? "s" : ""}.
+                    Choose a new owner for each before deleting.
+                  </p>
+                  {preview.owned_projects.map((p) =>
+                    p.candidates.length > 0 ? (
+                      <div
+                        key={p.project_id}
+                        className="flex items-center justify-between gap-2"
+                      >
+                        <span className="text-xs text-text-secondary truncate">
+                          {p.project_name}
+                        </span>
+                        <select
+                          value={assignments[p.project_id] ?? ""}
+                          onChange={(e) =>
+                            setAssignments((prev) => ({
+                              ...prev,
+                              [p.project_id]: e.target.value,
+                            }))
+                          }
+                          className="h-8 rounded-md border border-border bg-bg-secondary px-2 text-xs text-text-primary focus:outline-none focus:border-border-focus"
+                        >
+                          <option value="" disabled>
+                            Choose new owner…
+                          </option>
+                          {p.candidates.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : (
+                      <div
+                        key={p.project_id}
+                        className="flex items-center justify-between gap-2"
+                      >
+                        <span className="text-xs text-text-secondary truncate">
+                          {p.project_name}
+                        </span>
+                        <span className="text-xs text-text-tertiary italic">
+                          No Managers -- {currentUserName} (you) becomes owner
+                        </span>
+                      </div>
+                    ),
+                  )}
+                </div>
+              )
+            )}
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-text-secondary">
+                Type <span className="font-mono text-text-primary">DELETE</span>{" "}
+                to confirm
+              </label>
+              <Input
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                placeholder="DELETE"
+                autoComplete="off"
+              />
+            </div>
+
+            {error && <p className="text-xs text-status-error">{error}</p>}
+
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => setOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                disabled={!canDelete}
+                loading={submitting}
+                onClick={handleDelete}
+              >
+                Delete
+              </Button>
+            </div>
+          </div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -558,6 +771,13 @@ export default function AdminPage() {
           ) : u.id === user?.id ? (
             <span className="text-xs text-text-tertiary italic">You</span>
           ) : null}
+          {u.id !== user?.id && (
+            <DeleteUserDialog
+              targetUser={u}
+              currentUserName={user?.name ?? "You"}
+              onDeleted={() => mutate("/admin/users")}
+            />
+          )}
         </div>
       </td>
     </tr>

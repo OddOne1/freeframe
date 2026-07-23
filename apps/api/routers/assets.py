@@ -407,6 +407,7 @@ def initiate_new_version(
         version_number=next_version_number,
         processing_status=ProcessingStatus.uploading,
         created_by=current_user.id,
+        created_by_name=current_user.name,
     )
     db.add(version)
     db.flush()

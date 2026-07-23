@@ -11,7 +11,10 @@ from ..middleware.auth import get_current_user
 from ..models.user import User, UserStatus, UserGlobalRole
 from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.asset import Asset, AssetVersion, MediaFile
-from ..schemas.auth import UserResponse, UpdateUserRoleRequest, AdminUserResponse, AdminUserProjectSummary
+from ..schemas.auth import (
+    UserResponse, UpdateUserRoleRequest, AdminUserResponse, AdminUserProjectSummary,
+    PurgeUserPreviewResponse, PurgeUserOwnedProject, PurgeUserOwnerCandidate, PurgeUserRequest,
+)
 from ..schemas.project import ProjectUpdate, AdminProjectResponse, TransferOwnershipRequest
 from .hls_proxy import proxy_url_for
 
@@ -149,6 +152,159 @@ def update_user_role(
     db.commit()
     db.refresh(user)
     return user
+
+@router.get("/users/{user_id}/purge-preview", response_model=PurgeUserPreviewResponse)
+def purge_user_preview(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Read-only lookup for the Delete-confirmation dialog: every project
+    this user currently owns, plus the other Managers on each one who
+    could take over as owner. Doesn't mutate anything -- purge_user below
+    re-validates all of this itself rather than trusting this response.
+    Only accessible by admins."""
+    _require_superadmin(current_user)
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    owned_memberships = db.query(ProjectMember).filter(
+        ProjectMember.user_id == user_id,
+        ProjectMember.role == ProjectRole.owner,
+        ProjectMember.deleted_at.is_(None),
+    ).all()
+
+    owned_projects = []
+    for membership in owned_memberships:
+        project = db.query(Project).filter(Project.id == membership.project_id).first()
+        if not project:
+            continue
+        candidate_rows = (
+            db.query(ProjectMember, User)
+            .join(User, User.id == ProjectMember.user_id)
+            .filter(
+                ProjectMember.project_id == membership.project_id,
+                ProjectMember.role == ProjectRole.admin,
+                ProjectMember.deleted_at.is_(None),
+                User.deleted_at.is_(None),
+            )
+            .all()
+        )
+        owned_projects.append(PurgeUserOwnedProject(
+            project_id=project.id,
+            project_name=project.name,
+            candidates=[
+                PurgeUserOwnerCandidate(id=u.id, name=u.name, email=u.email)
+                for _, u in candidate_rows
+            ],
+        ))
+
+    return PurgeUserPreviewResponse(owned_projects=owned_projects)
+
+@router.post("/users/{user_id}/purge", status_code=status.HTTP_204_NO_CONTENT)
+def purge_user(
+    user_id: uuid.UUID,
+    body: PurgeUserRequest = PurgeUserRequest(),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Permanently delete a user -- irreversible, unlike Deactivate above.
+    Single-action by design (not a two-visit soft-delete-then-purge flow):
+    soft-deletes the user as part of this same transaction if that hasn't
+    already happened, since auth/invite code elsewhere still keys off
+    deleted_at distinctly from status.
+
+    Every table referencing users.id has an explicit ON DELETE policy from
+    the user_hard_delete_fk_policy migration -- CASCADE where a row is
+    meaningless without the user (memberships, votes, approvals, reactions,
+    mentions, notifications, direct shares), SET NULL everywhere else, with
+    a frozen name snapshot on assets/asset_versions/comments so content
+    other people built on (their comments, replies, approvals) stays fully
+    intact, just re-attributed to a name snapshot instead of a live user.
+
+    Owned-project handoff: project_members.user_id cascades away with the
+    user, which would silently leave a project with no owner. For every
+    project this user owns, a successor must be resolved first -- either a
+    Manager the caller chose (body.owner_assignments, validated against the
+    real Manager list here rather than trusted blindly), or, if no Manager
+    exists on that project, the caller themself. The promotion has to
+    happen *after* the old owner's membership row is actually gone, not
+    before -- project_members has a partial unique index allowing only one
+    role='owner' row per project at a time (see add_project_admin_role), so
+    promoting a successor while the old owner's row still exists would
+    violate it. Only accessible by admins."""
+    _require_superadmin(current_user)
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+    if user.role == UserGlobalRole.superadmin:
+        other_superadmin = db.query(User).filter(
+            User.role == UserGlobalRole.superadmin,
+            User.id != user.id,
+            User.deleted_at.is_(None),
+        ).first()
+        if not other_superadmin:
+            raise HTTPException(status_code=400, detail="Cannot delete the only remaining superadmin")
+
+    owned_memberships = db.query(ProjectMember).filter(
+        ProjectMember.user_id == user_id,
+        ProjectMember.role == ProjectRole.owner,
+        ProjectMember.deleted_at.is_(None),
+    ).all()
+
+    handoffs: list[tuple[uuid.UUID, uuid.UUID]] = []
+    for membership in owned_memberships:
+        project_id = membership.project_id
+        candidate_ids = {
+            m.user_id for m in (
+                db.query(ProjectMember)
+                .join(User, User.id == ProjectMember.user_id)
+                .filter(
+                    ProjectMember.project_id == project_id,
+                    ProjectMember.role == ProjectRole.admin,
+                    ProjectMember.deleted_at.is_(None),
+                    User.deleted_at.is_(None),
+                )
+                .all()
+            )
+        }
+        if candidate_ids:
+            chosen = body.owner_assignments.get(project_id)
+            if chosen is None or chosen not in candidate_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"A new owner must be chosen for project {project_id} before this user can be deleted",
+                )
+            handoffs.append((project_id, chosen))
+        else:
+            handoffs.append((project_id, current_user.id))
+
+    if user.deleted_at is None:
+        user.deleted_at = datetime.now(timezone.utc)
+
+    db.delete(user)
+    db.flush()  # applies the FK CASCADE now, so the old owner row is gone before we promote a successor below
+
+    for project_id, new_owner_id in handoffs:
+        successor_membership = db.query(ProjectMember).filter(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == new_owner_id,
+            ProjectMember.deleted_at.is_(None),
+        ).first()
+        if successor_membership:
+            successor_membership.role = ProjectRole.owner
+        else:
+            db.add(ProjectMember(
+                project_id=project_id, user_id=new_owner_id,
+                role=ProjectRole.owner, invited_by=current_user.id,
+            ))
+
+    db.commit()
 
 
 # ── Project overview & management ────────────────────────────────────────────

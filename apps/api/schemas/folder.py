@@ -16,7 +16,7 @@ class FolderResponse(BaseModel):
     project_id: uuid.UUID
     parent_id: Optional[uuid.UUID]
     name: str
-    created_by: uuid.UUID
+    created_by: Optional[uuid.UUID] = None
     created_at: datetime
     updated_at: datetime
     item_count: int = 0
