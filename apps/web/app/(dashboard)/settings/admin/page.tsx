@@ -643,6 +643,7 @@ export default function AdminPage() {
   );
   const [adminsCollapsed, setAdminsCollapsed] = React.useState(false);
   const [membersCollapsed, setMembersCollapsed] = React.useState(false);
+  const [deactivatedCollapsed, setDeactivatedCollapsed] = React.useState(true);
 
   const filteredUsers = React.useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -675,12 +676,24 @@ export default function AdminPage() {
 
   // Grouping (task 2) stays intact -- search/sort (task 3) filter and order
   // within each group, they don't collapse the admin/member split.
+  // Deactivated users (any role) get pulled out into their own group
+  // entirely rather than just sorted to the bottom within Admins/Members.
   const admins = React.useMemo(
-    () => filteredUsers.filter((u) => u.role === "superadmin").sort(compareUsers),
+    () =>
+      filteredUsers
+        .filter((u) => u.role === "superadmin" && u.status !== "deactivated")
+        .sort(compareUsers),
     [filteredUsers, compareUsers],
   );
   const members = React.useMemo(
-    () => filteredUsers.filter((u) => u.role !== "superadmin").sort(compareUsers),
+    () =>
+      filteredUsers
+        .filter((u) => u.role !== "superadmin" && u.status !== "deactivated")
+        .sort(compareUsers),
+    [filteredUsers, compareUsers],
+  );
+  const deactivated = React.useMemo(
+    () => filteredUsers.filter((u) => u.status === "deactivated").sort(compareUsers),
     [filteredUsers, compareUsers],
   );
 
@@ -846,7 +859,7 @@ export default function AdminPage() {
               description="Users will appear here once they register or are invited."
             />
           </div>
-        ) : admins.length === 0 && members.length === 0 ? (
+        ) : admins.length === 0 && members.length === 0 && deactivated.length === 0 ? (
           <div className="rounded-lg border border-border bg-bg-secondary">
             <EmptyState
               icon={Search}
@@ -868,6 +881,13 @@ export default function AdminPage() {
               users={members}
               collapsed={membersCollapsed}
               onToggle={() => setMembersCollapsed((c) => !c)}
+              renderRow={renderRow}
+            />
+            <UserGroupBlock
+              title="Deactivated"
+              users={deactivated}
+              collapsed={deactivatedCollapsed}
+              onToggle={() => setDeactivatedCollapsed((c) => !c)}
               renderRow={renderRow}
             />
           </div>
