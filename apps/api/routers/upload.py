@@ -15,6 +15,7 @@ from ..services.s3_service import (
 )
 from ..services.permissions import get_project_member, require_project_role
 from ..models.project import ProjectRole
+from .site_settings import _get_or_create_settings
 from ..schemas.upload import (
     InitiateUploadRequest, InitiateUploadResponse,
     PresignPartRequest, PresignPartResponse,
@@ -51,6 +52,21 @@ def initiate_upload(
             .scalar()
         if current_storage + body.file_size_bytes > project.storage_limit_bytes:
             raise HTTPException(status_code=400, detail="Project storage limit exceeded")
+
+    # Enforce platform-wide storage limit if set -- same aggregate pattern
+    # as the per-project check above, just without the project_id filter.
+    # Independent of per-user/per-project limits entirely (task 12);
+    # reuses the site_settings singleton rather than re-querying it a
+    # different way.
+    site_settings = _get_or_create_settings(db)
+    if site_settings.total_storage_limit_bytes is not None:
+        platform_storage = db.query(func.coalesce(func.sum(MediaFile.file_size_bytes), 0))\
+            .join(AssetVersion, MediaFile.version_id == AssetVersion.id)\
+            .join(Asset, AssetVersion.asset_id == Asset.id)\
+            .filter(Asset.deleted_at.is_(None))\
+            .scalar()
+        if platform_storage + body.file_size_bytes > site_settings.total_storage_limit_bytes:
+            raise HTTPException(status_code=400, detail="Platform storage limit exceeded")
 
     # Get or create asset
     if body.asset_id:

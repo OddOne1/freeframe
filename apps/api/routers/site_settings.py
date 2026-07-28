@@ -1,12 +1,15 @@
 import uuid
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from ..database import get_db
-from ..middleware.auth import get_current_user
+from ..middleware.auth import get_current_user, get_optional_user
 from ..models.user import User, UserGlobalRole
 from ..models.site_settings import SiteSettings
+from ..models.asset import Asset, AssetVersion, MediaFile
 from ..schemas.site_settings import (
     SiteSettingsResponse,
     SiteSettingsUpdate,
@@ -28,7 +31,18 @@ def _get_or_create_settings(db: Session) -> SiteSettings:
     return site_settings
 
 
-def _to_response(site_settings: SiteSettings) -> SiteSettingsResponse:
+def _platform_storage_used_bytes(db: Session) -> int:
+    """Sum of MediaFile.file_size_bytes across every non-deleted asset
+    platform-wide -- same aggregate the upload.py enforcement check uses,
+    just without a project filter."""
+    return db.query(func.coalesce(func.sum(MediaFile.file_size_bytes), 0)).join(
+        AssetVersion, MediaFile.version_id == AssetVersion.id
+    ).join(
+        Asset, AssetVersion.asset_id == Asset.id
+    ).filter(Asset.deleted_at.is_(None)).scalar() or 0
+
+
+def _to_response(site_settings: SiteSettings, include_usage: bool = False, db: Optional[Session] = None) -> SiteSettingsResponse:
     logo_dark_url = None
     logo_light_url = None
     logo_login_url = None
@@ -60,13 +74,20 @@ def _to_response(site_settings: SiteSettings) -> SiteSettingsResponse:
         logo_login_url=logo_login_url,
         favicon_url=favicon_url,
         theme_colors=site_settings.theme_colors,
+        total_storage_limit_bytes=site_settings.total_storage_limit_bytes,
+        total_storage_used_bytes=_platform_storage_used_bytes(db) if include_usage and db is not None else None,
     )
 # -- Endpoints ---------------------------------------------------------------
 
 @router.get("/site-settings", response_model=SiteSettingsResponse)
-def get_site_settings(db: Session = Depends(get_db)):
+def get_site_settings(db: Session = Depends(get_db), current_user: Optional[User] = Depends(get_optional_user)):
+    """Public/unauthenticated (backs the login page's branding), so
+    total_storage_used_bytes -- a real platform-wide usage figure -- is
+    only computed and included for an authenticated superadmin caller.
+    Everyone else gets the configured limit but not the live usage."""
     site_settings = _get_or_create_settings(db)
-    return _to_response(site_settings)
+    include_usage = current_user is not None and current_user.role == UserGlobalRole.superadmin
+    return _to_response(site_settings, include_usage=include_usage, db=db)
 
 
 @router.patch("/site-settings", response_model=SiteSettingsResponse)
@@ -87,7 +108,7 @@ def update_site_settings(
         setattr(site_settings, field, value)
     db.commit()
     db.refresh(site_settings)
-    return _to_response(site_settings)
+    return _to_response(site_settings, include_usage=True, db=db)
 
 
 @router.post(

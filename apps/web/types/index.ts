@@ -600,4 +600,9 @@ export interface SiteSettingsResponse {
   logo_login_url: string | null;
   favicon_url: string | null;
   theme_colors: Record<string, unknown> | null;
+  total_storage_limit_bytes?: number | null;
+  // Only populated for an authenticated superadmin caller -- null for
+  // anonymous/non-superadmin requests (GET /site-settings is otherwise
+  // public, backing the login page's branding).
+  total_storage_used_bytes?: number | null;
 }

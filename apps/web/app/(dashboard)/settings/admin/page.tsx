@@ -13,14 +13,16 @@ import {
   FolderKanban,
   Search,
   ChevronDown,
+  HardDrive,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, formatBytes } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/shared/avatar";
 import { EmptyState } from "@/components/shared/empty-state";
 import { useAuthStore } from "@/stores/auth-store";
+import { useSiteSettings } from "@/hooks/use-site-settings";
 import { useRouter } from "next/navigation";
 import type {
   UserStatus,
@@ -33,6 +35,7 @@ import type {
 // Above this many projects, a user's project list collapses into a hover
 // popover instead of inline chips, so the table stays readable.
 const PROJECT_HOVER_THRESHOLD = 3;
+const GB = 1024 ** 3;
 
 function BulkInviteDialog() {
   const [open, setOpen] = React.useState(false);
@@ -148,6 +151,96 @@ function BulkInviteDialog() {
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+  );
+}
+
+// ─── Platform-wide storage limit (task added 2026-07-23) ──────────────────
+// Separate from per-user/per-project limits (task 12) -- a single top-level
+// cap enforced purely at upload time against real bytes used platform-wide.
+// total_storage_used_bytes only comes back populated for a superadmin
+// caller (see SiteSettingsResponse), which this page always is.
+
+function PlatformStorageSection() {
+  const { totalStorageLimitBytes, totalStorageUsedBytes, updateTotalStorageLimit } =
+    useSiteSettings();
+  const [value, setValue] = React.useState<string>(
+    totalStorageLimitBytes ? String(Math.round(totalStorageLimitBytes / GB)) : "",
+  );
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  React.useEffect(() => {
+    setValue(totalStorageLimitBytes ? String(Math.round(totalStorageLimitBytes / GB)) : "");
+  }, [totalStorageLimitBytes]);
+
+  const usedBytes = totalStorageUsedBytes ?? 0;
+  const percent =
+    totalStorageLimitBytes && totalStorageLimitBytes > 0
+      ? (usedBytes / totalStorageLimitBytes) * 100
+      : null;
+
+  const handleSave = async () => {
+    setError("");
+    const trimmed = value.trim();
+    if (trimmed && (Number.isNaN(parseFloat(trimmed)) || parseFloat(trimmed) <= 0)) {
+      setError("Enter a positive number, or leave empty for no cap.");
+      return;
+    }
+    const bytes = trimmed ? Math.round(parseFloat(trimmed) * GB) : null;
+    if (bytes !== null && bytes < usedBytes) {
+      setError(
+        `Heads up: this is below the ${formatBytes(usedBytes)} already used -- new uploads will be blocked until usage drops below the cap.`,
+      );
+    }
+    setSaving(true);
+    try {
+      await updateTotalStorageLimit(bytes);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to update platform storage limit");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="rounded-lg border border-border bg-bg-secondary p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <HardDrive className="h-4 w-4 text-text-tertiary" />
+        <h2 className="text-sm font-semibold text-text-primary">Platform Storage</h2>
+      </div>
+      <p className="text-xs text-text-secondary">
+        {formatBytes(usedBytes)} used
+        {totalStorageLimitBytes !== null && ` of ${formatBytes(totalStorageLimitBytes)} limit`}
+        {percent !== null && ` (${Math.round(percent)}%)`}
+        {totalStorageLimitBytes === null && " -- no cap set"}
+      </p>
+      <div className="flex items-center gap-2">
+        <label className="text-xs font-medium text-text-tertiary whitespace-nowrap">
+          Platform Storage Limit (GB)
+        </label>
+        <input
+          type="number"
+          min="1"
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setError("");
+          }}
+          placeholder="No cap"
+          className="h-8 w-28 rounded-md border border-border bg-bg-secondary px-2 text-xs text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus"
+        />
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={handleSave}
+          loading={saving}
+          className="h-8 px-3 text-xs"
+        >
+          Save
+        </Button>
+      </div>
+      {error && <p className="text-xs text-status-error">{error}</p>}
+    </section>
   );
 }
 
@@ -812,6 +905,8 @@ export default function AdminPage() {
           </p>
         </div>
       </div>
+
+      <PlatformStorageSection />
 
       <section className="space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
