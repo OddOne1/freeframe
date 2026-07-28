@@ -4,7 +4,7 @@ import uuid
 import secrets
 from datetime import datetime, timezone, timedelta
 from ..database import get_db
-from ..schemas.auth import UserResponse, InviteRequest, UpdateProfileRequest
+from ..schemas.auth import UserResponse, InviteRequest, UpdateProfileRequest, ContactUserResponse
 from ..models.user import User, UserStatus, UserGlobalRole
 from ..services import s3_service
 from ..middleware.auth import get_current_user
@@ -78,6 +78,31 @@ def search_users(
         (User.first_name.ilike(pattern) | User.last_name.ilike(pattern) | User.email.ilike(pattern)),
     ).limit(10).all()
     return users
+
+
+@router.get("/admins", response_model=list[ContactUserResponse])
+def get_admins(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Active superadmins, for the Contact page -- so any user can find out
+    who to ask for help (more storage, an invite, a stuck upload).
+
+    Callable by any authenticated user, same openness as get_users_batch
+    and search_users above. Returns ContactUserResponse rather than
+    UserResponse: those two leak invite_token/storage_limit_bytes/
+    preferences to every caller, and that has no business being in a list
+    handed to everyone.
+
+    Deactivated (status != active) and soft-deleted users are excluded --
+    a contact list is only useful if everyone on it can actually be
+    reached.
+    """
+    return db.query(User).filter(
+        User.deleted_at.is_(None),
+        User.status == UserStatus.active,
+        User.role == UserGlobalRole.superadmin,
+    ).order_by(User.first_name, User.last_name).all()
 
 
 def require_admin(current_user: User = Depends(get_current_user)) -> User:

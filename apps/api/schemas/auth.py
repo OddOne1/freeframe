@@ -40,6 +40,21 @@ class UserResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ContactUserResponse(BaseModel):
+    """Deliberately minimal -- backs GET /users/admins, which any
+    authenticated user can call. UserResponse carries invite_token,
+    storage_limit_bytes, preferences and status; none of that belongs in a
+    world-readable "who do I contact for help" list, so this is a separate
+    schema rather than a reuse.
+    """
+    id: uuid.UUID
+    email: str
+    name: str
+    avatar_url: str | None
+
+    model_config = {"from_attributes": True}
+
+
 class AdminUserProjectSummary(BaseModel):
     project_id: uuid.UUID
     project_name: str
