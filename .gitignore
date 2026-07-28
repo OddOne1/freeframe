@@ -136,6 +136,19 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# SSH/private keys -- never commit these regardless of where they land in
+# the tree (found a stray unrelated deploy_key/deploy_key.pub inside
+# apps/web/ on 2026-07-23, uncaught by any prior pattern here)
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+*.pem
+*.ppk
+*_key
+*_key.pub
+deploy_key*
+
 # Environments
 .env*
 !.env.example
