@@ -2,9 +2,11 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
+from ..config import settings as app_settings
 from ..database import get_db
 from ..middleware.auth import get_current_user, get_optional_user
 from ..models.user import User, UserGlobalRole
@@ -40,6 +42,30 @@ def _platform_storage_used_bytes(db: Session) -> int:
     ).join(
         Asset, AssetVersion.asset_id == Asset.id
     ).filter(Asset.deleted_at.is_(None)).scalar() or 0
+
+
+def _sniff_image_content_type(data: bytes, fallback: str) -> str:
+    """Detect an image's real format from its magic bytes.
+
+    upload_site_logo stores *every* logo under a `.webp` key with an
+    `image/webp` content type regardless of what was actually uploaded, so
+    neither the key's extension nor the object's stored ContentType is
+    trustworthy. Browsers sniff and cope; email clients (notably Outlook on
+    Windows) do not render WebP at all and will show nothing for a PNG
+    mislabelled as one -- hence sniffing here rather than trusting either.
+    """
+    for magic, content_type in (
+        (b"\x89PNG\r\n\x1a\n", "image/png"),
+        (b"\xff\xd8\xff", "image/jpeg"),
+        (b"GIF8", "image/gif"),
+    ):
+        if data.startswith(magic):
+            return content_type
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.lstrip()[:5] == b"<?xml" or data.lstrip()[:4] == b"<svg":
+        return "image/svg+xml"
+    return fallback
 
 
 def _to_response(site_settings: SiteSettings, include_usage: bool = False, db: Optional[Session] = None) -> SiteSettingsResponse:
@@ -88,6 +114,41 @@ def get_site_settings(db: Session = Depends(get_db), current_user: Optional[User
     site_settings = _get_or_create_settings(db)
     include_usage = current_user is not None and current_user.role == UserGlobalRole.superadmin
     return _to_response(site_settings, include_usage=include_usage, db=db)
+
+
+@router.get("/site-settings/logo-image")
+def get_site_logo_image(db: Session = Depends(get_db)):
+    """Serve the site logo's raw bytes, unauthenticated and non-expiring.
+
+    Exists specifically for email templates, which cannot use the
+    `proxy_url_for` URLs `_to_response` hands the frontend: those are
+    *relative* (an email client has no current page to resolve them
+    against) and carry a token that expires after 24h (so the image would
+    break in every email older than a day). This endpoint is deliberately
+    plain: no token, no expiry, cacheable.
+
+    Light logo only -- email bodies are read on a white background. 404s
+    when no logo is configured; callers are expected to omit the <img>
+    entirely in that case rather than render a broken-image icon.
+    """
+    site_settings = _get_or_create_settings(db)
+    s3_key = site_settings.logo_light_s3_key
+    if not s3_key:
+        raise HTTPException(status_code=404, detail="No logo configured")
+
+    s3 = s3_service.get_s3_client()
+    try:
+        obj = s3.get_object(Bucket=app_settings.s3_bucket, Key=s3_key)
+        body = obj["Body"].read()
+    except Exception:
+        raise HTTPException(status_code=404, detail="Logo image not found")
+
+    fallback, cache_control = s3_service.get_content_type(s3_key)
+    return Response(
+        content=body,
+        media_type=_sniff_image_content_type(body, fallback),
+        headers={"Cache-Control": cache_control},
+    )
 
 
 @router.patch("/site-settings", response_model=SiteSettingsResponse)

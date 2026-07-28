@@ -7,6 +7,60 @@ from botocore.exceptions import ClientError
 from ..config import settings
 
 
+def email_logo_url() -> Optional[str]:
+    """Absolute URL of the site's custom logo for use in an email body, or
+    None when no logo is configured.
+
+    Deliberately NOT `proxy_url_for` (routers/hls_proxy.py): that returns a
+    *relative*, token-authenticated URL that expires after 24 hours. Neither
+    works in an email -- there is no current page for a relative URL to
+    resolve against, and a 24h expiry breaks the image in every email older
+    than a day. `/site-settings/logo-image` is unauthenticated and
+    non-expiring for exactly this reason.
+
+    `frontend_url` + "/api" is how the browser reaches this API in this
+    deployment (Traefik routes the /api prefix to the api container) -- the
+    same construction app/layout.tsx uses for the favicon.
+
+    Uses logo_light_s3_key only: email bodies are read on a white
+    background. Returning None (rather than a URL that 404s) is what lets
+    callers omit the <img> entirely instead of showing a broken-image icon.
+    """
+    # Imported lazily to keep this module import-light for the Celery
+    # workers, and to avoid a models <-> services import cycle.
+    from ..database import SessionLocal
+    from ..models.site_settings import SiteSettings
+
+    db = SessionLocal()
+    try:
+        site_settings = db.query(SiteSettings).first()
+        has_logo = bool(site_settings and site_settings.logo_light_s3_key)
+    except Exception as e:
+        # A branding lookup must never be the reason an email fails to send.
+        print(f"Could not resolve email logo: {e}")
+        return None
+    finally:
+        db.close()
+
+    if not has_logo:
+        return None
+    return f"{settings.frontend_url}/api/site-settings/logo-image"
+
+
+def _logo_img_tag() -> str:
+    """A centered <img> for the top of an email body, or "" if no logo is
+    configured. Inline styles only -- email clients strip <style> blocks."""
+    url = email_logo_url()
+    if not url:
+        return ""
+    return (
+        '<div style="text-align: center; margin-bottom: 24px;">'
+        f'<img src="{url}" alt="" '
+        'style="max-height: 48px; max-width: 220px; border: 0;" />'
+        "</div>"
+    )
+
+
 class EmailService:
     """
     Email service that supports both AWS SES and standard SMTP.
@@ -127,6 +181,7 @@ class EmailService:
         html_body = f"""
         <html>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            {_logo_img_tag()}
             <h2>You're invited!</h2>
             <p><strong>{inviter_name}</strong> has invited you to join <strong>{org_name}</strong> on FreeFrame.</p>
             <p>
@@ -158,6 +213,7 @@ class EmailService:
         html_body = f"""
         <html>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            {_logo_img_tag()}
             <h2>New Comment</h2>
             <p><strong>{commenter_name}</strong> commented on <strong>{asset_name}</strong>:</p>
             <blockquote style="border-left: 3px solid #4F46E5; padding-left: 12px; color: #555;">
@@ -189,6 +245,7 @@ class EmailService:
         html_body = f"""
         <html>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            {_logo_img_tag()}
             <h2>You were mentioned</h2>
             <p><strong>{mentioner_name}</strong> mentioned you on <strong>{asset_name}</strong>:</p>
             <blockquote style="border-left: 3px solid #4F46E5; padding-left: 12px; color: #555;">
@@ -221,6 +278,7 @@ class EmailService:
         html_body = f"""
         <html>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            {_logo_img_tag()}
             <h2>New Assignment</h2>
             <p><strong>{assigner_name}</strong> has assigned you to review <strong>{asset_name}</strong>.</p>
             {"<p><strong>Due date:</strong> " + due_date + "</p>" if due_date else ""}
@@ -252,6 +310,7 @@ class EmailService:
         html_body = f"""
         <html>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            {_logo_img_tag()}
             <h2>Asset {status.title()}</h2>
             <p><strong>{reviewer_name}</strong> has <strong>{status}</strong> <strong>{asset_name}</strong>.</p>
             {"<p><strong>Note:</strong> " + note + "</p>" if note else ""}

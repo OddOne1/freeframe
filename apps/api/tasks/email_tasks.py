@@ -22,6 +22,14 @@ jinja_env = Environment(
 def render_template(template_name: str, **context) -> str:
     """Render an email template with context."""
     context.setdefault("year", datetime.now().year)
+    if "logo_url" not in context:
+        # The site's custom logo, resolved once here so every template gets
+        # it for free via base.html's header instead of each task passing it
+        # through. None when no logo is configured -- base.html then keeps
+        # the plain "FreeFrame" wordmark. Imported inline, same as
+        # _send_email below, to avoid circular imports.
+        from ..services.email_service import email_logo_url
+        context["logo_url"] = email_logo_url()
     template = jinja_env.get_template(template_name)
     return template.render(**context)
 

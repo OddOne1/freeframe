@@ -33,6 +33,11 @@
             font-size: 24px;
             margin: 0;
         }
+        .logo img {
+            max-height: 48px;
+            max-width: 220px;
+            border: 0;
+        }
         h2 {
             color: #1a1a1a;
             font-size: 20px;
@@ -91,7 +96,16 @@
     <div class="container">
         <div class="card">
             <div class="logo">
+                {# logo_url is injected for every template by
+                   tasks/email_tasks.py::render_template, and is None
+                   whenever no custom logo is configured -- in which case
+                   the plain wordmark below stays, rather than an <img>
+                   that would render as a broken-image icon. #}
+                {% if logo_url %}
+                <img src="{{ logo_url }}" alt="" style="max-height: 48px; max-width: 220px; border: 0;">
+                {% else %}
                 <h1>FreeFrame</h1>
+                {% endif %}
             </div>
             {% block content %}{% endblock %}
         </div>
