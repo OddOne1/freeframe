@@ -1218,7 +1218,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                           currentVersion.processing_status === 'failed' && 'text-status-error',
                         currentVersion.processing_status === 'uploading' && 'text-text-tertiary',
                       )}>
-                          {currentVersion.processing_status}
+                          {currentVersion.processing_status === 'ready' ? 'DONE' : currentVersion.processing_status}
                       </span>
                       </FieldRow>
                     )}

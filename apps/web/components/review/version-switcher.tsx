@@ -22,7 +22,7 @@ const versionStatusConfig: Record<
     icon: <Loader2 className="h-2.5 w-2.5 animate-spin" />,
   },
   ready: {
-    label: 'Ready',
+    label: 'DONE',
     className: 'text-status-success',
     icon: <CheckCircle2 className="h-2.5 w-2.5" />,
   },
