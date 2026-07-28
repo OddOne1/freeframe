@@ -1,14 +1,18 @@
 'use client'
 
 import * as React from 'react'
+import useSWR from 'swr'
 import * as Dialog from '@radix-ui/react-dialog'
 import * as Switch from '@radix-ui/react-switch'
 import { X, ImagePlus, Globe, Lock, Star } from 'lucide-react'
-import { cn, resolveApiMediaUrl } from '@/lib/utils'
+import { cn, resolveApiMediaUrl, formatBytes } from '@/lib/utils'
 import { getGradientForProject } from '@/lib/gradient-utils'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { useAuthStore } from '@/stores/auth-store'
 import type { Project } from '@/types'
+
+const GB = 1024 ** 3
 
 interface ProjectSettingsDialogProps {
   project: Project
@@ -34,7 +38,24 @@ export function ProjectSettingsDialog({
   const [storageLimitGB, setStorageLimitGB] = React.useState<string>(
     project.storage_limit_bytes ? String(Math.round(project.storage_limit_bytes / (1024 ** 3))) : ''
   )
+  const [storageError, setStorageError] = React.useState('')
   const fileInputRef = React.useRef<HTMLInputElement>(null)
+
+  // Same two numbers OwnedProjectsView/EditableStorageLimit already compute
+  // (settings/projects/page.tsx) -- personal total from the auth store,
+  // other-owned-projects allocation from /projects filtered to role==owner
+  // excluding this project, kept consistent with that surface on purpose.
+  const { user } = useAuthStore()
+  const { data: ownedProjects } = useSWR<Project[]>('/projects', () => api.get<Project[]>('/projects'))
+  const personalTotalBytes = user?.storage_limit_bytes ?? null
+  const otherAllocatedBytes = React.useMemo(
+    () =>
+      (ownedProjects ?? [])
+        .filter((p) => p.role === 'owner' && p.id !== project.id)
+        .reduce((sum, p) => sum + (p.storage_limit_bytes ?? 0), 0),
+    [ownedProjects, project.id],
+  )
+  const remainingBytes = personalTotalBytes === null ? null : Math.max(personalTotalBytes - otherAllocatedBytes, 0)
 
   // Sync state when project changes
   React.useEffect(() => {
@@ -45,6 +66,7 @@ export function ProjectSettingsDialog({
     setRatingsVisible(project.ratings_visible_to_all ?? false)
     setPosterPreview(resolveApiMediaUrl(project.poster_url))
     setPosterFile(null)
+    setStorageError('')
   }, [project])
 
   const handlePosterSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -69,6 +91,26 @@ export function ProjectSettingsDialog({
   }
 
   const handleSave = async () => {
+    setStorageError('')
+    const trimmedStorage = storageLimitGB.trim()
+    if (trimmedStorage && (Number.isNaN(parseFloat(trimmedStorage)) || parseFloat(trimmedStorage) <= 0)) {
+      setStorageError('Enter a positive number, or leave empty to use your remaining storage.')
+      return
+    }
+    const storageBytes = trimmedStorage ? Math.round(parseFloat(trimmedStorage) * GB) : null
+    // Mirrors _check_owner_storage_allocation server-side (routers/projects.py)
+    // so the UI can reject before the round-trip -- the server still
+    // re-validates, this is purely a faster/clearer error for the common case.
+    if (storageBytes !== null && personalTotalBytes !== null) {
+      const projected = otherAllocatedBytes + storageBytes
+      if (projected > personalTotalBytes) {
+        setStorageError(
+          `Exceeds your ${formatBytes(personalTotalBytes)} total by ${formatBytes(projected - personalTotalBytes)}.`,
+        )
+        return
+      }
+    }
+
     setSaving(true)
     try {
       // Upload poster if changed
@@ -83,13 +125,13 @@ export function ProjectSettingsDialog({
         name: name.trim(),
         description: description.trim() || null,
         is_public: isPublic,
-        storage_limit_bytes: storageLimitGB ? Math.round(parseFloat(storageLimitGB) * 1024 ** 3) : null,
+        storage_limit_bytes: storageBytes,
       })
 
       onUpdated()
       onOpenChange(false)
-    } catch {
-      // silently fail
+    } catch (err: unknown) {
+      setStorageError(err instanceof Error ? err.message : 'Failed to save changes')
     } finally {
       setSaving(false)
     }
@@ -256,11 +298,24 @@ export function ProjectSettingsDialog({
                   type="number"
                   min="1"
                   value={storageLimitGB}
-                  onChange={(e) => setStorageLimitGB(e.target.value)}
+                  onChange={(e) => {
+                    setStorageLimitGB(e.target.value)
+                    setStorageError('')
+                  }}
                   placeholder="Unlimited"
                   className="w-full rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors"
                 />
-                <p className="text-xs text-text-tertiary">Leave empty for unlimited storage.</p>
+                {personalTotalBytes !== null && (
+                  <p className="text-xs text-text-tertiary">
+                    {formatBytes(remainingBytes ?? 0)} remaining of your {formatBytes(personalTotalBytes)} total.
+                  </p>
+                )}
+                <p className="text-xs text-text-tertiary">
+                  {personalTotalBytes === null
+                    ? 'Leave empty for unlimited storage.'
+                    : `Leave empty to use your remaining storage (~${formatBytes(remainingBytes ?? 0)}).`}
+                </p>
+                {storageError && <p className="text-xs text-status-error">{storageError}</p>}
               </div>
             </div>
           </div>

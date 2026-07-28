@@ -230,21 +230,19 @@ def get_project(project_id: uuid.UUID, db: Session = Depends(get_db), current_us
     ).scalar() or 0
     return resp
 
-def _check_owner_storage_allocation(db: Session, project_id: uuid.UUID, new_limit: int) -> None:
-    """The project's true owner has a personal storage_limit_bytes budget
-    (task 12) -- the sum of storage_limit_bytes across every project they
-    currently own (excluding this one) plus new_limit can't exceed it. No
-    personal limit (NULL) means unlimited, so nothing to enforce. A NULL
-    (unlimited) sibling project contributes 0 to the sum rather than being
-    treated as unbounded -- SQL SUM skips NULLs; the spec doesn't say how
-    to handle that combination so this is the literal reading, not a
-    considered decision."""
+def _owner_storage_snapshot(db: Session, project_id: uuid.UUID) -> tuple[User, int] | None:
+    """(true owner, amount already allocated to their *other* owned
+    projects' explicit limits) for this project, or None if there's no
+    resolvable true owner. Shared by _check_owner_storage_allocation
+    (enforcing a new explicit limit) and _owner_remaining_storage_budget
+    (what an owner's field resolves to when they clear it back to blank) --
+    same underlying query, not reimplemented twice."""
     owner_member = _get_true_owner_member(db, project_id)
     if not owner_member:
-        return
+        return None
     owner = db.query(User).filter(User.id == owner_member.user_id).first()
-    if not owner or owner.storage_limit_bytes is None:
-        return
+    if not owner:
+        return None
     allocated_elsewhere = db.query(func.coalesce(func.sum(Project.storage_limit_bytes), 0)).join(
         ProjectMember, ProjectMember.project_id == Project.id
     ).filter(
@@ -254,11 +252,43 @@ def _check_owner_storage_allocation(db: Session, project_id: uuid.UUID, new_limi
         Project.deleted_at.is_(None),
         Project.id != project_id,
     ).scalar() or 0
+    return owner, allocated_elsewhere
+
+def _check_owner_storage_allocation(db: Session, project_id: uuid.UUID, new_limit: int) -> None:
+    """The project's true owner has a personal storage_limit_bytes budget
+    (task 12) -- the sum of storage_limit_bytes across every project they
+    currently own (excluding this one) plus new_limit can't exceed it. No
+    personal limit (NULL) means unlimited, so nothing to enforce. A NULL
+    (unlimited) sibling project contributes 0 to the sum rather than being
+    treated as unbounded -- SQL SUM skips NULLs; the spec doesn't say how
+    to handle that combination so this is the literal reading, not a
+    considered decision."""
+    snapshot = _owner_storage_snapshot(db, project_id)
+    if not snapshot:
+        return
+    owner, allocated_elsewhere = snapshot
+    if owner.storage_limit_bytes is None:
+        return
     if allocated_elsewhere + new_limit > owner.storage_limit_bytes:
         raise HTTPException(
             status_code=400,
             detail="This would exceed the project owner's total storage limit",
         )
+
+def _owner_remaining_storage_budget(db: Session, project_id: uuid.UUID) -> int | None:
+    """What an owner's storage_limit_bytes should resolve to when they
+    explicitly clear the field back to blank (storage limit UX task,
+    2026-07-23): their personal total minus what's already allocated to
+    their *other* owned projects. None if there's no resolvable true owner
+    or the owner's own personal total is itself unlimited -- callers should
+    store None (true unlimited) in that case, not a computed number."""
+    snapshot = _owner_storage_snapshot(db, project_id)
+    if not snapshot:
+        return None
+    owner, allocated_elsewhere = snapshot
+    if owner.storage_limit_bytes is None:
+        return None
+    return max(owner.storage_limit_bytes - allocated_elsewhere, 0)
 
 @router.patch("/{project_id}", response_model=ProjectResponse)
 def update_project(project_id: uuid.UUID, body: ProjectUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -279,10 +309,24 @@ def update_project(project_id: uuid.UUID, body: ProjectUpdate, db: Session = Dep
         project.description = body.description
     if body.is_public is not None:
         project.is_public = body.is_public
-    if body.storage_limit_bytes is not None:
-        if current_user.role != UserGlobalRole.superadmin:
-            _check_owner_storage_allocation(db, project_id, body.storage_limit_bytes)
-        project.storage_limit_bytes = body.storage_limit_bytes
+    if "storage_limit_bytes" in fields_set:
+        if body.storage_limit_bytes is not None:
+            if current_user.role != UserGlobalRole.superadmin:
+                _check_owner_storage_allocation(db, project_id, body.storage_limit_bytes)
+            project.storage_limit_bytes = body.storage_limit_bytes
+        elif current_user.role == UserGlobalRole.superadmin:
+            # A superadmin explicitly clearing the field gets true
+            # unlimited -- they aren't bound by anyone's personal storage
+            # math, unlike the owner branch below.
+            project.storage_limit_bytes = None
+        else:
+            # Owner explicitly cleared the field: store their remaining
+            # personal budget as a concrete number rather than true NULL,
+            # so "empty" means "whatever's left of my total," not literally
+            # unlimited (storage limit UX task, 2026-07-23). Naturally
+            # resolves back to None when the owner's own personal total is
+            # itself unlimited.
+            project.storage_limit_bytes = _owner_remaining_storage_budget(db, project_id)
     if body.ratings_visible_to_all is not None:
         project.ratings_visible_to_all = body.ratings_visible_to_all
     db.commit()
