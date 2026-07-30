@@ -692,11 +692,23 @@ export interface TranscriptResponse {
 // ─── LUTs ─────────────────────────────────────────────────────────────────────
 
 /** Mirrors LutResponse in apps/api/schemas/lut.py. */
+export interface LutGroup {
+  id: string
+  name: string
+  created_at: string
+}
+
 export interface Lut {
   id: string
   name: string
   lut_size: number | null
   created_at: string
+  /** Usable in every project with no share row — superadmin-set only. */
+  is_platform_wide: boolean
+  group_id: string | null
+  /** Projects this LUT is currently shared into. Populated by GET /me/luts
+   *  so the share popover can render toggles without a request per project. */
+  shared_project_ids: string[]
   is_owner: boolean
   owner_name: string | null
   file_url: string | null

@@ -21,12 +21,15 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..middleware.auth import get_current_user
-from ..models.user import User
+from ..models.user import User, UserGlobalRole
 from ..models.asset import Asset, AssetVersion, MediaFile, AssetType
-from ..models.lut import Lut, ProjectLutShare
+from ..models.lut import Lut, LutGroup, ProjectLutShare
 from ..models.project import ProjectRole
 from ..schemas.asset import StreamUrlResponse
-from ..schemas.lut import LutResponse, LutExportResponse, ApplyLutRequest
+from ..schemas.lut import (
+    LutResponse, LutExportResponse, ApplyLutRequest, LutUpdate,
+    LutGroupResponse, LutGroupCreate, LutGroupUpdate,
+)
 from ..services import s3_service
 from ..services.permissions import require_project_role, require_asset_access
 from .hls_proxy import proxy_url_for
@@ -78,12 +81,16 @@ def _to_response(
     current_user: User,
     owner_name: Optional[str] = None,
     shared_with_project: Optional[bool] = None,
+    shared_project_ids: Optional[list] = None,
 ) -> LutResponse:
     return LutResponse(
         id=lut.id,
         name=lut.name,
         lut_size=lut.lut_size,
         created_at=lut.created_at,
+        is_platform_wide=lut.is_platform_wide,
+        group_id=lut.group_id,
+        shared_project_ids=shared_project_ids or [],
         is_owner=lut.owner_id == current_user.id,
         owner_name=owner_name,
         # 5 years: the browser refetches this on every picker open, but a
@@ -91,6 +98,17 @@ def _to_response(
         file_url=proxy_url_for(lut.s3_key, expires_hours=24 * 365 * 5),
         shared_with_project=shared_with_project,
     )
+
+
+def _get_own_group(db: Session, group_id: uuid.UUID, current_user: User) -> LutGroup:
+    group = db.query(LutGroup).filter(
+        LutGroup.id == group_id,
+        LutGroup.owner_id == current_user.id,
+        LutGroup.deleted_at.is_(None),
+    ).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return group
 
 
 def _get_own_lut(db: Session, lut_id: uuid.UUID, current_user: User) -> Lut:
@@ -153,7 +171,152 @@ def list_own_luts(
         Lut.owner_id == current_user.id,
         Lut.deleted_at.is_(None),
     ).order_by(Lut.created_at.desc()).all()
-    return [_to_response(lut, current_user) for lut in luts]
+
+    # Current share state for all of them in one query, so the share popover
+    # can render its per-project toggles without N requests.
+    shares: dict = {}
+    if luts:
+        rows = db.query(ProjectLutShare).filter(
+            ProjectLutShare.lut_id.in_([l.id for l in luts])
+        ).all()
+        for row in rows:
+            shares.setdefault(row.lut_id, []).append(row.project_id)
+
+    return [
+        _to_response(lut, current_user, shared_project_ids=shares.get(lut.id, []))
+        for lut in luts
+    ]
+
+
+@router.get("/luts/platform", response_model=list[LutResponse])
+def list_platform_luts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Every platform-wide LUT, from any superadmin.
+
+    Readable by any authenticated user: these are explicitly meant to be
+    usable by everyone, and the Settings page pins them for all viewers
+    (read-only for non-superadmins). Distinct from GET /me/luts, which only
+    ever returns the caller's own -- a superadmin needs to see every other
+    superadmin's platform LUTs here too, not just theirs.
+    """
+    rows = db.query(Lut, User).outerjoin(User, Lut.owner_id == User.id).filter(
+        Lut.is_platform_wide.is_(True),
+        Lut.deleted_at.is_(None),
+    ).order_by(Lut.name).all()
+    return [
+        _to_response(lut, current_user, owner_name=owner.name if owner else None)
+        for lut, owner in rows
+    ]
+
+
+# ─── Groups ──────────────────────────────────────────────────────────────────
+
+@router.post("/me/lut-groups", response_model=LutGroupResponse, status_code=status.HTTP_201_CREATED)
+def create_lut_group(
+    body: LutGroupCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    name = (body.name or "").strip()[:255]
+    if not name:
+        raise HTTPException(status_code=400, detail="Group name is required")
+    group = LutGroup(owner_id=current_user.id, name=name)
+    db.add(group)
+    db.commit()
+    db.refresh(group)
+    return group
+
+
+@router.get("/me/lut-groups", response_model=list[LutGroupResponse])
+def list_lut_groups(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return db.query(LutGroup).filter(
+        LutGroup.owner_id == current_user.id,
+        LutGroup.deleted_at.is_(None),
+    ).order_by(LutGroup.name).all()
+
+
+@router.patch("/me/lut-groups/{group_id}", response_model=LutGroupResponse)
+def rename_lut_group(
+    group_id: uuid.UUID,
+    body: LutGroupUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    group = _get_own_group(db, group_id, current_user)
+    if body.name is not None:
+        name = body.name.strip()[:255]
+        if not name:
+            raise HTTPException(status_code=400, detail="Group name is required")
+        group.name = name
+    db.commit()
+    db.refresh(group)
+    return group
+
+
+@router.delete("/me/lut-groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_lut_group(
+    group_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Soft delete. Member LUTs are explicitly ungrouped rather than left
+    pointing at a deleted row -- the FK's ON DELETE SET NULL only fires on a
+    hard delete, which this deliberately isn't."""
+    group = _get_own_group(db, group_id, current_user)
+    group.deleted_at = datetime.now(timezone.utc)
+    db.query(Lut).filter(Lut.group_id == group.id).update(
+        {"group_id": None}, synchronize_session=False
+    )
+    db.commit()
+
+
+@router.patch("/me/luts/{lut_id}", response_model=LutResponse)
+def update_lut(
+    lut_id: uuid.UUID,
+    body: LutUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Rename, move between groups, or toggle platform-wide.
+
+    Name and group are owner-only. `is_platform_wide` is superadmin-only and
+    checked here rather than relying on the UI hiding the control -- it
+    grants a LUT read access across every project on the platform, so it
+    cannot be a client-side-only restriction.
+    """
+    lut = _get_own_lut(db, lut_id, current_user)
+    fields_set = body.model_fields_set
+
+    if "is_platform_wide" in fields_set and body.is_platform_wide is not None:
+        if current_user.role != UserGlobalRole.superadmin:
+            raise HTTPException(
+                status_code=403,
+                detail="Only superadmins can make a LUT platform-wide",
+            )
+        lut.is_platform_wide = body.is_platform_wide
+
+    if "name" in fields_set and body.name is not None:
+        name = body.name.strip()[:255]
+        if not name:
+            raise HTTPException(status_code=400, detail="LUT name is required")
+        lut.name = name
+
+    # Explicit null clears the group; not sending the field leaves it alone.
+    if "group_id" in fields_set:
+        if body.group_id is None:
+            lut.group_id = None
+        else:
+            _get_own_group(db, body.group_id, current_user)  # 404s if not the caller's
+            lut.group_id = body.group_id
+
+    db.commit()
+    db.refresh(lut)
+    return _to_response(lut, current_user)
 
 
 @router.delete("/me/luts/{lut_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -260,16 +423,38 @@ def list_project_luts(
         Lut.deleted_at.is_(None),
     ).all()
 
+    # Third branch: platform-wide LUTs are available in every project with
+    # no ProjectLutShare row at all -- that is what "usable by every user in
+    # every project" means. Reported as shared_with_project=True so the
+    # picker groups them with the project's own LUTs rather than under
+    # "preview only", and so they can be applied as an asset's grade.
+    platform_rows = db.query(Lut, User).outerjoin(User, Lut.owner_id == User.id).filter(
+        Lut.is_platform_wide.is_(True),
+        Lut.deleted_at.is_(None),
+    ).all()
+
     shared_ids = {lut.id for _, lut, _ in shared_rows}
+    seen: set = set()
     out: list[LutResponse] = []
+
     for _, lut, owner in shared_rows:
+        seen.add(lut.id)
+        out.append(_to_response(
+            lut, current_user,
+            owner_name=owner.name if owner else None,
+            shared_with_project=True,
+        ))
+    for lut, owner in platform_rows:
+        if lut.id in seen:
+            continue
+        seen.add(lut.id)
         out.append(_to_response(
             lut, current_user,
             owner_name=owner.name if owner else None,
             shared_with_project=True,
         ))
     for lut in own:
-        if lut.id in shared_ids:
+        if lut.id in seen:
             continue  # already listed above
         out.append(_to_response(
             lut, current_user,
@@ -310,7 +495,11 @@ def apply_lut_to_asset(
     if not lut:
         raise HTTPException(status_code=404, detail="LUT not found")
 
-    is_shared = db.query(ProjectLutShare).filter(
+    # Platform-wide LUTs are visible in every project by definition, so they
+    # satisfy the "everyone on the team can see it" requirement without any
+    # ProjectLutShare row. Without this branch the apply step would reject
+    # exactly the LUTs that are meant to work everywhere.
+    is_shared = lut.is_platform_wide or db.query(ProjectLutShare).filter(
         ProjectLutShare.project_id == asset.project_id,
         ProjectLutShare.lut_id == lut.id,
     ).first() is not None
@@ -377,7 +566,7 @@ def request_lut_export(
 
     # Same visibility rule as applying: you may export with a LUT you own,
     # or one shared into this project.
-    if lut.owner_id != current_user.id:
+    if lut.owner_id != current_user.id and not lut.is_platform_wide:
         is_shared = db.query(ProjectLutShare).filter(
             ProjectLutShare.project_id == asset.project_id,
             ProjectLutShare.lut_id == lut.id,

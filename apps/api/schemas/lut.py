@@ -5,11 +5,43 @@ from typing import Optional
 from pydantic import BaseModel
 
 
+class LutGroupResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class LutGroupCreate(BaseModel):
+    name: str
+
+
+class LutGroupUpdate(BaseModel):
+    name: Optional[str] = None
+
+
+class LutUpdate(BaseModel):
+    """Rename, re-group, or flip platform-wide.
+
+    is_platform_wide is superadmin-only and enforced server-side; the other
+    two are owner-only. Optional-everything so a caller can touch one field
+    without resending the rest -- model_fields_set distinguishes "not sent"
+    from "explicitly null" (needed for clearing group_id).
+    """
+    name: Optional[str] = None
+    group_id: Optional[uuid.UUID] = None
+    is_platform_wide: Optional[bool] = None
+
+
 class LutResponse(BaseModel):
     id: uuid.UUID
     name: str
     lut_size: Optional[int] = None
     created_at: datetime
+    # Third visibility tier -- usable everywhere with no share row.
+    is_platform_wide: bool = False
+    group_id: Optional[uuid.UUID] = None
     # True when the requesting user uploaded it. The picker uses this to
     # separate "My LUTs" from "Shared with this project", and the settings
     # page uses it to decide whether delete/share are offered at all.
@@ -22,6 +54,10 @@ class LutResponse(BaseModel):
     # shared into that project (owned-but-unshared LUTs are listed too, since
     # the owner can still preview them locally).
     shared_with_project: Optional[bool] = None
+    # Project IDs this LUT is currently shared into. Populated by
+    # GET /me/luts so the share popover can render its toggles without one
+    # request per project.
+    shared_project_ids: list[uuid.UUID] = []
 
     model_config = {"from_attributes": True}
 
