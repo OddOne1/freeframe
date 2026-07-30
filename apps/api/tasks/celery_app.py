@@ -76,7 +76,12 @@ celery_app.conf.beat_schedule = {
     # deploy performs. See tasks/lut_tasks.py::sweep_lut_exports.
     "sweep-lut-exports": {
         "task": "sweep_lut_exports",
-        "schedule": crontab(minute="30"),  # every hour, offset from the above
+        # Twice a day (00:30 and 12:30), offset from the reminder job above.
+        # This is only the backstop cadence -- the countdown delete still
+        # runs an hour after each export, so the sweep normally finds
+        # nothing. It only matters for exports orphaned by a worker restart,
+        # which then survive up to ~12h instead of ~1h before being cleared.
+        "schedule": crontab(minute="30", hour="*/12"),
     },
 }
 
