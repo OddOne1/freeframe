@@ -10,6 +10,19 @@ const HISTORY_PAGE_SIZE = 20
 // the tab stays open — a genuinely dead connection just keeps showing
 // "retrying" rather than failing the whole upload outright.
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000]
+// Parts are uploaded through a small worker pool instead of one at a time —
+// a single sequential fetch-per-10MB-chunk (the old behavior) round-trips
+// through /upload/presign-part before every PUT and never uses more than one
+// TCP stream, so it badly underuses available bandwidth on anything but a
+// near-zero-latency path. 4 concurrent parts is a modest default: enough to
+// actually use the pipe without opening so many connections at once that a
+// single flaky part's retry backoff makes the whole upload look stalled.
+const CONCURRENT_PARTS = 4
+// Speed is computed from a trailing window of (time, bytesUploaded) samples
+// rather than a lifetime average, so it reflects "how fast is this going
+// right now" instead of converging slowly and hiding a recent slowdown.
+const SPEED_WINDOW_MS = 5000
+const SPEED_SAMPLE_INTERVAL_MS = 500
 
 export type UploadStatus = 'pending' | 'uploading' | 'paused' | 'processing' | 'complete' | 'failed' | 'cancelled'
 
@@ -34,6 +47,11 @@ export interface UploadFile {
   versionId?: string
   uploadId?: string
   createdAt: number // timestamp for grouping
+  // Recent-window transfer rate and estimated time remaining, in bytes/sec
+  // and seconds. Both undefined until enough samples exist to compute a rate
+  // (see SPEED_WINDOW_MS) and only meaningful while status === 'uploading'.
+  speedBps?: number
+  etaSeconds?: number
 }
 
 interface InitiateResponse {
@@ -57,6 +75,14 @@ const abortControllers: Record<string, AbortController> = {}
 // of any single React render, same pattern as abortControllers above.
 const manualPauseFlags: Record<string, boolean> = {}
 const manualPauseWaiters: Record<string, (() => void) | undefined> = {}
+
+// Speed tracking — module-level for the same reason as the maps above.
+// bytesUploadedMap is the running total of *committed* bytes (a part only
+// counts once its PUT actually succeeds, not while it's in flight), updated
+// concurrently by however many part-workers are active at once.
+const bytesUploadedMap: Record<string, number> = {}
+const speedSamples: Record<string, Array<{ t: number; bytes: number }>> = {}
+const speedIntervals: Record<string, ReturnType<typeof setInterval>> = {}
 
 function retryDelay(attempt: number): number {
   return RETRY_DELAYS_MS[Math.min(attempt - 1, RETRY_DELAYS_MS.length - 1)]
@@ -140,6 +166,80 @@ async function uploadOnePart(
   return putResponse.headers.get('ETag') ?? ''
 }
 
+// Wraps a single part's upload with the existing pause/retry-with-backoff
+// behavior, unchanged in substance from before — just pulled out so multiple
+// of these can run concurrently under a worker pool instead of one at a time.
+// Note: with several of these in flight together, the shared per-upload
+// status/error fields on the store entry can get written by more than one
+// part around the same moment (e.g. one part hits a transient failure right
+// as another succeeds) — status may flicker briefly rather than transition
+// cleanly. Acceptable trade for real throughput; revisit with a proper
+// per-upload status reducer if the flicker turns out to be more than cosmetic.
+async function uploadPartWithRetry(
+  id: string,
+  s3_key: string,
+  upload_id: string,
+  partNumber: number,
+  chunk: Blob,
+  controller: AbortController,
+  updateFile: (fileId: string, patch: Partial<UploadFile>) => void,
+): Promise<{ PartNumber: number; ETag: string }> {
+  let etag: string | null = null
+  let attempt = 0
+  while (etag === null) {
+    await checkAndWaitManualPause(id, controller, updateFile)
+    if (controller.signal.aborted) throw new DOMException('Upload cancelled', 'AbortError')
+
+    try {
+      etag = await uploadOnePart(s3_key, upload_id, partNumber, chunk, controller.signal)
+    } catch (err) {
+      if (controller.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
+        throw err
+      }
+      attempt++
+      updateFile(id, {
+        status: 'paused',
+        pauseReason: 'retrying',
+        error: `Part ${partNumber} interrupted — retrying (attempt ${attempt})…`,
+      })
+      await abortableSleep(retryDelay(attempt), controller.signal)
+      await checkAndWaitManualPause(id, controller, updateFile)
+      updateFile(id, { status: 'uploading', pauseReason: undefined, error: undefined })
+    }
+  }
+  return { PartNumber: partNumber, ETag: etag }
+}
+
+// Starts a periodic sampler that turns bytesUploadedMap[id]'s running total
+// into a trailing-window speed (bytes/sec) and a rough ETA, written into the
+// store so the UI can show live throughput. Caller is responsible for
+// clearing the returned interval when the upload ends (success, failure, or
+// cancel) — see the `finally` block in runChunkedUpload.
+function startSpeedSampler(
+  id: string,
+  fileSize: number,
+  updateFile: (fileId: string, patch: Partial<UploadFile>) => void,
+): ReturnType<typeof setInterval> {
+  speedSamples[id] = []
+  return setInterval(() => {
+    const samples = speedSamples[id]
+    if (!samples) return
+    const now = Date.now()
+    const bytes = bytesUploadedMap[id] ?? 0
+    samples.push({ t: now, bytes })
+    while (samples.length > 1 && now - samples[0].t > SPEED_WINDOW_MS) {
+      samples.shift()
+    }
+    if (samples.length < 2) return
+    const oldest = samples[0]
+    const elapsedSec = (now - oldest.t) / 1000
+    if (elapsedSec <= 0) return
+    const speedBps = (bytes - oldest.bytes) / elapsedSec
+    const etaSeconds = speedBps > 0 ? (fileSize - bytes) / speedBps : undefined
+    updateFile(id, { speedBps: speedBps > 0 ? speedBps : undefined, etaSeconds })
+  }, SPEED_SAMPLE_INTERVAL_MS)
+}
+
 function isMediaFile(file: File): boolean {
   return (
     file.type.startsWith('video/') ||
@@ -176,6 +276,7 @@ async function runChunkedUpload(params: {
   let s3_key: string | undefined
   let version_id: string | undefined
   let asset_id: string | undefined
+  let speedInterval: ReturnType<typeof setInterval> | undefined
 
   try {
     updateFile(id, { status: 'uploading' })
@@ -189,45 +290,42 @@ async function runChunkedUpload(params: {
     updateFile(id, { uploadId: upload_id, assetId: asset_id, versionId: version_id })
 
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
-    const parts: Array<{ PartNumber: number; ETag: string }> = []
+    const parts: Array<{ PartNumber: number; ETag: string }> = new Array(totalChunks)
 
-    for (let partNumber = 1; partNumber <= totalChunks; partNumber++) {
-      await checkAndWaitManualPause(id, controller, updateFile)
-      if (controller.signal.aborted) throw new DOMException('Upload cancelled', 'AbortError')
+    bytesUploadedMap[id] = 0
+    speedInterval = startSpeedSampler(id, file.size, updateFile)
 
-      const start = (partNumber - 1) * CHUNK_SIZE
-      const end = Math.min(start + CHUNK_SIZE, file.size)
-      const chunk = file.slice(start, end)
+    // Small worker pool instead of one part at a time — see CONCURRENT_PARTS
+    // above for why. Workers pull the next part number off a shared counter
+    // until none are left; each part still goes through the same
+    // pause/retry-with-backoff path as before, just several at once.
+    let nextPartNumber = 1
+    const claimNextPart = (): number | null => {
+      if (nextPartNumber > totalChunks) return null
+      return nextPartNumber++
+    }
 
-      let etag: string | null = null
-      let attempt = 0
-      while (etag === null) {
-        await checkAndWaitManualPause(id, controller, updateFile)
+    const partWorker = async (): Promise<void> => {
+      let partNumber = claimNextPart()
+      while (partNumber !== null) {
         if (controller.signal.aborted) throw new DOMException('Upload cancelled', 'AbortError')
 
-        try {
-          etag = await uploadOnePart(s3_key, upload_id, partNumber, chunk, controller.signal)
-        } catch (err) {
-          if (controller.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
-            throw err
-          }
-          attempt++
-          updateFile(id, {
-            status: 'paused',
-            pauseReason: 'retrying',
-            error: `Connection interrupted — retrying (attempt ${attempt})…`,
-          })
-          await abortableSleep(retryDelay(attempt), controller.signal)
-          // Honors a manual pause requested while we were backing off, and
-          // otherwise flips status back to 'uploading' before the next try.
-          await checkAndWaitManualPause(id, controller, updateFile)
-          updateFile(id, { status: 'uploading', pauseReason: undefined, error: undefined })
-        }
-      }
+        const start = (partNumber - 1) * CHUNK_SIZE
+        const end = Math.min(start + CHUNK_SIZE, file.size)
+        const chunk = file.slice(start, end)
 
-      parts.push({ PartNumber: partNumber, ETag: etag })
-      updateFile(id, { progress: Math.round((partNumber / totalChunks) * 95) })
+        const result = await uploadPartWithRetry(id, s3_key!, upload_id!, partNumber, chunk, controller, updateFile)
+        parts[result.PartNumber - 1] = result
+
+        bytesUploadedMap[id] = (bytesUploadedMap[id] ?? 0) + chunk.size
+        updateFile(id, { progress: Math.min(95, Math.round((bytesUploadedMap[id] / file.size) * 95)) })
+
+        partNumber = claimNextPart()
+      }
     }
+
+    const workerCount = Math.min(CONCURRENT_PARTS, totalChunks)
+    await Promise.all(Array.from({ length: workerCount }, () => partWorker()))
 
     await api.post('/upload/complete', {
       s3_key,
@@ -238,16 +336,16 @@ async function runChunkedUpload(params: {
     })
 
     if (isMediaFile(file)) {
-      updateFile(id, { progress: 100, status: 'processing', processingProgress: 0 })
+      updateFile(id, { progress: 100, status: 'processing', processingProgress: 0, speedBps: undefined, etaSeconds: undefined })
     } else {
-      updateFile(id, { progress: 100, status: 'complete' })
+      updateFile(id, { progress: 100, status: 'complete', speedBps: undefined, etaSeconds: undefined })
     }
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
-      updateFile(id, { status: 'cancelled', progress: 0, pauseReason: undefined })
+      updateFile(id, { status: 'cancelled', progress: 0, pauseReason: undefined, speedBps: undefined, etaSeconds: undefined })
     } else {
       const message = err instanceof Error ? err.message : 'Upload failed'
-      updateFile(id, { status: 'failed', error: message, pauseReason: undefined })
+      updateFile(id, { status: 'failed', error: message, pauseReason: undefined, speedBps: undefined, etaSeconds: undefined })
     }
     // Notify backend so the version is marked failed (not stuck at uploading).
     // This ensures post-refresh history shows the item in "Failed", not "Active".
@@ -255,6 +353,9 @@ async function runChunkedUpload(params: {
       api.post('/upload/abort', { s3_key, upload_id, version_id }).catch(() => {})
     }
   } finally {
+    if (speedInterval) clearInterval(speedInterval)
+    delete bytesUploadedMap[id]
+    delete speedSamples[id]
     delete abortControllers[id]
     delete manualPauseFlags[id]
     delete manualPauseWaiters[id]

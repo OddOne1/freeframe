@@ -16,7 +16,7 @@ import {
   Pause,
   Play,
 } from 'lucide-react'
-import { cn, formatBytes, formatRelativeTime } from '@/lib/utils'
+import { cn, formatBytes, formatRelativeTime, formatSpeed, formatEta } from '@/lib/utils'
 import { useUploadStore, type UploadFile, type UploadStatus } from '@/stores/upload-store'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -129,8 +129,10 @@ function UploadItem({ upload }: { upload: UploadFile }) {
         {/* Detail line */}
         <div className="flex items-center gap-1 mt-1">
           {upload.status === 'uploading' && (
-            <span className="text-[11px] text-text-secondary">
+            <span className="text-[11px] text-text-secondary truncate">
               Uploading {upload.progress}%
+              {upload.speedBps != null && ` · ${formatSpeed(upload.speedBps)}`}
+              {upload.etaSeconds != null && ` · ${formatEta(upload.etaSeconds)} left`}
             </span>
           )}
           {upload.status === 'paused' && upload.pauseReason === 'manual' && (

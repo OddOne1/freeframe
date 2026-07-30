@@ -75,6 +75,28 @@ export function formatBytes(bytes: number): string {
 }
 
 /**
+ * Format a transfer rate in bytes/sec into a human-readable string.
+ * e.g. 8_400_000 → "8.4 MB/s"
+ */
+export function formatSpeed(bytesPerSecond: number): string {
+  return `${formatBytes(bytesPerSecond)}/s`
+}
+
+/**
+ * Format a duration in seconds into a short "time left" string.
+ * e.g. 95 → "1m 35s", 12 → "12s", 4000 → "1h 6m"
+ */
+export function formatEta(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds))
+  const hrs = Math.floor(total / 3600)
+  const mins = Math.floor((total % 3600) / 60)
+  const secs = total % 60
+  if (hrs > 0) return `${hrs}h ${mins}m`
+  if (mins > 0) return `${mins}m ${secs}s`
+  return `${secs}s`
+}
+
+/**
  * Format an ISO date string into a relative time string
  * e.g. "2 hours ago", "3 days ago", "just now"
  */
