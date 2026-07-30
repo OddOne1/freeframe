@@ -50,6 +50,9 @@ class AssetResponse(BaseModel):
     rating: Optional[int]
     assignee_id: Optional[uuid.UUID]
     folder_id: Optional[uuid.UUID] = None
+    # The LUT the whole team sees on this shot, if any. The picker resolves
+    # it to a real LUT via GET /projects/{id}/luts.
+    applied_lut_id: Optional[uuid.UUID] = None
     due_date: Optional[datetime]
     keywords: Optional[list]
     created_by: Optional[uuid.UUID] = None

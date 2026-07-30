@@ -3,7 +3,7 @@
 import * as React from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { User, Bell, Shield, Palette, Brush, FolderKanban, LifeBuoy } from 'lucide-react'
+import { User, Bell, Shield, Palette, Brush, FolderKanban, LifeBuoy, SwatchBook } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 import { useHasProjectPrivilege } from '@/hooks/use-project-privilege'
@@ -25,9 +25,9 @@ const settingsNavItems: SettingsNavItem[] = [
   { href: '/settings/branding', label: 'Branding', icon: Brush, adminOnly: true },
   { href: '/settings/projects', label: 'Projects', icon: FolderKanban, projectPrivilegeOnly: true },
   { href: '/settings/admin', label: 'Admin', icon: Shield, adminOnly: true },
-  // Intentionally ungated: the whole point is that a plain `user` -- who
-  // sees none of the items above except Profile/Appearance/Notifications --
-  // can find out who to ask for help.
+  // Both ungated: a personal LUT library and the admin-contact list are
+  // each the user's own, not project- or admin-scoped.
+  { href: '/settings/luts', label: 'LUTs', icon: SwatchBook },
   { href: '/settings/contact', label: 'Contact', icon: LifeBuoy },
 ]
 

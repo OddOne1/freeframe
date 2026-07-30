@@ -164,6 +164,9 @@ export interface Asset {
   folder_id: string | null;
   due_date: string | null;
   keywords: string[];
+  /** The LUT the whole team sees on this shot. A LUT previewed locally but
+   *  never shared into the project is deliberately NOT written here. */
+  applied_lut_id?: string | null;
   // Null once the creator has been hard-deleted -- created_by_name is a
   // frozen snapshot from creation time, survives that.
   created_by: string | null;
@@ -626,4 +629,27 @@ export interface TranscriptResponse {
   captions_url: string | null
   text: string
   segments: TranscriptSegment[]
+}
+
+// ─── LUTs ─────────────────────────────────────────────────────────────────────
+
+/** Mirrors LutResponse in apps/api/schemas/lut.py. */
+export interface Lut {
+  id: string
+  name: string
+  lut_size: number | null
+  created_at: string
+  is_owner: boolean
+  owner_name: string | null
+  file_url: string | null
+  /** Only set by GET /projects/{id}/luts. A LUT you own but haven't shared
+   *  is listed with false — previewable locally, not applicable team-wide. */
+  shared_with_project: boolean | null
+}
+
+export interface LutExportResponse {
+  export_id: string
+  asset_id: string
+  version_id: string
+  lut_id: string
 }

@@ -16,6 +16,7 @@ import { AnnotationOverlay } from '@/components/review/annotation-overlay'
 import { CommentPanel } from '@/components/review/comment-panel'
 import { CommentInput } from '@/components/review/comment-input'
 import { TranscriptPanel } from '@/components/review/transcript-panel'
+import { LutPicker } from '@/components/review/lut-picker'
 import { CustomFieldInput } from '@/components/projects/asset-metadata'
 // ApprovalBar removed for now
 import { VersionSwitcher } from '@/components/review/version-switcher'
@@ -24,7 +25,8 @@ import { useReviewStore } from '@/stores/review-store'
 import { useAuthStore } from '@/stores/auth-store'
 import { useComments } from '@/hooks/use-comments'
 import { useSSE } from '@/hooks/use-sse'
-import type { TranscriptResponse } from '@/types'
+import { useLut } from '@/hooks/use-lut'
+import type { TranscriptResponse, LutExportResponse } from '@/types'
 import type { CommentWithReplies } from '@/hooks/use-comments'
 import { api, ApiError } from '@/lib/api'
 import { useUploadStore } from '@/stores/upload-store'
@@ -38,6 +40,7 @@ import {
   Loader2,
   Columns2,
   Upload,
+  Download,
   FileText,
   Tag,
   CircleDot,
@@ -393,10 +396,74 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     onTranscriptionProcessing: (data) => {
       if (data.asset_id === asset?.id) mutateTranscript()
     },
-    enabled: Boolean(supportsTranscript && asset?.project_id),
+    onLutExportReady: async (data) => {
+      if (data.asset_id !== asset?.id) return
+      setExporting(false)
+      try {
+        const res = await api.get<{ url: string }>(
+          `/assets/${data.asset_id}/lut-export/${data.export_id}?version_id=${data.version_id}`,
+        )
+        // Same hidden-iframe trigger the plain download already uses, so
+        // the browser treats it as a download rather than a navigation.
+        const url = resolveApiMediaUrl(res.url)
+        if (url) {
+          const iframe = document.createElement('iframe')
+          iframe.style.display = 'none'
+          iframe.src = url
+          document.body.appendChild(iframe)
+          setTimeout(() => iframe.remove(), 60_000)
+        }
+      } catch {
+        setExportError('The graded file was rendered but could not be fetched')
+      }
+    },
+    onLutExportFailed: (data) => {
+      if (data.asset_id !== asset?.id) return
+      setExporting(false)
+      setExportError(data.error || 'Graded export failed')
+    },
+    enabled: Boolean(asset?.project_id),
   })
 
   const captionsUrl = resolveApiMediaUrl(transcript?.captions_url ?? null)
+
+  // ── LUT preview + graded download ──
+  const lut = useLut(asset?.project_id, asset?.applied_lut_id ?? null)
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
+
+  const lutPicker = lut.supported && asset ? (
+    <LutPicker
+      luts={lut.luts}
+      selectedId={lut.selectedId}
+      onSelect={(id) => {
+        lut.select(id)
+        // Purely local preview. Writing it as the team-wide grade is a
+        // separate, explicit action -- and the backend rejects it outright
+        // for a LUT that isn't shared into this project.
+      }}
+      isLoading={lut.isLoading || lut.isLoadingCube}
+      className="shrink-0"
+    />
+  ) : null
+
+  async function handleGradedDownload() {
+    if (!asset || !lut.selectedId || !currentVersion) return
+    setExporting(true)
+    setExportError(null)
+    try {
+      await api.post<LutExportResponse>(
+        `/assets/${asset.id}/lut-export?version_id=${currentVersion.id}&lut_id=${lut.selectedId}`,
+        {},
+      )
+      // Nothing else to do here -- the file is rendered server-side and
+      // arrives via the lut_export_ready SSE event below.
+    } catch (err: unknown) {
+      const msg = err instanceof ApiError ? err.detail : 'Could not start the graded export'
+      setExportError(msg)
+      setExporting(false)
+    }
+  }
 
   // Navigating from a video to an image would otherwise leave the sidebar on
   // a Transcript tab whose button no longer exists.
@@ -881,6 +948,8 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               transcript?.transcription_status === 'ready' ? captionsUrl : null
             }
             captionsLanguage={transcript?.language ?? null}
+            cube={lut.cube}
+            lutPicker={lutPicker}
             overlay={
               <>
                 <AnnotationOverlay key={focusedCommentId ?? 'none'} />
@@ -909,6 +978,8 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             <ImageViewer
               asset={asset}
               version={currentVersion as any}
+              cube={lut.cube}
+              lutPicker={lutPicker}
               annotationCanvas={
                 <>
                   <AnnotationOverlay key={focusedCommentId ?? 'none'} />
@@ -1024,6 +1095,44 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             </div>
           )}
           <ShareDialog assetId={asset.id} assetName={asset.name} projectId={projectId} asset={asset} />
+          <button
+            onClick={async () => {
+              try {
+                const data = await api.get<{ url: string }>(
+                  `/assets/${asset.id}/stream?download=true`,
+                )
+                if (data?.url) {
+                  const iframe = document.createElement('iframe')
+                  iframe.style.display = 'none'
+                  iframe.src = data.url
+                  document.body.appendChild(iframe)
+                  setTimeout(() => iframe.remove(), 30000)
+                }
+              } catch {}
+            }}
+            className="flex items-center justify-center h-8 w-8 rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+            title="Download"
+          >
+            <Download className="h-4 w-4" />
+          </button>
+          {/* Graded download — separate from the plain Download above, and
+              only offered when a LUT is actually selected. Video only: the
+              export path is an ffmpeg encode. */}
+          {lut.supported && lut.selectedId && asset.asset_type === 'video' && (
+            <button
+              onClick={handleGradedDownload}
+              disabled={exporting}
+              className="flex items-center gap-1.5 h-8 px-2 rounded-md text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-60"
+              title={exportError ?? 'Render and download this shot with the LUT burned in'}
+            >
+              {exporting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4" />
+              )}
+              <span>{exporting ? 'Preparing…' : 'With LUT'}</span>
+            </button>
+          )}
           <button
             onClick={() => setSidebarOpen((p) => !p)}
             className={cn(

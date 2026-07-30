@@ -15,6 +15,7 @@ celery_app = Celery(
     include=[
         "apps.api.tasks.transcode_tasks",
         "apps.api.tasks.transcribe_tasks",
+        "apps.api.tasks.lut_tasks",
         "apps.api.tasks.watermark_tasks",
         "apps.api.tasks.reminder_tasks",
         "apps.api.tasks.email_tasks",
@@ -47,6 +48,9 @@ celery_app.conf.update(
     task_routes={
         "apps.api.tasks.transcode_tasks.*": {"queue": "transcoding"},
         "apps.api.tasks.transcribe_tasks.*": {"queue": "transcription"},
+        # Same ffmpeg/CPU profile as a normal transcode -- shares the
+        # existing worker rather than needing its own.
+        "apps.api.tasks.lut_tasks.*": {"queue": "transcoding"},
         "apps.api.tasks.email_tasks.send_magic_code_email": {"queue": "email_high"},
         "apps.api.tasks.email_tasks.send_invite_email": {"queue": "email_high"},
         "apps.api.tasks.email_tasks.send_mention_email": {"queue": "email_low"},
@@ -66,6 +70,13 @@ celery_app.conf.beat_schedule = {
     "due-date-reminders": {
         "task": "send_due_date_reminders",
         "schedule": crontab(minute="0"),  # every hour
+    },
+    # Safety net for the countdown-scheduled graded-export deletes -- an
+    # in-memory ETA task does not survive the worker restart that every
+    # deploy performs. See tasks/lut_tasks.py::sweep_lut_exports.
+    "sweep-lut-exports": {
+        "task": "sweep_lut_exports",
+        "schedule": crontab(minute="30"),  # every hour, offset from the above
     },
 }
 

@@ -48,6 +48,15 @@ class Asset(Base):
     # projects.created_by_name from task 8.
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     created_by_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # The LUT the whole team sees applied to this shot. On Asset rather than
+    # AssetVersion on purpose: a grade is a creative choice about the shot,
+    # and should survive a version bump rather than silently resetting.
+    # SET NULL so deleting a LUT degrades to "no grade" instead of orphaning.
+    # Only a LUT visible in this asset's project may be set here (enforced in
+    # routers/luts.py) — otherwise teammates hit a reference they can't read.
+    applied_lut_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("luts.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

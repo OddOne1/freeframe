@@ -41,6 +41,23 @@ export interface TranscriptionFailedEvent {
   error: string
 }
 
+/** Graded export finished rendering. The file lives under `lut-exports/`
+ *  and is deleted an hour later, so act on this promptly. */
+export interface LutExportReadyEvent {
+  asset_id: string
+  version_id: string
+  lut_id: string
+  export_id: string
+  expires_in: number
+  download_filename: string
+}
+
+export interface LutExportFailedEvent {
+  asset_id: string
+  export_id: string
+  error: string
+}
+
 export interface NewCommentEvent {
   asset_id: string
   comment_id: string
@@ -64,6 +81,8 @@ export type SSEEventType =
   | 'transcription_processing'
   | 'transcription_complete'
   | 'transcription_failed'
+  | 'lut_export_ready'
+  | 'lut_export_failed'
   | 'new_comment'
   | 'comment_resolved'
   | 'approval_updated'
@@ -77,6 +96,8 @@ export interface SSEEvent {
     | TranscriptionProcessingEvent
     | TranscriptionCompleteEvent
     | TranscriptionFailedEvent
+    | LutExportReadyEvent
+    | LutExportFailedEvent
     | NewCommentEvent
     | CommentResolvedEvent
     | ApprovalUpdatedEvent
@@ -91,6 +112,8 @@ export interface UseSSEOptions {
   onTranscriptionProcessing?: (data: TranscriptionProcessingEvent) => void
   onTranscriptionComplete?: (data: TranscriptionCompleteEvent) => void
   onTranscriptionFailed?: (data: TranscriptionFailedEvent) => void
+  onLutExportReady?: (data: LutExportReadyEvent) => void
+  onLutExportFailed?: (data: LutExportFailedEvent) => void
   onNewComment?: (data: NewCommentEvent) => void
   onCommentResolved?: (data: CommentResolvedEvent) => void
   onApprovalUpdated?: (data: ApprovalUpdatedEvent) => void
@@ -117,6 +140,8 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
     onTranscriptionProcessing,
     onTranscriptionComplete,
     onTranscriptionFailed,
+    onLutExportReady,
+    onLutExportFailed,
     onNewComment,
     onCommentResolved,
     onApprovalUpdated,
@@ -134,6 +159,8 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
     onTranscriptionProcessing,
     onTranscriptionComplete,
     onTranscriptionFailed,
+    onLutExportReady,
+    onLutExportFailed,
     onNewComment,
     onCommentResolved,
     onApprovalUpdated,
@@ -147,6 +174,8 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
       onTranscriptionProcessing,
       onTranscriptionComplete,
       onTranscriptionFailed,
+      onLutExportReady,
+      onLutExportFailed,
       onNewComment,
       onCommentResolved,
       onApprovalUpdated,
@@ -267,6 +296,32 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
           const event: SSEEvent = { type: 'transcription_failed', data }
           setLastEvent(event)
           callbackRefs.current.onTranscriptionFailed?.(data)
+        } catch {
+          // ignore malformed events
+        }
+      })
+
+      // ── lut_export_ready ──
+      es.addEventListener('lut_export_ready', (e: MessageEvent) => {
+        if (destroyed) return
+        try {
+          const data = JSON.parse(e.data) as LutExportReadyEvent
+          const event: SSEEvent = { type: 'lut_export_ready', data }
+          setLastEvent(event)
+          callbackRefs.current.onLutExportReady?.(data)
+        } catch {
+          // ignore malformed events
+        }
+      })
+
+      // ── lut_export_failed ──
+      es.addEventListener('lut_export_failed', (e: MessageEvent) => {
+        if (destroyed) return
+        try {
+          const data = JSON.parse(e.data) as LutExportFailedEvent
+          const event: SSEEvent = { type: 'lut_export_failed', data }
+          setLastEvent(event)
+          callbackRefs.current.onLutExportFailed?.(data)
         } catch {
           // ignore malformed events
         }

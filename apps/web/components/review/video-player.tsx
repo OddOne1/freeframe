@@ -25,6 +25,8 @@ import { useReviewStore, type TimeFormat } from "@/stores/review-store";
 import { useVideoPlayer } from "@/hooks/use-video-player";
 import { useReview } from "./review-provider";
 import { ProgressBar } from "./progress-bar";
+import { LutCanvas } from "./lut-canvas";
+import type { ParsedCube } from "@/lib/lut/cube-parser";
 import type { Comment } from "@/types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -54,6 +56,17 @@ interface VideoPlayerProps {
   captionsUrl?: string | null;
   /** ISO 639-1 code from Whisper's auto-detection, for <track srclang>. */
   captionsLanguage?: string | null;
+  /**
+   * Parsed LUT for non-destructive preview. When set, the real <video>
+   * stays in the DOM (hls.js, audio and all playback state keep running
+   * against it untouched) but is made invisible, and a WebGL canvas is
+   * laid over the identical box. Because the canvas occupies exactly the
+   * <video>'s layout box, VideoFrameConstraint's annotation overlay --
+   * which measures that box -- keeps lining up unmodified.
+   */
+  cube?: ParsedCube | null;
+  /** Picker element rendered into the transport bar. */
+  lutPicker?: React.ReactNode;
 }
 
 // ─── Video frame constraint ──────────────────────────────────────────────────
@@ -152,6 +165,8 @@ export function VideoPlayer({
   initialStreamUrl,
   captionsUrl,
   captionsLanguage,
+  cube,
+  lutPicker,
 }: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
@@ -309,6 +324,27 @@ export function VideoPlayer({
     }
   }, [toggleFullscreen]);
 
+  // The canvas needs the video's intrinsic size, and reading videoRef in
+  // JSX would never re-render when it populates. Tracked in state instead,
+  // refreshed on the same events VideoFrameConstraint listens to.
+  const [videoDims, setVideoDims] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const update = () => {
+      if (video.videoWidth && video.videoHeight) {
+        setVideoDims({ w: video.videoWidth, h: video.videoHeight });
+      }
+    };
+    update();
+    video.addEventListener("loadedmetadata", update);
+    video.addEventListener("resize", update);
+    return () => {
+      video.removeEventListener("loadedmetadata", update);
+      video.removeEventListener("resize", update);
+    };
+  }, [videoRef, streamUrl]);
+
   // Drive the TextTrack's mode directly. React renders <track> but does not
   // control its `mode`, and the browser defaults a non-`default` track to
   // "disabled" — which means the cues are never even parsed until this runs.
@@ -353,6 +389,10 @@ export function VideoPlayer({
           className={cn(
             "absolute inset-0 w-full h-full object-contain",
             isDrawingMode ? "pointer-events-none" : "",
+            // Invisible, not unmounted: it remains the decode/audio source
+            // and hls.js stays attached. `invisible` also preserves the
+            // layout box VideoFrameConstraint measures.
+            cube ? "invisible" : "",
           )}
           playsInline
           preload="metadata"
@@ -371,6 +411,18 @@ export function VideoPlayer({
             />
           )}
         </video>
+
+        {/* Graded preview, drawn over the exact box the <video> occupies */}
+        {cube && videoDims && (
+          <LutCanvas
+            source={videoRef.current}
+            cube={cube}
+            width={videoDims.w}
+            height={videoDims.h}
+            animated
+            className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+          />
+        )}
 
         {/* Loading spinner */}
         {isLoading && (
@@ -515,8 +567,9 @@ export function VideoPlayer({
           )}
         </div>
 
-        {/* Right: Captions, Quality, Fullscreen */}
+        {/* Right: LUT, Captions, Quality, Fullscreen */}
         <div className="flex items-center gap-2">
+          {lutPicker}
           {/* Captions toggle — hidden entirely until a transcript exists */}
           {captionsUrl && (
             <button

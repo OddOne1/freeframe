@@ -16,6 +16,12 @@ CONTENT_TYPE_MAP = {
     ".json": ("application/json", "max-age=86400"),
     ".png": ("image/png", "max-age=86400"),
     ".vtt": ("text/vtt", "max-age=86400"),
+    ".cube": ("text/plain", "max-age=86400"),
+    # no-store on exports: a graded file is deliberately short-lived (see
+    # tasks/lut_tasks.py) and must not linger in a proxy cache after the
+    # object itself has been deleted.
+    ".mp4": ("video/mp4", "no-store"),
+    ".mov": ("video/quicktime", "no-store"),
 }
 
 def _is_aws_s3() -> bool:

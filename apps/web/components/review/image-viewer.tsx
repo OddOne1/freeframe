@@ -21,6 +21,8 @@ import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { useReviewStore } from '@/stores/review-store'
 import { useReview } from '@/components/review/review-provider'
+import { LutCanvas } from '@/components/review/lut-canvas'
+import type { ParsedCube } from '@/lib/lut/cube-parser'
 import type { Asset, AssetVersion, MediaFile } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -84,17 +86,35 @@ interface SingleImageProps {
   alt: string
   containerRef: React.RefObject<HTMLDivElement>
   onImageLoad: (width: number, height: number) => void
+  /** Non-null once a LUT is picked; the <img> is then hidden behind a
+   *  canvas of the same size that draws it through the shader. */
+  cube?: ParsedCube | null
 }
 
-function SingleImage({ url, alt, containerRef, onImageLoad, annotationOverlay, isDrawingMode }: SingleImageProps & { annotationOverlay?: React.ReactNode; isDrawingMode?: boolean }) {
+function SingleImage({ url, alt, containerRef, onImageLoad, annotationOverlay, isDrawingMode, cube }: SingleImageProps & { annotationOverlay?: React.ReactNode; isDrawingMode?: boolean }) {
   const imgRef = React.useRef<HTMLImageElement>(null)
+  // Held in state rather than read off the ref so the canvas re-renders
+  // once the image has actually decoded.
+  const [decoded, setDecoded] = React.useState<HTMLImageElement | null>(null)
+  const [natural, setNatural] = React.useState<{ w: number; h: number } | null>(null)
+
+  React.useEffect(() => {
+    // New src: drop the old frame so a stale image is never shown graded
+    // with the new asset's LUT.
+    setDecoded(null)
+    setNatural(null)
+  }, [url])
 
   const handleLoad = () => {
     const img = imgRef.current
     if (img) {
       onImageLoad(img.naturalWidth, img.naturalHeight)
+      setNatural({ w: img.naturalWidth, h: img.naturalHeight })
+      setDecoded(img)
     }
   }
+
+  const graded = Boolean(cube) && decoded !== null && natural !== null
 
   return (
     <div ref={containerRef} className="relative flex items-center justify-center w-full h-full">
@@ -104,9 +124,23 @@ function SingleImage({ url, alt, containerRef, onImageLoad, annotationOverlay, i
         src={url}
         alt={alt}
         onLoad={handleLoad}
-        className="max-w-full max-h-full object-contain select-none"
+        // Kept in the DOM even when graded -- it is the decode source for
+        // the canvas, and it is what still sizes the layout box.
+        className={cn(
+          'max-w-full max-h-full object-contain select-none',
+          graded && 'invisible',
+        )}
         draggable={false}
       />
+      {graded && natural && (
+        <LutCanvas
+          source={decoded}
+          cube={cube ?? null}
+          width={natural.w}
+          height={natural.h}
+          className="absolute inset-0 m-auto max-w-full max-h-full object-contain select-none pointer-events-none"
+        />
+      )}
       {/* Annotation overlay — positioned on top of the image, moves with zoom/pan */}
       {annotationOverlay && (
         <div
@@ -141,9 +175,15 @@ interface ImageViewerProps {
   className?: string
   /** Optional: rendered on top of the image for annotations */
   annotationCanvas?: React.ReactNode
+  /** Parsed LUT for non-destructive preview. The stored file is never
+   *  touched — this only affects what is drawn. */
+  cube?: ParsedCube | null
+  /** Rendered into the toolbar; the page owns the picker so the same
+   *  selection drives both the preview and the graded-download action. */
+  lutPicker?: React.ReactNode
 }
 
-export function ImageViewer({ asset, version, className, annotationCanvas }: ImageViewerProps) {
+export function ImageViewer({ asset, version, className, annotationCanvas, cube, lutPicker }: ImageViewerProps) {
   const { isDrawingMode, setFocusedCommentId, setActiveAnnotation } = useReviewStore()
 
   const handleImageClick = () => {
@@ -315,6 +355,7 @@ export function ImageViewer({ asset, version, className, annotationCanvas }: Ima
                   onImageLoad={handleImageLoad}
                   annotationOverlay={annotationCanvas}
                   isDrawingMode={isDrawingMode}
+                  cube={cube}
                 />
               </TransformComponent>
 
@@ -322,6 +363,12 @@ export function ImageViewer({ asset, version, className, annotationCanvas }: Ima
             </>
           )}
         </TransformWrapper>
+
+        {/* LUT picker — top-left, opposite the zoom controls so it never
+            overlaps them. */}
+        {lutPicker && (
+          <div className="absolute left-3 top-3 z-10">{lutPicker}</div>
+        )}
       </div>
 
       {/* Carousel navigation */}
