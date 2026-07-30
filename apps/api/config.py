@@ -43,7 +43,17 @@ class Settings(BaseSettings):
     # Worker concurrency settings
     transcoding_concurrency: int = 2  # Number of concurrent video transcoding jobs
     email_concurrency: int = 2  # Number of concurrent email sending jobs
-    
+    # 1 by default on purpose: CPU Whisper jobs are heavy, and running them
+    # in parallel just makes them compete for the same cores the HLS
+    # transcodes are already using.
+    transcription_concurrency: int = 1
+
+    # Speech-to-text (faster-whisper, CPU-only -- see CLAUDE.md).
+    # MUST stay a multilingual checkpoint: the ".en" variants (small.en etc.)
+    # exist and would silently break every non-English upload.
+    whisper_model_size: str = "small"
+    whisper_compute_type: str = "int8"  # int8 is the sane CPU default; float32 is far slower
+
     # Email settings - supports AWS SES or any SMTP server
     # If mail_provider is "ses", uses AWS SES with aws_mail_* credentials
     # If mail_provider is "smtp", uses standard SMTP with smtp_* settings

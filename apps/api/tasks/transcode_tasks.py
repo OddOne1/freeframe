@@ -3,6 +3,7 @@ import sys
 import os
 import asyncio
 import json
+import logging
 
 # Ensure the workspace root is on the path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
@@ -13,6 +14,8 @@ from ..models.asset import AssetVersion, MediaFile, ProcessingStatus, AssetType
 from ..models.asset import Asset
 from ..services.s3_service import get_s3_client
 from ..config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _run_async(coro):
@@ -68,6 +71,22 @@ def process_asset(self, asset_id: str, version_id: str):
                 "asset_id": asset_id,
                 "version_id": version_id,
             })
+
+            # Speech-to-text runs as a separate, much slower stage on its own
+            # queue -- the asset is already `ready` and playable above, and
+            # nothing here is allowed to change that. Dispatch is swallowed
+            # on failure for exactly that reason: if it were allowed to
+            # raise, it would land in the except below and re-run the entire
+            # (already successful) transcode.
+            if asset.asset_type in (AssetType.video, AssetType.audio):
+                try:
+                    from .transcribe_tasks import transcribe_asset
+                    transcribe_asset.delay(asset_id, version_id)
+                except Exception:
+                    logger.warning(
+                        "Could not queue transcription for asset %s version %s",
+                        asset_id, version_id, exc_info=True,
+                    )
 
         except Exception as exc:
             version.processing_status = ProcessingStatus.failed

@@ -606,3 +606,24 @@ export interface SiteSettingsResponse {
   // public, backing the login page's branding).
   total_storage_used_bytes?: number | null;
 }
+
+// ─── Transcription ────────────────────────────────────────────────────────────
+
+export type TranscriptionStatus = 'not_started' | 'processing' | 'ready' | 'failed'
+
+export interface TranscriptSegment {
+  id: number
+  start: number
+  end: number
+  text: string
+}
+
+/** Mirrors TranscriptResponse in apps/api/schemas/asset.py. `segments` is
+ *  only populated once transcription_status is 'ready'. */
+export interface TranscriptResponse {
+  transcription_status: TranscriptionStatus
+  language: string | null
+  captions_url: string | null
+  text: string
+  segments: TranscriptSegment[]
+}

@@ -15,6 +15,7 @@ import { AnnotationCanvas } from '@/components/review/annotation-canvas'
 import { AnnotationOverlay } from '@/components/review/annotation-overlay'
 import { CommentPanel } from '@/components/review/comment-panel'
 import { CommentInput } from '@/components/review/comment-input'
+import { TranscriptPanel } from '@/components/review/transcript-panel'
 import { CustomFieldInput } from '@/components/projects/asset-metadata'
 // ApprovalBar removed for now
 import { VersionSwitcher } from '@/components/review/version-switcher'
@@ -22,6 +23,8 @@ import { ShareDialog } from '@/components/review/share-dialog'
 import { useReviewStore } from '@/stores/review-store'
 import { useAuthStore } from '@/stores/auth-store'
 import { useComments } from '@/hooks/use-comments'
+import { useSSE } from '@/hooks/use-sse'
+import type { TranscriptResponse } from '@/types'
 import type { CommentWithReplies } from '@/hooks/use-comments'
 import { api, ApiError } from '@/lib/api'
 import { useUploadStore } from '@/stores/upload-store'
@@ -53,7 +56,7 @@ import {
   X,
 } from 'lucide-react'
 import Link from 'next/link'
-import { cn, formatBytes, formatRelativeTime, formatTime } from '@/lib/utils'
+import { cn, formatBytes, formatRelativeTime, formatTime, resolveApiMediaUrl } from '@/lib/utils'
 import { usePageTitle } from '@/hooks/use-page-title'
 import type {
   Project,
@@ -348,7 +351,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const { asset, versions, isLoading, refetchComments, refetchVersions } = useReview()
-  const { currentVersion, isDrawingMode, focusedCommentId, seekTo, setFocusedCommentId, setActiveAnnotation } = useReviewStore()
+  const { currentVersion, isDrawingMode, focusedCommentId, playheadTime, seekTo, setFocusedCommentId, setActiveAnnotation } = useReviewStore()
   const { user, isSuperAdmin } = useAuthStore()
   const startVersionUpload = useUploadStore((s) => s.startVersionUpload)
   const versionFileInputRef = useRef<HTMLInputElement>(null)
@@ -356,9 +359,50 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const setLabel = useBreadcrumbStore((s) => s.setLabel)
   usePageTitle(asset?.name ?? null)
   const [annotationData, setAnnotationData] = useState<Record<string, unknown> | null>(null)
-  const [activeTab, setActiveTab] = useState<'comments' | 'fields'>('comments')
+  const [activeTab, setActiveTab] = useState<'comments' | 'fields' | 'transcript'>('comments')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const deepLinkApplied = useRef(false)
+
+  // ── Transcript ──
+  // Only video and audio ever get transcribed (see transcode_tasks.py's
+  // dispatch), so the tab and this fetch don't exist for images at all.
+  const supportsTranscript = asset?.asset_type === 'video' || asset?.asset_type === 'audio'
+  const transcriptKey =
+    supportsTranscript && asset && currentVersion
+      ? `/assets/${asset.id}/transcript?version_id=${currentVersion.id}`
+      : null
+  const { data: transcript, isLoading: transcriptLoading, mutate: mutateTranscript } =
+    useSWR<TranscriptResponse>(
+      transcriptKey,
+      // Takes the resolved key as a parameter rather than re-referencing the
+      // nullable `asset`/`currentVersion` from the closure -- the latter
+      // fails next build's strict null check even though the key is guarded.
+      (key: string) => api.get<TranscriptResponse>(key),
+    )
+
+  // Transcription finishes minutes after the asset became playable, so the
+  // panel subscribes rather than polls: the event just invalidates the SWR
+  // key above and the real transcript renders in place of "Transcribing…".
+  useSSE(asset?.project_id, {
+    onTranscriptionComplete: (data) => {
+      if (data.asset_id === asset?.id) mutateTranscript()
+    },
+    onTranscriptionFailed: (data) => {
+      if (data.asset_id === asset?.id) mutateTranscript()
+    },
+    onTranscriptionProcessing: (data) => {
+      if (data.asset_id === asset?.id) mutateTranscript()
+    },
+    enabled: Boolean(supportsTranscript && asset?.project_id),
+  })
+
+  const captionsUrl = resolveApiMediaUrl(transcript?.captions_url ?? null)
+
+  // Navigating from a video to an image would otherwise leave the sidebar on
+  // a Transcript tab whose button no longer exists.
+  useEffect(() => {
+    if (!supportsTranscript && activeTab === 'transcript') setActiveTab('comments')
+  }, [supportsTranscript, activeTab])
 
   // Fetch folder tree to build the folder path for the breadcrumb
   const { data: folderTree } = useSWR<FolderTreeNode[]>(
@@ -833,6 +877,10 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             assetId={asset.id}
             comments={comments}
             className="flex-1 min-h-0"
+            captionsUrl={
+              transcript?.transcription_status === 'ready' ? captionsUrl : null
+            }
+            captionsLanguage={transcript?.language ?? null}
             overlay={
               <>
                 <AnnotationOverlay key={focusedCommentId ?? 'none'} />
@@ -1027,6 +1075,19 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                 >
                   Fields
                 </button>
+                {supportsTranscript && (
+                  <button
+                    onClick={() => setActiveTab('transcript')}
+                    className={cn(
+                      'flex-1 py-1.5 text-[13px] font-medium rounded-md transition-all',
+                      activeTab === 'transcript'
+                        ? 'bg-bg-hover text-text-primary shadow-sm'
+                        : 'text-text-tertiary hover:text-text-secondary',
+                    )}
+                  >
+                    Transcript
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1054,6 +1115,13 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                   />
                   )}
                 </>
+              ) : activeTab === 'transcript' ? (
+                <TranscriptPanel
+                  transcript={transcript}
+                  isLoading={transcriptLoading}
+                  currentTime={playheadTime}
+                  onSeek={(seconds) => seekTo(seconds, false)}
+                />
               ) : (
                 <div className="flex-1 overflow-y-auto p-4">
                   <div>

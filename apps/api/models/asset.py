@@ -73,6 +73,21 @@ class FileType(str, PyEnum):
     audio = "audio"
     video = "video"
 
+class TranscriptionStatus(str, PyEnum):
+    """Speech-to-text stage, deliberately independent of
+    AssetVersion.processing_status.
+
+    Transcription runs *after* the asset is already playable (see
+    tasks/transcribe_tasks.py), so it can still be running -- or fail
+    outright -- against a version whose processing_status is already
+    `ready`. Folding the two together would either delay playback or make
+    a transcription failure look like a transcode failure.
+    """
+    not_started = "not_started"
+    processing = "processing"
+    ready = "ready"
+    failed = "failed"
+
 class MediaFile(Base):
     __tablename__ = "media_files"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -96,6 +111,21 @@ class MediaFile(Base):
     # color_space, dynamic_range, audio_codec, audio_bit_rate,
     # audio_bit_depth, audio_channels, audio_sample_rate.
     technical_metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Speech-to-text derivatives, written by tasks/transcribe_tasks.py long
+    # after the transcode pipeline has already marked the version ready.
+    # transcript.json is the source of truth (full text + segment
+    # timestamps); captions.vtt is generated from the same segments for the
+    # <track> element.
+    s3_key_transcript: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    s3_key_captions: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    # ISO 639-1, as auto-detected by Whisper -- stored rather than left to
+    # be parsed out of transcript.json, so <track srclang> and the panel's
+    # language label don't need the full file fetched just for this.
+    transcript_language: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    transcription_status: Mapped[TranscriptionStatus] = mapped_column(
+        Enum(TranscriptionStatus), nullable=False, default=TranscriptionStatus.not_started,
+        server_default=TranscriptionStatus.not_started.value,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class CarouselItem(Base):

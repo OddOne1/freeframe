@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+import json
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -8,21 +10,24 @@ from typing import Optional
 from ..database import get_db
 from ..middleware.auth import get_current_user
 from ..models.user import User, UserGlobalRole
-from ..models.asset import Asset, AssetVersion, MediaFile, AssetType, AssetStatus, FileType, ProcessingStatus
+from ..models.asset import Asset, AssetVersion, MediaFile, AssetType, AssetStatus, FileType, ProcessingStatus, TranscriptionStatus
 from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.share import AssetShare
 from ..models.activity import Mention, Notification, NotificationType
 from ..models.vote import Vote
-from ..schemas.asset import AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, VoteToggleResponse, VoteRequest
+from ..schemas.asset import AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, VoteToggleResponse, VoteRequest, TranscriptResponse, TranscriptSegment
 from ..schemas.notification import AssignmentUpdate
 from ..services.permissions import require_project_role, require_asset_access, can_access_asset, is_public_project, get_project_member, can_see_rating_aggregate
-from ..services.s3_service import build_download_filename
+from ..services.s3_service import build_download_filename, get_s3_client
+from ..config import settings
 from .hls_proxy import create_hls_token, proxy_url_for
 from ..schemas.upload import InitiateUploadRequest, InitiateUploadResponse, ALLOWED_MIME_TYPES, MAX_FILE_SIZE_BYTES, mime_to_asset_type
 from ..services.s3_service import create_multipart_upload
 from .folders import _get_descendant_ids as _get_descendant_folder_ids
 
 router = APIRouter(tags=["assets"])
+
+logger = logging.getLogger(__name__)
 
 # A version stuck in "processing" gets a manual retry option once it's been
 # running longer than this — long enough that a legitimately-running
@@ -377,6 +382,85 @@ def get_stream_url(
             url = proxy_url_for(s3_key)
 
     return StreamUrlResponse(url=url, asset_type=asset.asset_type)
+
+@router.get("/assets/{asset_id}/transcript", response_model=TranscriptResponse)
+def get_asset_transcript(
+    asset_id: uuid.UUID,
+    version_id: Optional[uuid.UUID] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Transcript + captions URL for one asset version.
+
+    Deliberately does NOT 409 on a not-yet-ready version the way
+    get_stream_url does: transcription is a separate stage that outlives
+    readiness in both directions, and the panel needs to render its
+    "Transcribing…" / "not available" states from a successful response
+    rather than from an error.
+
+    transcript.json is read server-side and returned parsed, so the client
+    needs one request instead of a second token-authenticated fetch of a
+    file it would only have to parse itself anyway.
+    """
+    asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    require_asset_access(db, asset, current_user)
+
+    if version_id:
+        version = db.query(AssetVersion).filter(
+            AssetVersion.id == version_id,
+            AssetVersion.asset_id == asset_id,
+            AssetVersion.deleted_at.is_(None),
+        ).first()
+    else:
+        version = db.query(AssetVersion).filter(
+            AssetVersion.asset_id == asset_id,
+            AssetVersion.deleted_at.is_(None),
+        ).order_by(AssetVersion.version_number.desc()).first()
+
+    if not version:
+        raise HTTPException(status_code=404, detail="No version found")
+
+    media_file = db.query(MediaFile).filter(MediaFile.version_id == version.id).first()
+    if not media_file:
+        raise HTTPException(status_code=404, detail="Media file not found")
+
+    response = TranscriptResponse(
+        transcription_status=media_file.transcription_status,
+        language=media_file.transcript_language,
+    )
+    if media_file.transcription_status != TranscriptionStatus.ready:
+        return response
+
+    if media_file.s3_key_captions:
+        response.captions_url = proxy_url_for(media_file.s3_key_captions)
+
+    if media_file.s3_key_transcript:
+        try:
+            s3 = get_s3_client()
+            obj = s3.get_object(Bucket=settings.s3_bucket, Key=media_file.s3_key_transcript)
+            data = json.loads(obj["Body"].read().decode("utf-8"))
+            response.text = data.get("text") or ""
+            response.segments = [
+                TranscriptSegment(
+                    id=int(seg.get("id", i)),
+                    start=float(seg.get("start", 0.0)),
+                    end=float(seg.get("end", 0.0)),
+                    text=(seg.get("text") or "").strip(),
+                )
+                for i, seg in enumerate(data.get("segments") or [])
+            ]
+        except Exception:
+            # The row says ready but the object is unreadable/missing. Return
+            # the status and captions URL rather than 500ing the whole panel.
+            logger.warning(
+                "Could not read transcript %s for asset %s",
+                media_file.s3_key_transcript, asset_id, exc_info=True,
+            )
+
+    return response
+
 
 @router.post("/assets/{asset_id}/versions", response_model=InitiateUploadResponse)
 def initiate_new_version(

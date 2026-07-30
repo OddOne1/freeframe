@@ -20,6 +20,27 @@ export interface TranscodeFailedEvent {
   error: string
 }
 
+/** Speech-to-text runs after the asset is already playable, so these are
+ *  separate from the transcode_* events above -- an asset can be `ready`
+ *  and mid-transcription at the same time. */
+export interface TranscriptionProcessingEvent {
+  asset_id: string
+  version_id: string
+}
+
+export interface TranscriptionCompleteEvent {
+  asset_id: string
+  version_id: string
+  language: string | null
+  segment_count: number
+}
+
+export interface TranscriptionFailedEvent {
+  asset_id: string
+  version_id: string
+  error: string
+}
+
 export interface NewCommentEvent {
   asset_id: string
   comment_id: string
@@ -40,6 +61,9 @@ export type SSEEventType =
   | 'transcode_progress'
   | 'transcode_complete'
   | 'transcode_failed'
+  | 'transcription_processing'
+  | 'transcription_complete'
+  | 'transcription_failed'
   | 'new_comment'
   | 'comment_resolved'
   | 'approval_updated'
@@ -50,6 +74,9 @@ export interface SSEEvent {
     | TranscodeProgressEvent
     | TranscodeCompleteEvent
     | TranscodeFailedEvent
+    | TranscriptionProcessingEvent
+    | TranscriptionCompleteEvent
+    | TranscriptionFailedEvent
     | NewCommentEvent
     | CommentResolvedEvent
     | ApprovalUpdatedEvent
@@ -61,6 +88,9 @@ export interface UseSSEOptions {
   onTranscodeProgress?: (data: TranscodeProgressEvent) => void
   onTranscodeComplete?: (data: TranscodeCompleteEvent) => void
   onTranscodeFailed?: (data: TranscodeFailedEvent) => void
+  onTranscriptionProcessing?: (data: TranscriptionProcessingEvent) => void
+  onTranscriptionComplete?: (data: TranscriptionCompleteEvent) => void
+  onTranscriptionFailed?: (data: TranscriptionFailedEvent) => void
   onNewComment?: (data: NewCommentEvent) => void
   onCommentResolved?: (data: CommentResolvedEvent) => void
   onApprovalUpdated?: (data: ApprovalUpdatedEvent) => void
@@ -84,6 +114,9 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
     onTranscodeProgress,
     onTranscodeComplete,
     onTranscodeFailed,
+    onTranscriptionProcessing,
+    onTranscriptionComplete,
+    onTranscriptionFailed,
     onNewComment,
     onCommentResolved,
     onApprovalUpdated,
@@ -98,6 +131,9 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
     onTranscodeProgress,
     onTranscodeComplete,
     onTranscodeFailed,
+    onTranscriptionProcessing,
+    onTranscriptionComplete,
+    onTranscriptionFailed,
     onNewComment,
     onCommentResolved,
     onApprovalUpdated,
@@ -108,6 +144,9 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
       onTranscodeProgress,
       onTranscodeComplete,
       onTranscodeFailed,
+      onTranscriptionProcessing,
+      onTranscriptionComplete,
+      onTranscriptionFailed,
       onNewComment,
       onCommentResolved,
       onApprovalUpdated,
@@ -189,6 +228,45 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
           const event: SSEEvent = { type: 'transcode_failed', data }
           setLastEvent(event)
           callbackRefs.current.onTranscodeFailed?.(data)
+        } catch {
+          // ignore malformed events
+        }
+      })
+
+      // ── transcription_processing ──
+      es.addEventListener('transcription_processing', (e: MessageEvent) => {
+        if (destroyed) return
+        try {
+          const data = JSON.parse(e.data) as TranscriptionProcessingEvent
+          const event: SSEEvent = { type: 'transcription_processing', data }
+          setLastEvent(event)
+          callbackRefs.current.onTranscriptionProcessing?.(data)
+        } catch {
+          // ignore malformed events
+        }
+      })
+
+      // ── transcription_complete ──
+      es.addEventListener('transcription_complete', (e: MessageEvent) => {
+        if (destroyed) return
+        try {
+          const data = JSON.parse(e.data) as TranscriptionCompleteEvent
+          const event: SSEEvent = { type: 'transcription_complete', data }
+          setLastEvent(event)
+          callbackRefs.current.onTranscriptionComplete?.(data)
+        } catch {
+          // ignore malformed events
+        }
+      })
+
+      // ── transcription_failed ──
+      es.addEventListener('transcription_failed', (e: MessageEvent) => {
+        if (destroyed) return
+        try {
+          const data = JSON.parse(e.data) as TranscriptionFailedEvent
+          const event: SSEEvent = { type: 'transcription_failed', data }
+          setLastEvent(event)
+          callbackRefs.current.onTranscriptionFailed?.(data)
         } catch {
           // ignore malformed events
         }

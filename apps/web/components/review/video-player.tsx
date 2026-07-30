@@ -11,8 +11,15 @@ import {
   ChevronUp,
   Check,
   Repeat,
+  Captions,
 } from "lucide-react";
-import { cn, formatTime, formatTimecode, formatFrames } from "@/lib/utils";
+import {
+  cn,
+  formatTime,
+  formatTimecode,
+  formatFrames,
+  languageLabel,
+} from "@/lib/utils";
 import { api } from "@/lib/api";
 import { useReviewStore, type TimeFormat } from "@/stores/review-store";
 import { useVideoPlayer } from "@/hooks/use-video-player";
@@ -33,6 +40,20 @@ interface VideoPlayerProps {
   className?: string;
   /** Pre-fetched stream URL (for share mode — skips authenticated API call) */
   initialStreamUrl?: string | null;
+  /**
+   * Absolute URL to captions.vtt, or null when transcription hasn't
+   * finished (or failed). The CC button is hidden entirely while null —
+   * a toggle that can't do anything is worse than no toggle.
+   *
+   * Note: no crossOrigin is set on the <video>. In production the API is
+   * served same-origin under /api, so the track fetch needs no CORS. Adding
+   * crossOrigin="anonymous" would also apply to the native-HLS/progressive
+   * `video.src` path in use-video-player.ts, which is a real playback risk
+   * for a cosmetic dev-only gain.
+   */
+  captionsUrl?: string | null;
+  /** ISO 639-1 code from Whisper's auto-detection, for <track srclang>. */
+  captionsLanguage?: string | null;
 }
 
 // ─── Video frame constraint ──────────────────────────────────────────────────
@@ -129,10 +150,13 @@ export function VideoPlayer({
   overlay,
   className,
   initialStreamUrl,
+  captionsUrl,
+  captionsLanguage,
 }: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [loop, setLoop] = useState(false);
+  const [captionsOn, setCaptionsOn] = useState(false);
 
   const { isDrawingMode, timeFormat, setTimeFormat, setPlayheadTime } =
     useReviewStore();
@@ -285,6 +309,23 @@ export function VideoPlayer({
     }
   }, [toggleFullscreen]);
 
+  // Drive the TextTrack's mode directly. React renders <track> but does not
+  // control its `mode`, and the browser defaults a non-`default` track to
+  // "disabled" — which means the cues are never even parsed until this runs.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const track = video.textTracks?.[0];
+    if (!track) return;
+    track.mode = captionsOn ? "showing" : "hidden";
+  }, [captionsOn, captionsUrl, videoRef]);
+
+  // A new asset (or a transcript that just finished) starts with captions
+  // off rather than inheriting the previous asset's toggle state.
+  useEffect(() => {
+    setCaptionsOn(false);
+  }, [assetId]);
+
   const handleSpeedCycle = useCallback(() => {
     const idx = SPEED_OPTIONS.indexOf(
       playbackRate as (typeof SPEED_OPTIONS)[number],
@@ -315,7 +356,21 @@ export function VideoPlayer({
           )}
           playsInline
           preload="metadata"
-        />
+        >
+          {captionsUrl && (
+            <track
+              key={captionsUrl}
+              kind="subtitles"
+              src={captionsUrl}
+              srcLang={captionsLanguage || "und"}
+              label={
+                captionsLanguage
+                  ? languageLabel(captionsLanguage)
+                  : "Captions"
+              }
+            />
+          )}
+        </video>
 
         {/* Loading spinner */}
         {isLoading && (
@@ -460,8 +515,30 @@ export function VideoPlayer({
           )}
         </div>
 
-        {/* Right: Quality, Fullscreen */}
+        {/* Right: Captions, Quality, Fullscreen */}
         <div className="flex items-center gap-2">
+          {/* Captions toggle — hidden entirely until a transcript exists */}
+          {captionsUrl && (
+            <button
+              onClick={() => setCaptionsOn((on) => !on)}
+              className={cn(
+                "flex h-7 items-center justify-center rounded px-1.5 text-xs font-medium border transition-colors shrink-0",
+                captionsOn
+                  ? "border-accent text-accent"
+                  : "border-border text-text-tertiary hover:text-text-primary hover:bg-bg-hover",
+              )}
+              aria-label={captionsOn ? "Hide captions" : "Show captions"}
+              aria-pressed={captionsOn}
+              title={
+                captionsLanguage
+                  ? `Captions (${languageLabel(captionsLanguage)})`
+                  : "Captions"
+              }
+            >
+              <Captions className="h-4 w-4" />
+            </button>
+          )}
+
           {/* Quality selector */}
           {qualityLevels.length > 0 && (
             <select

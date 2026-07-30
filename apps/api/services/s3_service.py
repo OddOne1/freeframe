@@ -15,6 +15,7 @@ CONTENT_TYPE_MAP = {
     ".mp3": ("audio/mpeg", "max-age=86400"),
     ".json": ("application/json", "max-age=86400"),
     ".png": ("image/png", "max-age=86400"),
+    ".vtt": ("text/vtt", "max-age=86400"),
 }
 
 def _is_aws_s3() -> bool:

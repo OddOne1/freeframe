@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 import uuid
 from datetime import datetime
 from typing import Optional
-from ..models.asset import AssetType, AssetStatus, ProcessingStatus, FileType
+from ..models.asset import AssetType, AssetStatus, ProcessingStatus, FileType, TranscriptionStatus
 from ..models.activity import NotificationType
 
 class MediaFileResponse(BaseModel):
@@ -21,6 +21,12 @@ class MediaFileResponse(BaseModel):
     fps: Optional[float]
     sequence_order: Optional[int]
     technical_metadata: Optional[dict] = None
+    # Speech-to-text stage -- independent of the version's processing_status,
+    # since transcription is still running (or already failed) long after the
+    # asset became playable. The transcript/captions content itself comes
+    # from GET /assets/{id}/transcript, not from here.
+    transcription_status: TranscriptionStatus = TranscriptionStatus.not_started
+    transcript_language: Optional[str] = None
     model_config = {"from_attributes": True}
 
 class AssetVersionResponse(BaseModel):
@@ -78,6 +84,27 @@ class StreamUrlResponse(BaseModel):
     url: str
     asset_type: AssetType
     expires_in: int = 3600
+
+class TranscriptSegment(BaseModel):
+    id: int
+    start: float
+    end: float
+    text: str
+
+class TranscriptResponse(BaseModel):
+    """Everything the transcript panel and the <track> element need in one
+    request: status, detected language, a proxy URL for captions.vtt, and
+    the parsed segments.
+
+    `segments` is only populated once transcription_status is `ready` --
+    while it is `processing` the panel shows its own "Transcribing…" state
+    off the status alone, and flips over on the SSE event.
+    """
+    transcription_status: TranscriptionStatus
+    language: Optional[str] = None
+    captions_url: Optional[str] = None
+    text: str = ""
+    segments: list[TranscriptSegment] = []
 
 class NotificationResponse(BaseModel):
     id: uuid.UUID

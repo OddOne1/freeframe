@@ -115,3 +115,21 @@ export function endOfDayISO(dateStr: string): string {
   d.setHours(23, 59, 59, 999)
   return d.toISOString()
 }
+
+/**
+ * Human-readable name for an ISO 639-1 code, as auto-detected by Whisper.
+ *
+ * Uses Intl.DisplayNames where available (covers every language Whisper can
+ * return, localized to the viewer) and falls back to the uppercased code
+ * itself — "PT" is still more useful than nothing if Intl is unavailable or
+ * the code is unrecognized.
+ */
+export function languageLabel(code: string | null | undefined): string {
+  if (!code) return 'Unknown'
+  try {
+    const dn = new Intl.DisplayNames(undefined, { type: 'language' })
+    return dn.of(code) || code.toUpperCase()
+  } catch {
+    return code.toUpperCase()
+  }
+}
