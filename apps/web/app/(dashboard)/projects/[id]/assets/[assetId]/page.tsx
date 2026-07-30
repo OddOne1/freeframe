@@ -469,6 +469,20 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     />
   ) : null
 
+  async function handlePlainDownload() {
+    if (!asset) return
+    try {
+      const data = await api.get<{ url: string }>(`/assets/${asset.id}/stream?download=true`)
+      if (data?.url) {
+        const iframe = document.createElement('iframe')
+        iframe.style.display = 'none'
+        iframe.src = data.url
+        document.body.appendChild(iframe)
+        setTimeout(() => iframe.remove(), 30000)
+      }
+    } catch {}
+  }
+
   async function handleGradedDownload() {
     if (!asset || !lut.selectedId || !currentVersion) return
     setExporting(true)
@@ -1117,42 +1131,54 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             </div>
           )}
           <ShareDialog assetId={asset.id} assetName={asset.name} projectId={projectId} asset={asset} />
-          <button
-            onClick={async () => {
-              try {
-                const data = await api.get<{ url: string }>(
-                  `/assets/${asset.id}/stream?download=true`,
-                )
-                if (data?.url) {
-                  const iframe = document.createElement('iframe')
-                  iframe.style.display = 'none'
-                  iframe.src = data.url
-                  document.body.appendChild(iframe)
-                  setTimeout(() => iframe.remove(), 30000)
-                }
-              } catch {}
-            }}
-            className="flex items-center justify-center h-8 w-8 rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
-            title="Download"
-          >
-            <Download className="h-4 w-4" />
-          </button>
-          {/* Graded download — separate from the plain Download above, and
-              only offered when a LUT is actually selected. Video only: the
-              export path is an ffmpeg encode. */}
-          {lut.supported && lut.selectedId && asset.asset_type === 'video' && (
+          {/* One button, not two: a plain click when there's nothing to grade,
+              a dropdown ("Download" / "Download with <LUT name>") the moment
+              a LUT is actually selected on this (video) asset. Video only —
+              the graded path is an ffmpeg encode. */}
+          {lut.supported && lut.selectedId && asset.asset_type === 'video' ? (
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger asChild>
+                <button
+                  type="button"
+                  disabled={exporting}
+                  className="flex items-center justify-center h-8 w-8 rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-60"
+                  title={exportError ?? 'Download'}
+                >
+                  {exporting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4" />
+                  )}
+                </button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  align="end"
+                  sideOffset={4}
+                  className="z-[100] w-56 rounded-lg border border-border bg-bg-elevated shadow-xl py-1"
+                >
+                  <DropdownMenu.Item
+                    onSelect={handlePlainDownload}
+                    className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
+                  >
+                    Download
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    onSelect={handleGradedDownload}
+                    className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
+                  >
+                    Download with {lut.luts.find((l) => l.id === lut.selectedId)?.name ?? 'LUT'}
+                  </DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
+          ) : (
             <button
-              onClick={handleGradedDownload}
-              disabled={exporting}
-              className="flex items-center gap-1.5 h-8 px-2 rounded-md text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-60"
-              title={exportError ?? 'Render and download this shot with the LUT burned in'}
+              onClick={handlePlainDownload}
+              className="flex items-center justify-center h-8 w-8 rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+              title="Download"
             >
-              {exporting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Download className="h-4 w-4" />
-              )}
-              <span>{exporting ? 'Preparing…' : 'With LUT'}</span>
+              <Download className="h-4 w-4" />
             </button>
           )}
           <button
