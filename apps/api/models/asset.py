@@ -115,10 +115,16 @@ class MediaFile(Base):
     sequence_order: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Codec/color/bitrate details from ffprobe — shape varies by file_type, so
     # JSONB rather than one column per possible field. See
-    # packages/transcoder for what gets written into it. Keys currently used:
-    # video_codec, video_bit_rate, visual_bit_depth, alpha_channel,
-    # color_space, dynamic_range, audio_codec, audio_bit_rate,
-    # audio_bit_depth, audio_channels, audio_sample_rate.
+    # packages/transcoder/base.py::parse_ffprobe_metadata for what gets
+    # written into it. Keys currently used: video_codec, video_bit_rate,
+    # visual_bit_depth, alpha_channel, color_space, dynamic_range,
+    # color_transfer, color_primaries, video_codec_profile, video_codec_level,
+    # field_order, display_aspect_ratio, timecode, rotation, camera_make,
+    # camera_model, creation_time, encoder, audio_codec, audio_bit_rate,
+    # audio_bit_depth, audio_channels, audio_sample_rate. (Camera make/model/
+    # timecode/etc. added 2026-07-30 — only populated when the source
+    # container actually carries these tags, which generic ffprobe parsing
+    # can't guarantee for proprietary raw formats like R3D/BRAW/ARRIRAW.)
     technical_metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     # Speech-to-text derivatives, written by tasks/transcribe_tasks.py long
     # after the transcode pipeline has already marked the version ready.

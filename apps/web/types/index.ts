@@ -207,6 +207,24 @@ export interface TechnicalMetadata {
   alpha_channel?: boolean;
   color_space?: string;
   dynamic_range?: string;
+  // Raw values behind the HDR/SDR bucket above -- a colorist wants to know
+  // it's specifically "smpte2084"/"bt2020", not just "HDR". Added 2026-07-30.
+  color_transfer?: string;
+  color_primaries?: string;
+  video_codec_profile?: string;
+  video_codec_level?: number;
+  field_order?: string;
+  display_aspect_ratio?: string;
+  timecode?: string;
+  rotation?: number;
+  // Only populated when the source container carries these tags (most
+  // reliable on QuickTime/MOV) -- not guaranteed for camera-native raw
+  // formats (R3D/BRAW/ARRIRAW), which generic ffprobe parsing often can't
+  // reach at all.
+  camera_make?: string;
+  camera_model?: string;
+  creation_time?: string;
+  encoder?: string;
   audio_codec?: string;
   audio_bit_rate?: number;
   audio_bit_depth?: number;

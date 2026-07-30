@@ -240,12 +240,34 @@ const TECHNICAL_METADATA_FIELDS: Array<{
   label: string
   format?: (v: any) => string
 }> = [
+  { key: 'camera_make', label: 'Camera make' },
+  { key: 'camera_model', label: 'Camera model' },
+  { key: 'timecode', label: 'Timecode' },
+  {
+    key: 'creation_time',
+    label: 'Recorded',
+    format: (v) => {
+      const d = new Date(v)
+      return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString()
+    },
+  },
   { key: 'video_codec', label: 'Video codec' },
+  { key: 'video_codec_profile', label: 'Codec profile' },
+  // Shown as ffprobe's raw integer, not converted to e.g. "4.1" -- the
+  // level-to-human-string scale differs by codec (H.264 vs HEVC vs AV1),
+  // and guessing wrong would show a plausible-looking but incorrect number.
+  { key: 'video_codec_level', label: 'Codec level' },
   { key: 'video_bit_rate', label: 'Video bitrate', format: (v) => formatBitrate(v) ?? String(v) },
   { key: 'visual_bit_depth', label: 'Bit depth', format: (v) => `${v}-bit` },
   { key: 'alpha_channel', label: 'Alpha channel', format: (v) => (v ? 'Yes' : 'No') },
   { key: 'color_space', label: 'Color space' },
+  { key: 'color_primaries', label: 'Color primaries' },
+  { key: 'color_transfer', label: 'Color transfer' },
   { key: 'dynamic_range', label: 'Dynamic range' },
+  { key: 'field_order', label: 'Field order' },
+  { key: 'display_aspect_ratio', label: 'Aspect ratio' },
+  { key: 'rotation', label: 'Rotation', format: (v) => `${v}°` },
+  { key: 'encoder', label: 'Encoder' },
   { key: 'audio_codec', label: 'Audio codec' },
   { key: 'audio_bit_rate', label: 'Audio bitrate', format: (v) => formatBitrate(v) ?? String(v) },
   { key: 'audio_bit_depth', label: 'Audio bit depth', format: (v) => `${v}-bit` },

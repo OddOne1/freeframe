@@ -37,9 +37,15 @@ def parse_ffprobe_metadata(probe_data: dict) -> dict:
     """Flatten an ffprobe JSON payload (from `-show_streams -show_format`)
     into a single dict covering both the plain MediaFile columns
     (width/height/duration_seconds/fps) and the Fields-tab technical_metadata
-    keys (video_codec, video_bit_rate, visual_bit_depth, alpha_channel,
-    color_space, dynamic_range, audio_codec, audio_bit_rate, audio_bit_depth,
-    audio_channels, audio_sample_rate).
+    keys: video_codec, video_bit_rate, visual_bit_depth, alpha_channel,
+    color_space, dynamic_range, color_transfer, color_primaries,
+    video_codec_profile, video_codec_level, field_order,
+    display_aspect_ratio, timecode, rotation, camera_make, camera_model,
+    creation_time, encoder, audio_codec, audio_bit_rate, audio_bit_depth,
+    audio_channels, audio_sample_rate. (Expanded 2026-07-30 — see CLAUDE.md's
+    "More technical metadata" note for what's still not captured here and
+    why: camera-native raw formats like R3D/BRAW/ARRIRAW carry much richer
+    metadata than generic ffprobe tag parsing can reach.)
 
     Fields are simply omitted when ffprobe doesn't report them — output shape
     varies a lot by container/codec, so this never raises on missing data.
@@ -99,6 +105,51 @@ def parse_ffprobe_metadata(probe_data: dict) -> dict:
             result["dynamic_range"] = "HDR"
         elif color_transfer and color_transfer not in ("unknown", "unspecified"):
             result["dynamic_range"] = "SDR"
+        # Raw color_transfer/color_primaries, distinct from the HDR/SDR bucket
+        # above -- a colorist wants to know it's specifically "smpte2084" or
+        # "bt2020", not just "HDR". ffprobe already returns these in the same
+        # probe call above; they just weren't being kept before.
+        if color_transfer and color_transfer not in ("unknown", "unspecified"):
+            result["color_transfer"] = color_transfer
+        color_primaries = video_stream.get("color_primaries")
+        if color_primaries and color_primaries not in ("unknown", "unspecified"):
+            result["color_primaries"] = color_primaries
+
+        profile = video_stream.get("profile")
+        if profile and profile not in ("unknown",):
+            result["video_codec_profile"] = profile
+        level = video_stream.get("level")
+        if level is not None and level != -99:  # ffprobe uses -99 for "not applicable"
+            result["video_codec_level"] = level
+
+        field_order = video_stream.get("field_order")
+        if field_order and field_order != "unknown":
+            result["field_order"] = field_order
+
+        dar = video_stream.get("display_aspect_ratio")
+        if dar and dar != "0:1":
+            result["display_aspect_ratio"] = dar
+
+        # Camera-originated files frequently carry make/model in stream or
+        # format tags -- most reliably on QuickTime/MOV/MP4 (com.apple.quicktime.*
+        # keys are a de facto standard many non-Apple cameras also write).
+        # Proprietary raw formats (R3D/BRAW/ARRIRAW/MXF) often carry much richer
+        # camera metadata (ISO, shutter, lens, white balance) that ffprobe's
+        # generic tag parsing typically can't reach at all -- that needs a
+        # dedicated tool like mediainfo/exiftool, not present in this image
+        # today, and is a bigger follow-up, not part of this change.
+        stream_tags = video_stream.get("tags", {}) or {}
+        timecode = stream_tags.get("timecode")
+        if timecode:
+            result["timecode"] = timecode
+        rotation = stream_tags.get("rotate")
+        if rotation:
+            try:
+                rotation_int = int(rotation)
+                if rotation_int:
+                    result["rotation"] = rotation_int
+            except (TypeError, ValueError):
+                pass
 
     if audio_stream:
         result["audio_codec"] = audio_stream.get("codec_name")
@@ -125,6 +176,25 @@ def parse_ffprobe_metadata(probe_data: dict) -> dict:
                     result["audio_bit_depth"] = bits_int
             except (TypeError, ValueError):
                 pass
+
+    # Format-level tags -- camera make/model most reliably found here on
+    # QuickTime-family containers (com.apple.quicktime.* keys), with a plain
+    # "make"/"model" fallback some non-Apple muxers use instead. Same
+    # per-format caveat as the stream-level tags above: proprietary raw
+    # formats often don't populate any of this via generic ffprobe.
+    fmt_tags = fmt.get("tags", {}) or {}
+    camera_make = fmt_tags.get("com.apple.quicktime.make") or fmt_tags.get("make")
+    if camera_make:
+        result["camera_make"] = camera_make
+    camera_model = fmt_tags.get("com.apple.quicktime.model") or fmt_tags.get("model")
+    if camera_model:
+        result["camera_model"] = camera_model
+    creation_time = fmt_tags.get("creation_time")
+    if creation_time:
+        result["creation_time"] = creation_time
+    encoder = fmt_tags.get("encoder") or fmt_tags.get("com.apple.quicktime.software")
+    if encoder:
+        result["encoder"] = encoder
 
     return result
 
