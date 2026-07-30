@@ -1167,7 +1167,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                     onSelect={handleGradedDownload}
                     className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
                   >
-                    Download with {lut.luts.find((l) => l.id === lut.selectedId)?.name ?? 'LUT'}
+                    Download with currently displayed LUT
                   </DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
