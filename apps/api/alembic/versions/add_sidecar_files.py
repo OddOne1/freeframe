@@ -16,8 +16,15 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Don't call sidecartype.create() here -- op.create_table() below already
+    # creates the enum type as a side effect of the enum column (via
+    # SQLAlchemy's Enum.create_type, on by default). Creating it explicitly
+    # first and then reusing the same object in the column caused
+    # `CREATE TYPE sidecartype` to run twice in one transaction and fail with
+    # "type already exists" on every attempt, regardless of starting DB
+    # state -- confirmed 2026-07-30 after it failed identically even
+    # immediately following a clean DROP TYPE.
     sidecartype = sa.Enum('cdl', 'ale', 'camera_xml', name='sidecartype')
-    sidecartype.create(op.get_bind())
 
     op.create_table(
         'sidecar_files',
