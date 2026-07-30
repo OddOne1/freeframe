@@ -653,3 +653,48 @@ export interface LutExportResponse {
   version_id: string
   lut_id: string
 }
+
+// ─── Email / SMTP settings (superadmin-only) ─────────────────────────────────
+
+/** Mirrors EmailSettingsResponse in apps/api/schemas/email_settings.py.
+ *  Note there are no password fields — secrets are reported only as
+ *  `*_set` booleans and never sent to the client. */
+export interface EmailSettingsResponse {
+  mail_provider: string | null
+  mail_from_address: string | null
+  mail_from_name: string | null
+  aws_mail_access_key_id: string | null
+  aws_mail_secret_access_key_set: boolean
+  aws_mail_region: string | null
+  smtp_host: string | null
+  smtp_port: number | null
+  smtp_user: string | null
+  smtp_password_set: boolean
+  smtp_use_tls: boolean | null
+  /** What's actually in effect once DB-over-env precedence is applied. */
+  effective_provider: string | null
+  effective_from_address: string | null
+  effective_smtp_host: string | null
+  using_env_fallback: boolean
+}
+
+export interface EmailSettingsUpdate {
+  mail_provider?: string | null
+  mail_from_address?: string | null
+  mail_from_name?: string | null
+  aws_mail_access_key_id?: string | null
+  aws_mail_secret_access_key?: string
+  aws_mail_region?: string | null
+  smtp_host?: string | null
+  smtp_port?: number | null
+  smtp_user?: string | null
+  smtp_password?: string
+  smtp_use_tls?: boolean | null
+  smtp_password_clear?: boolean
+  aws_mail_secret_access_key_clear?: boolean
+}
+
+export interface TestEmailResponse {
+  success: boolean
+  detail: string
+}

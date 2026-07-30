@@ -11,3 +11,4 @@ from .activity import Mention, ActivityLog, Notification
 from .vote import Vote
 from .site_settings import SiteSettings
 from .lut import Lut, ProjectLutShare
+from .email_settings import EmailSettings

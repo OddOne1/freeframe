@@ -5,6 +5,7 @@ from typing import Optional
 import boto3
 from botocore.exceptions import ClientError
 from ..config import settings
+from .email_config import load_mail_config
 
 
 def email_logo_url() -> Optional[str]:
@@ -68,17 +69,30 @@ class EmailService:
     """
     
     def __init__(self):
-        self.provider = settings.mail_provider
-        self.from_address = settings.mail_from_address
-        self.from_name = settings.mail_from_name
-    
+        # Resolved per instance from the DB singleton, falling back to env
+        # vars field-by-field (services/email_config.py). Note the module
+        # still exports a long-lived `email_service` singleton at the bottom
+        # of this file -- that one caches whatever config existed when the
+        # process started, which is why `refresh()` exists and why the
+        # settings-test endpoint constructs its own EmailService.
+        self.config = load_mail_config()
+        self.provider = self.config.provider
+        self.from_address = self.config.from_address
+        self.from_name = self.config.from_name
+
+    def refresh(self) -> None:
+        """Re-read configuration. Called after an admin saves new settings
+        so a running worker doesn't keep using stale credentials until it
+        restarts."""
+        self.__init__()
+
     def _get_ses_client(self):
         """Create AWS SES client."""
         return boto3.client(
             "ses",
-            aws_access_key_id=settings.aws_mail_access_key_id,
-            aws_secret_access_key=settings.aws_mail_secret_access_key,
-            region_name=settings.aws_mail_region,
+            aws_access_key_id=self.config.aws_access_key_id,
+            aws_secret_access_key=self.config.aws_secret_access_key,
+            region_name=self.config.aws_region,
         )
     
     def _send_via_ses(
@@ -89,7 +103,7 @@ class EmailService:
         text_body: Optional[str] = None,
     ) -> bool:
         """Send email via AWS SES."""
-        if not settings.aws_mail_access_key_id or not settings.aws_mail_secret_access_key:
+        if not self.config.aws_access_key_id or not self.config.aws_secret_access_key:
             raise ValueError("AWS SES credentials not configured")
         
         ses = self._get_ses_client()
@@ -120,7 +134,7 @@ class EmailService:
         text_body: Optional[str] = None,
     ) -> bool:
         """Send email via SMTP server."""
-        if not settings.smtp_host:
+        if not self.config.smtp_host:
             raise ValueError("SMTP host not configured")
         
         msg = MIMEMultipart("alternative")
@@ -133,14 +147,14 @@ class EmailService:
         msg.attach(MIMEText(html_body, "html"))
         
         try:
-            if settings.smtp_use_tls:
-                server = smtplib.SMTP(settings.smtp_host, settings.smtp_port)
+            if self.config.smtp_use_tls:
+                server = smtplib.SMTP(self.config.smtp_host, self.config.smtp_port)
                 server.starttls()
             else:
-                server = smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port)
-            
-            if settings.smtp_user and settings.smtp_password:
-                server.login(settings.smtp_user, settings.smtp_password)
+                server = smtplib.SMTP_SSL(self.config.smtp_host, self.config.smtp_port)
+
+            if self.config.smtp_user and self.config.smtp_password:
+                server.login(self.config.smtp_user, self.config.smtp_password)
             
             server.sendmail(self.from_address, [to_email], msg.as_string())
             server.quit()

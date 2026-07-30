@@ -35,10 +35,18 @@ def render_template(template_name: str, **context) -> str:
 
 
 def _send_email(to_email: str, subject: str, html_body: str, text_body: Optional[str] = None) -> bool:
-    """Send email using the email service."""
+    """Send email using the email service.
+
+    Constructs a fresh EmailService per send rather than using the module
+    singleton: mail settings are now admin-editable at runtime, and a
+    long-lived worker holding config resolved at import time would keep
+    using stale credentials until the next deploy. The extra cost is one
+    small indexed read against a single-row table, against an SMTP/SES
+    round trip.
+    """
     # Import here to avoid circular imports
-    from ..services.email_service import email_service
-    return email_service.send_email(to_email, subject, html_body, text_body)
+    from ..services.email_service import EmailService
+    return EmailService().send_email(to_email, subject, html_body, text_body)
 
 
 # ============================================================================
