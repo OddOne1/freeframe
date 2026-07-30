@@ -6,6 +6,10 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     imagemagick \
     curl \
+    # EXIF-class metadata (packages/transcoder/base.py::parse_exiftool_metadata).
+    # Unlike ffprobe it cannot read a presigned URL, so the transcoder now
+    # downloads the source into its existing work dir to run this.
+    libimage-exiftool-perl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install API dependencies

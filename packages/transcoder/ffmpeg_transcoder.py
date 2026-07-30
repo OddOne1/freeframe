@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Callable, Optional
 import boto3
 from botocore.config import Config
-from .base import BaseTranscoder, TranscodeJob, TranscodeResult, VideoMetadata, parse_ffprobe_metadata
+from .base import (
+    BaseTranscoder, TranscodeJob, TranscodeResult, VideoMetadata,
+    parse_ffprobe_metadata, probe_exiftool, merge_exiftool_metadata,
+)
 
 
 class FFmpegTranscoder(BaseTranscoder):
@@ -143,6 +146,31 @@ class FFmpegTranscoder(BaseTranscoder):
                     probed = parse_ffprobe_metadata(json.loads(probe_result.stdout))
                 except (json.JSONDecodeError, KeyError):
                     probed = {}
+
+            # EXIF pass. This is the only step in the whole pipeline that
+            # needs the source on local disk -- exiftool cannot read the
+            # presigned URL everything else streams from -- so the file is
+            # pulled down, read, and deleted again immediately rather than
+            # being kept for the duration of the transcode. On multi-GB
+            # camera originals that download is a real added cost; it buys
+            # EXIF/camera data that ffprobe's tag parsing cannot reach.
+            # Wrapped so a download or exiftool failure degrades to
+            # ffprobe-only metadata instead of failing the transcode.
+            exif_path = work_dir / f"exifsrc_{job.version_id}"
+            try:
+                self.s3.download_file(self.bucket, job.input_s3_key, str(exif_path))
+                probed = merge_exiftool_metadata(probed, probe_exiftool(str(exif_path)))
+            except Exception:
+                pass
+            finally:
+                # work_dir is rmtree'd in the outer finally regardless; this
+                # just avoids holding a second full-size copy on disk for the
+                # entire encode.
+                try:
+                    if exif_path.exists():
+                        exif_path.unlink()
+                except OSError:
+                    pass
 
             # 3. Build quality ladder based on available qualities
             QUALITY_MAP = {

@@ -12,3 +12,4 @@ from .vote import Vote
 from .site_settings import SiteSettings
 from .lut import Lut, ProjectLutShare
 from .email_settings import EmailSettings
+from .sidecar import SidecarFile, SidecarType

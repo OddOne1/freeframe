@@ -230,6 +230,46 @@ export interface TechnicalMetadata {
   audio_bit_depth?: number;
   audio_channels?: number;
   audio_sample_rate?: number;
+
+  // ── EXIF pass (exiftool) ──
+  // Captured by packages/transcoder/base.py::parse_exiftool_metadata.
+  // The five *_hidden-by-omission fields below (ycbcr_positioning,
+  // components_configuration, exif_version, interoperability_index,
+  // interoperability_version) plus GPS are stored but deliberately left out
+  // of TECHNICAL_METADATA_FIELDS, so they are typed here but never rendered.
+  software?: string;
+  exif_orientation?: string;
+  date_time?: string;
+  date_time_original?: string;
+  date_time_digitized?: string;
+  ycbcr_positioning?: string;
+  compression?: string;
+  x_resolution?: number | string;
+  y_resolution?: number | string;
+  resolution_unit?: string;
+  exposure_time?: string | number;
+  f_number?: number | string;
+  exposure_program?: string;
+  exif_version?: string;
+  components_configuration?: string;
+  compressed_bits_per_pixel?: number | string;
+  exposure_bias?: number | string;
+  max_aperture_value?: number | string;
+  metering_mode?: string;
+  flash?: string;
+  focal_length?: string | number;
+  flashpix_version?: string;
+  exif_color_space?: string;
+  file_source?: string;
+  interoperability_index?: string;
+  interoperability_version?: string;
+  gps_latitude?: string | number;
+  gps_longitude?: string | number;
+  gps_altitude?: string | number;
+  // Manufacturer-decoded MakerNote tags arrive under snake_cased names that
+  // vary by camera (white_balance, lens_model, iso, af_points_in_focus...).
+  // They are stored and typed loosely; only whitelisted keys render.
+  [key: string]: unknown;
 }
 
 export interface MediaFile {
@@ -715,4 +755,20 @@ export interface EmailSettingsUpdate {
 export interface TestEmailResponse {
   success: boolean
   detail: string
+}
+
+// ─── Sidecar files ────────────────────────────────────────────────────────────
+
+export type SidecarType = 'cdl' | 'ale' | 'camera_xml'
+
+/** Mirrors SidecarResponse in apps/api/schemas/sidecar.py. `parsed_metadata`
+ *  shape varies by type: CDL gives { color_corrections: [...] }, ALE gives
+ *  heading/columns/clips, camera XML gives a flat dotted-path dict. */
+export interface SidecarFile {
+  id: string
+  asset_id: string
+  sidecar_type: SidecarType
+  original_filename: string
+  parsed_metadata: Record<string, unknown>
+  created_at: string
 }

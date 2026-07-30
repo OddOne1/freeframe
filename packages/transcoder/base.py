@@ -1,4 +1,7 @@
+import json
+import logging
 import re
+import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -197,6 +200,224 @@ def parse_ffprobe_metadata(probe_data: dict) -> dict:
         result["encoder"] = encoder
 
     return result
+
+
+# exiftool tags whose value is present but meaningless. exiftool returns a
+# key with an empty or placeholder value for a tag it recognizes but has no
+# real data for, rather than omitting the key -- storing those would render
+# a blank row in the Fields tab, since the frontend whitelist filter only
+# drops undefined/null.
+_EXIFTOOL_EMPTY_VALUES = {"", "-", "n/a", "none", "undef", "unknown", "(none)"}
+
+# EXIF tag name -> technical_metadata key. Ordering within a value tuple is
+# preference order: the first tag exiftool actually reports wins.
+_EXIFTOOL_FIELD_MAP: list[tuple[str, tuple[str, ...]]] = [
+    # camera_make/camera_model/software deliberately OVERRIDE the ffprobe
+    # values (see _merge below): exiftool reads these across far more
+    # container and image types than the QuickTime-only tags ffprobe reaches.
+    ("camera_make", ("Make",)),
+    ("camera_model", ("Model",)),
+    ("software", ("Software",)),
+    # EXIF Orientation is an 8-value enum ("Horizontal (normal)",
+    # "Rotate 90 CW", ...), NOT a degree value -- deliberately a separate key
+    # from the video-world `rotation` degrees ffprobe fills.
+    ("exif_orientation", ("Orientation",)),
+    # Three genuinely distinct timestamps; not collapsed into creation_time.
+    ("date_time", ("ModifyDate", "DateTime")),
+    ("date_time_original", ("DateTimeOriginal",)),
+    ("date_time_digitized", ("CreateDate", "DateTimeDigitized")),
+    ("ycbcr_positioning", ("YCbCrPositioning",)),
+    ("compression", ("Compression",)),
+    ("x_resolution", ("XResolution",)),
+    ("y_resolution", ("YResolution",)),
+    ("resolution_unit", ("ResolutionUnit",)),
+    ("exposure_time", ("ExposureTime", "ShutterSpeedValue")),
+    ("f_number", ("FNumber", "ApertureValue")),
+    ("exposure_program", ("ExposureProgram",)),
+    ("exif_version", ("ExifVersion",)),
+    ("components_configuration", ("ComponentsConfiguration",)),
+    ("compressed_bits_per_pixel", ("CompressedBitsPerPixel",)),
+    ("exposure_bias", ("ExposureCompensation", "ExposureBiasValue")),
+    ("max_aperture_value", ("MaxApertureValue",)),
+    ("metering_mode", ("MeteringMode",)),
+    ("flash", ("Flash",)),
+    ("focal_length", ("FocalLength",)),
+    ("flashpix_version", ("FlashpixVersion",)),
+    # EXIF ColorSpace means sRGB/Uncalibrated -- a different concept from the
+    # video YUV/Rec.709 `color_space` ffprobe fills, hence its own key.
+    ("exif_color_space", ("ColorSpace",)),
+    ("file_source", ("FileSource",)),
+    ("interoperability_index", ("InteroperabilityIndex",)),
+    ("interoperability_version", ("InteroperabilityVersion",)),
+    # Captured but deliberately absent from the frontend whitelist -- see
+    # CLAUDE.md: stored, never lost, not shown by default.
+    ("gps_latitude", ("GPSLatitude",)),
+    ("gps_longitude", ("GPSLongitude",)),
+    ("gps_altitude", ("GPSAltitude",)),
+]
+
+# Tags exiftool always emits that describe the file rather than the shot, or
+# that duplicate data already captured from ffprobe. Skipped when harvesting
+# manufacturer-decoded MakerNote tags below.
+_EXIFTOOL_STRUCTURAL_TAGS = {
+    "SourceFile", "ExifToolVersion", "FileName", "Directory", "FileSize",
+    "FileModifyDate", "FileAccessDate", "FileInodeChangeDate", "FilePermissions",
+    "FileType", "FileTypeExtension", "MIMEType", "ImageWidth", "ImageHeight",
+    "ImageSize", "Megapixels", "EncodingProcess", "BitsPerSample",
+    "ColorComponents", "YCbCrSubSampling", "Duration", "VideoFrameRate",
+    "AvgBitrate", "ExifByteOrder", "Warning",
+}
+
+
+def _exiftool_value(raw):
+    """Normalize one exiftool value, or None if it carries no real data."""
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return raw
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (list, dict)):
+        # Structured values (rare outside MakerNote groups) are stringified
+        # rather than dropped -- better a readable row than a lost field.
+        text = str(raw).strip()
+        return text or None
+    text = str(raw).strip()
+    if not text or text.lower() in _EXIFTOOL_EMPTY_VALUES:
+        return None
+    # "(Binary data 432 bytes, use -b option to extract)" and friends: a
+    # placeholder standing in for a blob, not a value worth storing.
+    if text.startswith("(Binary data") or "use -b option" in text:
+        return None
+    return text
+
+
+def probe_exiftool(path: str) -> dict:
+    """Run `exiftool -j` against a LOCAL file and return parsed metadata.
+
+    Local path, not a URL -- this is the one tool in the pipeline that
+    cannot read from a presigned URL, which is why callers now download the
+    source first. Returns {} on any failure: metadata extraction is
+    best-effort and must never block processing (or fail an upload) just
+    because exiftool is missing or choked on an exotic format.
+    """
+    try:
+        # -n keeps numeric tags numeric where sensible; -api largefilesupport
+        # matters for the multi-GB camera originals this app accepts.
+        proc = subprocess.run(
+            ["exiftool", "-j", "-api", "largefilesupport=1", path],
+            capture_output=True, text=True, timeout=180,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            return {}
+        payload = json.loads(proc.stdout)
+        if not isinstance(payload, list) or not payload:
+            return {}
+        return parse_exiftool_metadata(payload[0])
+    except FileNotFoundError:
+        logging.getLogger(__name__).warning(
+            "exiftool not installed — skipping EXIF pass. "
+            "Add libimage-exiftool-perl to the image."
+        )
+        return {}
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError, ValueError):
+        return {}
+
+
+def parse_exiftool_metadata(exiftool_json: dict) -> dict:
+    """Flatten one `exiftool -j <path>` record into technical_metadata keys.
+
+    Complements parse_ffprobe_metadata rather than replacing it: exiftool
+    reaches EXIF-class data (exposure, aperture, GPS, orientation, the three
+    distinct EXIF timestamps) that ffprobe's generic tag parsing does not,
+    across images as well as video.
+
+    Two rules that matter more than the field list:
+
+    - **Empty and placeholder values are skipped entirely**, not stored.
+      exiftool returns a key with "" or "-" for a tag it recognizes but has
+      no value for; storing that renders a blank row, because the frontend
+      whitelist only filters undefined/null.
+    - **Raw `MakerNote` is never stored** -- it is an undecoded proprietary
+      binary blob, pure bloat with no display value. Manufacturer-decoded
+      tags that exiftool *does* understand (white balance, AF points,
+      picture style, lens data, and so on, varying by camera) are kept under
+      their own snake_cased names, since those are real, readable metadata.
+
+    Never raises: exiftool's output shape varies enormously by file type.
+    """
+    if not exiftool_json:
+        return {}
+
+    result: dict = {}
+
+    for key, candidates in _EXIFTOOL_FIELD_MAP:
+        for tag in candidates:
+            value = _exiftool_value(exiftool_json.get(tag))
+            if value is not None:
+                result[key] = value
+                break
+
+    # Manufacturer-decoded MakerNote tags. exiftool surfaces these as ordinary
+    # named tags (it only leaves "MakerNote" itself as an opaque blob when it
+    # has no decoder), so anything left over that isn't structural, isn't
+    # already mapped above, and isn't the raw blob is worth keeping.
+    mapped_tags = {tag for _, candidates in _EXIFTOOL_FIELD_MAP for tag in candidates}
+    for tag, raw in exiftool_json.items():
+        if tag in mapped_tags or tag in _EXIFTOOL_STRUCTURAL_TAGS:
+            continue
+        # The raw undecoded blob, and the GPS composites that duplicate the
+        # individual keys already captured above.
+        if tag == "MakerNote" or tag.startswith("MakerNote"):
+            continue
+        if tag.startswith("GPS") and tag not in ("GPSLatitude", "GPSLongitude", "GPSAltitude"):
+            continue
+        value = _exiftool_value(raw)
+        if value is None:
+            continue
+        result.setdefault(_snake_case_tag(tag), value)
+
+    return result
+
+
+def _snake_case_tag(tag: str) -> str:
+    """"WhiteBalance" -> "white_balance"; "AFPointsUsed" -> "af_points_used"."""
+    out = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", tag)
+    out = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", out)
+    return re.sub(r"[^a-zA-Z0-9]+", "_", out).strip("_").lower()
+
+
+def merge_exiftool_metadata(ffprobe_result: dict, exif_result: dict) -> dict:
+    """Merge exiftool output over ffprobe output.
+
+    exiftool wins for camera_make/camera_model/software because it reads
+    them from far more formats than ffprobe's QuickTime-tag path. Everything
+    else only fills gaps -- ffprobe stays authoritative for codec/stream
+    facts, which exiftool reports less precisely.
+    """
+    merged = dict(ffprobe_result or {})
+    if not exif_result:
+        return merged
+
+    for key in ("camera_make", "camera_model"):
+        if exif_result.get(key):
+            merged[key] = exif_result[key]
+    # `software` is exiftool's equivalent of ffprobe's QuickTime-only
+    # `encoder`; keep it under its own key and let it also override encoder
+    # when ffprobe found nothing.
+    if exif_result.get("software"):
+        merged["software"] = exif_result["software"]
+        merged.setdefault("encoder", exif_result["software"])
+
+    for key, value in exif_result.items():
+        merged.setdefault(key, value)
+
+    # For image assets, "when was this actually shot" is DateTimeOriginal --
+    # a more meaningful creation_time than any container mtime ffprobe saw.
+    if exif_result.get("date_time_original"):
+        merged["creation_time"] = merged.get("creation_time") or exif_result["date_time_original"]
+
+    return merged
 
 
 class BaseTranscoder(ABC):

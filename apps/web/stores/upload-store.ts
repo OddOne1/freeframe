@@ -240,6 +240,45 @@ function startSpeedSampler(
   }, SPEED_SAMPLE_INTERVAL_MS)
 }
 
+/** Extensions that identify a sidecar rather than a new asset.
+ *  Kept in sync with SIDECAR_EXTENSIONS in
+ *  apps/api/services/sidecar_parsers.py. */
+const SIDECAR_EXTENSION_RE = /\.(cdl|cc|ccc|ale|xml)$/i
+
+export function isSidecarFile(file: File): boolean {
+  return SIDECAR_EXTENSION_RE.test(file.name)
+}
+
+/**
+ * Upload sidecars to the filename-matching endpoint instead of creating an
+ * asset for them. Returns per-file results so the caller can report the
+ * no-match case, which is a real outcome (the clip may simply not be
+ * uploaded yet) rather than an error to swallow.
+ */
+export async function uploadSidecars(
+  files: File[],
+  projectId: string,
+): Promise<Array<{ file: string; ok: boolean; detail: string }>> {
+  const results: Array<{ file: string; ok: boolean; detail: string }> = []
+  for (const file of files) {
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      await api.upload(`/projects/${projectId}/sidecars/match`, form)
+      results.push({ file: file.name, ok: true, detail: 'Attached' })
+    } catch (err: unknown) {
+      const detail =
+        err && typeof err === 'object' && 'detail' in err
+          ? String((err as { detail: unknown }).detail)
+          : err instanceof Error
+            ? err.message
+            : 'Could not attach sidecar'
+      results.push({ file: file.name, ok: false, detail })
+    }
+  }
+  return results
+}
+
 function isMediaFile(file: File): boolean {
   return (
     file.type.startsWith('video/') ||

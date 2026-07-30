@@ -34,7 +34,7 @@ import { Avatar } from "@/components/shared/avatar";
 import { AssetGrid } from "@/components/projects/asset-grid";
 import { CommentPanel } from "@/components/review/comment-panel";
 import { UploadZone } from "@/components/upload/upload-zone";
-import { useUploadStore } from "@/stores/upload-store";
+import { useUploadStore, isSidecarFile, uploadSidecars } from "@/stores/upload-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useViewStore } from "@/stores/view-store";
 import { useBreadcrumbStore } from "@/stores/breadcrumb-store";
@@ -389,19 +389,42 @@ export default function ProjectDetailPage() {
     }
   }, [uploadFiles, mutateAssets, mutateSubfolders, projectId]);
 
+  const [sidecarResults, setSidecarResults] = React.useState<
+    Array<{ file: string; ok: boolean; detail: string }> | null
+  >(null);
+
   const handleFilesSelected = (files: File[]) => {
     setPendingFiles(files);
     if (files.length > 0) setAssetName(files[0].name.replace(/\.[^/.]+$/, ""));
   };
 
   const handleStartUpload = () => {
-    pendingFiles.forEach((file) => {
-      const name =
-        pendingFiles.length === 1 ? assetName || file.name : file.name;
+    // Sidecars (.cdl/.cc/.ccc/.ale/.xml) are split out before anything is
+    // uploaded as an asset: dropping a folder of clips alongside their CDLs
+    // should attach them, not create a batch of unplayable "assets".
+    const sidecars = pendingFiles.filter(isSidecarFile);
+    const media = pendingFiles.filter((f) => !isSidecarFile(f));
+
+    media.forEach((file) => {
+      const name = media.length === 1 ? assetName || file.name : file.name;
       // Note: startUpload does not yet accept folderId — assets will upload to root.
       // Upload store needs to be updated in a future task to support folder placement.
       startUpload(file, projectId, name, project?.name, currentFolderId);
     });
+
+    if (sidecars.length > 0) {
+      // Deliberately after the media loop: a clip and its sidecar dropped
+      // together still won't match on this pass, because the asset row does
+      // not exist until its upload completes. The failure is reported
+      // plainly so the user can re-drop the sidecar, per the spec's
+      // no-match rule -- no silent discard, no holding state.
+      void uploadSidecars(sidecars, projectId).then((results) => {
+        const failed = results.filter((r) => !r.ok);
+        setSidecarResults(failed.length > 0 ? failed : null);
+        if (results.some((r) => r.ok)) void mutateAssets();
+      });
+    }
+
     setPendingFiles([]);
     setAssetName("");
     setUploadOpen(false);
@@ -989,6 +1012,41 @@ export default function ProjectDetailPage() {
               }
             />
           )}
+
+          {/* Sidecars that matched no clip. Reported rather than swallowed:
+              the usual cause is that the footage hasn't finished uploading
+              yet, and the fix is simply to re-drop the sidecar. */}
+          <Dialog.Root
+            open={sidecarResults !== null}
+            onOpenChange={(open) => !open && setSidecarResults(null)}
+          >
+            <Dialog.Portal>
+              <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm" />
+              <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary p-6 shadow-xl">
+                <Dialog.Title className="text-sm font-semibold text-text-primary">
+                  Some sidecars weren&apos;t attached
+                </Dialog.Title>
+                <Dialog.Description className="mt-1 text-xs text-text-secondary">
+                  Each sidecar is matched to a clip by filename. If the clip is
+                  still uploading, attach the sidecar again once it finishes —
+                  or use &ldquo;Attach sidecar&rdquo; on the clip itself.
+                </Dialog.Description>
+                <ul className="mt-3 space-y-1.5 max-h-56 overflow-y-auto">
+                  {(sidecarResults ?? []).map((r) => (
+                    <li key={r.file} className="text-xs">
+                      <span className="text-text-primary">{r.file}</span>
+                      <span className="text-text-tertiary"> — {r.detail}</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-4 flex justify-end">
+                  <Button size="sm" variant="secondary" onClick={() => setSidecarResults(null)}>
+                    Close
+                  </Button>
+                </div>
+              </Dialog.Content>
+            </Dialog.Portal>
+          </Dialog.Root>
 
           {/* Upload dialog */}
           <Dialog.Root open={uploadOpen} onOpenChange={setUploadOpen}>

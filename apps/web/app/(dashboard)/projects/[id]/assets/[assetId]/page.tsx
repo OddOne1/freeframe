@@ -17,6 +17,7 @@ import { CommentPanel } from '@/components/review/comment-panel'
 import { CommentInput } from '@/components/review/comment-input'
 import { TranscriptPanel } from '@/components/review/transcript-panel'
 import { LutPicker } from '@/components/review/lut-picker'
+import { SidecarMetadata } from '@/components/review/sidecar-metadata'
 import { CustomFieldInput } from '@/components/projects/asset-metadata'
 // ApprovalBar removed for now
 import { VersionSwitcher } from '@/components/review/version-switcher'
@@ -273,7 +274,63 @@ const TECHNICAL_METADATA_FIELDS: Array<{
   { key: 'audio_bit_depth', label: 'Audio bit depth', format: (v) => `${v}-bit` },
   { key: 'audio_channels', label: 'Audio channels' },
   { key: 'audio_sample_rate', label: 'Audio sample rate', format: (v) => formatSampleRate(v) ?? String(v) },
+
+  // ── EXIF pass (exiftool, 2026-07-30) ──
+  // Everything captured by parse_exiftool_metadata is visible EXCEPT five
+  // fields, per the user's final decision: ycbcr_positioning,
+  // components_configuration, exif_version, interoperability_index and
+  // interoperability_version. Those are stored but deliberately absent from
+  // this array -- same hide-but-don't-lose mechanism as GPS
+  // (gps_latitude/gps_longitude/gps_altitude, also intentionally missing
+  // here). An earlier draft of the spec proposed hiding compression, the
+  // resolution fields, compressed_bits_per_pixel, flashpix_version and
+  // file_source too; the user explicitly overruled that, so they are listed.
+  { key: 'software', label: 'Software' },
+  { key: 'exif_orientation', label: 'Orientation' },
+  {
+    key: 'date_time_original',
+    label: 'Shot',
+    format: (v) => formatExifDate(v),
+  },
+  {
+    key: 'date_time_digitized',
+    label: 'Digitized',
+    format: (v) => formatExifDate(v),
+  },
+  {
+    key: 'date_time',
+    label: 'Modified',
+    format: (v) => formatExifDate(v),
+  },
+  { key: 'exposure_time', label: 'Shutter speed', format: (v) => (String(v).includes('/') ? `${v} s` : `${v} s`) },
+  { key: 'f_number', label: 'Aperture', format: (v) => `f/${v}` },
+  { key: 'focal_length', label: 'Focal length' },
+  { key: 'exposure_program', label: 'Exposure program' },
+  { key: 'exposure_bias', label: 'Exposure bias' },
+  { key: 'max_aperture_value', label: 'Max aperture', format: (v) => `f/${v}` },
+  { key: 'metering_mode', label: 'Metering mode' },
+  { key: 'flash', label: 'Flash' },
+  { key: 'exif_color_space', label: 'EXIF color space' },
+  { key: 'compression', label: 'Compression' },
+  { key: 'x_resolution', label: 'X resolution' },
+  { key: 'y_resolution', label: 'Y resolution' },
+  { key: 'resolution_unit', label: 'Resolution unit' },
+  { key: 'compressed_bits_per_pixel', label: 'Compressed bits/pixel' },
+  { key: 'flashpix_version', label: 'FlashPix version' },
+  { key: 'file_source', label: 'File source' },
 ]
+
+/** EXIF timestamps are "YYYY:MM:DD HH:MM:SS", which Date() will not parse.
+ *  Falls back to the raw string rather than showing "Invalid Date". */
+function formatExifDate(v: unknown): string {
+  const raw = String(v)
+  const normalized = raw.replace(
+    /^(\d{4}):(\d{2}):(\d{2})/,
+    (_m, y, mo, d) => `${y}-${mo}-${d}`,
+  )
+  const d = new Date(normalized)
+  return Number.isNaN(d.getTime()) ? raw : d.toLocaleString()
+}
 
 function TechnicalMetadataList({ metadata }: { metadata: TechnicalMetadata }) {
   const rows = TECHNICAL_METADATA_FIELDS
@@ -1477,6 +1534,16 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                           {showAllFields && <TechnicalMetadataList metadata={primaryFile.technical_metadata} />}
                         </div>
                       )}
+
+                    {/* Sidecar-derived metadata. Kept visually separate from
+                        the block above: that is derived from the file itself,
+                        this is user-supplied. */}
+                    {asset && (
+                      <SidecarMetadata
+                        assetId={asset.id}
+                        canEdit={canEditStatus || currentRole === 'admin'}
+                      />
+                    )}
 
                     {/* Custom project-defined fields */}
                     {metadataFields && metadataFields.length > 0 && (

@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .base import parse_ffprobe_metadata
+from .base import parse_ffprobe_metadata, probe_exiftool, merge_exiftool_metadata
 
 
 def _probe_local_file(path: str) -> dict:
@@ -25,6 +25,15 @@ def _probe_local_file(path: str) -> dict:
         return {}
 
 
+def _probe_local_file_full(path: str) -> dict:
+    """ffprobe + exiftool against the same local file, merged.
+
+    Images and audio already download the source (unlike the video path), so
+    the EXIF pass costs nothing extra here beyond exiftool's own runtime.
+    """
+    return merge_exiftool_metadata(_probe_local_file(path), probe_exiftool(path))
+
+
 def process_image(s3_client, bucket: str, input_s3_key: str, output_prefix: str) -> dict:
     """Convert image to WebP + generate thumbnail. Returns dict of S3 keys
     plus width/height/technical_metadata probed from the original file."""
@@ -35,7 +44,7 @@ def process_image(s3_client, bucket: str, input_s3_key: str, output_prefix: str)
     try:
         s3_client.download_file(bucket, input_s3_key, tmp_input)
 
-        probed = _probe_local_file(tmp_input)
+        probed = _probe_local_file_full(tmp_input)
         result["width"] = probed.pop("width", None)
         result["height"] = probed.pop("height", None)
         probed.pop("duration_seconds", None)
@@ -78,7 +87,7 @@ def process_audio(s3_client, bucket: str, input_s3_key: str, output_prefix: str)
     try:
         s3_client.download_file(bucket, input_s3_key, tmp_input)
 
-        probed = _probe_local_file(tmp_input)
+        probed = _probe_local_file_full(tmp_input)
         result["duration_seconds"] = probed.pop("duration_seconds", None)
         probed.pop("width", None)
         probed.pop("height", None)
