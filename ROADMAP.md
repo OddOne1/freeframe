@@ -8,11 +8,22 @@ Last updated: 2026-07-31.
 
 **Phase 1 — capture, upload, verify.** A native app that ingests footage from a card or drive, uploads it to FreeFrame, and verifies the upload against the source (a real checksum comparison, not just an HTTP success) before the user trusts a card is safe to wipe. Smallest useful version — ships first.
 
-**Phase 2 — drive-to-drive checksummed offload.** Copy footage between drives directly, independent of FreeFrame: one source to one destination, one source to many destinations at once, many sources to many destinations, and chained/cascading copies (card → local drive A → then A → drive B and/or FreeFrame, each hop verified before the next starts). Verification manifests are written in **ASC MHL**, the existing open industry standard for this exact job — already used by Silverstack, Hedge, and other professional offload tools — instead of a proprietary format, so a FreeFrame offload is verifiable by tools a collaborator may already run. The checksum algorithm is chosen per copy job, not forced platform-wide: ASC MHL supports MD5, SHA-1, and xxHash (64/XXH3/XXH128) and C4, and different people/productions have already standardized on different ones.
+**Phase 2 — drive-to-drive checksummed offload.** Copy footage between drives directly, independent of FreeFrame: one source to one destination, one source to many destinations at once, many sources to many destinations, and chained/cascading copies (card → local drive A → then A → drive B and/or FreeFrame, each hop verified before the next starts). Verification manifests are written in **ASC MHL**, the existing open industry standard for this exact job — already used by Silverstack, Hedge, and other professional offload tools — instead of a proprietary format, so a FreeFrame offload is verifiable by tools a collaborator may already run. The checksum algorithm is chosen per copy job, not forced platform-wide — ASC MHL supports MD5, SHA-1, xxHash (64/XXH3/XXH128), and C4 — and the app shows a short strengths/weaknesses summary next to the picker so people can actually make an informed choice:
+
+| Algorithm | Strength | Weakness | Pick it for |
+|---|---|---|---|
+| xxHash (64/XXH3/XXH128) | Fastest by far — the right choice on multi-hundred-GB card offloads | Not cryptographic; won't catch deliberate tampering | Default: routine "did the copy work" checks |
+| MD5 | Fast, universally supported | Cryptographically broken (deliberate collisions possible) | Matching an existing MD5-based pipeline |
+| SHA-1 | Common legacy default in post/broadcast | Also cryptographically broken; slower than MD5 with no real corruption-detection edge over it | Matching an existing SHA-1-based pipeline |
+| C4 | Cryptographically strong (SHA-512-based); resists deliberate tampering, not just accidental corruption | Slower; long 90-character encoded identifier, awkward to eyeball or transcribe | Offloads that might need to hold up as evidence later (legal, insurance, disputed authorship) |
 
 **Phase 3 — resumable uploads and full automation.** True cross-restart resume for FreeFrame uploads — an interrupted transfer picks up without re-hashing the source or re-scanning the destination — plus cascading multi-hop copy chains and automatic NLE detection with an offer to install the matching FreeFrame plugin. The hardest phase technically (new server-side upload-state tracking), so it comes last, once phases 1 and 2 are solid.
 
 Windows port follows once the Mac app is stable across all three phases — not built in parallel from day one.
+
+## Direct editor-to-editor transfer
+
+Two editors sharing files directly instead of always routing through FreeFrame. Same network: the app discovers the other machine and links them directly (mDNS discovery + direct encrypted transfer, the same proven approach the open-source LocalSend app uses — no need to invent this from scratch). Different networks, or no easy direct path: fall back to pushing the file through the FreeFrame server instead, so it always works regardless of network. True internet-wide peer-to-peer (bypassing NATs/firewalls without a relay) is deliberately out of scope — it's unreliable in practice and its own fallback path ends up being "route through a server" anyway, so it doesn't earn its complexity.
 
 ## NLE integration
 
