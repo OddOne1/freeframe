@@ -112,6 +112,30 @@ For the full guide including **SSL setup**, **bring-your-own infrastructure** (e
 | [Architecture](docs/architecture.md) | System design, data flow, media pipeline, permissions |
 | [Contributing](docs/contributing.md) | Dev setup, testing, code style, PR process |
 | [Environment Variables](.env.example) | Full config reference with comments |
+| [Roadmap](ROADMAP.md) | Planned features and build order |
+
+## Roadmap
+
+Planned build order, prerequisites first:
+
+1. Transcript search
+2. C2PA camera-authenticity verification
+3. Per-project technical QC spec + upload flagging
+4. Desktop app — Mac, phase 1 (capture, upload, verify)
+5. DaVinci Resolve NLE panel
+6. LUFS playback normalization
+7. Desktop app — Mac, phase 2 (drive-to-drive checksummed copy + ASC MHL + selectable algorithm + explainer)
+8. Download export options modal
+9. Waveform display, multi-track
+10. LAN-direct transfer + server-relay fallback
+11. Premiere Pro NLE panel
+12. Desktop app — Mac, phase 3 (resumable uploads + cascading chains + NLE auto-detect/install)
+13. Windows port of the desktop app
+14. Cam2Cloud-style live ingest — exploring feasibility
+15. Customer usage rights/licensing of content — not ready to build, needs its own scoping conversation first
+16. AI topic summarization/highlighting — not ready to build, gated on a future AI/LLM integration decision
+
+See [ROADMAP.md](ROADMAP.md) for the full description of each item.
 
 ## Contributing
 
