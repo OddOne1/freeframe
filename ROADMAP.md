@@ -17,6 +17,10 @@ Last updated: 2026-07-31.
 | SHA-1 | Common legacy default in post/broadcast | Also cryptographically broken; slower than MD5 with no real corruption-detection edge over it | Matching an existing SHA-1-based pipeline |
 | C4 | Cryptographically strong (SHA-512-based); resists deliberate tampering, not just accidental corruption | Slower; long 90-character encoded identifier, awkward to eyeball or transcribe | Offloads that might need to hold up as evidence later (legal, insurance, disputed authorship) |
 
+**Design reference**: [ingesto](https://github.com/noar-justedit/ingesto), an open-source camera-ingest app, covers a lot of this ground already (copy-mode tiers, checksum lists, MHL export, kiosk mode). It's GPL-3.0 licensed, which doesn't mix cleanly with this project's MIT license, so the plan is to build FreeFrame's own app using it as a UX/feature reference rather than forking its code — see `CLAUDE.md` for the full reasoning.
+
+**UI color rule**: process/status indicators (verified, failed, in progress, not started) always use FreeFrame's existing status colors — the same green/amber/red/blue palette already used for approvals and upload status in the web app — so the desktop app speaks the same visual language. Everything else (buttons, highlights, general chrome) uses FreeFrame's actual brand accent color, not a default app color.
+
 **Phase 3 — resumable uploads and full automation.** True cross-restart resume for FreeFrame uploads — an interrupted transfer picks up without re-hashing the source or re-scanning the destination — plus cascading multi-hop copy chains and automatic NLE detection with an offer to install the matching FreeFrame plugin. The hardest phase technically (new server-side upload-state tracking), so it comes last, once phases 1 and 2 are solid.
 
 Windows port follows once the Mac app is stable across all three phases — not built in parallel from day one.
