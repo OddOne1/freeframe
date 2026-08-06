@@ -18,5 +18,12 @@
   },
   "build": {
     "$comment": "Full config in electron-builder.yml"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "electron-builder",
+      "app-builder-bin"
+    ]
   }
 }

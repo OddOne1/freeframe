@@ -148,8 +148,15 @@
 
     async function refresh() {
       listEl.innerHTML = '<div class="empty">Loading…</div>';
-      const volumes = await window.freeframe.listVolumes();
-      render(volumes);
+      try {
+        const volumes = await window.freeframe.listVolumes();
+        render(volumes);
+      } catch (err) {
+        // Previously a failure here just left "Loading…" on screen forever
+        // with no way to tell success from stuck (see volumes.js's
+        // getDiskutilInfo fix note, 2026-08-01) — always show something.
+        listEl.innerHTML = `<div class="empty">Couldn't load volumes: ${String(err.message || err)}</div>`;
+      }
     }
 
     refreshBtn.addEventListener("click", refresh);

@@ -10,6 +10,8 @@ const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const os = require("node:os");
+const crypto = require("node:crypto");
 
 const execFileAsync = promisify(execFile);
 
@@ -26,13 +28,31 @@ const execFileAsync = promisify(execFile);
 
 /** Runs `diskutil info -plist <mountPoint>` and converts the result to JSON
  * via `plutil` (also built into macOS) instead of pulling in a plist
- * parser dependency just for this one call site. */
+ * parser dependency just for this one call site.
+ *
+ * BUG FIXED 2026-08-01: this originally piped diskutil's XML into plutil
+ * via execFile's `{ input: ... }` option — that option only exists on the
+ * *Sync* child_process variants (execFileSync/execSync/spawnSync). The
+ * async `execFile` silently ignores unknown options rather than throwing,
+ * so plutil was spawned reading from an empty stdin that never closed and
+ * hung forever waiting for input that was never sent. Because that hang
+ * is a stall, not a rejection, listVolumes()'s per-volume try/catch never
+ * fired either — Promise.all just never settled, the IPC call never
+ * returned, and the renderer's "Loading…" state had nothing to catch or
+ * time out on. Fixed by writing the plist to a real temp file and having
+ * plutil read that path instead of stdin — same zero-extra-dependency
+ * approach, just without the broken pipe. */
 async function getDiskutilInfo(mountPoint) {
   const { stdout: plistXml } = await execFileAsync("diskutil", ["info", "-plist", mountPoint]);
-  const { stdout: json } = await execFileAsync("plutil", ["-convert", "json", "-o", "-", "-"], {
-    input: plistXml,
-  });
-  return JSON.parse(json);
+
+  const tempFile = path.join(os.tmpdir(), `freeframe-diskutil-${crypto.randomUUID()}.plist`);
+  await fs.writeFile(tempFile, plistXml, "utf8");
+  try {
+    const { stdout: json } = await execFileAsync("plutil", ["-convert", "json", "-o", "-", tempFile]);
+    return JSON.parse(json);
+  } finally {
+    await fs.unlink(tempFile).catch(() => {});
+  }
 }
 
 /** @returns {"removable"|"internal"|"external"|"network"} */

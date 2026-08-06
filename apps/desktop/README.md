@@ -19,11 +19,13 @@ Not built yet: source/destination assignment, the copy engine, checksum algorith
 
 ```bash
 cd apps/desktop
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
-Runs unsigned, locally — this is fine and normal for development. Gatekeeper only blocks apps that have been *downloaded* (carry the quarantine flag); a local dev build launched via `npm run dev` never hits that at all.
+Runs unsigned, locally — this is fine and normal for development. Gatekeeper only blocks apps that have been *downloaded* (carry the quarantine flag); a local dev build launched via `pnpm dev` never hits that at all.
+
+**If `pnpm dev` fails with `Electron failed to install correctly, please delete node_modules/electron and try installing again`** — this isn't Electron actually being broken. pnpm blocks dependency postinstall scripts by default (a supply-chain-safety default, since pnpm 9), and Electron's own postinstall script is what downloads the real Electron binary — skip that script and `node_modules/electron` never gets the binary, hence the error. `package.json`'s `pnpm.onlyBuiltDependencies` field pre-approves `electron`/`electron-builder`/`app-builder-bin` so a fresh `pnpm install` shouldn't hit this at all going forward. If it still does (e.g. an older pnpm that predates this config field, or the lockfile already has the packages marked skipped from a prior install): run `pnpm approve-builds`, select `electron` (and `electron-builder` if it's also listed), confirm, then `pnpm install` again before retrying `pnpm dev`.
 
 ## Before this can ship to anyone else — real blocker, not a formality
 
