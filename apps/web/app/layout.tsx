@@ -39,6 +39,20 @@ export async function generateMetadata(): Promise<Metadata> {
   // no matter what the SSR or client-side code did. app/favicon.ico has
   // been deleted from the repo for exactly this reason -- generateMetadata
   // is now the single source of truth for the tab icon, full stop.
+  //
+  // CORRECTION 2026-07-31: the favicon.ico deletion above was an incomplete
+  // fix -- app/icon.png and app/apple-icon.png are the SAME Next.js
+  // file-based icon convention (auto-generate their own <link rel="icon">/
+  // <link rel="apple-touch-icon"> regardless of generateMetadata, exactly
+  // like favicon.ico did) and were left in the repo the whole time,
+  // shipped in the same original commit (94dfc47) as favicon.ico. This is
+  // what was actually causing the old default logo to flash in on reload
+  // and occasionally win outright -- not just a Safari cache quirk as
+  // previously diagnosed (see the now-corrected freeframe-safari-favicon-
+  // cache-false-alarm memory). Both files have been deleted for the same
+  // reason favicon.ico was. If a favicon bug resurfaces again, check for
+  // ANY file matching Next's icon/apple-icon/favicon convention re-added
+  // under app/ before re-diagnosing as a browser cache issue.
   let iconHref = "/logo-icon.png";
   try {
     const internalUrl = process.env.API_INTERNAL_URL || "http://localhost:8000";
