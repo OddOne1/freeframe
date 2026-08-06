@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Standard Electron hardened-runtime entitlements. Required for the
+       app to run at all under hardenedRuntime: true (electron-builder.yml)
+       — without these, Electron's own V8/JIT gets killed by the OS. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+
+  <!-- Outbound network: uploading to FreeFrame. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+
+  <!-- Inbound network: same-LAN direct transfer between editors (roadmap
+       §9) needs this app to accept incoming connections, not just make
+       them. Included now rather than added later so this file doesn't
+       need re-signing/re-notarizing just to add it down the line. -->
+  <key>com.apple.security.network.server</key>
+  <true/>
+
+  <!-- User-initiated file access (drive/volume browsing, destination
+       picking). Removable-volume access itself is a separate macOS TCC
+       privacy prompt, not an entitlement — this covers standard
+       user-selected file/folder dialogs. -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+</dict>
+</plist>

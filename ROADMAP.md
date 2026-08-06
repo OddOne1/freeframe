@@ -6,6 +6,8 @@ Last updated: 2026-07-31.
 
 ## Desktop capture & offload app (Mac, then Windows)
 
+**Status (2026-08-01): scaffolding started** at `apps/desktop` (Electron, confirmed over Tauri). Hard requirement: installs and launches on any Mac with no admin password and no trip to System Settings — on current macOS that's only achievable through real Apple code signing + notarization, which needs an Apple Developer Program account ($99/year, not yet set up). See `apps/desktop/README.md` for the exact checklist.
+
 **Phase 1 — capture, upload, verify.** A native app that ingests footage from a card or drive, uploads it to FreeFrame, and verifies the upload against the source (a real checksum comparison, not just an HTTP success) before the user trusts a card is safe to wipe. Smallest useful version — ships first.
 
 **Phase 2 — drive-to-drive checksummed offload.** Copy footage between drives directly, independent of FreeFrame: one source to one destination, one source to many destinations at once, many sources to many destinations, and chained/cascading copies (card → local drive A → then A → drive B and/or FreeFrame, each hop verified before the next starts). Verification manifests are written in **ASC MHL**, the existing open industry standard for this exact job — already used by Silverstack, Hedge, and other professional offload tools — instead of a proprietary format, so a FreeFrame offload is verifiable by tools a collaborator may already run. The checksum algorithm is chosen per copy job, not forced platform-wide — ASC MHL supports MD5, SHA-1, xxHash (64/XXH3/XXH128), and C4 — and the app shows a short strengths/weaknesses summary next to the picker so people can actually make an informed choice:

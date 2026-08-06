@@ -1,0 +1,67 @@
+# electron-builder config for the FreeFrame desktop app.
+#
+# HARD REQUIREMENT (user, 2026-08-01): must install and launch on any Mac
+# with zero admin password and zero trip to System Settings. Since macOS
+# Sequoia removed the old Control-click Gatekeeper bypass, the ONLY way to
+# satisfy that is Apple code signing + notarization — there is no packaging
+# trick around it. Everything below is structured for that from day one,
+# even though the actual signing identity/notarization credentials aren't
+# wired in yet (YON.Studio has no Apple Developer Program account as of
+# this scaffold — see README.md "Before this can ship" section).
+#
+# Until signing is wired in, `npm run build:mac:unsigned` produces an
+# unsigned build for local testing only — NOT for distribution. An unsigned
+# build handed to anyone else will hit exactly the blocked-Gatekeeper
+# problem this whole feature exists to avoid.
+
+appId: studio.yon.freeframe.desktop
+productName: "FreeFrame Desktop (name TBD)"
+copyright: "Copyright © 2026 YON.Studio"
+
+directories:
+  output: dist
+  buildResources: build-resources
+
+files:
+  - src/**/*
+  - package.json
+
+mac:
+  # Universal binary: current Apple Silicon Macs AND older Intel Macs still
+  # in service in production/post environments both need to just work.
+  target:
+    - target: dmg
+      arch:
+        - universal
+  category: public.app-category.video
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build-resources/entitlements.mac.plist
+  entitlementsInherit: build-resources/entitlements.mac.plist
+  # Fill in once YON.Studio's Developer ID Application certificate exists.
+  # Leave unset (rather than a placeholder string) so a real cert is a
+  # deliberate, visible change here — not silently picked up on someone's
+  # machine because a name happened to match.
+  # identity: "Developer ID Application: YON.Studio (TEAMID)"
+
+# Notarization (electron-builder calls Apple's notarytool automatically at
+# build time when these env vars are present — nothing else to configure
+# here). Needs, once the Developer Program account exists:
+#   APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
+# electron-builder's afterSign hook picks these up on its own; no custom
+# notarize.js needed for a build this simple.
+afterSign: build-resources/notarize.js
+
+dmg:
+  # Explicitly NOT defaulting the drag target to /Applications only —
+  # dragging to the user's own ~/Applications works with zero elevated
+  # permission on every Mac, including managed/non-admin corporate
+  # accounts, where /Applications may prompt. Both are offered; neither
+  # requires an admin password either way once the app itself is notarized.
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications

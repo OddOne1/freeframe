@@ -113,6 +113,7 @@ For the full guide including **SSL setup**, **bring-your-own infrastructure** (e
 | [Contributing](docs/contributing.md) | Dev setup, testing, code style, PR process |
 | [Environment Variables](.env.example) | Full config reference with comments |
 | [Roadmap](ROADMAP.md) | Planned features and build order |
+| [Desktop app](apps/desktop/README.md) | Camera/drive offload companion app — dev setup, current state |
 
 ## Roadmap
 

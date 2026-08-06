@@ -1,0 +1,22 @@
+{
+  "name": "desktop",
+  "productName": "FreeFrame Desktop (name TBD)",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Camera/drive offload app for FreeFrame — capture, upload, verify. Mac first, Windows to follow.",
+  "main": "src/main/main.js",
+  "scripts": {
+    "dev": "electron .",
+    "build": "electron-builder --mac",
+    "build:mac": "electron-builder --mac --universal",
+    "build:mac:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --universal"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "@electron/notarize": "^2.5.0"
+  },
+  "build": {
+    "$comment": "Full config in electron-builder.yml"
+  }
+}
