@@ -151,7 +151,9 @@ async function main() {
     check(true, "Electron launched and renderer is inspectable");
 
     const bridge = await cdp.eval("Object.keys(window.freeframe).sort().join(',')");
-    check(bridge === "cancelCopy,chooseFolder,listVolumes,onCopyProgress,startCopy", "contextBridge exposes exactly the intended API", bridge);
+    check(
+      bridge === "cancelCopy,chooseFolder,getRecentFolders,listVolumes,onCopyProgress,onVolumesChanged,rememberFolder,startCopy",
+      "contextBridge exposes exactly the intended API", bridge);
     check(await cdp.eval("typeof window.require") === "undefined", "no window.require");
     check(await cdp.eval("typeof window.process") === "undefined", "no window.process");
     check(await cdp.eval("typeof window.ipcRenderer") === "undefined", "raw ipcRenderer not exposed");

@@ -27,6 +27,12 @@ A working checksummed offload tool — one source, many destinations in parallel
   - `packages/design-tokens/tokens.css` is the single source for every CSS custom property, consumed by `apps/web` via a plain `@import` in `globals.css` and copied into this app's renderer by `scripts/sync-tokens.js` on `predev`/`prebuild`/`pretest`. This renderer has no bundler, so a copy step is the honest alternative to adding one for one file. **`src/renderer/tokens.css` is generated and gitignored** — edit the package.
   - This mattered more than it sounds: the two had already drifted. The desktop copy carried `--bg-secondary #17171c` against the web's `#16161a`, a single `--border` where the web has three real border tokens, and text colors that were close but wrong. Divergence you can't see side by side is exactly the kind that survives review.
   - `scripts/sync-icons.js` generates `src/renderer/icons.js` from the `lucide` package pinned at **0.511.0** — the same release `apps/web` pins via `lucide-react ^0.511.0`, so the icon family is provably identical rather than drifting from whatever version a path was copied from. Generated rather than imported because the renderer runs `sandbox: true` / `nodeIntegration: false` and cannot `require()` anything, and a sandboxed preload can only require a small allow-list. Where `apps/web` already uses an icon for the same concept (`RefreshCw`, `List`/`LayoutGrid`, `X`, `AlertTriangle`, `FolderOpen`, `HardDrive`) the same one is used here.
+- **Live volume detection** — the main process watches `/Volumes` (debounced 300 ms, since one mount fires several fs events) and pushes `volumes:changed`; the renderer re-lists. Plugging in a card needs no clicks. Verified by actually mounting and ejecting a disk image via `hdiutil` and watching the list update untouched.
+- **Free/total space comes from `statfs`**, not `diskutil`. Both of the failures this fixes were real on this machine: a 52 TB SMB share reported `total=null free=null` because diskutil describes physical devices and a network share has none; and the APFS boot volume reported **0 bytes free** because free space belongs to the container shared by the System and Data volumes, not to the single volume queried. `statfs` matches `df` byte-for-byte on both. `bavail` not `bfree`, so root-reserved blocks aren't counted as space you can fill. The same failure also mis-classified the SMB share as `external`; unclassifiable-by-diskutil now reads as `network`.
+- **Per-device folder picking** — the context menu on a volume offers "Choose folder here as Source/Destination…", rooting the native dialog at that mount point. The general header buttons stay, since they're the right tool for a plain folder-to-folder move; the per-device variant is what disambiguates *which* drive a folder is on when several cards are being offloaded at once. The last folder used per device is remembered in `userData` and offered back in the same menu.
+- **A volume can hold both roles.** Copying between two folders on one RAID is a real workflow, so assigning a volume as source no longer silently evicts it from Destinations (and vice versa). Instead the conflict raises a modal offering a subfolder for each role, with Cancel reverting only the assignment that caused it. The bare volume root is never allowed on both sides — that would copy a folder into itself.
+- **Unassign by dragging back** to the middle column, mirroring the context menu's Remove, with the same drop-ready affordance the other two zones already had. Manually-picked folders that end up unassigned are pruned from the list rather than lingering forever; real mounted volumes never are.
+- **Overlay scrollbars** on the columns — invisible at rest, appearing on hover of the scrolling area, in the macOS convention rather than Chromium's default light bar.
 - `electron-builder.yml` — mac target (universal: arm64 + x64), hardened runtime, entitlements, and a notarization hook (`build-resources/notarize.js`) — all structured correctly but **not wired to a real signing identity yet** (see below).
 
 **Deliberately not built yet** (each a separate follow-up, not an oversight): the FAST / VERIFIED / PRO tiers, ASC MHL manifest export, the multi-algorithm picker and its tradeoff explainer (xxHash64 is hardcoded for now), double source read, folder-naming templates, multi-level chains and fan-out in the UI (the engine already handles both), and FreeFrame upload. See `CLAUDE.md`'s "Roadmap" section for the sequencing.
@@ -34,10 +40,15 @@ A working checksummed offload tool — one source, many destinations in parallel
 ### Tests
 
 ```bash
-pnpm test          # both suites
+pnpm test          # engine + e2e
 pnpm test:engine   # copy engine against real files in temp dirs
 pnpm test:e2e      # launches Electron, drives the real UI over CDP
+pnpm test:polish   # the 7 polish behaviours, incl. a real hdiutil mount cycle
 ```
+
+`test:polish` is deliberately **not** part of `pnpm test`: it attaches and
+detaches a real disk image, which is a side effect a default test run
+shouldn't have on someone's machine.
 
 `test:engine` covers multi-destination copies, structure/unicode preservation, progress monotonicity, the guard rails (destination inside source, etc.), and — most importantly — that a corrupted or truncated destination is actually *caught*, and that `allVerified` goes false when a file genuinely can't be written. A verifier that always passes is worse than no verifier, so that case is asserted explicitly rather than assumed.
 

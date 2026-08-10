@@ -18,7 +18,25 @@ contextBridge.exposeInMainWorld("freeframe", {
 
   cancelCopy: () => ipcRenderer.invoke("copy:cancel"),
 
-  chooseFolder: (title) => ipcRenderer.invoke("dialog:choose-folder", { title }),
+  // defaultPath roots the native dialog inside one device (item 3) —
+  // omitted for the general header buttons, supplied for the per-device
+  // context-menu entries.
+  chooseFolder: (title, defaultPath) =>
+    ipcRenderer.invoke("dialog:choose-folder", { title, defaultPath }),
+
+  /** Item 6 — last folder chosen per device, persisted in userData. */
+  getRecentFolders: () => ipcRenderer.invoke("recent-folders:get"),
+  rememberFolder: (device, folder) =>
+    ipcRenderer.invoke("recent-folders:remember", { device, folder }),
+
+  /** Fires when /Volumes changes — a drive plugged in or ejected.
+   *  Returns an unsubscribe function. Carries no payload: the renderer
+   *  re-runs listVolumes() rather than trusting a diff computed elsewhere. */
+  onVolumesChanged: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on("volumes:changed", listener);
+    return () => ipcRenderer.removeListener("volumes:changed", listener);
+  },
 
   /**
    * Subscribe to copy progress. Returns an unsubscribe function.

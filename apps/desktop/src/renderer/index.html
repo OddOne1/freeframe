@@ -81,6 +81,28 @@
     .col-head button { padding: 3px 7px; font-size: 11px; }
     .col-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px; min-width: 0; }
 
+    /* Item 4 — overlay scrollbars.
+       The default Chromium bar is a solid light track that fights the dark
+       theme. This is the macOS overlay convention: nothing visible until
+       you're actually in the scrolling area. No JS needed for "only when
+       there's overflow" — overflow-y:auto already handles that; the :hover
+       rule handles "only when you're looking at it". */
+    .col-body::-webkit-scrollbar { width: 10px; }
+    .col-body::-webkit-scrollbar-track { background: transparent; }
+    .col-body::-webkit-scrollbar-thumb {
+      background: transparent;
+      border-radius: 999px;
+      /* Transparent border + background-clip is what makes the visible
+         thumb narrower than the hit area — a 4px-wide bar you can't grab
+         is worse than no bar. */
+      border: 3px solid transparent;
+      background-clip: content-box;
+      transition: background-color 150ms;
+    }
+    .col-body:hover::-webkit-scrollbar-thumb { background-color: rgba(148, 148, 158, .45); }
+    .col-body:hover::-webkit-scrollbar-thumb:hover { background-color: rgba(148, 148, 158, .75); }
+    .col-body::-webkit-scrollbar-corner { background: transparent; }
+
     .zone { min-height: 100%; border-radius: 8px; }
     /* Drop affordance while a drag is in flight. */
     .zone.drop-ready { outline: 1px dashed var(--border); outline-offset: -4px; }
@@ -260,6 +282,32 @@
       opacity: .95; box-shadow: 0 8px 24px rgba(0,0,0,.5); display: none;
     }
 
+    /* ── Item 5: dual-role conflict modal ── */
+    #modal-backdrop {
+      position: fixed; inset: 0; z-index: 1100; display: none;
+      background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
+      align-items: center; justify-content: center;
+    }
+    #modal-backdrop.open { display: flex; }
+    .modal {
+      width: 420px; max-width: calc(100vw - 40px);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 12px; padding: 18px;
+      box-shadow: 0 24px 60px rgba(0,0,0,.6);
+    }
+    .modal-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .modal-head .icon svg { height: 18px; width: 18px; }
+    .modal-head .icon { color: var(--status-warning); }
+    .modal h3 { margin: 0; font-size: 14px; font-weight: 600; }
+    .modal p { margin: 0 0 14px; font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+    .modal p b { color: var(--text-primary); font-weight: 600; }
+    .modal-actions { display: flex; flex-direction: column; gap: 8px; }
+    .modal-actions .row2 { display: flex; gap: 8px; }
+    .modal-actions .row2 button { flex: 1; justify-content: center; }
+    .modal-actions button { display: flex; align-items: center; gap: 6px; }
+    .modal-chosen { font-size: 11px; color: var(--status-success); }
+
     /* ── Context menu (non-drag fallback) ── */
     #menu {
       position: fixed; z-index: 1000; display: none;
@@ -331,7 +379,7 @@
           <button data-view="square" title="Grid view" aria-label="Grid view"><span data-icon="viewGrid"></span></button>
         </div>
       </div>
-      <div class="col-body"><div class="zone" id="zone-volumes"></div></div>
+      <div class="col-body"><div class="zone" id="zone-volumes" data-zone="volumes"></div></div>
     </div>
 
     <div class="col">
@@ -356,6 +404,27 @@
     </div>
     <div class="summary" id="summary"></div>
   </footer>
+
+  <div id="modal-backdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head">
+        <span class="icon" data-icon="warning"></span>
+        <h3 id="modal-title">Same volume on both sides</h3>
+      </div>
+      <p id="modal-body"></p>
+      <div class="modal-actions">
+        <div class="row2">
+          <button id="modal-src">Choose Source Folder…</button>
+          <button id="modal-dst">Choose Destination Folder…</button>
+        </div>
+        <div id="modal-chosen" class="modal-chosen"></div>
+        <div class="row2">
+          <button id="modal-cancel">Cancel</button>
+          <button id="modal-done" class="primary" disabled>Done</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div id="ghost"></div>
   <div id="menu"></div>
@@ -385,6 +454,10 @@
 
     /** "line" | "square" — Volumes column only. */
     let volumesView = "line";
+
+    /** Item 6 — recent folder per device, mirrored from the main process so
+     *  it survives a restart. Keyed by mountPoint. */
+    let recentFolders = {};
 
     let nextId = 1;
     const newId = () => `d${nextId++}`;
@@ -453,18 +526,40 @@
     // ── Assignment ──
     function setSource(p) {
       if (copying) return;
-      // A path can't hold both roles; assigning as source removes it (and
-      // anything cascading from it) from the destination tree.
-      removeDest(p, true);
+      const previous = sourcePath;
       sourcePath = p;
+      // Item 5: holding both roles is legitimate — copying between two
+      // folders on one big RAID is a real workflow. What's *not* legitimate
+      // is the bare volume root on both sides, which would copy a folder
+      // into itself. So don't silently evict it from Destinations any more;
+      // surface the conflict and make the user resolve it with subfolders.
+      if (destNodes.some((n) => n.path === p)) {
+        openDualRoleModal(p, () => { sourcePath = previous; render(); });
+      }
       render();
     }
     function addDest(p, parentId = null) {
-      if (copying || p === sourcePath) return;
+      if (copying) return;
       if (destNodes.some((n) => n.path === p)) return;
       destNodes.push({ id: newId(), path: p, parentId });
+      // Symmetric with setSource: same conflict, same modal, whichever side
+      // triggered it.
+      if (p === sourcePath) {
+        openDualRoleModal(p, () => { removeDest(p, true); render(); });
+      }
       render();
     }
+    /** Item 6 — a manually-picked folder that no longer holds any role has
+     *  no reason to sit in the center column forever. Real mounted volumes
+     *  are never pruned; they're there because they're mounted. */
+    function pruneExtraFolder(p) {
+      if (!p) return;
+      if (volumes.some((v) => v.mountPoint === p)) return;  // a real volume
+      if (sourcePath === p) return;
+      if (destNodes.some((n) => n.path === p)) return;
+      extraFolders = extraFolders.filter((f) => f !== p);
+    }
+
     function removeDest(p, silent = false) {
       const node = destNodes.find((n) => n.path === p);
       if (!node) return;
@@ -473,6 +568,7 @@
       // dropping their data.
       for (const child of destNodes) if (child.parentId === node.id) child.parentId = null;
       destNodes = destNodes.filter((n) => n.id !== node.id);
+      pruneExtraFolder(p);
       if (!silent) render();
     }
     function cascadeFrom(childPath, parentId) {
@@ -495,6 +591,70 @@
       render();
     }
 
+    // ── Item 3 + 6: folder picking, per-device and with recents ──
+
+    /** Opens the native picker, optionally rooted inside `device`, and
+     *  records the result as that device's recent folder. */
+    async function pickFolder({ title, device = null }) {
+      const folder = await window.freeframe.chooseFolder(title, device || undefined);
+      if (!folder) return null;
+      if (!extraFolders.includes(folder) && !volumes.some((v) => v.mountPoint === folder)) {
+        extraFolders.push(folder);
+      }
+      if (device) {
+        recentFolders[device] = folder;
+        window.freeframe.rememberFolder(device, folder);
+      }
+      return folder;
+    }
+
+    /** The device a path belongs to, for recent-folder lookup: the volume
+     *  whose mountPoint is the longest prefix of it. */
+    function deviceFor(p) {
+      let best = null;
+      for (const v of volumes) {
+        if (p === v.mountPoint || p.startsWith(v.mountPoint + "/")) {
+          if (!best || v.mountPoint.length > best.length) best = v.mountPoint;
+        }
+      }
+      return best;
+    }
+
+    // ── Item 5: dual-role conflict modal ──
+    let modalState = null;
+
+    function openDualRoleModal(volumePath, onCancel) {
+      modalState = { volumePath, onCancel, src: null, dst: null };
+      const name = entryFor(volumePath).name;
+      const body = $("modal-body");
+      body.replaceChildren(
+        document.createTextNode("This volume is now both the source and a destination. Copying "),
+        el("b", { text: name }),
+        document.createTextNode(
+          " into itself would recurse, so pick a subfolder for each role — a source folder to read from, and a separate destination folder to write into."
+        )
+      );
+      $("modal-chosen").textContent = "";
+      $("modal-done").disabled = true;
+      $("modal-backdrop").classList.add("open");
+    }
+
+    function updateModalChosen() {
+      if (!modalState) return;
+      const bits = [];
+      if (modalState.src) bits.push(`Source: ${modalState.src}`);
+      if (modalState.dst) bits.push(`Destination: ${modalState.dst}`);
+      $("modal-chosen").textContent = bits.join("   ·   ");
+      // Both are required: resolving only one side leaves the volume root
+      // still serving the other role, i.e. the same conflict.
+      $("modal-done").disabled = !(modalState.src && modalState.dst);
+    }
+
+    function closeModal() {
+      $("modal-backdrop").classList.remove("open");
+      modalState = null;
+    }
+
     // ── Drag (pointer-based, not HTML5 DnD) ──
     // HTML5 drag-and-drop can't be driven by synthetic events, which would
     // make the cascade interaction untestable, and it behaves inconsistently
@@ -511,6 +671,9 @@
       document.body.style.cursor = "grabbing";
       zoneSource.classList.add("drop-ready");
       zoneDest.classList.add("drop-ready");
+      // Item 7: the middle column is a valid target (drop here to unassign),
+      // so it needs the same affordance the other two already had.
+      zoneVolumes.classList.add("drop-ready");
     }
     function moveGhost(x, y) {
       ghost.style.left = `${x + 12}px`;
@@ -519,6 +682,7 @@
     function clearDropIndicators() {
       zoneSource.classList.remove("drop-active");
       zoneDest.classList.remove("drop-active");
+      zoneVolumes.classList.remove("drop-active");
       for (const c of document.querySelectorAll(".cascade-target")) c.classList.remove("cascade-target");
     }
     /** What's under the cursor: a destination card (cascade), or a zone. */
@@ -556,6 +720,7 @@
       document.body.style.cursor = "";
       zoneSource.classList.remove("drop-ready");
       zoneDest.classList.remove("drop-ready");
+      zoneVolumes.classList.remove("drop-ready");
       clearDropIndicators();
 
       if (!t) return;
@@ -564,6 +729,16 @@
         cascadeFrom(dragged, t.parentId);
       } else if (t.zone === "source") {
         setSource(dragged);
+      } else if (t.zone === "volumes") {
+        // Item 7: dragging an assigned card back to the middle unassigns it
+        // — the drag equivalent of the context menu's Remove.
+        if (fromRole === "source" && sourcePath === dragged) {
+          sourcePath = null;
+          pruneExtraFolder(dragged);
+          render();
+        } else if (fromRole === "dest") {
+          removeDest(dragged);
+        }
       } else if (t.zone === "dest") {
         if (fromRole === "dest") {
           // Dragged out of a cascade and into open space → back to copying
@@ -588,6 +763,34 @@
       add("Set as Source", () => setSource(path), sourcePath === path);
       add("Set as Destination", () => addDest(path, null), destNodes.some((n) => n.path === path));
 
+      // Item 3 — per-device pickers. The general header buttons stay (they
+      // are the right tool for a plain folder-to-folder move), but they
+      // can't say *which* drive a folder is on, which matters the moment
+      // more than one card is being offloaded at once.
+      const isVolume = volumes.some((v) => v.mountPoint === path);
+      if (isVolume) {
+        menu.appendChild(el("div", { class: "sep" }));
+        add("Choose folder here as Source…", async () => {
+          const f = await pickFolder({ title: `Choose a source folder on ${entryFor(path).name}`, device: path });
+          if (f) setSource(f);
+        });
+        add("Choose folder here as Destination…", async () => {
+          const f = await pickFolder({ title: `Choose a destination folder on ${entryFor(path).name}`, device: path });
+          if (f) addDest(f, null);
+        });
+
+        // Item 6 — offer the last folder used on this device, so picking the
+        // same destination twice doesn't mean browsing to it twice.
+        const recent = recentFolders[path];
+        if (recent) {
+          const short = recent.replace(path, "").replace(/^\//, "") || recent;
+          menu.appendChild(el("div", { class: "sep" }));
+          menu.appendChild(el("div", { class: "label", text: "Recent on this device" }));
+          add(`Source: ${short}`, () => setSource(recent));
+          add(`Destination: ${short}`, () => addDest(recent, null));
+        }
+      }
+
       // "Cascade from…" — Hedge's own non-drag path, mirrored here for the
       // same accessibility reason the drag fallback exists at all.
       const candidates = destNodes.filter(
@@ -604,8 +807,11 @@
       if (role === "dest" || role === "source") {
         menu.appendChild(el("div", { class: "sep" }));
         add("Remove", () => {
-          if (role === "source") { sourcePath = null; render(); }
-          else removeDest(path);
+          if (role === "source") {
+            sourcePath = null;
+            pruneExtraFolder(path);
+            render();
+          } else removeDest(path);
         });
       }
 
@@ -945,18 +1151,69 @@
     for (const btn of document.querySelectorAll("[data-choose]")) {
       btn.addEventListener("click", async () => {
         const which = btn.dataset.choose;
-        const folder = await window.freeframe.chooseFolder(
-          which === "source" ? "Choose a source folder" : "Choose a destination folder"
-        );
+        const folder = await pickFolder({
+          title: which === "source" ? "Choose a source folder" : "Choose a destination folder",
+        });
         if (!folder) return;
-        if (!extraFolders.includes(folder) && !volumes.some((v) => v.mountPoint === folder)) {
-          extraFolders.push(folder);
+        // The general picker can land anywhere, so attribute the result to
+        // whichever device it turned out to be on — that's what makes it
+        // show up under "Recent on this device" later.
+        const dev = deviceFor(folder);
+        if (dev) {
+          recentFolders[dev] = folder;
+          window.freeframe.rememberFolder(dev, folder);
         }
         if (which === "source") setSource(folder);
         else addDest(folder, null);
       });
     }
 
+    // ── Item 5: modal buttons ──
+    $("modal-src").addEventListener("click", async () => {
+      if (!modalState) return;
+      const f = await pickFolder({ title: "Choose a source folder", device: modalState.volumePath });
+      if (!f) return;
+      modalState.src = f;
+      updateModalChosen();
+    });
+    $("modal-dst").addEventListener("click", async () => {
+      if (!modalState) return;
+      const f = await pickFolder({ title: "Choose a destination folder", device: modalState.volumePath });
+      if (!f) return;
+      modalState.dst = f;
+      updateModalChosen();
+    });
+    $("modal-cancel").addEventListener("click", () => {
+      // Reverts only the assignment that caused the conflict, leaving the
+      // pre-existing one alone — cancelling shouldn't undo work the user
+      // didn't just do.
+      const revert = modalState?.onCancel;
+      closeModal();
+      revert?.();
+    });
+    $("modal-done").addEventListener("click", () => {
+      if (!modalState || !modalState.src || !modalState.dst) return;
+      const root = modalState.volumePath;
+      const { src, dst } = modalState;
+      closeModal();
+      // Replace the bare volume root on both sides with the chosen
+      // subfolders. Done as a swap rather than an add so the root doesn't
+      // linger in either role.
+      if (sourcePath === root) sourcePath = src;
+      const node = destNodes.find((n) => n.path === root);
+      if (node) node.path = dst;
+      else destNodes.push({ id: newId(), path: dst, parentId: null });
+      pruneExtraFolder(root);
+      render();
+    });
+
+    // ── Item 1: live volume detection ──
+    // No polling — the main process watches /Volumes and pushes. The
+    // renderer just re-lists, rather than trusting a diff computed
+    // elsewhere.
+    window.freeframe.onVolumesChanged(() => { refresh(); });
+
+    window.freeframe.getRecentFolders().then((r) => { recentFolders = r || {}; }).catch(() => {});
     refresh();
   </script>
 </body>

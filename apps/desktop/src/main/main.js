@@ -1,4 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const fs = require("node:fs");
+const fsp = require("node:fs/promises");
 const path = require("node:path");
 const { listVolumes } = require("./volumes");
 const { runCopyJob } = require("./copy-engine");
@@ -10,6 +12,35 @@ let mainWindow = null;
 // numbers meaningless; the roadmap's multi-hop DAG is a scheduler on top
 // of this, not several uncoordinated runs.
 let activeJob = null;
+
+// ── Live volume detection ──
+// Mounting or ejecting a disk fires several fs events in quick succession
+// (the directory entry appearing, then metadata settling), so a raw watcher
+// would push 3-5 refreshes for one physical action. Debounced to one.
+const VOLUME_DEBOUNCE_MS = 300;
+let volumeWatcher = null;
+let volumeDebounce = null;
+
+function startVolumeWatcher() {
+  if (volumeWatcher) return;
+  try {
+    volumeWatcher = fs.watch("/Volumes", () => {
+      clearTimeout(volumeDebounce);
+      volumeDebounce = setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("volumes:changed");
+        }
+      }, VOLUME_DEBOUNCE_MS);
+    });
+    // A watcher error (the directory going away, fd exhaustion) must not
+    // take the app down — the manual Refresh button still works.
+    volumeWatcher.on("error", () => {
+      volumeWatcher = null;
+    });
+  } catch {
+    volumeWatcher = null;
+  }
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -105,21 +136,76 @@ ipcMain.handle("copy:cancel", async () => {
 // the normal case, not the exception. The native dialog is also the
 // mechanism that triggers macOS's own file-access permission prompt for a
 // location the app hasn't been granted yet.
-ipcMain.handle("dialog:choose-folder", async (_event, { title } = {}) => {
-  const result = await dialog.showOpenDialog(mainWindow, {
+// ── Item 6: recent folder per device ──
+// A small JSON file in userData rather than in-memory: the point is that
+// re-selecting yesterday's destination doesn't mean browsing to it again,
+// and that only pays off across restarts. Keyed by mountPoint, which is
+// stable for the life of a mount; a drive that comes back under a
+// different /Volumes name simply has no memory yet, which is correct
+// rather than wrong.
+function recentsFile() {
+  return path.join(app.getPath("userData"), "recent-folders.json");
+}
+
+async function readRecents() {
+  try {
+    return JSON.parse(await fsp.readFile(recentsFile(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+ipcMain.handle("recent-folders:get", async () => readRecents());
+
+ipcMain.handle("recent-folders:remember", async (_event, { device, folder } = {}) => {
+  if (typeof device !== "string" || typeof folder !== "string" || !device || !folder) return {};
+  const recents = await readRecents();
+  recents[device] = folder;
+  try {
+    await fsp.mkdir(path.dirname(recentsFile()), { recursive: true });
+    await fsp.writeFile(recentsFile(), JSON.stringify(recents, null, 2));
+  } catch {
+    // Losing the convenience of a remembered folder must never break the
+    // actual assignment the user just made.
+  }
+  return recents;
+});
+
+ipcMain.handle("dialog:choose-folder", async (_event, { title, defaultPath } = {}) => {
+  const options = {
     title: title || "Choose folder",
     properties: ["openDirectory", "createDirectory"],
-  });
+  };
+  // Roots the dialog inside a specific device. Without this, picking
+  // "DAY_01" while offloading three cards at once gives no way to tell
+  // which drive that folder is actually on.
+  if (typeof defaultPath === "string" && defaultPath) {
+    // Only if it still exists — a stale path makes the native dialog open
+    // somewhere arbitrary rather than erroring, which is worse than just
+    // falling back to the default location.
+    try {
+      const st = await fsp.stat(defaultPath);
+      if (st.isDirectory()) options.defaultPath = defaultPath;
+    } catch { /* fall through to the system default */ }
+  }
+  const result = await dialog.showOpenDialog(mainWindow, options);
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
 });
 
 app.whenReady().then(() => {
   createWindow();
+  startVolumeWatcher();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on("before-quit", () => {
+  clearTimeout(volumeDebounce);
+  volumeWatcher?.close();
+  volumeWatcher = null;
 });
 
 app.on("window-all-closed", () => {

@@ -55,6 +55,41 @@ async function getDiskutilInfo(mountPoint) {
   }
 }
 
+/** Real free/total bytes for a mount point.
+ *
+ * `statfs` is the source of truth, not `diskutil info`, for two reasons
+ * confirmed empirically on this machine (2026-08-10):
+ *
+ *  - **Network mounts**: diskutil populates no size fields at all for an
+ *    SMB mount — it reported `total=null free=null` for a 52 TB share that
+ *    `df` reads fine. diskutil is built around physical device info; a
+ *    network share has no device to describe.
+ *  - **APFS internal**: diskutil reported `free=0` for the boot volume,
+ *    because free space belongs to the APFS *container* shared by the
+ *    read-only System and writable Data volumes, not to the single volume
+ *    being asked about. `df` and Finder both report ~163 GB.
+ *
+ * statfs is a plain POSIX call against whatever is actually mounted at the
+ * path, so it sidesteps both. Verified to match `df` byte-for-byte on the
+ * internal drive and the network share.
+ *
+ * bavail (not bfree) is deliberate: bfree counts blocks reserved for root,
+ * which a user can't actually write into — reporting it would overstate
+ * how much footage fits.
+ */
+async function getSpace(mountPoint) {
+  try {
+    const st = await fs.statfs(mountPoint);
+    const bsize = Number(st.bsize);
+    return {
+      totalBytes: Number(st.blocks) * bsize,
+      freeBytes: Number(st.bavail) * bsize,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** @returns {"removable"|"internal"|"external"|"network"} */
 function classify(info) {
   const bus = info.BusProtocol || "";
@@ -76,28 +111,47 @@ async function listVolumes() {
 
   const results = await Promise.all(
     mountPoints.map(async (mountPoint) => {
+      // Asked for unconditionally: it's the authoritative answer even when
+      // diskutil succeeds, and it's the only answer when diskutil doesn't.
+      const space = await getSpace(mountPoint);
+
       try {
         const info = await getDiskutilInfo(mountPoint);
+        // diskutil's own numbers survive only as a fallback for the rare
+        // case where statfs itself fails (an unreachable network mount that
+        // is still listed under /Volumes, typically).
+        const fallbackTotal = typeof info.TotalSize === "number" ? info.TotalSize : null;
+        const fallbackFree =
+          typeof info.FreeSpace === "number"
+            ? info.FreeSpace
+            : typeof info.VolumeFreeSpace === "number"
+              ? info.VolumeFreeSpace
+              : null;
         return {
           name: info.VolumeName || path.basename(mountPoint),
           mountPoint,
           deviceId: info.DeviceIdentifier || "",
           type: classify(info),
-          totalBytes: typeof info.TotalSize === "number" ? info.TotalSize : null,
-          freeBytes: typeof info.FreeSpace === "number" ? info.FreeSpace : typeof info.VolumeFreeSpace === "number" ? info.VolumeFreeSpace : null,
+          totalBytes: space ? space.totalBytes : fallbackTotal,
+          freeBytes: space ? space.freeBytes : fallbackFree,
           fileSystem: info.FilesystemType || info.FilesystemName || null,
         };
       } catch (err) {
         // A handful of virtual/network mount types make diskutil unhappy.
         // Still surface the volume rather than hiding it — unclassifiable
-        // beats invisible, matches classify()'s "external" fallback logic.
+        // beats invisible. statfs usually still works here, which is the
+        // whole point: an SMB share diskutil can't describe at all still
+        // gets real numbers.
         return {
           name: path.basename(mountPoint),
           mountPoint,
           deviceId: "",
-          type: "external",
-          totalBytes: null,
-          freeBytes: null,
+          // diskutil couldn't describe it, and on this machine that has so
+          // far only happened for network mounts — a better guess than
+          // "external", which put a 52 TB SMB share behind a USB-drive icon.
+          type: "network",
+          totalBytes: space ? space.totalBytes : null,
+          freeBytes: space ? space.freeBytes : null,
           fileSystem: null,
         };
       }
