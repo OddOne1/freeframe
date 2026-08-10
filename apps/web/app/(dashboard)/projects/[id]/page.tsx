@@ -26,7 +26,15 @@ import {
   ExternalLink,
   Users,
 } from "lucide-react";
-import { cn, formatRelativeTime, formatBytes, resolveApiMediaUrl } from "@/lib/utils";
+import {
+  cn,
+  formatRelativeTime,
+  formatBytes,
+  resolveApiMediaUrl,
+  trashExpiresAt,
+  formatTimeRemaining,
+  TRASH_RETENTION_DAYS,
+} from "@/lib/utils";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -62,6 +70,46 @@ import type {
   FolderTreeNode,
   ShareLink,
 } from "@/types";
+
+/**
+ * When an item was deleted, and when it will be gone for good.
+ *
+ * The API returns only `deleted_at`; the expiry is derived from it and the
+ * retention constant, which is why no new field was needed. The absolute
+ * timestamp is shown alongside the countdown deliberately — "expires in 4
+ * days" alone gives no way to check the maths or to reason about a
+ * deletion someone else performed.
+ *
+ * Re-renders come from the once-a-minute tick in the parent.
+ */
+function TrashExpiry({ deletedAt }: { deletedAt: string | null }) {
+  const expiresAt = trashExpiresAt(deletedAt);
+  if (!deletedAt || !expiresAt) return null;
+
+  const deleted = new Date(deletedAt);
+  const remainingMs = expiresAt.getTime() - Date.now();
+  // Last day: this is about to be irreversible, so it stops being grey.
+  const urgent = remainingMs < 24 * 60 * 60 * 1000;
+
+  return (
+    <p className="text-2xs text-text-tertiary mt-0.5 pl-6">
+      <span title={deleted.toString()}>
+        Deleted{" "}
+        {deleted.toLocaleString(undefined, {
+          dateStyle: "medium",
+          timeStyle: "short",
+        })}
+      </span>
+      <span className="mx-1.5 text-text-tertiary/50">·</span>
+      <span
+        className={cn(urgent && "text-status-warning")}
+        title={`Permanently deleted after ${expiresAt.toLocaleString()}`}
+      >
+        {formatTimeRemaining(expiresAt)}
+      </span>
+    </p>
+  );
+}
 
 export default function ProjectDetailPage() {
   const params = useParams();
@@ -117,6 +165,18 @@ export default function ProjectDetailPage() {
     assetIds: string[];
     folderIds: string[];
   } | null>(null);
+  // Recently Deleted: the item a "Delete Permanently" click is waiting on
+  // confirmation for. Irreversible, and the button sits right beside
+  // Restore, so a misclick must not be able to destroy footage.
+  const [pendingPurge, setPendingPurge] = React.useState<{
+    id: string;
+    name: string;
+    kind: "asset" | "folder";
+  } | null>(null);
+  // Drives the countdown re-render. Days-and-hours precision means once a
+  // minute is plenty; a per-second ticker would re-render this page 60×
+  // more often to display the same string.
+  const [, setCountdownTick] = React.useState(0);
   const [assetToRename, setAssetToRename] = React.useState<AssetResponse | null>(null);
   const [assetToDelete, setAssetToDelete] = React.useState<AssetResponse | null>(null);
 
@@ -134,6 +194,8 @@ export default function ProjectDetailPage() {
     bulkMove,
     restoreAsset,
     restoreFolder,
+    purgeAsset,
+    purgeFolder,
   } = useFolders(projectId);
 
   const { trash, mutateTrash } = useTrash(projectId);
@@ -338,6 +400,20 @@ export default function ProjectDetailPage() {
   const canCreateFolder = currentRole === "owner" || currentRole === "editor";
   const canShare = currentRole === "owner" || currentRole === "editor";
   const canManageMembers = currentRole === "owner";
+  // Skipping the 30-day wait destroys footage immediately, so it sits one
+  // level above the editor gate the rest of the trash uses. "admin" is the
+  // role labelled "Manager" in the UI — there is no separate role by that
+  // name. The API enforces this independently; hiding the button is only a
+  // courtesy.
+  const canPurge = currentRole === "owner" || currentRole === "admin";
+
+  // Only while the trash is actually on screen — nothing else on this page
+  // shows a countdown, so an always-on interval would be pure wakeups.
+  React.useEffect(() => {
+    if (!showTrash) return;
+    const t = setInterval(() => setCountdownTick((n) => n + 1), 60_000);
+    return () => clearInterval(t);
+  }, [showTrash]);
   const canSeeShareLinks = currentRole === "owner" || currentRole === "editor";
   const canComment = currentRole !== "viewer";
 
@@ -745,9 +821,13 @@ export default function ProjectDetailPage() {
             />
           ) : showTrash ? (
             <div className="flex-1 overflow-y-auto">
-              <h2 className="text-sm font-medium text-text-primary mb-3">
+              <h2 className="text-sm font-medium text-text-primary mb-1">
                 Recently Deleted
               </h2>
+              <p className="text-xs text-text-tertiary mb-3">
+                Items are permanently deleted {TRASH_RETENTION_DAYS} days
+                after they were removed.
+              </p>
               {trash.folders.length === 0 && trash.assets.length === 0 ? (
                 <p className="text-xs text-text-tertiary">No deleted items</p>
               ) : (
@@ -755,54 +835,92 @@ export default function ProjectDetailPage() {
                   {trash.folders.map((item) => (
                     <div
                       key={item.id}
-                      className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-white/5"
+                      className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg hover:bg-white/5"
                     >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <FolderIcon className="h-4 w-4 text-text-tertiary shrink-0" />
-                        <span className="text-sm text-text-primary truncate">
-                          {item.name}
-                        </span>
-                        <span className="text-xs text-text-tertiary">
-                          Folder
-                        </span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FolderIcon className="h-4 w-4 text-text-tertiary shrink-0" />
+                          <span className="text-sm text-text-primary truncate">
+                            {item.name}
+                          </span>
+                          <span className="text-xs text-text-tertiary">
+                            Folder
+                          </span>
+                        </div>
+                        <TrashExpiry deletedAt={item.deleted_at} />
                       </div>
-                      <button
-                        className="text-xs text-accent hover:underline shrink-0"
-                        onClick={async () => {
-                          await restoreFolder(item.id);
-                          mutateTrash();
-                          mutateAssets();
-                          mutateSubfolders();
-                        }}
-                      >
-                        Restore
-                      </button>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <button
+                          className="text-xs text-accent hover:underline"
+                          onClick={async () => {
+                            await restoreFolder(item.id);
+                            mutateTrash();
+                            mutateAssets();
+                            mutateSubfolders();
+                          }}
+                        >
+                          Restore
+                        </button>
+                        {canPurge && (
+                          <button
+                            className="text-xs text-status-error hover:underline"
+                            onClick={() =>
+                              setPendingPurge({
+                                id: item.id,
+                                name: item.name,
+                                kind: "folder",
+                              })
+                            }
+                          >
+                            Delete Permanently
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
                   {trash.assets.map((item) => (
                     <div
                       key={item.id}
-                      className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-white/5"
+                      className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg hover:bg-white/5"
                     >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="text-sm text-text-primary truncate">
-                          {item.name}
-                        </span>
-                        <span className="text-xs text-text-tertiary capitalize">
-                          {item.type}
-                        </span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm text-text-primary truncate">
+                            {item.name}
+                          </span>
+                          <span className="text-xs text-text-tertiary capitalize">
+                            {item.type}
+                          </span>
+                        </div>
+                        <TrashExpiry deletedAt={item.deleted_at} />
                       </div>
-                      <button
-                        className="text-xs text-accent hover:underline shrink-0"
-                        onClick={async () => {
-                          await restoreAsset(item.id);
-                          mutateTrash();
-                          mutateAssets();
-                          mutateSubfolders();
-                        }}
-                      >
-                        Restore
-                      </button>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <button
+                          className="text-xs text-accent hover:underline"
+                          onClick={async () => {
+                            await restoreAsset(item.id);
+                            mutateTrash();
+                            mutateAssets();
+                            mutateSubfolders();
+                          }}
+                        >
+                          Restore
+                        </button>
+                        {canPurge && (
+                          <button
+                            className="text-xs text-status-error hover:underline"
+                            onClick={() =>
+                              setPendingPurge({
+                                id: item.id,
+                                name: item.name,
+                                kind: "asset",
+                              })
+                            }
+                          >
+                            Delete Permanently
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1407,6 +1525,34 @@ export default function ProjectDetailPage() {
       )}
 
       {/* Bulk delete confirmation */}
+      {/* Permanent delete from Recently Deleted. Unlike every other delete
+          on this page, nothing comes back from this one — hence the
+          explicit warning rather than the usual "you can restore it
+          later". */}
+      <ConfirmDialog
+        open={pendingPurge !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingPurge(null);
+        }}
+        title={`Permanently delete "${pendingPurge?.name ?? ""}"?`}
+        description={
+          pendingPurge?.kind === "folder"
+            ? "This folder and everything still inside it will be deleted immediately, along with all stored media. This cannot be undone."
+            : "This asset, all of its versions, comments and stored media will be deleted immediately. This cannot be undone."
+        }
+        confirmLabel="Delete Permanently"
+        variant="danger"
+        onConfirm={async () => {
+          if (!pendingPurge) return;
+          if (pendingPurge.kind === "folder") await purgeFolder(pendingPurge.id);
+          else await purgeAsset(pendingPurge.id);
+          setPendingPurge(null);
+          mutateTrash();
+          mutateAssets();
+          mutateSubfolders();
+        }}
+      />
+
       <ConfirmDialog
         open={pendingBulkDelete !== null}
         onOpenChange={(open) => {

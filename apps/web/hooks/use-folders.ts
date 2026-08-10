@@ -63,6 +63,22 @@ export function useFolders(projectId: string) {
     await mutateTree()
   }
 
+  /**
+   * Permanent, irreversible delete of an already-soft-deleted item,
+   * skipping the 30-day wait. Owner/admin only — the API enforces that
+   * with `require_project_role(..., ProjectRole.admin)`; hiding the button
+   * is a courtesy, not the control.
+   */
+  async function purgeAsset(assetId: string): Promise<void> {
+    await api.post(`/assets/${assetId}/purge`)
+    await mutateTree()
+  }
+
+  async function purgeFolder(folderId: string): Promise<void> {
+    await api.post(`/folders/${folderId}/purge`)
+    await mutateTree()
+  }
+
   return {
     tree: tree ?? [],
     mutateTree,
@@ -74,6 +90,8 @@ export function useFolders(projectId: string) {
     bulkMove,
     restoreAsset,
     restoreFolder,
+    purgeAsset,
+    purgeFolder,
   }
 }
 

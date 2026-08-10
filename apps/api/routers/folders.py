@@ -21,6 +21,7 @@ from ..schemas.folder import (
     FolderUpdate,
 )
 from ..services.permissions import require_project_role, get_project_member, is_public_project
+from ..services.purge_service import purge_asset, purge_folder
 
 router = APIRouter(tags=["folders"])
 
@@ -530,3 +531,60 @@ def restore_folder(
 
     db.commit()
     return {"ok": True}
+
+# ─── Permanent delete (skip the 30-day wait) ─────────────────────────────────
+#
+# Owner/admin only, one level above the `editor` gate the rest of this
+# router uses. `require_project_role` ranks owner and admin equally (4),
+# above editor (3), so passing ProjectRole.admin means exactly "owner or
+# manager" — which is what was asked for; there is no separate "manager"
+# role, `admin` IS that role (models/project.py:17-22).
+#
+# Both endpoints only accept an *already soft-deleted* item. That keeps
+# this strictly a trash operation rather than a way to skip the trash: you
+# cannot destroy a live asset in one call, and the normal editor-level
+# delete still has to happen first.
+
+@router.post("/assets/{asset_id}/purge", status_code=status.HTTP_200_OK)
+def purge_asset_now(
+    asset_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Permanently delete a soft-deleted asset now. Owner/admin only."""
+    asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.isnot(None)).first()
+    if not asset:
+        # Deliberately the same 404 whether the asset is live or absent —
+        # "this exists but isn't deleted" is the caller using the wrong
+        # endpoint, and the trash view is the only legitimate entry point.
+        raise HTTPException(status_code=404, detail="Deleted asset not found")
+
+    require_project_role(db, asset.project_id, current_user, ProjectRole.admin)
+
+    stats = purge_asset(db, asset)
+    db.commit()
+    return {"ok": True, **stats}
+
+
+@router.post("/folders/{folder_id}/purge", status_code=status.HTTP_200_OK)
+def purge_folder_now(
+    folder_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Permanently delete a soft-deleted folder and its contents now.
+
+    Owner/admin only. Unlike the scheduled sweep, this recurses into the
+    folder's descendants: they were stamped deleted at the same moment but
+    are not individually expired yet, and leaving them behind would strand
+    rows nothing can ever list again.
+    """
+    folder = db.query(Folder).filter(Folder.id == folder_id, Folder.deleted_at.isnot(None)).first()
+    if not folder:
+        raise HTTPException(status_code=404, detail="Deleted folder not found")
+
+    require_project_role(db, folder.project_id, current_user, ProjectRole.admin)
+
+    stats = purge_folder(db, folder)
+    db.commit()
+    return {"ok": True, **stats}

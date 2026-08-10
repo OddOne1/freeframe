@@ -19,6 +19,7 @@ celery_app = Celery(
         "apps.api.tasks.watermark_tasks",
         "apps.api.tasks.reminder_tasks",
         "apps.api.tasks.email_tasks",
+        "apps.api.tasks.purge_tasks",
     ],
 )
 
@@ -82,6 +83,17 @@ celery_app.conf.beat_schedule = {
         # nothing. It only matters for exports orphaned by a worker restart,
         # which then survive up to ~12h instead of ~1h before being cleared.
         "schedule": crontab(minute="30", hour="*/12"),
+    },
+    # 30-day Recently Deleted retention. Daily is ample: the window is
+    # measured in days, so the worst case is an item surviving its
+    # thirtieth day by a few hours, which nobody can perceive and which
+    # errs towards keeping data rather than destroying it early.
+    #
+    # 03:15 keeps it clear of both jobs above and out of working hours —
+    # this one deletes real footage and issues a lot of S3 calls.
+    "purge-expired-trash": {
+        "task": "purge_expired_trash",
+        "schedule": crontab(minute="15", hour="3"),
     },
 }
 

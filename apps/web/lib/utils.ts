@@ -100,6 +100,50 @@ export function formatEta(seconds: number): string {
  * Format an ISO date string into a relative time string
  * e.g. "2 hours ago", "3 days ago", "just now"
  */
+/**
+ * How long a soft-deleted item stays in Recently Deleted before the
+ * scheduled purge removes it permanently. Must match
+ * `RETENTION_DAYS` in apps/api/services/purge_service.py — the API
+ * returns `deleted_at` and nothing else, so the expiry is computed here.
+ */
+export const TRASH_RETENTION_DAYS = 30
+
+export function trashExpiresAt(deletedAt: string | null | undefined): Date | null {
+  if (!deletedAt) return null
+  const deleted = new Date(deletedAt)
+  if (Number.isNaN(deleted.getTime())) return null
+  return new Date(deleted.getTime() + TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000)
+}
+
+/**
+ * "expires in 12 days, 4 hours".
+ *
+ * Days and hours because that's the precision the retention window
+ * actually has — a per-second countdown on a 30-day timer would be noise,
+ * and would need a ticker 60× busier to serve it.
+ *
+ * `now` is injectable so this is testable without freezing the clock.
+ */
+export function formatTimeRemaining(expiresAt: Date, now: Date = new Date()): string {
+  const ms = expiresAt.getTime() - now.getTime()
+  // The sweep runs daily, so an item can legitimately sit here a few hours
+  // past its expiry. Saying "expires in -3 hours" would look broken.
+  if (ms <= 0) return 'expiring shortly'
+
+  const totalHours = Math.floor(ms / (60 * 60 * 1000))
+  const days = Math.floor(totalHours / 24)
+  const hours = totalHours % 24
+
+  if (days > 0) {
+    return `expires in ${days} day${days !== 1 ? 's' : ''}, ${hours} hour${hours !== 1 ? 's' : ''}`
+  }
+  if (totalHours > 0) {
+    return `expires in ${totalHours} hour${totalHours !== 1 ? 's' : ''}`
+  }
+  const mins = Math.max(1, Math.floor(ms / (60 * 1000)))
+  return `expires in ${mins} minute${mins !== 1 ? 's' : ''}`
+}
+
 export function formatRelativeTime(date: string): string {
   const now = Date.now()
   const then = new Date(date).getTime()
