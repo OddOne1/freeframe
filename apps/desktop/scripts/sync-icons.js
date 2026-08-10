@@ -47,6 +47,8 @@ const ICONS = {
   external: "HardDrive",
   network: "Server",
   folder: "FolderOpen",
+  // A FreeFrame project shown as an upload destination.
+  freeframe: "CloudUpload",
   arrowRight: "ArrowRight",
 };
 

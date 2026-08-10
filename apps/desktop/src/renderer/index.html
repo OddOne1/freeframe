@@ -333,6 +333,26 @@
     }
 
     /* ── Item 5: dual-role conflict modal ── */
+    .field { margin-bottom: 10px; }
+    .field label {
+      display: block; font-size: 10px; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--text-tertiary); margin-bottom: 4px;
+    }
+    .field input {
+      width: 100%; height: 30px; border-radius: 6px; padding: 0 9px;
+      background: var(--bg-secondary); border: 1px solid var(--border);
+      color: var(--text-primary); font-size: 12px; font-family: inherit;
+    }
+    .field input:focus { outline: none; border-color: var(--border-focus); }
+    .ff-error { font-size: 11px; color: var(--status-error); min-height: 14px; margin-bottom: 8px; }
+
+    #login-backdrop {
+      position: fixed; inset: 0; z-index: 1100; display: none;
+      background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
+      align-items: center; justify-content: center;
+    }
+    #login-backdrop.open { display: flex; }
+
     #modal-backdrop {
       position: fixed; inset: 0; z-index: 1100; display: none;
       background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
@@ -458,6 +478,28 @@
     <div class="summary" id="summary"></div>
   </footer>
 
+  <div id="login-backdrop" class="modal-backdrop-shared">
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3>Sign in to FreeFrame</h3>
+      </div>
+      <p>Projects you can upload to will appear alongside your drives.</p>
+      <div class="field"><label for="ff-url">Server</label>
+        <input id="ff-url" type="text" spellcheck="false" /></div>
+      <div class="field"><label for="ff-email">Email</label>
+        <input id="ff-email" type="email" autocomplete="username" spellcheck="false" /></div>
+      <div class="field"><label for="ff-pass">Password</label>
+        <input id="ff-pass" type="password" autocomplete="current-password" /></div>
+      <div id="ff-error" class="ff-error"></div>
+      <div class="modal-actions">
+        <div class="row2">
+          <button id="ff-cancel">Cancel</button>
+          <button id="ff-submit" class="primary">Sign in</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="algo-menu"></div>
 
   <div id="modal-backdrop">
@@ -506,6 +548,14 @@
     let copying = false;
     let nodeStatus = new Map();  // id -> { status, copiedBytes, filesVerified }
     let sourceReleased = false;
+
+    /** FreeFrame session + projects. Projects appear in the centre column
+     *  alongside physical drives and are usable as destinations. Using one
+     *  as a SOURCE is deliberately out of scope for this pass — the roadmap
+     *  only ever specified upload-as-destination, and nothing here can read
+     *  files back down. */
+    let ffStatus = { loggedIn: false, user: null, baseUrl: "" };
+    let ffProjects = [];
 
     /** Checksum algorithm for the next job. Defaults to xxHash64, so
      *  nothing changes for anyone who never opens the picker. */
@@ -622,6 +672,18 @@
     function allEntries() {
       return [
         ...volumes.map((v) => ({ ...v })),
+        // Projects use the same card/tile treatment as drives; `kind`
+        // marks them so the destination path can branch.
+        ...ffProjects.map((p) => ({
+          kind: "freeframe",
+          projectId: p.id,
+          name: p.name,
+          mountPoint: `freeframe://${p.id}`,
+          type: "freeframe",
+          totalBytes: p.storage_limit_bytes ?? null,
+          freeBytes: null,
+          assetCount: p.asset_count ?? 0,
+        })),
         ...extraFolders.map((p) => ({
           name: baseName(p), mountPoint: p, type: "folder",
           totalBytes: null, freeBytes: null,
@@ -633,8 +695,14 @@
     const isAssigned = (p) => sourcePath === p || destNodes.some((n) => n.path === p);
 
     // ── Assignment ──
+    const isProject = (p) => typeof p === "string" && p.startsWith("freeframe://");
+
     function setSource(p) {
       if (copying) return;
+      // Reading files back down from FreeFrame isn't built (and wasn't
+      // asked for), so a project can't be a source. Refusing here beats
+      // letting it be assigned and failing at copy time.
+      if (isProject(p)) return;
       const previous = sourcePath;
       sourcePath = p;
       // Item 5: holding both roles is legitimate — copying between two
@@ -848,6 +916,8 @@
         } else if (fromRole === "dest") {
           removeDest(dragged);
         }
+      } else if (t.zone === "source" && isProject(dragged)) {
+        // Silently ignored above; nothing to do.
       } else if (t.zone === "dest") {
         if (fromRole === "dest") {
           // Dragged out of a cascade and into open space → back to copying
@@ -869,7 +939,7 @@
       const add = (label, fn, disabled = false) =>
         menu.appendChild(el("button", { text: label, disabled, onClick: () => { closeMenu(); fn(); } }));
 
-      add("Set as Source", () => setSource(path), sourcePath === path);
+      add("Set as Source", () => setSource(path), sourcePath === path || isProject(path));
       add("Set as Destination", () => addDest(path, null), destNodes.some((n) => n.path === path));
 
       // Item 3 — per-device pickers. The general header buttons stay (they
@@ -992,9 +1062,11 @@
         el("div", { class: "name", text: entry.name }),
         el("div", {
           class: "meta",
-          text: entry.totalBytes == null
-            ? entry.mountPoint
-            : `${formatBytes(entry.freeBytes)} free of ${formatBytes(entry.totalBytes)}`,
+          text: entry.kind === "freeframe"
+            ? `${entry.assetCount} asset${entry.assetCount === 1 ? "" : "s"} · upload destination`
+            : entry.totalBytes == null
+              ? entry.mountPoint
+              : `${formatBytes(entry.freeBytes)} free of ${formatBytes(entry.totalBytes)}`,
           title: entry.mountPoint,
         }),
       ]);
@@ -1276,12 +1348,26 @@
       render();
 
       try {
-        const summary = await window.freeframe.startCopy(
-          sourcePath,
-          destNodes.map((n) => ({ id: n.id, path: n.path, parentId: n.parentId })),
-          algorithm
-        );
-        renderSummary(summary);
+        const projectNodes = destNodes.filter((n) => isProject(n.path));
+        const localNodes = destNodes.filter((n) => !isProject(n.path));
+
+        let summary = null;
+        if (localNodes.length) {
+          summary = await window.freeframe.startCopy(
+            sourcePath,
+            localNodes.map((n) => ({ id: n.id, path: n.path, parentId: n.parentId })),
+            algorithm
+          );
+          renderSummary(summary);
+        }
+        // Uploads run after the local legs, and one project at a time —
+        // main refuses a second job while one is active. Sequential rather
+        // than parallel is the honest first-pass behaviour.
+        for (const node of projectNodes) {
+          const projectId = node.path.replace("freeframe://", "");
+          const up = await window.freeframe.freeframeUpload(sourcePath, projectId, null);
+          renderSummary(up);
+        }
       } catch (err) {
         const box = $("summary");
         box.replaceChildren(
@@ -1370,6 +1456,76 @@
     // renderer just re-lists, rather than trusting a diff computed
     // elsewhere.
     window.freeframe.onVolumesChanged(() => { refresh(); });
+
+    // ── FreeFrame account ──
+    function updateAccountButton() {
+      const btn = $("account");
+      btn.textContent = ffStatus.loggedIn
+        ? (ffStatus.user?.name || ffStatus.user?.email || "Signed in")
+        : "Sign in to FreeFrame";
+      btn.title = ffStatus.loggedIn ? "Click to sign out" : "Sign in to upload to a FreeFrame project";
+    }
+
+    async function loadProjects() {
+      if (!ffStatus.loggedIn) { ffProjects = []; render(); return; }
+      const res = await window.freeframe.freeframeProjects();
+      ffProjects = res && res.ok ? (res.projects || []) : [];
+      render();
+    }
+
+    async function refreshAccount() {
+      ffStatus = await window.freeframe.freeframeStatus();
+      updateAccountButton();
+      await loadProjects();
+    }
+
+    const openLogin = () => {
+      $("ff-error").textContent = "";
+      $("ff-url").value = ffStatus.baseUrl || "https://frame.yon.studio/api";
+      $("ff-pass").value = "";
+      $("login-backdrop").classList.add("open");
+      $("ff-email").focus();
+    };
+    const closeLogin = () => {
+      // Never leave the password sitting in a detached DOM node.
+      $("ff-pass").value = "";
+      $("login-backdrop").classList.remove("open");
+    };
+
+    $("account").addEventListener("click", async () => {
+      if (copying) return;
+      if (ffStatus.loggedIn) {
+        ffStatus = await window.freeframe.freeframeLogout();
+        ffProjects = [];
+        updateAccountButton();
+        render();
+      } else {
+        openLogin();
+      }
+    });
+    $("ff-cancel").addEventListener("click", closeLogin);
+    $("ff-submit").addEventListener("click", async () => {
+      const email = $("ff-email").value.trim();
+      const password = $("ff-pass").value;
+      const baseUrl = $("ff-url").value.trim();
+      if (!email || !password) { $("ff-error").textContent = "Email and password are required."; return; }
+      $("ff-submit").disabled = true;
+      $("ff-error").textContent = "";
+      try {
+        const res = await window.freeframe.freeframeLogin(email, password, baseUrl);
+        if (!res || !res.ok) {
+          $("ff-error").textContent = (res && res.error) || "Sign-in failed.";
+          return;
+        }
+        closeLogin();
+        await refreshAccount();
+      } finally {
+        $("ff-submit").disabled = false;
+      }
+    });
+    $("ff-pass").addEventListener("keydown", (e) => { if (e.key === "Enter") $("ff-submit").click(); });
+
+    refreshAccount().catch(() => {});
 
     $("algo-btn").addEventListener("click", (e) => {
       e.stopPropagation();

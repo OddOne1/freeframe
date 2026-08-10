@@ -17,6 +17,7 @@
     "test": "node scripts/test-copy.js && node scripts/e2e-copy.js",
     "test:e2e": "node scripts/e2e-copy.js",
     "test:engine": "node scripts/test-copy.js",
+    "test:freeframe": "node scripts/e2e-freeframe.js",
     "test:polish": "node scripts/e2e-polish.js"
   },
   "devDependencies": {

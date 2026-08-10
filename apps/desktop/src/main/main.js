@@ -7,6 +7,8 @@ const path = require("node:path");
 const { listVolumes } = require("./volumes");
 const { runCopyJob } = require("./copy-engine");
 const { listAlgorithms, isSupported, DEFAULT_ALGORITHM } = require("./hashers");
+const freeframe = require("./freeframe");
+const { listFilesRecursive } = require("./copy-engine");
 
 const execFileAsync = promisify(execFile);
 
@@ -132,6 +134,127 @@ ipcMain.handle("checksum:algorithms", async () => ({
   default: DEFAULT_ALGORITHM,
 }));
 
+// ── FreeFrame account ──
+// The renderer never receives a token. It asks main to act, exactly like
+// volumes and copying, so a compromised renderer can't exfiltrate the
+// credential.
+ipcMain.handle("freeframe:login", async (_e, { email, password, baseUrl } = {}) => {
+  if (typeof email !== "string" || typeof password !== "string") {
+    return { ok: false, error: "Email and password are required" };
+  }
+  try {
+    return await freeframe.login({ email, password, baseUrl });
+  } catch (err) {
+    return { ok: false, error: String(err.message || err) };
+  }
+});
+
+ipcMain.handle("freeframe:logout", async () => { await freeframe.clearSession(); return freeframe.status(); });
+ipcMain.handle("freeframe:status", async () => freeframe.status());
+
+ipcMain.handle("freeframe:projects", async () => {
+  try { return { ok: true, projects: await freeframe.listProjects() }; }
+  catch (err) { return { ok: false, error: String(err.message || err) }; }
+});
+
+ipcMain.handle("freeframe:folder-tree", async (_e, { projectId } = {}) => {
+  try { return { ok: true, tree: await freeframe.folderTree(projectId) }; }
+  catch (err) { return { ok: false, error: String(err.message || err) }; }
+});
+
+// Upload a whole source tree into a project as a destination.
+//
+// Deliberately NOT routed through runCopyJob: that engine is pure
+// filesystem and electron-free by design, and a project isn't a path. It
+// also can't be a cascade parent -- reading files back down from FreeFrame
+// is explicitly out of scope for this pass, so nothing can copy *from* a
+// project.
+ipcMain.handle("freeframe:upload", async (event, { sourcePath, projectId, folderId } = {}) => {
+  if (activeJob) throw new Error("A copy is already running");
+  if (typeof sourcePath !== "string" || !projectId) throw new Error("Source and project are required");
+
+  const webContents = event.sender;
+  const send = (p) => { if (!webContents.isDestroyed()) webContents.send("copy:progress", p); };
+
+  let cancelled = false;
+  activeJob = { cancel: () => { cancelled = true; } };
+  const startedAt = Date.now();
+
+  try {
+    const rel = await listFilesRecursive(sourcePath);
+    let totalBytes = 0;
+    const sizes = new Map();
+    for (const r of rel) {
+      const st = await fsp.stat(path.join(sourcePath, r));
+      sizes.set(r, st.size);
+      totalBytes += st.size;
+    }
+
+    send({ phase: "start", totalFiles: rel.length, totalBytes, legCount: 1, nodes: [] });
+
+    const uploaded = [];
+    const errors = [];
+    let doneBytes = 0;
+
+    for (const r of rel) {
+      if (cancelled) break;
+      send({ phase: "file-start", file: r, bytes: sizes.get(r) });
+      try {
+        const res = await freeframe.uploadFile({
+          projectId,
+          filePath: path.join(sourcePath, r),
+          assetName: path.basename(r),
+          folderId: folderId || null,
+          onProgress: ({ uploaded: u }) => {
+            const overall = doneBytes + u;
+            send({
+              phase: "bytes", file: r, copiedBytes: overall, totalBytes,
+              percent: totalBytes > 0 ? Math.min(100, (overall / totalBytes) * 100) : 100,
+            });
+          },
+        });
+        uploaded.push(res);
+        doneBytes += sizes.get(r) || 0;
+        send({ phase: "file-done", file: r, ok: true, copiedBytes: doneBytes, totalBytes });
+      } catch (err) {
+        errors.push({ file: r, error: String(err.message || err) });
+        send({ phase: "file-done", file: r, ok: false });
+      }
+    }
+
+    const summary = {
+      mode: "UPLOAD",
+      algorithmLabel: "FreeFrame upload",
+      sourcePath,
+      nodes: [],
+      destPaths: [`FreeFrame project ${projectId}`],
+      cancelled,
+      totalFiles: rel.length,
+      filesCopied: uploaded.length,
+      fileCopiesVerified: uploaded.length,
+      totalFileCopies: rel.length,
+      totalBytes,
+      copiedBytes: doneBytes,
+      legCount: 1,
+      mismatches: [],
+      errors,
+      // Deliberately NOT claiming verification: the app has not re-read
+      // these bytes back from FreeFrame and compared them. Post-upload
+      // checksum verification is the roadmap's phase-1 requirement and is
+      // NOT implemented here -- saying "verified" would be a lie about the
+      // one thing this tool exists to prove.
+      allVerified: false,
+      uploadOnly: true,
+      durationMs: Date.now() - startedAt,
+      files: [],
+    };
+    send({ phase: "done", summary });
+    return summary;
+  } finally {
+    activeJob = null;
+  }
+});
+
 // Copy job. The renderer sends plain path strings; every filesystem
 // operation happens here, in the main process, exactly like volumes:list.
 //
@@ -256,9 +379,11 @@ ipcMain.handle("dialog:choose-folder", async (_event, { title, defaultPath } = {
   return result.filePaths[0];
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   createWindow();
   startVolumeWatcher();
+  // Restores a previous session from the OS keychain, if there is one.
+  await freeframe.loadSession().catch(() => {});
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

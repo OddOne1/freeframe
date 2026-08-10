@@ -35,6 +35,17 @@ contextBridge.exposeInMainWorld("freeframe", {
   chooseFolder: (title, defaultPath) =>
     ipcRenderer.invoke("dialog:choose-folder", { title, defaultPath }),
 
+  /** FreeFrame account. No token ever crosses this bridge — the renderer
+   *  asks main to act on its behalf, same as volumes and copying. */
+  freeframeLogin: (email, password, baseUrl) =>
+    ipcRenderer.invoke("freeframe:login", { email, password, baseUrl }),
+  freeframeLogout: () => ipcRenderer.invoke("freeframe:logout"),
+  freeframeStatus: () => ipcRenderer.invoke("freeframe:status"),
+  freeframeProjects: () => ipcRenderer.invoke("freeframe:projects"),
+  freeframeFolderTree: (projectId) => ipcRenderer.invoke("freeframe:folder-tree", { projectId }),
+  freeframeUpload: (sourcePath, projectId, folderId) =>
+    ipcRenderer.invoke("freeframe:upload", { sourcePath, projectId, folderId }),
+
   /** Item 6 — last folder chosen per device, persisted in userData. */
   getRecentFolders: () => ipcRenderer.invoke("recent-folders:get"),
   rememberFolder: (device, folder) =>
