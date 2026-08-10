@@ -115,13 +115,26 @@ async function readError(res) {
 /** Exchange the refresh token for a new access token. */
 async function refreshAccessToken() {
   if (!state.refreshToken) return null;
-  const res = await rawRequest("POST", "/auth/refresh", {
-    body: { refresh_token: state.refreshToken },
-  });
+  let res;
+  try {
+    res = await rawRequest("POST", "/auth/refresh", {
+      body: { refresh_token: state.refreshToken },
+    });
+  } catch {
+    // The server was unreachable — offline, DNS, a tunnel still coming up.
+    // That says nothing about whether the credential is valid, so the
+    // stored session is left alone and the next call can retry. Deleting
+    // it here would mean a laptop opened on a plane is permanently signed
+    // out by the time it lands.
+    return null;
+  }
   if (!res.ok) {
-    // The refresh token is dead (expired/revoked) — drop the session
-    // rather than retrying forever against a credential that can't work.
-    await clearSession();
+    // Only an explicit rejection of the credential drops it. A 500 or a
+    // 502 from a restarting container is a server problem, not a dead
+    // token, and clearing on any non-ok (which this did) meant one bad
+    // response at launch silently signed the user out for good — with the
+    // token file deleted, so re-launching couldn't recover it either.
+    if (res.status === 401 || res.status === 403) await clearSession();
     return null;
   }
   const data = await res.json();
@@ -188,6 +201,82 @@ function status() {
 
 const listProjects = () => apiRequest("GET", "/projects");
 const folderTree = (projectId) => apiRequest("GET", `/projects/${projectId}/folder-tree`);
+
+/**
+ * Assets in a project, optionally scoped to one folder.
+ *
+ * There is no separate "list the files in this folder" endpoint and none
+ * was needed: `GET /projects/{id}/assets` (apps/api/routers/assets.py)
+ * already takes `folder_id` ("root" or a UUID) and `recursive`, and
+ * `recursive=true` returns a whole subtree in a single call.
+ *
+ * Each asset carries `latest_version.files[]`, which has
+ * `original_filename`, `file_size_bytes` and the version's
+ * `processing_status` — so one request produces the complete manifest a
+ * copy job needs, with no per-asset round trip to size anything.
+ */
+function listAssets(projectId, { folderId = null, recursive = true } = {}) {
+  const params = new URLSearchParams();
+  params.set("folder_id", folderId || "root");
+  params.set("recursive", recursive ? "true" : "false");
+  return apiRequest("GET", `/projects/${projectId}/assets?${params}`);
+}
+
+/**
+ * A Node Readable of one asset's original bytes.
+ *
+ * `?download=true` matters: for video it resolves to `s3_key_raw`, the file
+ * as it was uploaded, rather than the transcoded streaming proxy. Pulling a
+ * project down and getting HLS renditions back instead of the camera
+ * original would defeat the point.
+ *
+ * Two calls, because the API hands out a short-lived proxy URL rather than
+ * the bytes: GET the URL, then GET the URL. The proxy path is relative, so
+ * it's resolved against the signed-in server the same way apps/web resolves
+ * it against its API origin.
+ */
+async function openAssetStream(assetId) {
+  const { url } = await apiRequest("GET", `/assets/${assetId}/stream?download=true`);
+  if (!url) throw new Error("No download URL returned");
+  const absolute = url.startsWith("http") ? url : `${state.baseUrl}${url}`;
+
+  // The proxy URL carries its own token, so this request is deliberately
+  // unauthenticated — adding the bearer token would be harmless but is not
+  // what makes it work, and pretending otherwise would mislead.
+  const res = await fetch(absolute);
+  if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
+  if (!res.body) throw new Error("Download returned an empty body");
+
+  const { Readable, Transform } = require("node:stream");
+
+  // Every chunk is COPIED before it leaves this function. This is not
+  // defensive tidiness — without it the pull silently corrupts files.
+  //
+  // The engine hashes each chunk synchronously and then hands the same
+  // object to fs.WriteStream.write(), which is asynchronous. Chunks coming
+  // off a TLS fetch body are views into buffers the TLS layer reuses, so
+  // once writes start queueing (i.e. as soon as there's any backpressure —
+  // measured at 40 KB into a small file, 600 KB into a larger one) the
+  // bytes behind an already-queued chunk get overwritten before they reach
+  // the disk. The result is a file of exactly the right LENGTH whose
+  // contents diverge partway through, differently on every run, while the
+  // source hash stays stable and correct.
+  //
+  // Found by the end-to-end pull test, not by reading the code: two
+  // consecutive pulls of the same asset produced identical source hashes
+  // and two different files on disk. The verification pass is what caught
+  // it — this is precisely the failure SECURE mode exists to refuse.
+  //
+  // The copy lives here rather than in copy-engine.js on purpose: chunks
+  // from fs.createReadStream are already stable (each is a slice of a pool
+  // that stays alive as long as the slice does), so making the engine copy
+  // unconditionally would add a memcpy per 4 MiB chunk to every local
+  // card offload to fix a problem local offloads don't have.
+  const stable = new Transform({
+    transform(chunk, _enc, cb) { cb(null, Buffer.from(chunk)); },
+  });
+  return Readable.fromWeb(res.body).pipe(stable);
+}
 
 // ── Upload (multipart) ───────────────────────────────────────────────────
 
@@ -261,6 +350,8 @@ module.exports = {
   apiRequest,
   listProjects,
   folderTree,
+  listAssets,
+  openAssetStream,
   uploadFile,
   // Test seam: lets the harness drive the client without real credentials.
   __setState: (patch) => Object.assign(state, patch),

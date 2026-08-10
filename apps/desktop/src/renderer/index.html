@@ -355,6 +355,19 @@
        glyph is h-7 w-7 = 28px). */
     .tile-icon .icon svg { height: 28px; width: 28px; }
 
+    /* Project artwork fills the media box the way apps/web's project card
+       does — object-cover, not contain: a letterboxed poster with bars
+       either side reads as a broken image, not as artwork. */
+    .tile-poster { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* Same bottom scrim project-card.tsx layers under its title. Here it
+       keeps the type badge readable over an arbitrary poster rather than
+       carrying text itself. */
+    .tile-scrim {
+      position: absolute; inset-inline: 0; bottom: 0; height: 60%;
+      background: linear-gradient(to top, rgba(0,0,0,.70), rgba(0,0,0,.30) 45%, transparent);
+      pointer-events: none;
+    }
+
     /* Bottom-right, not top-right: the kebab trigger added in the last
        pass sits top-right and was overlapping this badge, clipping every
        type label to "NETWO▮" / "REMOVAB▮". */
@@ -434,12 +447,171 @@
     }
     #rename-backdrop.open { display: flex; }
 
-    #login-backdrop {
+    /* ── Item 2: in-project folder picker ── */
+    #ffdir-backdrop {
       position: fixed; inset: 0; z-index: 1100; display: none;
       background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
       align-items: center; justify-content: center;
     }
+    #ffdir-backdrop.open { display: flex; }
+    .ffdir-modal { width: 420px; max-width: calc(100vw - 40px); }
+    .ffdir-tree {
+      max-height: 300px; overflow-y: auto;
+      border: 1px solid var(--border); border-radius: 6px;
+      background: var(--bg-secondary);
+      padding: 4px 0; margin: 10px 0 8px;
+    }
+    .ffdir-row {
+      display: flex; align-items: center; gap: 8px;
+      padding-top: 5px; padding-bottom: 5px; padding-right: 10px;
+      font-size: 12px; color: var(--text-primary);
+      cursor: default; user-select: none;
+    }
+    .ffdir-row:hover { background: var(--bg-hover); }
+    .ffdir-row.selected { background: var(--accent-muted); }
+    .ffdir-row.selected .ffdir-name { color: var(--text-primary); font-weight: 500; }
+    .ffdir-glyph { color: var(--text-tertiary); flex-shrink: 0; }
+    .ffdir-row.selected .ffdir-glyph { color: var(--accent); }
+    .ffdir-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* tabular-nums so the counts form a straight column rather than
+       jittering with digit width. */
+    .ffdir-count {
+      font-size: 10px; color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums; flex-shrink: 0;
+    }
+    .ffdir-empty, .ffdir-error { padding: 10px; font-size: 11px; color: var(--text-tertiary); }
+    .ffdir-error { color: var(--status-error); }
+    .ffdir-chosen { font-size: 11px; color: var(--text-secondary); margin-bottom: 10px; }
+    .ffdir-chosen span { color: var(--text-primary); }
+
+    /* ── Sign-in ──────────────────────────────────────────────────────
+       Rebuilt against apps/web/app/(auth)/layout.tsx and the classic branch
+       of components/auth/login-form.tsx, not from memory of them. The
+       measurements below are those files' Tailwind classes resolved to
+       values: max-w-sm = 384px, rounded-xl = 12px, p-6 = 24px, h-10 = 40px
+       inputs, h-11 = 44px button, gap-4 = 16px, gap-1.5 = 6px.
+
+       Scoped under #login-backdrop rather than extending the shared .field
+       / .modal rules, which the rename and dual-role modals also use — those
+       are compact utility dialogs and shouldn't inherit a sign-in screen's
+       proportions. */
+    #login-backdrop {
+      position: fixed; inset: 0; z-index: 1100; display: none;
+      /* Denser than the utility modals' 55%: this covers the whole app and
+         reads as its own screen, which is what the web login is. */
+      background: rgba(0,0,0,.72); backdrop-filter: blur(3px);
+      align-items: center; justify-content: center;
+      /* The web login lives in a full browser window; this one has to fit
+         whatever the app window happens to be. At the default 612px-tall
+         window the stack overflowed — logo against the top edge, tagline
+         against the bottom — so it scrolls rather than clipping, and
+         `margin:auto` keeps it centred while it still fits. */
+      overflow-y: auto; padding: 24px 0;
+    }
     #login-backdrop.open { display: flex; }
+
+    /* The accent bloom behind the card — layout.tsx's
+       `h-[600px] w-[600px] rounded-full bg-accent/[0.04] blur-[120px]`. */
+    .login-glow {
+      position: absolute; left: 50%; top: 33%;
+      transform: translate(-50%, -50%);
+      height: 600px; width: 600px; border-radius: 50%;
+      background: rgba(91,141,239,.10);
+      filter: blur(120px); pointer-events: none;
+    }
+    .login-stack {
+      position: relative; display: flex; flex-direction: column;
+      align-items: center; width: 100%; max-width: 384px; padding: 0 16px;
+      margin: auto; flex-shrink: 0;
+    }
+    /* The web login's mb-10 / h-12, scaled down: this card carries a Server
+       field the web one doesn't, and the app window is shorter than a
+       browser window. */
+    .login-logo { margin-bottom: 24px; }
+    .login-logo img { height: 34px; width: auto; max-width: 200px; object-fit: contain; display: block; }
+    /* Shown instead when logo.svg is missing (see sync-tokens.js). */
+    .login-logo.text-fallback {
+      font-size: 26px; font-weight: 700; letter-spacing: -.02em;
+      color: var(--text-primary);
+    }
+
+    .login-card {
+      width: 100%; box-sizing: border-box;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      /* bg-bg-secondary/50 + backdrop-blur-sm */
+      background: color-mix(in srgb, var(--bg-secondary) 60%, transparent);
+      backdrop-filter: blur(6px);
+      padding: 24px;
+      box-shadow: 0 20px 25px -5px rgba(0,0,0,.35), 0 8px 10px -6px rgba(0,0,0,.35);
+      display: flex; flex-direction: column; gap: 16px;
+    }
+    /* mb-8 under the heading block, then gap-4 between fields. */
+    .login-head { margin-bottom: 8px; }
+    .login-head h3 {
+      margin: 0 0 4px; font-size: 20px; font-weight: 600;
+      color: var(--text-primary); letter-spacing: -.01em;
+    }
+    .login-head p { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text-secondary); }
+
+    .login-field { display: flex; flex-direction: column; gap: 6px; }
+    .login-field label { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
+    .login-field input {
+      height: 40px; width: 100%; box-sizing: border-box;
+      border-radius: 6px; border: 1px solid var(--border);
+      background: var(--bg-secondary);
+      padding: 0 12px; font-size: 14px; font-family: inherit;
+      color: var(--text-primary);
+      transition: border-color 150ms, box-shadow 150ms;
+    }
+    .login-field input::placeholder { color: var(--text-tertiary); }
+    /* focus:border-accent focus:ring-2 focus:ring-accent/20 */
+    .login-field input:focus {
+      outline: none; border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(91,141,239,.20);
+    }
+    .login-hint { font-size: 11px; color: var(--text-tertiary); }
+
+    /* Hidden until there's something to say — an always-present empty box
+       (what .ff-error's min-height did) leaves a permanent dead gap. */
+    .login-error {
+      display: none;
+      border-radius: 6px;
+      border: 1px solid color-mix(in srgb, var(--status-error) 30%, transparent);
+      background: color-mix(in srgb, var(--status-error) 10%, transparent);
+      padding: 10px 12px; font-size: 13px; line-height: 1.4;
+      color: var(--status-error);
+    }
+    .login-error.show { display: block; }
+
+    /* Button size="lg": h-11, text-base, full width. */
+    .login-submit {
+      height: 44px; width: 100%; margin-top: 8px;
+      border: none; border-radius: 6px;
+      background: var(--accent); color: var(--accent-foreground);
+      font-size: 15px; font-weight: 500; font-family: inherit;
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      transition: background 150ms, box-shadow 150ms, transform 150ms;
+      box-shadow: 0 1px 2px rgba(91,141,239,.20);
+    }
+    .login-submit:hover:not(:disabled) {
+      background: var(--accent-hover, var(--accent));
+      box-shadow: 0 4px 6px -1px rgba(91,141,239,.25);
+    }
+    .login-submit:active:not(:disabled) { transform: scale(.98); }
+    .login-submit:disabled { opacity: .5; }
+
+    /* The web login's tertiary text link ("Sign in with password instead"),
+       in the same position and weight — Cancel is this app's equivalent
+       secondary action. */
+    .login-cancel {
+      border: none; background: transparent; font-family: inherit;
+      font-size: 13px; color: var(--text-tertiary);
+      padding: 4px; transition: color 150ms;
+    }
+    .login-cancel:hover { color: var(--text-secondary); }
+
+    .login-tagline { margin: 20px 0 0; font-size: 11px; color: var(--text-tertiary); }
 
     #modal-backdrop {
       position: fixed; inset: 0; z-index: 1100; display: none;
@@ -567,25 +739,65 @@
     <div class="summary" id="summary"></div>
   </footer>
 
+  <!-- Modelled on apps/web's actual sign-in screen (app/(auth)/layout.tsx
+       plus the 'classic' branch of components/auth/login-form.tsx): the
+       accent glow, the wordmark above a bordered translucent card, the
+       label-above-input fields, the full-width primary button, and the
+       tagline underneath. Password rather than magic-code because a desktop
+       app can't receive the emailed code — that's login-form's own classic
+       branch, not an invented flow. -->
   <div id="login-backdrop" class="modal-backdrop-shared">
-    <div class="modal" role="dialog" aria-modal="true">
-      <div class="modal-head">
-        <h3>Sign in to FreeFrame</h3>
-      </div>
-      <p>Projects you can upload to will appear alongside your drives.</p>
-      <div class="field"><label for="ff-url">Server</label>
-        <input id="ff-url" type="text" spellcheck="false" /></div>
-      <div class="field"><label for="ff-email">Email</label>
-        <input id="ff-email" type="email" autocomplete="username" spellcheck="false" /></div>
-      <div class="field"><label for="ff-pass">Password</label>
-        <input id="ff-pass" type="password" autocomplete="current-password" /></div>
-      <div id="ff-error" class="ff-error"></div>
-      <div class="modal-actions">
-        <div class="row2">
-          <button id="ff-cancel">Cancel</button>
-          <button id="ff-submit" class="primary">Sign in</button>
+    <div class="login-glow" aria-hidden="true"></div>
+    <div class="login-stack">
+      <div class="login-logo"><img id="ff-logo" src="logo.svg" alt="FreeFrame" /></div>
+
+      <div class="login-card" role="dialog" aria-modal="true" aria-labelledby="ff-title">
+        <div class="login-head">
+          <h3 id="ff-title">Sign in to FreeFrame</h3>
+          <p>Projects you can offload to — and pull from — appear alongside your drives.</p>
         </div>
+
+        <div id="ff-error" class="login-error" role="alert"></div>
+
+        <div class="login-field">
+          <label for="ff-email">Email address</label>
+          <input id="ff-email" type="email" placeholder="you@example.com"
+                 autocomplete="username" spellcheck="false" />
+        </div>
+        <div class="login-field">
+          <label for="ff-pass">Password</label>
+          <input id="ff-pass" type="password" placeholder="Your password"
+                 autocomplete="current-password" />
+        </div>
+        <div class="login-field">
+          <label for="ff-url">Server</label>
+          <input id="ff-url" type="text" spellcheck="false" />
+          <!-- No equivalent on the web login, where the server is wherever
+               the page came from. A desktop app has to be told. -->
+          <span class="login-hint">The FreeFrame instance to sign in to.</span>
+        </div>
+
+        <button id="ff-submit" class="login-submit">Sign in</button>
+        <button id="ff-cancel" class="login-cancel">Cancel</button>
       </div>
+
+      <p class="login-tagline">Collaborative media review &amp; approval</p>
+    </div>
+  </div>
+
+  <!-- Item 2: which folder inside a project this job reads from / writes
+       into. The project equivalent of the per-device "Choose folder here
+       as Destination…" entry. -->
+  <div id="ffdir-backdrop" class="ff-backdrop">
+    <div class="modal ffdir-modal" role="dialog" aria-modal="true" aria-labelledby="ffdir-title">
+      <div class="modal-head"><h3 id="ffdir-title">Choose a folder</h3></div>
+      <p>Files go into the folder you pick here. Choose “Project root” to put them at the top level.</p>
+      <div id="ffdir-tree" class="ffdir-tree"></div>
+      <div class="ffdir-chosen">Selected: <span id="ffdir-chosen"></span></div>
+      <div class="modal-actions"><div class="row2">
+        <button id="ffdir-cancel">Cancel</button>
+        <button id="ffdir-save" class="primary">Use this folder</button>
+      </div></div>
     </div>
   </div>
 
@@ -779,9 +991,65 @@
       }
     }
     /** Volume type → icon key. Falls back to the generic drive icon rather
-     *  than rendering an empty box for a type we don't recognize. */
+     *  than rendering an empty box for a type we don't recognize.
+     *
+     *  `freeframe` was missing here, so every project fell through to the
+     *  default and rendered as the internal-drive laptop glyph — a project
+     *  looked like this Mac. */
     const typeIcon = (t) =>
-      ({ removable: "removable", internal: "internal", external: "external", network: "network", folder: "folder" }[t] || "internal");
+      ({
+        removable: "removable", internal: "internal", external: "external",
+        network: "network", folder: "folder", freeframe: "freeframe",
+      }[t] || "internal");
+
+    /** Human label for the corner type badge. The raw enum value is fine
+     *  for drives ("removable"/"network") but "freeframe" reads as noise on
+     *  a card that is already, visibly, a FreeFrame project. */
+    const typeLabel = (entry) => (entry.kind === "freeframe" ? "project" : entry.type);
+
+    // ── FreeFrame poster / gradient ──
+    //
+    // Deliberately the same two-branch treatment as apps/web's
+    // project-card.tsx: the poster image when there is one, and otherwise a
+    // gradient picked deterministically from the project id — NOT a generic
+    // glyph. Reusing both the preset list and the hash means a given
+    // project is the same colour in the desktop app as it is in the browser.
+    //
+    // The web presets are Tailwind class names (`from-violet-600 via-…`),
+    // which mean nothing without Tailwind, so they're resolved here to the
+    // hex values of those exact palette entries.
+    const PROJECT_GRADIENTS = [
+      ["#7c3aed", "#9333ea", "#d946ef"], // violet-600  → purple-600 → fuchsia-500
+      ["#2563eb", "#4f46e5", "#8b5cf6"], // blue-600    → indigo-600 → violet-500
+      ["#059669", "#0d9488", "#06b6d4"], // emerald-600 → teal-600   → cyan-500
+      ["#f97316", "#f59e0b", "#eab308"], // orange-500  → amber-500  → yellow-500
+      ["#e11d48", "#db2777", "#d946ef"], // rose-600    → pink-600   → fuchsia-500
+      ["#06b6d4", "#3b82f6", "#6366f1"], // cyan-500    → blue-500   → indigo-500
+      ["#0ea5e9", "#22d3ee", "#2dd4bf"], // sky-500     → cyan-400   → teal-400
+      ["#ec4899", "#f43f5e", "#fb923c"], // pink-500    → rose-500   → orange-400
+    ];
+    /** Byte-for-byte the same hash as apps/web's getGradientForProject, so
+     *  the two apps agree on which preset a project gets. */
+    function projectGradient(projectId) {
+      const hash = String(projectId).split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+      const [from, via, to] = PROJECT_GRADIENTS[hash % PROJECT_GRADIENTS.length];
+      // bg-gradient-to-br is 135deg; the radial overlay is the same
+      // highlight project-card.tsx layers over its gradient.
+      return `radial-gradient(circle at 30% 40%, rgba(255,255,255,.10), transparent 60%),` +
+        ` linear-gradient(135deg, ${from} 0%, ${via} 50%, ${to} 100%)`;
+    }
+
+    /** Absolute URL for an API-relative media path. Mirrors apps/web's
+     *  resolveApiMediaUrl, except the base is the signed-in server rather
+     *  than a build-time env var — poster_url comes back as a relative,
+     *  token-carrying proxy path (`/media/...?token=…`), which resolves
+     *  against the page in a browser but against `file://` here. */
+    function mediaUrl(url) {
+      if (!url) return null;
+      if (!url.startsWith("/")) return url;
+      const base = (ffStatus.baseUrl || "").replace(/\/+$/, "");
+      return base ? base + url : null;
+    }
 
     // ── Helpers ──
     function formatBytes(bytes) {
@@ -823,6 +1091,16 @@
           totalBytes: p.storage_limit_bytes ?? null,
           freeBytes: null,
           assetCount: p.asset_count ?? 0,
+          // Returned by GET /projects all along and simply never read —
+          // which is why every project rendered as a bare icon box.
+          posterUrl: p.poster_url || null,
+          // Item 2 — which folder inside the project this job uses. Null
+          // means the root, which is what every project meant before.
+          folderLabel: (() => {
+            const sel = projectFolder[p.id];
+            if (!sel || sel.id === "root") return null;
+            return sel.path || sel.name;
+          })(),
         })),
         ...extraFolders.map((p) => ({
           name: baseName(p), mountPoint: p, type: "folder",
@@ -901,12 +1179,19 @@
     // ── Assignment ──
     const isProject = (p) => typeof p === "string" && p.startsWith("freeframe://");
 
+    const projectIdOf = (p) => (isProject(p) ? p.slice("freeframe://".length) : null);
+
     function setSource(p) {
       if (copying) return;
-      // Reading files back down from FreeFrame isn't built (and wasn't
-      // asked for), so a project can't be a source. Refusing here beats
-      // letting it be assigned and failing at copy time.
-      if (isProject(p)) return;
+      // A project CAN now be a source (item 3) — copy-engine has a
+      // FreeFrame source provider. What it still can't be is both sides of
+      // the same job: the dual-role modal resolves that by picking two
+      // native subfolders, which is meaningless for a project, so this
+      // combination is refused outright rather than half-handled.
+      if (isProject(p) && destNodes.some((n) => n.path === p)) {
+        showProjectConflict(p);
+        return;
+      }
       const previous = sourcePath;
       sourcePath = p;
       // Item 5: holding both roles is legitimate — copying between two
@@ -922,6 +1207,13 @@
     function addDest(p, parentId = null) {
       if (copying) return;
       if (destNodes.some((n) => n.path === p)) return;
+      // Same refusal as setSource, from the other side.
+      if (isProject(p) && p === sourcePath) { showProjectConflict(p); return; }
+      // A project can't be a cascade parent: cascading re-reads the parent
+      // *from disk* to prove what landed there, and there is no local disk
+      // to re-read for an upload. Silently accepting it would produce a
+      // chain that fails at run time.
+      if (parentId && isProject(destNodes.find((n) => n.id === parentId)?.path || "")) return;
       destNodes.push({ id: newId(), path: p, parentId });
       // Symmetric with setSource: same conflict, same modal, whichever side
       // triggered it.
@@ -929,6 +1221,23 @@
         openDualRoleModal(p, () => { removeDest(p, true); render(); });
       }
       render();
+    }
+
+    /** A project on both sides of one job. Not the dual-role modal: that
+     *  offers native subfolder pickers, which a project has no equivalent
+     *  of, so it would dead-end. */
+    function showProjectConflict(p) {
+      const box = $("summary");
+      box.replaceChildren(
+        el("div", { class: "head" }, [el("h3", { class: "bad", text: "Same project on both sides" })]),
+        el("div", {
+          class: "verdict bad",
+          text: `“${entryFor(p).name}” is already on the other side of this job. ` +
+            `Pulling a project down and pushing back into the same project in one pass ` +
+            `isn't supported — run it as two jobs, or pick a different project.`,
+        })
+      );
+      box.style.display = "block";
     }
     /** Item 6 — a manually-picked folder that no longer holds any role has
      *  no reason to sit in the center column forever. Real mounted volumes
@@ -987,6 +1296,117 @@
         window.freeframe.rememberFolder(device, folder);
       }
       return folder;
+    }
+
+    // ── Item 2: in-project folder picker ──────────────────────────────────
+    //
+    // The project equivalent of "Choose folder here as Destination…". A
+    // project used to always mean its root, because freeframeUpload's
+    // folderId argument was hardcoded to null at the one call site — the
+    // IPC and the bridge already carried it.
+    //
+    // Renderer-side only, deliberately: main.js's freeframe:folder-tree
+    // handler and preload's freeframeFolderTree already existed and are
+    // used unchanged.
+
+    /** projectId → { id, name, path } for the folder that project reads
+     *  from / writes into. Absent means the project root. */
+    let projectFolder = {};
+    let folderPickerState = null;
+
+    /** The value that actually reaches freeframeUpload's third argument.
+     *  "root" and "no selection" both mean null on the wire — the API's
+     *  folder_id is nullable, and sending the string "root" would 422. */
+    function uploadFolderIdFor(projectId) {
+      const sel = projectFolder[projectId];
+      if (!sel || !sel.id || sel.id === "root") return null;
+      return sel.id;
+    }
+
+    async function openProjectFolders(projectId) {
+      if (copying) return;
+      const res = await window.freeframe.freeframeFolderTree(projectId);
+      if (!res || !res.ok) {
+        showFolderPicker(projectId, [], (res && res.error) || "Couldn't load folders.");
+        return;
+      }
+      showFolderPicker(projectId, res.tree || []);
+    }
+
+    /** Split from the fetch above so the tree rendering can be exercised
+     *  without a live server. */
+    function showFolderPicker(projectId, tree, error = null) {
+      const project = ffProjects.find((p) => p.id === projectId);
+      const current = projectFolder[projectId];
+      folderPickerState = {
+        projectId,
+        selected: current ? { ...current } : { id: "root", name: "Project root", path: "" },
+      };
+
+      $("ffdir-title").textContent = project ? project.name : "Choose a folder";
+      const host = $("ffdir-tree");
+      host.replaceChildren();
+
+      if (error) {
+        host.appendChild(el("div", { class: "ffdir-error", text: error }));
+      }
+
+      // The root is a real, selectable row rather than an implicit default,
+      // so "upload to the top level" is something you can actively choose
+      // (and choose *back* to) rather than only the absence of a choice.
+      host.appendChild(folderRow({ id: "root", name: "Project root", item_count: project ? project.asset_count : null }, 0, ""));
+
+      const walk = (nodes, depth, prefix) => {
+        for (const n of nodes || []) {
+          const p = `${prefix}/${n.name}`;
+          host.appendChild(folderRow(n, depth, p));
+          if (n.children && n.children.length) walk(n.children, depth + 1, p);
+        }
+      };
+      walk(tree, 1, "");
+
+      if (!error && (!tree || tree.length === 0)) {
+        host.appendChild(el("div", { class: "ffdir-empty", text: "This project has no folders — assets go to the root." }));
+      }
+
+      updateFolderPickerChosen();
+      $("ffdir-backdrop").classList.add("open");
+    }
+
+    function folderRow(node, depth, pathLabel) {
+      const isRoot = node.id === "root";
+      const row = el("div", {
+        class: "ffdir-row",
+        dataset: { folderId: String(node.id), path: pathLabel },
+        style: `padding-left:${8 + depth * 16}px`,
+      });
+      const glyph = icon(isRoot ? "freeframe" : "folder");
+      glyph.classList.add("ffdir-glyph");
+      row.appendChild(glyph);
+      row.appendChild(el("span", { class: "ffdir-name", text: node.name }));
+      if (node.item_count != null) {
+        row.appendChild(el("span", { class: "ffdir-count", text: `${node.item_count}` }));
+      }
+      row.addEventListener("click", () => {
+        if (!folderPickerState) return;
+        folderPickerState.selected = { id: String(node.id), name: node.name, path: pathLabel };
+        updateFolderPickerChosen();
+      });
+      return row;
+    }
+
+    function updateFolderPickerChosen() {
+      if (!folderPickerState) return;
+      const sel = folderPickerState.selected;
+      for (const r of document.querySelectorAll("#ffdir-tree .ffdir-row")) {
+        r.classList.toggle("selected", r.dataset.folderId === sel.id);
+      }
+      $("ffdir-chosen").textContent = sel.id === "root" ? "Project root" : sel.path || sel.name;
+    }
+
+    function closeFolderPicker() {
+      folderPickerState = null;
+      $("ffdir-backdrop").classList.remove("open");
     }
 
     /** The device a path belongs to, for recent-folder lookup: the volume
@@ -1143,8 +1563,29 @@
       const add = (label, fn, disabled = false) =>
         menu.appendChild(el("button", { text: label, disabled, onClick: () => { closeMenu(); fn(); } }));
 
-      add("Set as Source", () => setSource(path), sourcePath === path || isProject(path));
+      // isProject() used to hard-disable "Set as Source". It no longer
+      // does — copy-engine has a FreeFrame source provider (item 3).
+      add("Set as Source", () => setSource(path), sourcePath === path);
       add("Set as Destination", () => addDest(path, null), destNodes.some((n) => n.path === path));
+
+      // Item 2 — the project counterpart of the per-device folder pickers
+      // below. Offered for a project whichever role it holds: the same
+      // selection scopes an upload's target folder and a pull's source
+      // folder.
+      if (isProject(path)) {
+        menu.appendChild(el("div", { class: "sep" }));
+        const sel = projectFolder[projectIdOf(path)];
+        add(
+          sel ? `Change folder (${sel.id === "root" ? "Project root" : sel.name})…` : "Choose folder in project…",
+          () => openProjectFolders(projectIdOf(path))
+        );
+        if (sel && sel.id !== "root") {
+          add("Use the project root", () => {
+            delete projectFolder[projectIdOf(path)];
+            render();
+          });
+        }
+      }
 
       // Item 3 — per-device pickers. The general header buttons stay (they
       // are the right tool for a plain folder-to-folder move), but they
@@ -1301,7 +1742,11 @@
         el("div", {
           class: "meta",
           text: entry.kind === "freeframe"
-            ? `${entry.assetCount} asset${entry.assetCount === 1 ? "" : "s"} · upload destination`
+            // Says where in the project the files land, not just that it's
+            // a project — the whole point of the folder picker is that a
+            // project no longer implicitly means its root.
+            ? `${entry.assetCount} asset${entry.assetCount === 1 ? "" : "s"} · ` +
+              (entry.folderLabel ? `→ ${entry.folderLabel}` : "project root")
             : entry.totalBytes == null
               ? entry.mountPoint
               : `${formatBytes(entry.freeBytes)} free of ${formatBytes(entry.totalBytes)}`,
@@ -1319,7 +1764,7 @@
       const right = el("div", { class: "row", style: "flex-shrink:0;gap:6px" });
       if (role === "source") right.appendChild(el("span", { class: "badge src", text: "Source" }));
       if (role === "dest") right.appendChild(el("span", { class: "badge dst", text: "Dest" }));
-      if (!role) right.appendChild(el("span", { class: "badge", text: entry.type }));
+      if (!role) right.appendChild(el("span", { class: "badge", text: typeLabel(entry) }));
       if (status) {
         right.appendChild(el("span", { class: `status-text ${status}`, text: statusLabel(status) }));
         right.appendChild(el("span", { class: `dot ${status}` }));
@@ -1381,17 +1826,44 @@
       // have to keep plugged in, not on a subfolder of it.
       const { isSource, isDest, selfAssigned } = roleFor(entry.mountPoint);
 
-      const iconTile = el("div", { class: "tile-icon" });
-      iconTile.appendChild(icon(typeIcon(entry.type)));
-
-      const media = el("div", { class: "tile-media" }, [iconTile]);
+      // A project gets apps/web's own card treatment — poster, or the
+      // project's deterministic gradient — rather than the icon-in-a-box
+      // used for drives. A drive has no artwork to show and the glyph is
+      // the whole point; a project has one, and rendering a generic box
+      // instead was the reason the FreeFrame side didn't look like
+      // FreeFrame.
+      const media = el("div", { class: "tile-media" });
+      if (entry.kind === "freeframe") {
+        const poster = mediaUrl(entry.posterUrl);
+        if (poster) {
+          const img = el("img", { class: "tile-poster" });
+          img.alt = "";
+          // A dead/expired proxy token would otherwise leave a broken-image
+          // glyph; fall back to the gradient the project would have had.
+          img.addEventListener("error", () => {
+            img.remove();
+            media.style.backgroundImage = projectGradient(entry.projectId);
+          });
+          img.src = poster;
+          media.appendChild(img);
+        } else {
+          media.style.backgroundImage = projectGradient(entry.projectId);
+        }
+        // Same bottom scrim project-card.tsx puts under its title, so the
+        // badges stay legible over an arbitrary poster.
+        media.appendChild(el("div", { class: "tile-scrim" }));
+      } else {
+        const iconTile = el("div", { class: "tile-icon" });
+        iconTile.appendChild(icon(typeIcon(entry.type)));
+        media.appendChild(iconTile);
+      }
       // Stacked, not either/or: the badges have to say "both" before
       // anyone has to interpret a split border colour.
       const badges = el("div", { class: "tile-roles" });
       if (isSource) badges.appendChild(el("span", { class: "tile-role src", text: "Source" }));
       if (isDest) badges.appendChild(el("span", { class: "tile-role dst", text: "Dest" }));
       if (isSource || isDest) media.appendChild(badges);
-      media.appendChild(el("span", { class: "tile-badge", text: entry.type }));
+      media.appendChild(el("span", { class: "tile-badge", text: typeLabel(entry) }));
 
       const info = el("div", { class: "tile-info" }, [
         el("div", { class: "tile-name", text: entry.name }),
@@ -1401,7 +1873,9 @@
           // branch rendered a bare "— free". Mirrors makeCard, which
           // already had this branch.
           text: entry.kind === "freeframe"
-            ? `${entry.assetCount} asset${entry.assetCount === 1 ? "" : "s"}`
+            ? (entry.folderLabel
+                ? `→ ${entry.folderLabel}`
+                : `${entry.assetCount} asset${entry.assetCount === 1 ? "" : "s"}`)
             : entry.freeBytes == null
               ? entry.mountPoint
               : `${formatBytes(entry.freeBytes)} free`,
@@ -1603,6 +2077,28 @@
         ]));
       }
 
+      // Assets the server couldn't hand over as originals. Shown even on a
+      // fully-verified job, and deliberately not folded into the mismatch
+      // list: nothing went wrong with these files, they were never
+      // attempted — and "Copy verified" must not be readable as
+      // "everything came down" when it isn't.
+      if (s.skippedAssets && s.skippedAssets.length) {
+        box.appendChild(el("div", {
+          class: "verdict bad",
+          style: "margin-top:8px",
+          text: `${s.skippedAssets.length} asset${s.skippedAssets.length === 1 ? " was" : "s were"} not pulled — ` +
+            `this offload is not a complete copy of the folder.`,
+        }));
+        const sl = el("ul");
+        for (const a of s.skippedAssets.slice(0, 8)) {
+          sl.appendChild(el("li", { text: `${a.name} — ${a.reason}` }));
+        }
+        if (s.skippedAssets.length > 8) {
+          sl.appendChild(el("li", { text: `…and ${s.skippedAssets.length - 8} more` }));
+        }
+        box.appendChild(sl);
+      }
+
       const problems = [...s.mismatches, ...s.errors];
       if (problems.length) {
         const ul = el("ul");
@@ -1641,10 +2137,16 @@
 
         let summary = null;
         if (localNodes.length) {
+          // Item 3 — sourcePath may be `freeframe://<id>`, in which case
+          // main builds a FreeFrame source provider for the engine instead
+          // of reading a local directory. Everything downstream of that —
+          // the single fan-out read, the hashing, the verify-by-re-reading
+          // each destination from disk — is unchanged.
           summary = await window.freeframe.startCopy(
             sourcePath,
             localNodes.map((n) => ({ id: n.id, path: n.path, parentId: n.parentId })),
-            algorithm
+            algorithm,
+            isProject(sourcePath) ? uploadFolderIdFor(projectIdOf(sourcePath)) : null
           );
           renderSummary(summary);
         }
@@ -1652,8 +2154,13 @@
         // main refuses a second job while one is active. Sequential rather
         // than parallel is the honest first-pass behaviour.
         for (const node of projectNodes) {
-          const projectId = node.path.replace("freeframe://", "");
-          const up = await window.freeframe.freeframeUpload(sourcePath, projectId, null);
+          const projectId = projectIdOf(node.path);
+          // Item 2 — was hardcoded null, which is why every upload landed
+          // at the project root no matter what. The IPC handler and the
+          // preload bridge already accepted and threaded this argument.
+          const up = await window.freeframe.freeframeUpload(
+            sourcePath, projectId, uploadFolderIdFor(projectId)
+          );
           renderSummary(up);
         }
       } catch (err) {
@@ -1767,8 +2274,17 @@
       await loadProjects();
     }
 
+    /** The error box is hidden when empty rather than holding a reserved
+     *  blank line, so the card doesn't carry a dead gap in its normal state. */
+    function setLoginError(msg) {
+      const box = $("ff-error");
+      if (!box) return;
+      box.textContent = msg || "";
+      box.classList.toggle("show", Boolean(msg));
+    }
+
     const openLogin = () => {
-      $("ff-error").textContent = "";
+      setLoginError("");
       $("ff-url").value = ffStatus.baseUrl || "https://frame.yon.studio/api";
       $("ff-pass").value = "";
       $("login-backdrop").classList.add("open");
@@ -1796,22 +2312,41 @@
       const email = $("ff-email").value.trim();
       const password = $("ff-pass").value;
       const baseUrl = $("ff-url").value.trim();
-      if (!email || !password) { $("ff-error").textContent = "Email and password are required."; return; }
+      if (!email || !password) { setLoginError("Email and password are required."); return; }
       $("ff-submit").disabled = true;
-      $("ff-error").textContent = "";
+      $("ff-submit").textContent = "Signing in…";
+      setLoginError("");
       try {
         const res = await window.freeframe.freeframeLogin(email, password, baseUrl);
         if (!res || !res.ok) {
-          $("ff-error").textContent = (res && res.error) || "Sign-in failed.";
+          setLoginError((res && res.error) || "Sign-in failed.");
           return;
         }
         closeLogin();
         await refreshAccount();
       } finally {
         $("ff-submit").disabled = false;
+        $("ff-submit").textContent = "Sign in";
       }
     });
     on("ff-pass", "keydown", (e) => { if (e.key === "Enter") $("ff-submit").click(); });
+    on("ff-email", "keydown", (e) => { if (e.key === "Enter") $("ff-pass").focus(); });
+    // Escape closes, matching every other modal here.
+    on("login-backdrop", "keydown", (e) => { if (e.key === "Escape") closeLogin(); });
+
+    // logo.svg is copied in by sync-tokens.js and gitignored. If it's absent
+    // (a checkout where the sync hasn't run), fall back to a text wordmark
+    // rather than a broken-image icon on the sign-in screen.
+    initStep("login logo", () => {
+      const img = $("ff-logo");
+      if (!img) return;
+      img.addEventListener("error", () => {
+        const holder = img.parentElement;
+        if (!holder) return;
+        holder.classList.add("text-fallback");
+        holder.textContent = "FreeFrame";
+      });
+    });
 
     // ── Bootstrap ──
     // Each step is independent and isolated. Previously these ran as bare
@@ -1837,6 +2372,19 @@
 
     initStep("recent folders", () => {
       window.freeframe.getRecentFolders().then((r) => { recentFolders = r || {}; }).catch(() => {});
+    });
+
+    initStep("project folder picker", () => {
+      on("ffdir-cancel", "click", closeFolderPicker);
+      on("ffdir-save", "click", () => {
+        if (!folderPickerState) return;
+        const { projectId, selected } = folderPickerState;
+        if (selected.id === "root") delete projectFolder[projectId];
+        else projectFolder[projectId] = selected;
+        closeFolderPicker();
+        render();
+      });
+      on("ffdir-backdrop", "keydown", (e) => { if (e.key === "Escape") closeFolderPicker(); });
     });
 
     initStep("rename", () => {

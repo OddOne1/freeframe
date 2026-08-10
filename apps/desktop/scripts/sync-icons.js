@@ -47,8 +47,14 @@ const ICONS = {
   external: "HardDrive",
   network: "Server",
   folder: "FolderOpen",
-  // A FreeFrame project shown as an upload destination.
-  freeframe: "CloudUpload",
+  // A FreeFrame project. Was CloudUpload while a project could only ever
+  // be uploaded *to*; it can now also be a source, so a glyph that says
+  // "upload" would be wrong half the time. Clapperboard is the production
+  // the project represents, which is true in both directions.
+  freeframe: "Clapperboard",
+  // Assets inside a project, in the folder picker's tree.
+  file: "File",
+  chevronRight: "ChevronRight",
   arrowRight: "ArrowRight",
   // Dropdown affordance on the checksum pill (item 7) and the per-card
   // menu trigger (item 3).

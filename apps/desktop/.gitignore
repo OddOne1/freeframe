@@ -4,6 +4,7 @@
 # them would recreate exactly the hand-maintained duplication this replaced.
 src/renderer/tokens.css
 src/renderer/icons.js
+src/renderer/logo.svg
 
 # electron-builder output
 dist/

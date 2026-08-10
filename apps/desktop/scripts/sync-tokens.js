@@ -28,3 +28,19 @@ const banner =
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
 fs.writeFileSync(OUT, banner + fs.readFileSync(SRC, "utf8"));
 console.log(`[sync-tokens] ${path.relative(process.cwd(), OUT)} ← packages/design-tokens/tokens.css`);
+
+// The wordmark, for the sign-in screen. Same reasoning as the tokens: this
+// is apps/web's own asset rather than a redrawn approximation, so the
+// desktop sign-in shows the actual FreeFrame logo and follows it if it ever
+// changes. The .svg is the one to take — apps/web's login uses logo-full.png,
+// but that's a 3500px raster for a mark rendered ~44px tall here.
+const LOGO_SRC = path.join(__dirname, "..", "..", "web", "public", "logo.svg");
+const LOGO_OUT = path.join(__dirname, "..", "src", "renderer", "logo.svg");
+if (fs.existsSync(LOGO_SRC)) {
+  fs.copyFileSync(LOGO_SRC, LOGO_OUT);
+  console.log(`[sync-tokens] ${path.relative(process.cwd(), LOGO_OUT)} ← apps/web/public/logo.svg`);
+} else {
+  // Not fatal: the sign-in screen falls back to a text wordmark. A missing
+  // logo shouldn't be able to fail a build.
+  console.warn(`[sync-tokens] no logo at ${LOGO_SRC} — sign-in will use the text wordmark`);
+}

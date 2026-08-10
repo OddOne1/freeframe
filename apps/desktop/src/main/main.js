@@ -162,6 +162,130 @@ ipcMain.handle("freeframe:folder-tree", async (_e, { projectId } = {}) => {
   catch (err) { return { ok: false, error: String(err.message || err) }; }
 });
 
+// Item 3 — what a project actually contains, for the UI to show before a
+// pull is started. The copy job builds its own manifest from the same
+// endpoint; this is purely so "12 assets, 4.1 GB" can be shown up front
+// rather than only discovered once the job is running.
+ipcMain.handle("freeframe:list-assets", async (_e, { projectId, folderId, recursive } = {}) => {
+  try {
+    const files = await freeframeSourceFiles(projectId, folderId, recursive !== false);
+    return {
+      ok: true,
+      files,
+      totalBytes: files.reduce((sum, f) => sum + f.size, 0),
+      skipped: files.__skipped || [],
+    };
+  } catch (err) {
+    return { ok: false, error: String(err.message || err) };
+  }
+});
+
+/**
+ * Flatten a project (or one folder in it) into the {rel, size} manifest the
+ * copy engine wants.
+ *
+ * The open question this item started with — "is there a flat 'list the
+ * assets in this folder' endpoint?" — resolved to yes, with no backend
+ * change needed: GET /projects/{id}/assets takes folder_id and recursive,
+ * and returns each asset's filename, byte size and processing status in one
+ * response (apps/api/routers/assets.py).
+ */
+async function freeframeSourceFiles(projectId, folderId, recursive) {
+  if (!projectId) throw new Error("A project is required");
+  const assets = await freeframe.listAssets(projectId, { folderId, recursive });
+
+  const files = [];
+  const skipped = [];
+  const usedNames = new Set();
+
+  for (const asset of assets || []) {
+    const version = asset.latest_version;
+    const media = version && version.files && version.files[0];
+
+    // A version still transcoding has no downloadable original yet — the
+    // stream endpoint returns 409 for it. Skipping it up front with a
+    // reason beats a mid-job error per file.
+    if (!media) { skipped.push({ name: asset.name, reason: "no file yet" }); continue; }
+    if (version.processing_status && version.processing_status !== "ready") {
+      skipped.push({ name: asset.name, reason: `still ${version.processing_status}` });
+      continue;
+    }
+
+    // `?download=true` only resolves to the original upload for VIDEO.
+    // get_stream_url's other branch (apps/api/routers/assets.py:376-380)
+    // uses `s3_key_processed or s3_key_raw` even when download=true, so an
+    // image or audio asset that has been processed serves the derivative —
+    // a re-encoded JPEG, a compressed audio proxy — while
+    // `file_size_bytes` still describes the original. Measured against the
+    // live API: a 38.5 MB WAV came back as 1.2 MB, a 260 KB JPEG as 274 KB.
+    //
+    // Skipped with a reason rather than pulled. An offload tool that
+    // quietly substitutes a proxy for the master, and reports success
+    // because the proxy downloaded intact, is worse than one that says it
+    // couldn't get the original. Lifting this needs a backend change — see
+    // the note in README.md; nothing here can work around it, because the
+    // original's bytes are simply not reachable through this endpoint.
+    if (asset.asset_type !== "video" && media.s3_key_processed) {
+      skipped.push({
+        name: asset.name,
+        reason: `only a processed derivative is downloadable for ${asset.asset_type} — the original isn't reachable via /stream?download=true`,
+      });
+      continue;
+    }
+
+    // Names come from other users' uploads, and land in path.join() against
+    // a real destination root. A "../" in one would write outside the
+    // destination entirely, so the name is reduced to its basename.
+    let rel = path.basename(media.original_filename || asset.name || String(asset.id));
+    if (!rel || rel === "." || rel === "..") rel = String(asset.id);
+
+    // Two assets in one project may legitimately share a filename (a folder
+    // structure is flattened by `recursive`). Silently letting the second
+    // overwrite the first would lose footage and still report success.
+    if (usedNames.has(rel)) {
+      const ext = path.extname(rel);
+      rel = `${path.basename(rel, ext)}-${String(asset.id).slice(0, 8)}${ext}`;
+    }
+    usedNames.add(rel);
+
+    files.push({ rel, size: media.file_size_bytes || 0, assetId: asset.id });
+  }
+
+  files.__skipped = skipped;
+  return files;
+}
+
+/**
+ * The FreeFrame source provider handed to copy-engine.
+ *
+ * Built here rather than in copy-engine.js on purpose: it needs the API
+ * client, which imports electron, and the engine is deliberately plain Node
+ * so scripts/test-copy.js can drive it without booting a window.
+ */
+function freeframeSource(projectId, folderId) {
+  let manifest = null;
+  return {
+    kind: "freeframe",
+    label: `freeframe://${projectId}`,
+    root: null,
+    // Assets that exist but couldn't be pulled, with the reason. Read off
+    // the provider after the job so the summary can say so — a job that
+    // silently returns 3 of 5 files and calls itself verified is exactly
+    // the outcome this app is supposed to make impossible.
+    skipped: [],
+    list: async function () {
+      manifest = await freeframeSourceFiles(projectId, folderId, true);
+      this.skipped = manifest.__skipped || [];
+      return manifest.map((f) => ({ rel: f.rel, size: f.size }));
+    },
+    open: async (rel) => {
+      const entry = (manifest || []).find((f) => f.rel === rel);
+      if (!entry) throw new Error(`No asset for ${rel}`);
+      return freeframe.openAssetStream(entry.assetId);
+    },
+  };
+}
+
 // Upload a whole source tree into a project as a destination.
 //
 // Deliberately NOT routed through runCopyJob: that engine is pure
@@ -287,6 +411,19 @@ ipcMain.handle("copy:start", async (event, payload) => {
   if (!sourcePath) throw new Error("No source selected");
   if (nodes.length === 0) throw new Error("No destination selected");
 
+  // Item 3 — a project as the source. The engine takes a source *provider*
+  // rather than only a path, so this is a different kind of source, not a
+  // download staged into a temp directory and copied from there.
+  const projectSource = sourcePath.startsWith("freeframe://")
+    ? freeframeSource(
+        sourcePath.slice("freeframe://".length),
+        typeof payload?.sourceFolderId === "string" ? payload.sourceFolderId : null
+      )
+    : null;
+  if (projectSource && nodes.some((n) => n.path.startsWith("freeframe://"))) {
+    throw new Error("A project can't be both the source and a destination of one job");
+  }
+
   // Validated rather than passed through: an unknown name would otherwise
   // surface as a mid-copy throw after files had already been written.
   const algorithm = isSupported(payload?.algorithm) ? payload.algorithm : DEFAULT_ALGORITHM;
@@ -296,8 +433,9 @@ ipcMain.handle("copy:start", async (event, payload) => {
   activeJob = { cancel: () => { cancelled = true; } };
 
   try {
-    return await runCopyJob({
+    const summary = await runCopyJob({
       sourcePath,
+      source: projectSource,
       nodes,
       algorithm,
       isCancelled: () => cancelled,
@@ -307,6 +445,12 @@ ipcMain.handle("copy:start", async (event, payload) => {
         if (!webContents.isDestroyed()) webContents.send("copy:progress", p);
       },
     });
+    // Assets deliberately left out of the job travel with the summary, so
+    // "everything verified" can never be read as "everything came down".
+    if (projectSource && projectSource.skipped.length) {
+      summary.skippedAssets = projectSource.skipped;
+    }
+    return summary;
   } finally {
     activeJob = null;
   }

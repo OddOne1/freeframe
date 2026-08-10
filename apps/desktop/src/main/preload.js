@@ -13,8 +13,12 @@ contextBridge.exposeInMainWorld("freeframe", {
   // means "cascades from that destination". Resolves with the final
   // summary; per-node progress arrives separately via onCopyProgress
   // below, since invoke() can only resolve once.
-  startCopy: (sourcePath, nodes, algorithm) =>
-    ipcRenderer.invoke("copy:start", { sourcePath, nodes, algorithm }),
+  //
+  // `sourcePath` may be a `freeframe://<projectId>` URI rather than a local
+  // path, in which case `sourceFolderId` scopes it to one folder inside
+  // that project (null = the whole project).
+  startCopy: (sourcePath, nodes, algorithm, sourceFolderId) =>
+    ipcRenderer.invoke("copy:start", { sourcePath, nodes, algorithm, sourceFolderId }),
 
   cancelCopy: () => ipcRenderer.invoke("copy:cancel"),
 
@@ -43,6 +47,10 @@ contextBridge.exposeInMainWorld("freeframe", {
   freeframeStatus: () => ipcRenderer.invoke("freeframe:status"),
   freeframeProjects: () => ipcRenderer.invoke("freeframe:projects"),
   freeframeFolderTree: (projectId) => ipcRenderer.invoke("freeframe:folder-tree", { projectId }),
+  /** What a project (or one folder in it) holds, for showing a count and a
+   *  size before a pull is started. */
+  freeframeListAssets: (projectId, folderId, recursive) =>
+    ipcRenderer.invoke("freeframe:list-assets", { projectId, folderId, recursive }),
   freeframeUpload: (sourcePath, projectId, folderId) =>
     ipcRenderer.invoke("freeframe:upload", { sourcePath, projectId, folderId }),
 

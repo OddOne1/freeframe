@@ -44,6 +44,55 @@ let makeHasher = null;
  *  from each file's relative path, so an empty directory tree is not
  *  preserved. Symlinks are skipped rather than followed: following them
  *  can escape the source tree entirely and silently copy unrelated data. */
+/**
+ * A **source provider** — everything the engine needs from "wherever the
+ * bytes come from", and nothing else:
+ *
+ *   kind   — for messages and for the checks that are filesystem-specific
+ *   label  — what to call it in the summary
+ *   root   — the local path, for a local source only; null otherwise
+ *   list() — [{ rel, size }]
+ *   open(rel) — a Readable of that file's bytes
+ *
+ * **Contract for open():** the chunks it emits must own their memory. The
+ * engine hashes a chunk synchronously and then passes that same object to
+ * an asynchronous write, so a provider that yields views into a buffer it
+ * later reuses will produce files of the correct length with corrupted
+ * contents — and a source hash that looks perfectly fine. A TLS fetch body
+ * does exactly this; see the copy in freeframe.js's openAssetStream.
+ * fs.createReadStream already satisfies the contract, which is why the
+ * local path does no copying.
+ *
+ * This exists so a FreeFrame project can be a source (item 3) without being
+ * forced through the local-filesystem read path — no staging directory, no
+ * download-then-copy pass that would write every byte twice and defeat the
+ * point of verifying what actually landed. Once `open()` hands back a
+ * stream, the fan-out, the hashing, and the read-back-from-disk
+ * verification are all bit-for-bit the same code they were.
+ *
+ * The FreeFrame provider is *injected* by main.js rather than built here:
+ * it needs the API client, which imports electron, and this module's whole
+ * point is that it doesn't (see the header). A fake provider is also how
+ * scripts/test-copy.js exercises the non-local path without a server.
+ */
+function localSource(root) {
+  return {
+    kind: "local",
+    label: root,
+    root,
+    list: async () => {
+      const rels = await listFilesRecursive(root);
+      const out = [];
+      for (const rel of rels) {
+        const st = await fsp.stat(path.join(root, rel));
+        out.push({ rel, size: st.size });
+      }
+      return out;
+    },
+    open: (rel) => fs.createReadStream(path.join(root, rel), { highWaterMark: CHUNK_SIZE }),
+  };
+}
+
 async function listFilesRecursive(root) {
   const out = [];
   async function walk(dir) {
@@ -77,17 +126,21 @@ async function listFilesRecursive(root) {
  *
  * @returns {Promise<{sourceHash: string, bytes: number}>}
  */
-async function copyOneFileFanOut(sourcePath, destPaths, onBytes) {
+async function copyOneFileFanOut(openRead, destPaths, onBytes) {
   // Resolved before the Promise constructor deliberately: an `async`
   // executor swallows its own rejections (the constructor ignores the
   // returned promise), so a hasher-init failure in here would hang the
   // copy forever instead of surfacing.
   const factory = makeHasher || (await getHasherFactory(DEFAULT_ALGORITHM));
 
+  // Opened before the constructor for the same reason — a FreeFrame source
+  // has to make an HTTP request to get its stream, and a rejection from
+  // that inside an async executor would hang rather than fail.
+  const readStream = await openRead();
+
   return new Promise((resolve, reject) => {
     const hasher = factory();
 
-    const readStream = fs.createReadStream(sourcePath, { highWaterMark: CHUNK_SIZE });
     const writeStreams = destPaths.map((p) => fs.createWriteStream(p));
 
     let bytes = 0;
@@ -172,15 +225,15 @@ async function hashFileOnDisk(filePath, algorithm = null) {
  *
  * Split out of runCopyJob so a cascaded leg (A → B) runs the exact same
  * code path as the primary leg (source → A) — the only difference is which
- * root it reads from.
+ * source provider it reads from. A cascaded leg is always a local one; only
+ * the primary leg can be reading from FreeFrame.
  */
-async function runLeg({ fromRoot, toRoots, relFiles, sizes, onFileEvent, isCancelled }) {
+async function runLeg({ from, toRoots, relFiles, sizes, onFileEvent, isCancelled }) {
   const fileResults = [];
 
   for (const rel of relFiles) {
     if (isCancelled()) break;
 
-    const srcFile = path.join(fromRoot, rel);
     const destFiles = toRoots.map((d) => path.join(d, rel));
     const size = sizes.get(rel) ?? 0;
 
@@ -191,7 +244,7 @@ async function runLeg({ fromRoot, toRoots, relFiles, sizes, onFileEvent, isCance
     try {
       await Promise.all(destFiles.map((f) => fsp.mkdir(path.dirname(f), { recursive: true })));
 
-      const { sourceHash } = await copyOneFileFanOut(srcFile, destFiles, (n) => {
+      const { sourceHash } = await copyOneFileFanOut(() => from.open(rel), destFiles, (n) => {
         onFileEvent({ type: "bytes", file: rel, delta: n });
       });
       entry.sourceHash = sourceHash;
@@ -299,10 +352,20 @@ function summarizeRoot(root, fileResults, expectedFileCount) {
  * @param {() => boolean} [opts.isCancelled]
  */
 async function runCopyJob({
-  sourcePath, nodes, destPaths, algorithm = DEFAULT_ALGORITHM,
+  sourcePath, source, nodes, destPaths, algorithm = DEFAULT_ALGORITHM,
   onProgress = () => {}, isCancelled = () => false,
 }) {
   const startedAt = Date.now();
+
+  // `source` (a provider) and `sourcePath` (a local directory) are the two
+  // accepted forms. The path form stays the default so every existing
+  // caller and test is untouched; a provider is how a FreeFrame project
+  // gets in.
+  const src = source || localSource(sourcePath);
+  if (!src.root && !source) throw new Error("A source is required");
+  // The summary and the progress events still report a single source
+  // identity, whatever kind it is.
+  sourcePath = src.root || src.label;
 
   // Resolved once, up front, so every leg of this job — copy and verify
   // alike — uses the same algorithm. Throws here rather than mid-copy if
@@ -336,35 +399,45 @@ async function runCopyJob({
     }
   }
 
-  const sourceStat = await fsp.stat(sourcePath);
-  if (!sourceStat.isDirectory()) throw new Error(`Source is not a directory: ${sourcePath}`);
+  if (src.root) {
+    const sourceStat = await fsp.stat(src.root);
+    if (!sourceStat.isDirectory()) throw new Error(`Source is not a directory: ${src.root}`);
+  }
 
   // Copying a destination into itself, or into a subdirectory of the
   // source, produces infinite recursion or silent self-overwrite. Cheap to
   // check, miserable to debug. Applied against each node's own effective
   // parent too, so a cascade can't nest into its own parent either.
-  const srcResolved = path.resolve(sourcePath);
+  //
+  // Only the *local* source can be nested with a local destination. A
+  // remote source has no path to compare, so those three checks are skipped
+  // for the root leg — but the cascade and duplicate checks below still
+  // apply in full, because cascaded legs are local either way.
+  const srcResolved = src.root ? path.resolve(src.root) : null;
   const seenPaths = new Set();
   for (const n of jobNodes) {
     const destResolved = path.resolve(n.path);
     const parentRoot = n.parentId ? path.resolve(byId.get(n.parentId).path) : srcResolved;
-    if (destResolved === parentRoot) throw new Error(`Destination is the same as the source it copies from: ${n.path}`);
-    if (destResolved.startsWith(parentRoot + path.sep)) throw new Error(`Destination is inside the source it copies from: ${n.path}`);
-    if (parentRoot.startsWith(destResolved + path.sep)) throw new Error(`Source is inside the destination: ${n.path}`);
+    if (parentRoot !== null) {
+      if (destResolved === parentRoot) throw new Error(`Destination is the same as the source it copies from: ${n.path}`);
+      if (destResolved.startsWith(parentRoot + path.sep)) throw new Error(`Destination is inside the source it copies from: ${n.path}`);
+      if (parentRoot.startsWith(destResolved + path.sep)) throw new Error(`Source is inside the destination: ${n.path}`);
+    }
     if (seenPaths.has(destResolved)) throw new Error(`Duplicate destination: ${n.path}`);
     seenPaths.add(destResolved);
   }
 
   onProgress({ phase: "scanning", sourcePath, nodes: jobNodes });
 
-  const relFiles = await listFilesRecursive(sourcePath);
-  const sizes = new Map();
+  // One listing call, whatever the source is. For FreeFrame this is the
+  // single `GET /projects/{id}/assets?folder_id=…&recursive=…` that already
+  // returns each asset's filename and byte size — no per-file round trip
+  // just to build the manifest.
+  const listing = await src.list();
+  const relFiles = listing.map((f) => f.rel);
+  const sizes = new Map(listing.map((f) => [f.rel, f.size]));
   let totalBytes = 0;
-  for (const rel of relFiles) {
-    const st = await fsp.stat(path.join(sourcePath, rel));
-    sizes.set(rel, st.size);
-    totalBytes += st.size;
-  }
+  for (const f of listing) totalBytes += f.size;
 
   // Every leg moves the same payload, so total work scales with the number
   // of legs, not with destination count within a leg (a fan-out leg reads
@@ -432,7 +505,11 @@ async function runCopyJob({
     }
 
     await Promise.all(
-      [...groups.entries()].map(async ([fromRoot, groupNodes]) => {
+      [...groups.entries()].map(async ([fromKey, groupNodes]) => {
+        // Root-leg nodes read from the job's source provider (which may be
+        // remote); cascaded nodes always read from a local destination that
+        // has already been verified on disk.
+        const from = groupNodes[0].parentId === null ? src : localSource(fromKey);
         for (const n of groupNodes) {
           n.status = "copying";
           n.startedAt = Date.now();
@@ -441,7 +518,7 @@ async function runCopyJob({
 
         const toRoots = groupNodes.map((n) => n.path);
         const fileResults = await runLeg({
-          fromRoot,
+          from,
           toRoots,
           relFiles,
           sizes,
@@ -573,4 +650,6 @@ module.exports = {
   listFilesRecursive,
   hashFileOnDisk,
   copyOneFileFanOut,
+  // The default provider, and the shape main.js's FreeFrame one implements.
+  localSource,
 };
