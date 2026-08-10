@@ -278,6 +278,57 @@ async function openAssetStream(assetId) {
   return Readable.fromWeb(res.body).pipe(stable);
 }
 
+// ── MIME detection ───────────────────────────────────────────────────────
+//
+// **This is load-bearing, not cosmetic.** Uploads used to send
+// `application/octet-stream` for every file. The API accepts it, but
+// `mime_to_asset_type` (apps/api/schemas/upload.py) maps octet-stream to
+// AssetType.video *unconditionally* — so a JPEG or a WAV was created as a
+// video asset, `process_asset` ran the ffmpeg HLS branch on it, that
+// failed, and `list_assets` hides assets whose versions all failed
+// (`include_failed` defaults to False). The bytes reached S3 and the row
+// existed, but nothing appeared on the site: exactly the "zero files
+// showing up" report.
+//
+// Every value below is checked against ALLOWED_MIME_TYPES in that same
+// schema — sending a type the API rejects would turn a silent failure into
+// a loud one, which is better, but still a failure.
+const MIME_BY_EXT = {
+  // Video
+  ".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime",
+  ".avi": "video/x-msvideo", ".mkv": "video/x-matroska", ".webm": "video/webm",
+  ".mpeg": "video/mpeg", ".mpg": "video/mpeg", ".wmv": "video/x-ms-wmv",
+  ".flv": "video/x-flv", ".3gp": "video/3gpp", ".3g2": "video/3gpp2",
+  ".ogv": "video/ogg", ".mxf": "application/mxf",
+  ".m2ts": "video/mp2t", ".mts": "video/mp2t", ".ts": "video/mp2t",
+  // Audio
+  ".mp3": "audio/mpeg", ".wav": "audio/wav", ".flac": "audio/flac",
+  ".aac": "audio/aac", ".ogg": "audio/ogg", ".m4a": "audio/x-m4a",
+  ".aif": "audio/aiff", ".aiff": "audio/aiff",
+  // Image
+  ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+  ".webp": "image/webp", ".heic": "image/heic", ".tif": "image/tiff",
+  ".tiff": "image/tiff", ".gif": "image/gif", ".dpx": "image/x-dpx",
+  ".exr": "image/x-exr",
+  // Camera-native. These are the formats the API's octet-stream fallback
+  // was actually meant for, and they genuinely are video.
+  ".braw": "application/x-braw", ".r3d": "application/x-r3d",
+  ".ari": "application/x-arriraw", ".arx": "application/x-arriraw",
+  ".cine": "application/x-cine", ".dng": "application/x-cinema-dng",
+};
+
+/**
+ * MIME type for a filename, or null when the extension isn't recognised.
+ *
+ * Null rather than a guess: the caller decides what to do with an unknown
+ * file, and octet-stream is not a safe default — it means "video" to this
+ * API, which is how a text file becomes a failed video asset.
+ */
+function mimeForFilename(fileName) {
+  const ext = path.extname(String(fileName || "")).toLowerCase();
+  return MIME_BY_EXT[ext] || null;
+}
+
 // ── Upload (multipart) ───────────────────────────────────────────────────
 
 // Mirrors apps/web/stores/upload-store.ts's flow rather than inventing a
@@ -290,12 +341,23 @@ async function uploadFile({ projectId, filePath, assetName, folderId = null, onP
   const stat = await fsp.stat(filePath);
   const fileName = path.basename(filePath);
 
+  const mimeType = mimeForFilename(fileName);
+  if (!mimeType) {
+    // Refused here rather than sent as octet-stream. The server would
+    // accept octet-stream and then classify this as a video, transcode it
+    // as one, fail, and hide the result — an upload that reports success
+    // and produces nothing visible. Better to say we didn't upload it.
+    throw new Error(
+      `Unrecognised file type "${path.extname(fileName) || fileName}" — FreeFrame would file this as a video and fail to process it`
+    );
+  }
+
   const init = await apiRequest("POST", "/upload/initiate", {
     project_id: projectId,
     asset_name: assetName || fileName,
     original_filename: fileName,
     file_size_bytes: stat.size,
-    mime_type: "application/octet-stream",
+    mime_type: mimeType,
     folder_id: folderId,
   });
 
@@ -353,6 +415,7 @@ module.exports = {
   listAssets,
   openAssetStream,
   uploadFile,
+  mimeForFilename,
   // Test seam: lets the harness drive the client without real credentials.
   __setState: (patch) => Object.assign(state, patch),
   __getState: () => ({ ...state }),

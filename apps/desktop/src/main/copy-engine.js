@@ -93,6 +93,48 @@ function localSource(root) {
   };
 }
 
+/**
+ * One or more individually-chosen files, with no directory to walk.
+ *
+ * A separate provider rather than a special case inside localSource,
+ * because the two differ in the one place that matters: a directory source
+ * has a root that destination paths must be checked against, and a set of
+ * hand-picked files has no common root at all. Everything downstream — the
+ * fan-out, the hashing, the read-back verification — is identical.
+ */
+function localFilesSource(filePaths) {
+  const byRel = new Map();
+  for (const f of filePaths) {
+    const rel = path.basename(f);
+    if (byRel.has(rel)) {
+      // Silently suffixing one of them would hand back a file the user
+      // didn't name; silently overwriting would lose one. Neither belongs
+      // in a tool whose job is not losing footage.
+      throw new Error(
+        `Two selected files are both named "${rel}". Rename one, or select their folder instead.`
+      );
+    }
+    byRel.set(rel, f);
+  }
+
+  return {
+    kind: "local-files",
+    label: filePaths.length === 1 ? filePaths[0] : `${filePaths.length} selected files`,
+    root: null,
+    files: [...filePaths],
+    list: async () => {
+      const out = [];
+      for (const [rel, full] of byRel) {
+        const st = await fsp.stat(full);
+        if (!st.isFile()) throw new Error(`Not a file: ${full}`);
+        out.push({ rel, size: st.size });
+      }
+      return out;
+    },
+    open: (rel) => fs.createReadStream(byRel.get(rel), { highWaterMark: CHUNK_SIZE }),
+  };
+}
+
 async function listFilesRecursive(root) {
   const out = [];
   async function walk(dir) {
@@ -352,17 +394,25 @@ function summarizeRoot(root, fileResults, expectedFileCount) {
  * @param {() => boolean} [opts.isCancelled]
  */
 async function runCopyJob({
-  sourcePath, source, nodes, destPaths, algorithm = DEFAULT_ALGORITHM,
+  sourcePath, sourceFiles, source, nodes, destPaths, algorithm = DEFAULT_ALGORITHM,
   onProgress = () => {}, isCancelled = () => false,
 }) {
   const startedAt = Date.now();
 
-  // `source` (a provider) and `sourcePath` (a local directory) are the two
-  // accepted forms. The path form stays the default so every existing
-  // caller and test is untouched; a provider is how a FreeFrame project
-  // gets in.
-  const src = source || localSource(sourcePath);
-  if (!src.root && !source) throw new Error("A source is required");
+  // Three accepted forms: `source` (a provider — how a FreeFrame project
+  // gets in), `sourceFiles` (individually-chosen files), and `sourcePath`
+  // (a local directory, the original and still the default, so every
+  // existing caller and test is untouched).
+  let src = source || (Array.isArray(sourceFiles) && sourceFiles.length ? localFilesSource(sourceFiles) : null);
+  if (!src) {
+    if (typeof sourcePath !== "string" || !sourcePath) throw new Error("A source is required");
+    // A path that turns out to be a file is treated as a one-file set
+    // rather than rejected. Callers reach here from a native picker and
+    // from an OS drag-and-drop, and neither knows which it handed over
+    // until it's looked; failing on it would be a technicality.
+    const st = await fsp.stat(sourcePath);
+    src = st.isDirectory() ? localSource(sourcePath) : localFilesSource([sourcePath]);
+  }
   // The summary and the progress events still report a single source
   // identity, whatever kind it is.
   sourcePath = src.root || src.label;
@@ -399,9 +449,18 @@ async function runCopyJob({
     }
   }
 
-  if (src.root) {
-    const sourceStat = await fsp.stat(src.root);
-    if (!sourceStat.isDirectory()) throw new Error(`Source is not a directory: ${src.root}`);
+  // A chosen file must not be written over by its own job — copying
+  // /a/clip.mov into /a would do exactly that, and the read and the write
+  // would be the same inode.
+  if (src.files) {
+    const sourceSet = new Set(src.files.map((f) => path.resolve(f)));
+    for (const n of jobNodes) {
+      for (const f of src.files) {
+        if (sourceSet.has(path.resolve(n.path, path.basename(f)))) {
+          throw new Error(`Destination ${n.path} already holds the selected file ${path.basename(f)}`);
+        }
+      }
+    }
   }
 
   // Copying a destination into itself, or into a subdirectory of the
@@ -652,4 +711,5 @@ module.exports = {
   copyOneFileFanOut,
   // The default provider, and the shape main.js's FreeFrame one implements.
   localSource,
+  localFilesSource,
 };

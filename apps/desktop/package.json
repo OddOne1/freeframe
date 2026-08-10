@@ -25,7 +25,8 @@
     "test:subfolder": "node scripts/e2e-subfolder.js",
     "test:menu": "node scripts/e2e-menu.js",
     "test:ff-ui": "node scripts/e2e-freeframe-ui.js",
-    "test:ff-source": "node scripts/e2e-ff-source.js"
+    "test:ff-source": "node scripts/e2e-ff-source.js",
+    "test:upload": "node scripts/e2e-upload.js"
   },
   "devDependencies": {
     "@electron/notarize": "^2.5.0",

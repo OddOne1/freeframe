@@ -187,6 +187,11 @@
     /* Drop affordance while a drag is in flight. */
     .zone.drop-ready { outline: 1px dashed var(--border); outline-offset: -4px; }
     .zone.drop-active { outline: 2px solid var(--accent); outline-offset: -4px; background: rgba(91,141,239,.06); }
+    /* Item 6 — a drop coming from Finder rather than from inside the app.
+       Same affordance as drop-active deliberately: to the user it's the
+       same gesture, and two different highlights for "you may drop here"
+       would be noise. */
+    .zone.os-drop { outline: 2px solid var(--accent); outline-offset: -4px; background: rgba(91,141,239,.06); }
 
     .hint { color: var(--text-tertiary); font-size: 11px; text-align: center; padding: 20px 8px; line-height: 1.5; }
 
@@ -697,6 +702,9 @@
     .summary .verdict { margin-top: 8px; font-size: 11px; }
     .verdict.ok { color: var(--status-success); }
     .verdict.bad { color: var(--status-error); }
+    /* An upload that completed but is not verified — genuinely neither
+       green nor red, and the palette already has a word for that. */
+    .verdict.warn { color: var(--status-warning); }
   </style>
 </head>
 <body>
@@ -905,6 +913,13 @@
     let volumes = [];            // from volumes:list
     let extraFolders = [];       // added via Choose folder…
     let sourcePath = null;
+    // Item 5 — when the source is individually-chosen files rather than a
+    // directory, this holds them and `sourcePath` holds a synthetic
+    // `fileset://` key so everything that indexes state by path (cards,
+    // drag, menus, role highlighting) keeps working untouched. A SINGLE
+    // file needs none of this: its own path is a perfectly good key, and
+    // the engine treats a file path as a one-file set.
+    let sourceFiles = null;
     /** Destination tree. parentId null = copies from the original source;
      *  a parentId = cascades from that node. Same shape the engine takes,
      *  so nothing has to be translated at the IPC boundary. */
@@ -1021,6 +1036,7 @@
       ({
         removable: "removable", internal: "internal", external: "external",
         network: "network", folder: "folder", freeframe: "freeframe",
+        file: "file",
       }[t] || "internal");
 
     /** Human label for the corner type badge. The raw enum value is fine
@@ -1192,8 +1208,23 @@
 
     const entryFor = (p) => withDisplayName(
       allEntries().find((e) => e.mountPoint === p)
-      || { name: baseName(p), mountPoint: p, type: "folder", totalBytes: null, freeBytes: null }
+      || (p === FILESET
+        ? {
+            name: `${(sourceFiles || []).length} files`,
+            mountPoint: p, type: "file",
+            // The card's second line lists what was actually picked, since
+            // "3 files" alone says nothing about which.
+            fileList: (sourceFiles || []).map(baseName).join(", "),
+            totalBytes: null, freeBytes: null,
+          }
+        : { name: baseName(p), mountPoint: p, type: pathLooksLikeFile(p) ? "file" : "folder", totalBytes: null, freeBytes: null })
     );
+
+    /** A chosen path with an extension is treated as a file for display
+     *  purposes only — the engine stats it for real. Extensionless files
+     *  simply show the folder glyph, which is cosmetic and not worth an
+     *  async round trip per render. */
+    const pathLooksLikeFile = (p) => /\.[A-Za-z0-9]{1,6}$/.test(String(p || ""));
 
     const isAssigned = (p) => sourcePath === p || destNodes.some((n) => n.path === p);
 
@@ -1201,6 +1232,23 @@
     const isProject = (p) => typeof p === "string" && p.startsWith("freeframe://");
 
     const projectIdOf = (p) => (isProject(p) ? p.slice("freeframe://".length) : null);
+
+    const FILESET = "fileset://selected";
+    const isFileSet = (p) => p === FILESET;
+
+    /**
+     * Use a set of individually-chosen files as the source.
+     *
+     * One file keeps its own real path as the key — no synthetic entry, and
+     * the card reads as that file. Several get the synthetic key, because
+     * there is no single path that means "these three".
+     */
+    function setSourceFiles(files) {
+      if (copying || !files || !files.length) return;
+      if (files.length === 1) { sourceFiles = null; setSource(files[0]); return; }
+      sourceFiles = [...files];
+      setSource(FILESET);
+    }
 
     function setSource(p) {
       if (copying) return;
@@ -1213,6 +1261,9 @@
         showProjectConflict(p);
         return;
       }
+      // Any source that isn't the file set drops the file set, or a stale
+      // list would be sent alongside an unrelated path.
+      if (p !== FILESET) sourceFiles = null;
       const previous = sourcePath;
       sourcePath = p;
       // Item 5: holding both roles is legitimate — copying between two
@@ -1297,7 +1348,7 @@
     }
     function clearAll() {
       if (copying) return;
-      sourcePath = null; destNodes = []; nodeStatus = new Map(); sourceReleased = false;
+      sourcePath = null; sourceFiles = null; destNodes = []; nodeStatus = new Map(); sourceReleased = false;
       $("summary").style.display = "none";
       render();
     }
@@ -1316,6 +1367,36 @@
       // wrong heading is worse than one not remembered at all.
       if (device && role) rememberRecent(device, role, folder);
       return folder;
+    }
+
+    /**
+     * The source picker — folders *or* individual files (item 5).
+     *
+     * Separate from pickFolder because only a source can be a file: a
+     * destination has to be a directory to write into. Applies the result
+     * itself, since "one directory" and "several files" are different
+     * assignments.
+     */
+    async function pickSource({ title, device = null }) {
+      const res = await window.freeframe.chooseSource(title, device || undefined);
+      if (!res || !res.paths || !res.paths.length) return null;
+      applySourceSelection(res, device);
+      return res;
+    }
+
+    /** Shared by the picker and the OS drop, so both behave identically. */
+    function applySourceSelection(sel, device = null) {
+      if (sel.kind === "dir") {
+        const folder = sel.paths[0];
+        if (!extraFolders.includes(folder) && !volumes.some((v) => v.mountPoint === folder)) {
+          extraFolders.push(folder);
+        }
+        const dev = device || deviceFor(folder);
+        if (dev) rememberRecent(dev, "source", folder);
+        setSource(folder);
+      } else {
+        setSourceFiles(sel.paths);
+      }
     }
 
     /** Recents for one device and one role, newest first. Keyed by the
@@ -1574,7 +1655,7 @@
         // Item 7: dragging an assigned card back to the middle unassigns it
         // — the drag equivalent of the context menu's Remove.
         if (fromRole === "source" && sourcePath === dragged) {
-          sourcePath = null;
+          sourcePath = null; sourceFiles = null;
           pruneExtraFolder(dragged);
           render();
         } else if (fromRole === "dest") {
@@ -1698,8 +1779,17 @@
         const roleSubmenu = (roleKey, label, apply) => {
           const panel = addSubmenu(label);
           addTo(panel, "Browse…", async () => {
+            // The source panel also accepts individual files; a
+            // destination must stay a directory to write into.
+            if (roleKey === "source") {
+              await pickSource({
+                title: `Choose a source folder or files on ${entryFor(path).name}`,
+                device: path,
+              });
+              return;
+            }
             const f = await pickFolder({
-              title: `Choose a ${roleKey} folder on ${entryFor(path).name}`,
+              title: `Choose a destination folder on ${entryFor(path).name}`,
               device: path,
               role: roleKey,
             });
@@ -1791,7 +1881,7 @@
         menu.appendChild(el("div", { class: "sep" }));
         add("Remove", () => {
           if (role === "source") {
-            sourcePath = null;
+            sourcePath = null; sourceFiles = null;
             pruneExtraFolder(path);
             render();
           } else removeDest(path);
@@ -1833,7 +1923,7 @@
       if (res && res.ok) {
         // No refresh here: the /Volumes watcher fires when the mount
         // actually disappears. Refreshing now would just race it.
-        if (sourcePath === vol.mountPoint) sourcePath = null;
+        if (sourcePath === vol.mountPoint) { sourcePath = null; sourceFiles = null; }
         for (const n of destNodes.filter((n) => n.path === vol.mountPoint)) removeDest(n.path, true);
         render();
         return;
@@ -1876,6 +1966,9 @@
             // project no longer implicitly means its root.
             ? `${entry.assetCount} asset${entry.assetCount === 1 ? "" : "s"} · ` +
               (entry.folderLabel ? `→ ${entry.folderLabel}` : "project root")
+            // Naming the picked files beats showing a synthetic key.
+            : entry.fileList
+              ? entry.fileList
             : entry.totalBytes == null
               ? entry.mountPoint
               : `${formatBytes(entry.freeBytes)} free of ${formatBytes(entry.totalBytes)}`,
@@ -2176,10 +2269,22 @@
       const box = $("summary");
       box.replaceChildren();
       box.style.display = "block";
-      const good = s.allVerified;
+      // Items 1 & 2 — an upload summary is a different shape AND a
+      // different guarantee, and rendering it through the local-copy
+      // vocabulary made a working upload read as a failed copy.
+      const isUpload = Boolean(s.uploadOnly);
+      const uploadOk = isUpload && !s.cancelled && s.errors.length === 0 && s.filesCopied === s.totalFiles;
+      const good = isUpload ? uploadOk : s.allVerified;
 
       box.appendChild(el("div", { class: "head" }, [
-        el("h3", { class: good ? "ok" : "bad", text: good ? "Copy verified" : "Copy finished with problems" }),
+        el("h3", {
+          // Never "verified" for an upload: nothing has been read back
+          // from FreeFrame and compared. See the verdict text below.
+          class: good ? "ok" : "bad",
+          text: isUpload
+            ? (uploadOk ? "Upload complete" : "Upload finished with problems")
+            : (good ? "Copy verified" : "Copy finished with problems"),
+        }),
       ]));
 
       const stats = el("div", { class: "stats" });
@@ -2187,9 +2292,18 @@
         document.createTextNode(`${k} `), el("b", { text: v }),
       ]));
       stat("Files", `${s.totalFiles}`);
-      stat("Verified", `${s.fileCopiesVerified}/${s.totalFileCopies}`);
-      stat("Destinations", `${s.nodes.length}`);
-      stat("Legs", `${s.legCount}`);
+      // "Verified" means re-read from the destination and hash-matched.
+      // An upload has done no such thing — the count is "the upload call
+      // returned", which is a weaker claim and needs a weaker word.
+      if (isUpload) stat("Uploaded", `${s.filesCopied ?? s.fileCopiesVerified}/${s.totalFiles}`);
+      else stat("Verified", `${s.fileCopiesVerified}/${s.totalFileCopies}`);
+      // Item 1 — an upload tracks no per-node cascade state, so nodes is
+      // empty by design and the real target lives in destPaths. Reading
+      // nodes.length for both is why a real upload said "Destinations 0".
+      stat("Destinations", `${isUpload ? (s.destPaths || []).length : s.nodes.length}`);
+      // Item 4 — "Legs" is cascade jargon and irrelevant to the vast
+      // majority of jobs, which have exactly one.
+      if (s.legCount > 1) stat("Cascade Legs", `${s.legCount}`);
       stat("Data", formatBytes(s.copiedBytes));
       stat("Duration", s.durationMs < 1000 ? `${s.durationMs} ms` : `${(s.durationMs / 1000).toFixed(1)}s`);
       if (s.mismatches.length) stat("Mismatches", `${s.mismatches.length}`);
@@ -2242,11 +2356,21 @@
         box.appendChild(ul);
       }
 
+      // Item 2 — an upload gets its own verdict. `allVerified: false` is
+      // correct and deliberate for uploads (nothing has been read back
+      // from FreeFrame and compared), but the local-copy wording read as
+      // an active failure rather than "this destination type is honestly
+      // less mature". The claim is weakened, not the honesty: this still
+      // does not say "verified", because it isn't.
       box.appendChild(el("div", {
-        class: `verdict ${good ? "ok" : "bad"}`,
-        text: good
-          ? "Every file was re-read from each destination and matched the source. Safe to wipe the card."
-          : "Not every destination verified — do NOT wipe the source until this is resolved.",
+        class: `verdict ${good ? (isUpload ? "warn" : "ok") : "bad"}`,
+        text: isUpload
+          ? (uploadOk
+              ? "Uploaded — not yet independently verified against FreeFrame. Checksum verification for this destination type isn't built yet, so keep the source until you've confirmed the files yourself."
+              : "Upload did not finish — some files were not sent. Keep the source.")
+          : (good
+              ? "Every file was re-read from each destination and matched the source. Safe to wipe the card."
+              : "Not every destination verified — do NOT wipe the source until this is resolved."),
       }));
     }
 
@@ -2272,10 +2396,11 @@
           // the single fan-out read, the hashing, the verify-by-re-reading
           // each destination from disk — is unchanged.
           summary = await window.freeframe.startCopy(
-            sourcePath,
+            isFileSet(sourcePath) ? null : sourcePath,
             localNodes.map((n) => ({ id: n.id, path: n.path, parentId: n.parentId })),
             algorithm,
-            isProject(sourcePath) ? uploadFolderIdFor(projectIdOf(sourcePath)) : null
+            isProject(sourcePath) ? uploadFolderIdFor(projectIdOf(sourcePath)) : null,
+            sourceFiles
           );
           renderSummary(summary);
         }
@@ -2288,7 +2413,10 @@
           // at the project root no matter what. The IPC handler and the
           // preload bridge already accepted and threaded this argument.
           const up = await window.freeframe.freeframeUpload(
-            sourcePath, projectId, uploadFolderIdFor(projectId)
+            isFileSet(sourcePath) ? null : sourcePath,
+            projectId,
+            uploadFolderIdFor(projectId),
+            sourceFiles
           );
           renderSummary(up);
         }
@@ -2319,8 +2447,12 @@
     for (const btn of document.querySelectorAll("[data-choose]")) {
       btn.addEventListener("click", async () => {
         const which = btn.dataset.choose;
+        if (which === "source") {
+          await pickSource({ title: "Choose a source folder or files" });
+          return;
+        }
         const folder = await pickFolder({
-          title: which === "source" ? "Choose a source folder" : "Choose a destination folder",
+          title: "Choose a destination folder",
         });
         if (!folder) return;
         // The general picker can land anywhere, so attribute the result to
@@ -2333,6 +2465,96 @@
         else addDest(folder, null);
       });
     }
+
+    // ── Item 6: native OS drag-and-drop from Finder ──
+    //
+    // Entirely separate from the in-app pointer drag (beginDrag/mousemove/
+    // mouseup), which only moves cards that already exist in the UI and is
+    // untouched by this. Different trigger, same downstream setSource /
+    // setSourceFiles / addDest calls.
+    //
+    // The renderer can't turn a dropped File into a path — webUtils lives
+    // in electron, which the sandbox forbids requiring — so preload does
+    // that and hands back plain strings.
+    function wireOsDrop(zoneId, role) {
+      const zone = $(zoneId);
+      if (!zone) return;
+
+      const over = (e) => {
+        // Only for real file drops. Without this check an in-app drag
+        // would light up the zone twice, in two different styles.
+        if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes("Files")) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        if (!copying) zone.classList.add("os-drop");
+      };
+      zone.addEventListener("dragover", over);
+      zone.addEventListener("dragenter", over);
+      zone.addEventListener("dragleave", (e) => {
+        // dragleave fires when crossing onto a child too; ignore those.
+        if (e.relatedTarget && zone.contains(e.relatedTarget)) return;
+        zone.classList.remove("os-drop");
+      });
+
+      zone.addEventListener("drop", async (e) => {
+        if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+        e.preventDefault();
+        zone.classList.remove("os-drop");
+        if (copying) return;
+
+        const paths = [];
+        for (const f of e.dataTransfer.files) {
+          const p = window.freeframe.pathForFile(f);
+          if (p) paths.push(p);
+        }
+        if (!paths.length) return;
+
+        // main stats them: only it can tell a folder from a file, and the
+        // two mean different things on the source side.
+        const sel = await window.freeframe.classifyPaths(paths);
+        if (!sel) return;
+
+        if (role === "source") {
+          applySourceSelection(sel);
+        } else {
+          // A destination has to be a directory to write into. Dropping
+          // files here is a mistake worth naming rather than ignoring.
+          if (sel.kind !== "dir") {
+            const box = $("summary");
+            box.replaceChildren(
+              el("div", { class: "head" }, [el("h3", { class: "bad", text: "That can't be a destination" })]),
+              el("div", {
+                class: "verdict bad",
+                text: "A destination has to be a folder to copy into. Drop a folder here, or drop those files on Sources instead.",
+              })
+            );
+            box.style.display = "block";
+            return;
+          }
+          const folder = sel.paths[0];
+          if (!extraFolders.includes(folder) && !volumes.some((v) => v.mountPoint === folder)) {
+            extraFolders.push(folder);
+          }
+          const dev = deviceFor(folder);
+          if (dev) rememberRecent(dev, "destination", folder);
+          addDest(folder, null);
+        }
+      });
+    }
+
+    // The window itself must refuse drops, or dropping a file anywhere
+    // outside a zone makes Electron navigate the whole page to that file —
+    // the app is simply gone, with no way back.
+    for (const ev of ["dragover", "drop"]) {
+      window.addEventListener(ev, (e) => {
+        if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files")) e.preventDefault();
+      });
+    }
+
+    initStep("os drag-and-drop", () => {
+      wireOsDrop("zone-source", "source");
+      wireOsDrop("zone-dest", "dest");
+    });
 
     // ── Item 5: modal buttons ──
     on("modal-src", "click", async () => {

@@ -244,6 +244,10 @@ async function main() {
     // Limit worth stating: this proves the renderer passes the device
     // through. Whether the *native* dialog then honours defaultPath is not
     // automatable — showOpenDialog is a blocking OS modal.
+    // Both pickers are stubbed: a *source* now goes through pickSource
+    // (the panel that also accepts individual files), a destination still
+    // through pickFolder. Same question either way — is the device
+    // threaded down to the dialog.
     await cdp.eval(`
       window.__pickCalls = [];
       window.__origPick = window.pickFolder;
@@ -251,6 +255,12 @@ async function main() {
         window.__pickCalls.push({ title: opts.title, defaultPath: opts.device });
         if (!extraFolders.includes(${JSON.stringify(pickedB)})) extraFolders.push(${JSON.stringify(pickedB)});
         return ${JSON.stringify(pickedB)};
+      };
+      window.__origPickSource = window.pickSource;
+      window.pickSource = async (opts) => {
+        window.__pickCalls.push({ title: opts.title, defaultPath: opts.device });
+        applySourceSelection({ kind: "dir", paths: [${JSON.stringify(pickedB)}] }, opts.device);
+        return { kind: "dir", paths: [${JSON.stringify(pickedB)}] };
       };
       true`);
     const dev = vols[0]?.mountPoint;

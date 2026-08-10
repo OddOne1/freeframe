@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 // The only bridge between the sandboxed renderer and the main process.
 // Deliberately narrow — expose specific async functions, never the raw
@@ -17,8 +17,10 @@ contextBridge.exposeInMainWorld("freeframe", {
   // `sourcePath` may be a `freeframe://<projectId>` URI rather than a local
   // path, in which case `sourceFolderId` scopes it to one folder inside
   // that project (null = the whole project).
-  startCopy: (sourcePath, nodes, algorithm, sourceFolderId) =>
-    ipcRenderer.invoke("copy:start", { sourcePath, nodes, algorithm, sourceFolderId }),
+  // `sourceFiles` is the alternative to `sourcePath`: individually-chosen
+  // files with no directory to walk.
+  startCopy: (sourcePath, nodes, algorithm, sourceFolderId, sourceFiles) =>
+    ipcRenderer.invoke("copy:start", { sourcePath, nodes, algorithm, sourceFolderId, sourceFiles }),
 
   cancelCopy: () => ipcRenderer.invoke("copy:cancel"),
 
@@ -39,6 +41,27 @@ contextBridge.exposeInMainWorld("freeframe", {
   chooseFolder: (title, defaultPath) =>
     ipcRenderer.invoke("dialog:choose-folder", { title, defaultPath }),
 
+  /** Same panel, but individual files are selectable too. Resolves
+   *  { kind: "dir" | "files", paths } — the caller has to branch, so the
+   *  kind is returned rather than inferred from the shape. */
+  chooseSource: (title, defaultPath) =>
+    ipcRenderer.invoke("dialog:choose-folder", { title, defaultPath, allowFiles: true }),
+
+  /** Classify a bag of paths from an OS drop into one source shape. */
+  classifyPaths: (paths) => ipcRenderer.invoke("dialog:classify-paths", { paths }),
+
+  /**
+   * Real filesystem path for a File from an OS drag-and-drop.
+   *
+   * Must live in the preload: `webUtils` comes from electron, which the
+   * sandboxed renderer cannot require. The renderer hands over the File it
+   * got from the drop event and receives a plain string — it never gains
+   * access to webUtils itself.
+   */
+  pathForFile: (file) => {
+    try { return webUtils.getPathForFile(file) || null; } catch { return null; }
+  },
+
   /** FreeFrame account. No token ever crosses this bridge — the renderer
    *  asks main to act on its behalf, same as volumes and copying. */
   freeframeLogin: (email, password, baseUrl) =>
@@ -51,8 +74,8 @@ contextBridge.exposeInMainWorld("freeframe", {
    *  size before a pull is started. */
   freeframeListAssets: (projectId, folderId, recursive) =>
     ipcRenderer.invoke("freeframe:list-assets", { projectId, folderId, recursive }),
-  freeframeUpload: (sourcePath, projectId, folderId) =>
-    ipcRenderer.invoke("freeframe:upload", { sourcePath, projectId, folderId }),
+  freeframeUpload: (sourcePath, projectId, folderId, sourceFiles) =>
+    ipcRenderer.invoke("freeframe:upload", { sourcePath, projectId, folderId, sourceFiles }),
 
   /** Cosmetic in-app display name per volume/folder. Never renames
    *  anything on disk. */

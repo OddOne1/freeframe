@@ -293,9 +293,12 @@ function freeframeSource(projectId, folderId) {
 // also can't be a cascade parent -- reading files back down from FreeFrame
 // is explicitly out of scope for this pass, so nothing can copy *from* a
 // project.
-ipcMain.handle("freeframe:upload", async (event, { sourcePath, projectId, folderId } = {}) => {
+ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, projectId, folderId } = {}) => {
   if (activeJob) throw new Error("A copy is already running");
-  if (typeof sourcePath !== "string" || !projectId) throw new Error("Source and project are required");
+  const pickedFiles = Array.isArray(sourceFiles) ? sourceFiles.filter((p) => typeof p === "string" && p) : [];
+  if ((typeof sourcePath !== "string" && !pickedFiles.length) || !projectId) {
+    throw new Error("Source and project are required");
+  }
 
   const webContents = event.sender;
   const send = (p) => { if (!webContents.isDestroyed()) webContents.send("copy:progress", p); };
@@ -305,11 +308,23 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, projectId, folder
   const startedAt = Date.now();
 
   try {
-    const rel = await listFilesRecursive(sourcePath);
+    // Either a directory to walk, or a set of individually-chosen files.
+    // `fullPath` is what maps a display name back to bytes on disk in
+    // both cases, so the loop below doesn't care which it was.
+    const fullPath = new Map();
+    let rel;
+    if (pickedFiles.length) {
+      rel = pickedFiles.map((f) => path.basename(f));
+      pickedFiles.forEach((f, i) => fullPath.set(rel[i], f));
+    } else {
+      rel = await listFilesRecursive(sourcePath);
+      for (const r of rel) fullPath.set(r, path.join(sourcePath, r));
+    }
+
     let totalBytes = 0;
     const sizes = new Map();
     for (const r of rel) {
-      const st = await fsp.stat(path.join(sourcePath, r));
+      const st = await fsp.stat(fullPath.get(r));
       sizes.set(r, st.size);
       totalBytes += st.size;
     }
@@ -326,7 +341,7 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, projectId, folder
       try {
         const res = await freeframe.uploadFile({
           projectId,
-          filePath: path.join(sourcePath, r),
+          filePath: fullPath.get(r),
           assetName: path.basename(r),
           folderId: folderId || null,
           onProgress: ({ uploaded: u }) => {
@@ -349,7 +364,7 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, projectId, folder
     const summary = {
       mode: "UPLOAD",
       algorithmLabel: "FreeFrame upload",
-      sourcePath,
+      sourcePath: sourcePath || (pickedFiles.length === 1 ? pickedFiles[0] : `${pickedFiles.length} selected files`),
       nodes: [],
       destPaths: [`FreeFrame project ${projectId}`],
       cancelled,
@@ -391,6 +406,12 @@ ipcMain.handle("copy:start", async (event, payload) => {
   }
 
   const sourcePath = typeof payload?.sourcePath === "string" ? payload.sourcePath : null;
+  // Item 5 — a source can be individually-chosen files rather than a
+  // directory to walk. Sanitized the same way `nodes` is: this is the
+  // untrusted side of the boundary and these become real read paths.
+  const sourceFiles = Array.isArray(payload?.sourceFiles)
+    ? payload.sourceFiles.filter((p) => typeof p === "string" && p)
+    : null;
 
   // The destination tree. Sanitized field-by-field rather than passed
   // through: the renderer is the untrusted side of this boundary by design
@@ -408,13 +429,13 @@ ipcMain.handle("copy:start", async (event, payload) => {
         }))
     : [];
 
-  if (!sourcePath) throw new Error("No source selected");
+  if (!sourcePath && !(sourceFiles && sourceFiles.length)) throw new Error("No source selected");
   if (nodes.length === 0) throw new Error("No destination selected");
 
   // Item 3 — a project as the source. The engine takes a source *provider*
   // rather than only a path, so this is a different kind of source, not a
   // download staged into a temp directory and copied from there.
-  const projectSource = sourcePath.startsWith("freeframe://")
+  const projectSource = sourcePath && sourcePath.startsWith("freeframe://")
     ? freeframeSource(
         sourcePath.slice("freeframe://".length),
         typeof payload?.sourceFolderId === "string" ? payload.sourceFolderId : null
@@ -435,6 +456,7 @@ ipcMain.handle("copy:start", async (event, payload) => {
   try {
     const summary = await runCopyJob({
       sourcePath,
+      sourceFiles,
       source: projectSource,
       nodes,
       algorithm,
@@ -602,10 +624,16 @@ ipcMain.handle("display-names:set", async (_event, { mountPoint, name } = {}) =>
   return names;
 });
 
-ipcMain.handle("dialog:choose-folder", async (_event, { title, defaultPath } = {}) => {
+// `allowFiles` adds individual files to what the panel will accept. It's
+// off by default because a *destination* must be a directory — but a
+// source can legitimately be one clip, which the directory-only panel
+// rendered dimmed and unselectable, with no explanation.
+ipcMain.handle("dialog:choose-folder", async (_event, { title, defaultPath, allowFiles } = {}) => {
   const options = {
     title: title || "Choose folder",
-    properties: ["openDirectory", "createDirectory"],
+    properties: allowFiles
+      ? ["openDirectory", "openFile", "multiSelections", "createDirectory"]
+      : ["openDirectory", "createDirectory"],
   };
   // Roots the dialog inside a specific device. Without this, picking
   // "DAY_01" while offloading three cards at once gives no way to tell
@@ -621,8 +649,35 @@ ipcMain.handle("dialog:choose-folder", async (_event, { title, defaultPath } = {
   }
   const result = await dialog.showOpenDialog(mainWindow, options);
   if (result.canceled || result.filePaths.length === 0) return null;
-  return result.filePaths[0];
+  // Single path for the folder-only case, so every existing caller is
+  // unchanged. When files were allowed, the caller gets the full
+  // selection plus what it actually is, since it has to branch on that.
+  if (!allowFiles) return result.filePaths[0];
+  const stats = await Promise.all(result.filePaths.map((p) => fsp.stat(p).catch(() => null)));
+  const dirs = result.filePaths.filter((_, i) => stats[i] && stats[i].isDirectory());
+  const files = result.filePaths.filter((_, i) => stats[i] && stats[i].isFile());
+  // A directory wins if one was picked: mixing "walk this tree" with
+  // "these exact files" in one source has no single sensible meaning.
+  if (dirs.length) return { kind: "dir", paths: [dirs[0]] };
+  if (files.length) return { kind: "files", paths: files };
+  return null;
 });
+
+/** Split a mixed list of dropped/selected paths into one source shape. */
+async function classifyPaths(paths) {
+  const stats = await Promise.all(paths.map((p) => fsp.stat(p).catch(() => null)));
+  const dirs = paths.filter((_, i) => stats[i] && stats[i].isDirectory());
+  const files = paths.filter((_, i) => stats[i] && stats[i].isFile());
+  if (dirs.length) return { kind: "dir", paths: [dirs[0]], ignored: paths.length - 1 };
+  if (files.length) return { kind: "files", paths: files, ignored: paths.length - files.length };
+  return null;
+}
+
+// Used by the OS drag-and-drop path, which gets a bag of paths from the
+// drop event and needs the same classification the picker does.
+ipcMain.handle("dialog:classify-paths", async (_event, { paths } = {}) =>
+  Array.isArray(paths) && paths.length ? classifyPaths(paths.filter((p) => typeof p === "string")) : null
+);
 
 app.whenReady().then(async () => {
   createWindow();

@@ -134,7 +134,20 @@ async function main() {
     console.log("\n2. FreeFrame login is reachable");
     check(await ev(`document.getElementById("account").textContent.length > 0`),
       "account button labelled", await ev(`document.getElementById("account").textContent`));
-    await ev(`document.getElementById("account").click(); true`);
+
+    // The button toggles: it opens the modal when signed out, and SIGNS
+    // OUT when signed in. Clicking it unconditionally meant running the
+    // suite silently destroyed the developer's session — which is exactly
+    // what kept happening, and what made the live upload test refuse to
+    // run afterwards. When a session exists, open the modal directly
+    // instead; the click wiring is asserted by the signed-out path.
+    const signedIn = await ev(`(async () => (await window.freeframe.freeframeStatus()).loggedIn)()`);
+    if (signedIn) {
+      console.log("     (signed in — opening the modal directly so the session survives)");
+      await ev(`openLogin(); true`);
+    } else {
+      await ev(`document.getElementById("account").click(); true`);
+    }
     await sleep(200);
     check(await ev(`document.getElementById("login-backdrop").classList.contains("open")`),
       "clicking it opens the existing login modal");
