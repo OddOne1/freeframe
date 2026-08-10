@@ -49,7 +49,18 @@ pnpm test:engine   # copy engine against real files in temp dirs
 pnpm test:e2e      # launches Electron, drives the real UI over CDP
 pnpm test:polish   # the 7 polish behaviours, incl. a real hdiutil mount cycle
 pnpm test:freeframe # FreeFrame integration against the real API (no login)
+pnpm test:polish2   # second polish pass, dev mode
+pnpm test:packaged  # builds a real .app and runs the same suite against it
 ```
+
+**`test:packaged` matters more than it looks.** A missing `#account` element
+once threw in top-level script code and silently killed every statement
+after it — including the bootstrap `refresh()` — so the app launched empty
+and the checksum picker was inert. Every existing harness still passed,
+because they injected state directly and never exercised the app's own
+initialization. `e2e-polish2.js` now asserts *no uncaught exception during
+page load* as its first check, and can run against a packaged `.app`, which
+is where that class of bug was actually caught.
 
 `test:polish` is deliberately **not** part of `pnpm test`: it attaches and
 detaches a real disk image, which is a side effect a default test run

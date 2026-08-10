@@ -50,6 +50,11 @@ const ICONS = {
   // A FreeFrame project shown as an upload destination.
   freeframe: "CloudUpload",
   arrowRight: "ArrowRight",
+  // Dropdown affordance on the checksum pill (item 7) and the per-card
+  // menu trigger (item 3).
+  chevronDown: "ChevronDown",
+  kebab: "EllipsisVertical",
+  pencil: "Pencil",
 };
 
 /** lucide ships icons as [tag, attrs] child tuples; wrap them in the same

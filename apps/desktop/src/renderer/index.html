@@ -51,7 +51,37 @@
       background: transparent; cursor: pointer;
       display: inline-flex; align-items: center; gap: 5px;
     }
-    header .mode:hover { color: var(--text-secondary); border-color: var(--text-tertiary); }
+    /* Item 7 — this was reading as a static status badge, so nobody tried
+       clicking it. A caret plus a real hover state is what makes it look
+       like a control rather than a label. */
+    header .mode:hover {
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+      background: var(--bg-elevated);
+    }
+    header .mode .caret svg { height: 11px; width: 11px; }
+    header .mode .caret { display: inline-flex; opacity: .7; transition: transform 120ms; }
+    header .mode:hover .caret { opacity: 1; }
+    header .mode.open .caret { transform: rotate(180deg); }
+
+    /* Item 3 — persistent per-card menu trigger. Right-click still works;
+       this makes the same menu discoverable without knowing it's there. */
+    .card-menu, .tile-menu {
+      -webkit-app-region: no-drag;
+      background: transparent; border: none; padding: 0;
+      width: 20px; height: 20px; border-radius: 5px;
+      color: var(--text-tertiary);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; cursor: pointer;
+    }
+    .card-menu:hover, .tile-menu:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .card-menu svg, .tile-menu svg { height: 14px; width: 14px; }
+    .tile-menu {
+      position: absolute; top: 6px; right: 6px; z-index: 2;
+      background: rgba(0,0,0,.55); color: rgba(255,255,255,.85);
+      backdrop-filter: blur(4px);
+    }
+    .tile-menu:hover { background: rgba(0,0,0,.8); color: #fff; }
 
     /* Algorithm picker — a menu, not a bare <select>, because each option
        carries a paragraph of explanation. Somebody choosing between MD5,
@@ -170,7 +200,20 @@
     .card .name { font-weight: 600; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .card .meta { color: var(--text-secondary); font-size: 10px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .card .row { display: flex; align-items: center; gap: 6px; min-width: 0; }
-    .card.assigned { opacity: .45; }
+    /* List view gets the same three states — the screenshot was grid, but
+       the gap is identical here. A left rail rather than a full border,
+       since these rows are wide and a full outline reads as noise. */
+    .card.role-src { border-left: 3px solid var(--accent); }
+    .card.role-dst { border-left: 3px solid var(--status-turquoise); }
+    .card.role-both {
+      border-left: 3px solid transparent;
+      background-image:
+        linear-gradient(var(--bg-elevated), var(--bg-elevated)),
+        linear-gradient(180deg, var(--accent) 0 50%, var(--status-turquoise) 50% 100%);
+      background-origin: border-box;
+      background-clip: padding-box, border-box;
+    }
+    .card.self-assigned { opacity: .45; }
 
     /* A destination card that will accept a cascade drop — the blue outline
        from Hedge's documented mechanic. */
@@ -252,11 +295,41 @@
     }
     .tile:hover { border-color: var(--border-focus); }
     .tile:active { cursor: grabbing; }
-    .tile.assigned {
+    /* Role-specific highlight. The border says WHICH role, so a drive
+       holding a source subfolder and a destination subfolder is
+       distinguishable at a glance rather than just "involved somehow".
+       Blue = source (unchanged from before), turquoise = destination
+       (same token .tile-role.dst already uses for its badge). */
+    .tile.role-src {
       border-color: var(--accent);
       background: rgba(91, 141, 239, .05);
       box-shadow: 0 10px 15px -3px rgba(91,141,239,.10), 0 4px 6px -4px rgba(91,141,239,.10);
     }
+    .tile.role-dst {
+      border-color: var(--status-turquoise);
+      background: rgba(45, 212, 191, .05);
+      box-shadow: 0 10px 15px -3px rgba(45,212,191,.10), 0 4px 6px -4px rgba(45,212,191,.10);
+    }
+    /* Both roles on one drive — literally half and half.
+       Implemented with the two-layer background trick rather than
+       `border-image`, which the spec suggested: border-image works, but it
+       DISABLES border-radius outright, squaring off the corners of a tile
+       whose whole visual language is 8px rounded. Painting the gradient
+       into the border box and masking the interior with a padding-box
+       layer gets the same split and keeps the radius. */
+    .tile.role-both {
+      border-color: transparent;
+      background-image:
+        linear-gradient(var(--bg-primary), var(--bg-primary)),
+        linear-gradient(135deg, var(--accent) 0 50%, var(--status-turquoise) 50% 100%);
+      background-origin: border-box;
+      background-clip: padding-box, border-box;
+      box-shadow: 0 10px 15px -3px rgba(91,141,239,.10), 0 4px 6px -4px rgba(45,212,191,.10);
+    }
+    /* Dimming still means "this exact path is placed somewhere", which is
+       now distinct from "a folder inside it is" — the drive itself stays
+       assignable in the latter case, so it shouldn't look spent. */
+    .tile.self-assigned { opacity: .55; }
     /* Same blue-outline cascade affordance the list cards use. */
     .tile.cascade-target { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: 0 0 0 6px rgba(91,141,239,.14); }
 
@@ -282,8 +355,11 @@
        glyph is h-7 w-7 = 28px). */
     .tile-icon .icon svg { height: 28px; width: 28px; }
 
+    /* Bottom-right, not top-right: the kebab trigger added in the last
+       pass sits top-right and was overlapping this badge, clipping every
+       type label to "NETWO▮" / "REMOVAB▮". */
     .tile-badge {
-      position: absolute; top: 8px; right: 8px;
+      position: absolute; bottom: 8px; right: 8px;
       border-radius: 4px;
       background: rgba(0,0,0,.55);
       backdrop-filter: blur(4px);
@@ -291,8 +367,13 @@
       font-size: 9px; font-weight: 600; letter-spacing: .04em;
       text-transform: uppercase; color: rgba(255,255,255,.85);
     }
-    .tile-role {
+    /* Stacked so a drive holding both roles says so twice over — badge
+       and border — rather than relying on colour alone. */
+    .tile-roles {
       position: absolute; top: 8px; left: 8px;
+      display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
+    }
+    .tile-role {
       border-radius: 4px; padding: 2px 6px;
       font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
     }
@@ -345,6 +426,13 @@
     }
     .field input:focus { outline: none; border-color: var(--border-focus); }
     .ff-error { font-size: 11px; color: var(--status-error); min-height: 14px; margin-bottom: 8px; }
+
+    #rename-backdrop {
+      position: fixed; inset: 0; z-index: 1100; display: none;
+      background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
+      align-items: center; justify-content: center;
+    }
+    #rename-backdrop.open { display: flex; }
 
     #login-backdrop {
       position: fixed; inset: 0; z-index: 1100; display: none;
@@ -421,11 +509,12 @@
 <body>
   <header>
     <h1>Offload</h1>
-    <button class="mode" id="algo-btn" title="Checksum algorithm">
+    <button class="mode" id="algo-btn" title="Change checksum algorithm">
       <span id="algo-label">SECURE · xxHash64</span>
-      <span class="icon sm" data-icon="viewList" style="display:none"></span>
+      <span class="icon caret" data-icon="chevronDown"></span>
     </button>
     <span class="spacer"></span>
+    <button id="account">Sign in to FreeFrame</button>
     <button id="refresh"><span class="icon" data-icon="refresh"></span> Refresh</button>
     <button id="clear">Clear</button>
     <button id="start" class="primary" disabled>Copy &amp; Verify</button>
@@ -500,6 +589,18 @@
     </div>
   </div>
 
+  <div id="rename-backdrop" class="ff-backdrop">
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head"><h3 id="rename-title">Rename</h3></div>
+      <p id="rename-sub"></p>
+      <div class="field"><input id="rename-input" type="text" maxlength="120" /></div>
+      <div class="modal-actions"><div class="row2">
+        <button id="rename-cancel">Cancel</button>
+        <button id="rename-save" class="primary">Save</button>
+      </div></div>
+    </div>
+  </div>
+
   <div id="algo-menu"></div>
 
   <div id="modal-backdrop">
@@ -531,6 +632,36 @@
     // window.freeframe is the only thing preload.js exposes.
 
     const $ = (id) => document.getElementById(id);
+
+    /**
+     * Attach a listener by element id, tolerating a missing element.
+     *
+     * This exists because of a real outage, not defensively-in-general:
+     * a bare `getElementById("account").addEventListener(...)` was
+     * written against a button
+     * that wasn't in the markup. That throws on null, and because it sat
+     * in top-level script code every statement after it — the login
+     * modal's wiring, the algorithm picker, and the bootstrap refresh()
+     * at the very end — never ran. One typo blanked the whole app on
+     * launch. A missing element should cost you that one control, not
+     * everything below it.
+     */
+    function on(id, event, handler, opts) {
+      const node = $(id);
+      if (!node) {
+        console.error(`[wiring] #${id} is missing — "${event}" not attached. ` +
+          `Everything else stays wired.`);
+        return false;
+      }
+      node.addEventListener(event, handler, opts);
+      return true;
+    }
+
+    /** Run an init step in isolation, so one failure can't cascade into
+     *  the next. Same reasoning as `on` above. */
+    function initStep(name, fn) {
+      try { fn(); } catch (err) { console.error(`[init] ${name} failed:`, err); }
+    }
     const zoneSource = $("zone-source");
     const zoneVolumes = $("zone-volumes");
     const zoneDest = $("zone-dest");
@@ -556,6 +687,11 @@
      *  files back down. */
     let ffStatus = { loggedIn: false, user: null, baseUrl: "" };
     let ffProjects = [];
+
+    /** Item 8 — cosmetic label overrides, keyed by mountPoint. Display
+     *  only; the real name on disk is never touched. */
+    let displayNames = {};
+    let renameTarget = null;
 
     /** Checksum algorithm for the next job. Defaults to xxHash64, so
      *  nothing changes for anyone who never opens the picker. */
@@ -618,8 +754,12 @@
       menuEl.style.display = "block";
       menuEl.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 396))}px`;
       menuEl.style.top = `${r.bottom + 6}px`;
+      $("algo-btn").classList.add("open");   // flips the caret
     }
-    const closeAlgoMenu = () => { $("algo-menu").style.display = "none"; };
+    const closeAlgoMenu = () => {
+      $("algo-menu").style.display = "none";
+      $("algo-btn")?.classList.remove("open");
+    };
 
     // ── Icons ──
     // window.FF_ICONS comes from the generated icons.js (lucide@0.511.0,
@@ -690,7 +830,71 @@
         })),
       ];
     }
-    const entryFor = (p) => allEntries().find((e) => e.mountPoint === p) || { name: baseName(p), mountPoint: p, type: "folder", totalBytes: null, freeBytes: null };
+    /**
+     * What the middle column actually lists.
+     *
+     * A folder chosen inside a real volume is deliberately NOT given its
+     * own tile: it already appears in Sources or Destinations, and the
+     * volume that contains it carries the role highlight (see roleFor
+     * below). Listing it here as well made the same choice visible three
+     * times, and put the highlight on `Prints` rather than on the drive
+     * the user actually has to keep plugged in.
+     *
+     * A folder with no resolvable parent volume still gets a tile —
+     * that's rare, but losing sight of it entirely would be worse than
+     * the redundancy this removes.
+     */
+    function volumesColumnEntries() {
+      return allEntries().filter((e) => {
+        const isPickedFolder = e.type === "folder" && extraFolders.includes(e.mountPoint);
+        if (!isPickedFolder) return true;
+        return deviceFor(e.mountPoint) === null;
+      });
+    }
+
+    /**
+     * Which roles a real volume is involved in — directly, or through any
+     * folder inside it.
+     *
+     * This is what moves the highlight from the subfolder to the drive.
+     * `deviceFor` resolves a path to its containing volume, so a source
+     * of /Volumes/RB_Padel/PROG and a destination of
+     * /Volumes/RB_Padel/Prints both resolve to RB_Padel, which then shows
+     * as both.
+     */
+    function roleFor(mountPoint) {
+      const owns = (p) => p === mountPoint || deviceFor(p) === mountPoint;
+      return {
+        isSource: Boolean(sourcePath) && owns(sourcePath),
+        isDest: destNodes.some((n) => owns(n.path)),
+        // The volume itself holding a role is different from merely
+        // containing one: only the former should be dimmed as
+        // "already placed", since the drive stays assignable otherwise.
+        selfAssigned: isAssigned(mountPoint),
+      };
+    }
+
+    /** Role → CSS modifier, shared by both views so they can't drift. */
+    function roleClass(mountPoint) {
+      const { isSource, isDest } = roleFor(mountPoint);
+      if (isSource && isDest) return " role-both";
+      if (isSource) return " role-src";
+      if (isDest) return " role-dst";
+      return "";
+    }
+
+    /** Applied at the single point every card, tile, chain label and menu
+     *  title reads a name from, so an override shows up everywhere at once
+     *  rather than in whichever places got updated. */
+    function withDisplayName(entry) {
+      const override = displayNames[entry.mountPoint];
+      return override ? { ...entry, name: override, realName: entry.name } : entry;
+    }
+
+    const entryFor = (p) => withDisplayName(
+      allEntries().find((e) => e.mountPoint === p)
+      || { name: baseName(p), mountPoint: p, type: "folder", totalBytes: null, freeBytes: null }
+    );
 
     const isAssigned = (p) => sourcePath === p || destNodes.some((n) => n.path === p);
 
@@ -972,7 +1176,11 @@
 
       // "Cascade from…" — Hedge's own non-drag path, mirrored here for the
       // same accessibility reason the drag fallback exists at all.
-      const candidates = destNodes.filter(
+      // Item 4 — never offered on the source card. Cascading is
+      // destination-to-destination: a chain reads FROM a verified
+      // destination, so "cascade from…" on the source is meaningless and
+      // was appearing purely because this block had no role guard.
+      const candidates = role === "source" ? [] : destNodes.filter(
         (n) => n.path !== path && n.parentId === null && !destNodes.some((c) => c.parentId === n.id)
       );
       if (candidates.length) {
@@ -981,6 +1189,14 @@
         for (const c of candidates) {
           add(`  ${entryFor(c.path).name}`, () => cascadeFrom(path, c.id));
         }
+      }
+
+      // Item 8 — cosmetic rename. Wording matches the reference: the
+      // current label in quotes, so it's obvious what's being renamed.
+      menu.appendChild(el("div", { class: "sep" }));
+      add(`Rename “${entryFor(path).name}”…`, () => openRename(path));
+      if (displayNames[path]) {
+        add("Reset to real name", () => setDisplayName(path, ""));
       }
 
       // Item 1 — eject/disconnect. Only for real volumes (a picked folder
@@ -1017,6 +1233,28 @@
       menu.style.top = `${Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 10)}px`;
     }
     const closeMenu = () => { menu.style.display = "none"; };
+
+    // ── Item 8: cosmetic rename ──
+    async function setDisplayName(mountPoint, name) {
+      displayNames = await window.freeframe.setDisplayName(mountPoint, name);
+      render();
+    }
+
+    function openRename(mountPoint) {
+      const entry = entryFor(mountPoint);
+      renameTarget = mountPoint;
+      $("rename-title").textContent = `Rename “${entry.name}”`;
+      $("rename-sub").textContent =
+        `Changes the label in this app only — ${entry.realName || entry.name} keeps its real name on disk.`;
+      $("rename-input").value = entry.name;
+      $("rename-backdrop").classList.add("open");
+      $("rename-input").focus();
+      $("rename-input").select();
+    }
+    const closeRename = () => {
+      renameTarget = null;
+      $("rename-backdrop").classList.remove("open");
+    };
 
     /** Eject or disconnect, surfacing diskutil's own reason on failure —
      *  "volume in use" names the app to quit, which "eject failed" doesn't. */
@@ -1088,7 +1326,11 @@
       }
 
       const card = el("div", {
-        class: `card${!role && isAssigned(entry.mountPoint) ? " assigned" : ""}`,
+        // Role colouring applies only to the middle column (`!role`) —
+        // cards already inside Sources/Destinations carry their own badge
+        // and don't need a second signal for the role they literally are.
+        class: `card${!role ? roleClass(entry.mountPoint) : ""}` +
+          `${!role && isAssigned(entry.mountPoint) ? " self-assigned" : ""}`,
         dataset: node
           ? { destId: node.id, path: entry.mountPoint, role: role || "" }
           : { path: entry.mountPoint, role: role || "" },
@@ -1103,6 +1345,24 @@
         card.appendChild(bar);
       }
 
+      // Item 3 — visible menu trigger. Additive: right-click below still
+      // works, this just stops the per-device folder pickers and rename
+      // being things you have to already know about to find.
+      const kebab = el("button", {
+        class: "card-menu",
+        title: "More…",
+        onClick: (e) => {
+          e.stopPropagation();
+          const r = e.currentTarget.getBoundingClientRect();
+          openMenu({ preventDefault() {}, clientX: r.right - 4, clientY: r.bottom + 2 }, entry.mountPoint, role);
+        },
+      });
+      kebab.appendChild(icon("kebab"));
+      // mousedown must not start a drag from the trigger itself, or the
+      // menu never opens because the click turns into a drag.
+      kebab.addEventListener("mousedown", (e) => e.stopPropagation());
+      right.appendChild(kebab);
+
       card.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
         beginDrag(e, entry.mountPoint, role);
@@ -1115,32 +1375,60 @@
      *  apps/web's asset-card.tsx: media area with a centered icon tile,
      *  then a compact info block. */
     function makeTile(entry) {
-      const assigned = isAssigned(entry.mountPoint);
-      const isSrc = sourcePath === entry.mountPoint;
-      const node = destNodes.find((n) => n.path === entry.mountPoint);
+      // Roles are resolved through deviceFor, so a drive shows as source
+      // and/or destination when a folder INSIDE it holds that role — the
+      // whole point of this view: the highlight belongs on the drive you
+      // have to keep plugged in, not on a subfolder of it.
+      const { isSource, isDest, selfAssigned } = roleFor(entry.mountPoint);
 
       const iconTile = el("div", { class: "tile-icon" });
       iconTile.appendChild(icon(typeIcon(entry.type)));
 
       const media = el("div", { class: "tile-media" }, [iconTile]);
-      if (isSrc) media.appendChild(el("span", { class: "tile-role src", text: "Source" }));
-      else if (node) media.appendChild(el("span", { class: "tile-role dst", text: "Dest" }));
+      // Stacked, not either/or: the badges have to say "both" before
+      // anyone has to interpret a split border colour.
+      const badges = el("div", { class: "tile-roles" });
+      if (isSource) badges.appendChild(el("span", { class: "tile-role src", text: "Source" }));
+      if (isDest) badges.appendChild(el("span", { class: "tile-role dst", text: "Dest" }));
+      if (isSource || isDest) media.appendChild(badges);
       media.appendChild(el("span", { class: "tile-badge", text: entry.type }));
 
       const info = el("div", { class: "tile-info" }, [
         el("div", { class: "tile-name", text: entry.name }),
         el("div", {
           class: "tile-meta",
-          text: entry.totalBytes == null ? entry.mountPoint : `${formatBytes(entry.freeBytes)} free`,
+          // A FreeFrame project has no free-space figure, so the generic
+          // branch rendered a bare "— free". Mirrors makeCard, which
+          // already had this branch.
+          text: entry.kind === "freeframe"
+            ? `${entry.assetCount} asset${entry.assetCount === 1 ? "" : "s"}`
+            : entry.freeBytes == null
+              ? entry.mountPoint
+              : `${formatBytes(entry.freeBytes)} free`,
           title: entry.mountPoint,
         }),
       ]);
 
       const tile = el("div", {
-        class: `tile${assigned ? " assigned" : ""}`,
+        class: `tile${roleClass(entry.mountPoint)}${selfAssigned ? " self-assigned" : ""}`,
         dataset: { path: entry.mountPoint, role: "" },
         title: entry.mountPoint,
       }, [media, info]);
+
+      // Item 3 — same trigger in grid view, over the media area where the
+      // reference layout puts it.
+      const tileKebab = el("button", {
+        class: "tile-menu",
+        title: "More…",
+        onClick: (e) => {
+          e.stopPropagation();
+          const r = e.currentTarget.getBoundingClientRect();
+          openMenu({ preventDefault() {}, clientX: r.right - 4, clientY: r.bottom + 2 }, entry.mountPoint, undefined);
+        },
+      });
+      tileKebab.appendChild(icon("kebab"));
+      tileKebab.addEventListener("mousedown", (e) => e.stopPropagation());
+      media.appendChild(tileKebab);
 
       tile.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
@@ -1169,7 +1457,7 @@
       // Center column — the only one with a view toggle.
       zoneVolumes.replaceChildren();
       zoneVolumes.className = `zone${volumesView === "square" ? " grid-view" : ""}`;
-      const entries = allEntries();
+      const entries = volumesColumnEntries();
       if (!entries.length) {
         zoneVolumes.appendChild(el("div", {
           class: "hint",
@@ -1179,9 +1467,9 @@
           style: volumesView === "square" ? "grid-column:1/-1" : "",
         }));
       } else if (volumesView === "square") {
-        for (const e of entries) zoneVolumes.appendChild(makeTile(e));
+        for (const e of entries) zoneVolumes.appendChild(makeTile(withDisplayName(e)));
       } else {
-        for (const e of entries) zoneVolumes.appendChild(makeCard(e, {}));
+        for (const e of entries) zoneVolumes.appendChild(makeCard(withDisplayName(e), {}));
       }
 
       for (const b of document.querySelectorAll("#view-toggle button")) {
@@ -1389,9 +1677,9 @@
     }
 
     window.freeframe.onCopyProgress(onProgress);
-    $("refresh").addEventListener("click", refresh);
-    $("clear").addEventListener("click", clearAll);
-    $("start").addEventListener("click", startCopy);
+    on("refresh", "click", refresh);
+    on("clear", "click", clearAll);
+    on("start", "click", startCopy);
     for (const btn of document.querySelectorAll("[data-choose]")) {
       btn.addEventListener("click", async () => {
         const which = btn.dataset.choose;
@@ -1413,21 +1701,21 @@
     }
 
     // ── Item 5: modal buttons ──
-    $("modal-src").addEventListener("click", async () => {
+    on("modal-src", "click", async () => {
       if (!modalState) return;
       const f = await pickFolder({ title: "Choose a source folder", device: modalState.volumePath });
       if (!f) return;
       modalState.src = f;
       updateModalChosen();
     });
-    $("modal-dst").addEventListener("click", async () => {
+    on("modal-dst", "click", async () => {
       if (!modalState) return;
       const f = await pickFolder({ title: "Choose a destination folder", device: modalState.volumePath });
       if (!f) return;
       modalState.dst = f;
       updateModalChosen();
     });
-    $("modal-cancel").addEventListener("click", () => {
+    on("modal-cancel", "click", () => {
       // Reverts only the assignment that caused the conflict, leaving the
       // pre-existing one alone — cancelling shouldn't undo work the user
       // didn't just do.
@@ -1435,7 +1723,7 @@
       closeModal();
       revert?.();
     });
-    $("modal-done").addEventListener("click", () => {
+    on("modal-done", "click", () => {
       if (!modalState || !modalState.src || !modalState.dst) return;
       const root = modalState.volumePath;
       const { src, dst } = modalState;
@@ -1492,7 +1780,7 @@
       $("login-backdrop").classList.remove("open");
     };
 
-    $("account").addEventListener("click", async () => {
+    on("account", "click", async () => {
       if (copying) return;
       if (ffStatus.loggedIn) {
         ffStatus = await window.freeframe.freeframeLogout();
@@ -1503,8 +1791,8 @@
         openLogin();
       }
     });
-    $("ff-cancel").addEventListener("click", closeLogin);
-    $("ff-submit").addEventListener("click", async () => {
+    on("ff-cancel", "click", closeLogin);
+    on("ff-submit", "click", async () => {
       const email = $("ff-email").value.trim();
       const password = $("ff-pass").value;
       const baseUrl = $("ff-url").value.trim();
@@ -1523,23 +1811,57 @@
         $("ff-submit").disabled = false;
       }
     });
-    $("ff-pass").addEventListener("keydown", (e) => { if (e.key === "Enter") $("ff-submit").click(); });
+    on("ff-pass", "keydown", (e) => { if (e.key === "Enter") $("ff-submit").click(); });
 
-    refreshAccount().catch(() => {});
+    // ── Bootstrap ──
+    // Each step is independent and isolated. Previously these ran as bare
+    // top-level statements, so the first thrown exception silently killed
+    // every step after it — including the refresh() that populates the
+    // whole window. Ordering here is presentation only; nothing below
+    // depends on anything above completing.
+    initStep("account", () => { refreshAccount().catch(() => {}); });
 
-    $("algo-btn").addEventListener("click", (e) => {
-      e.stopPropagation();
-      if ($("algo-menu").style.display === "block") closeAlgoMenu();
-      else openAlgoMenu();
+    initStep("algorithm picker", () => {
+      on("algo-btn", "click", (e) => {
+        e.stopPropagation();
+        if ($("algo-menu").style.display === "block") closeAlgoMenu();
+        else openAlgoMenu();
+      });
+      window.freeframe.getAlgorithms().then(({ algorithms: list, default: def }) => {
+        algorithms = list || [];
+        algorithm = def || "xxhash64";
+        const label = $("algo-label");
+        if (label) label.textContent = algoLabel();
+      }).catch(() => {});
     });
-    window.freeframe.getAlgorithms().then(({ algorithms: list, default: def }) => {
-      algorithms = list || [];
-      algorithm = def || "xxhash64";
-      $("algo-label").textContent = algoLabel();
-    }).catch(() => {});
 
-    window.freeframe.getRecentFolders().then((r) => { recentFolders = r || {}; }).catch(() => {});
-    refresh();
+    initStep("recent folders", () => {
+      window.freeframe.getRecentFolders().then((r) => { recentFolders = r || {}; }).catch(() => {});
+    });
+
+    initStep("rename", () => {
+      on("rename-cancel", "click", closeRename);
+      on("rename-save", "click", async () => {
+        if (!renameTarget) return;
+        const value = $("rename-input").value;
+        const target = renameTarget;
+        closeRename();
+        await setDisplayName(target, value);
+      });
+      on("rename-input", "keydown", (e) => {
+        if (e.key === "Enter") $("rename-save").click();
+        if (e.key === "Escape") closeRename();
+      });
+    });
+
+    initStep("display names", () => {
+      window.freeframe.getDisplayNames().then((n) => { displayNames = n || {}; render(); }).catch(() => {});
+    });
+
+    // Last, and deliberately outside any conditional: if this doesn't run,
+    // the app shows an empty window, which is the symptom that started
+    // this whole pass.
+    initStep("initial volume load", () => { refresh(); });
   </script>
 </body>
 </html>

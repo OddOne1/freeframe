@@ -46,6 +46,12 @@ contextBridge.exposeInMainWorld("freeframe", {
   freeframeUpload: (sourcePath, projectId, folderId) =>
     ipcRenderer.invoke("freeframe:upload", { sourcePath, projectId, folderId }),
 
+  /** Cosmetic in-app display name per volume/folder. Never renames
+   *  anything on disk. */
+  getDisplayNames: () => ipcRenderer.invoke("display-names:get"),
+  setDisplayName: (mountPoint, name) =>
+    ipcRenderer.invoke("display-names:set", { mountPoint, name }),
+
   /** Item 6 — last folder chosen per device, persisted in userData. */
   getRecentFolders: () => ipcRenderer.invoke("recent-folders:get"),
   rememberFolder: (device, folder) =>

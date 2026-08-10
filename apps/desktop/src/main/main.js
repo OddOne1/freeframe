@@ -357,6 +357,46 @@ ipcMain.handle("recent-folders:remember", async (_event, { device, folder } = {}
   return recents;
 });
 
+// ── Item 8: cosmetic display-name override ──
+// Renames how a card is LABELLED in this app only. It never touches the
+// real volume or folder name on disk — that would be a destructive
+// filesystem operation dressed up as a UI convenience. The full
+// operator/talent/camera metadata-preset system that drives folder naming
+// at copy time is a separate, much larger roadmap item (§10) and is
+// deliberately not this.
+//
+// Persisted the same way recent folders are, keyed by mountPoint.
+function namesFile() {
+  return path.join(app.getPath("userData"), "display-names.json");
+}
+
+async function readNames() {
+  try {
+    return JSON.parse(await fsp.readFile(namesFile(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+ipcMain.handle("display-names:get", async () => readNames());
+
+ipcMain.handle("display-names:set", async (_event, { mountPoint, name } = {}) => {
+  if (typeof mountPoint !== "string" || !mountPoint) return {};
+  const names = await readNames();
+  const trimmed = typeof name === "string" ? name.trim().slice(0, 120) : "";
+  // Empty clears the override and falls back to the real name, so there's
+  // always a way back without hunting for a settings file.
+  if (trimmed) names[mountPoint] = trimmed;
+  else delete names[mountPoint];
+  try {
+    await fsp.mkdir(path.dirname(namesFile()), { recursive: true });
+    await fsp.writeFile(namesFile(), JSON.stringify(names, null, 2));
+  } catch {
+    /* a cosmetic label failing to persist must not break the assignment */
+  }
+  return names;
+});
+
 ipcMain.handle("dialog:choose-folder", async (_event, { title, defaultPath } = {}) => {
   const options = {
     title: title || "Choose folder",
