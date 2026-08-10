@@ -18,6 +18,9 @@
       --text-secondary: #9a9aa5;
       --accent: #5b8def;
       --accent-hover: #7aa3f5;
+      --ok: #4ade80;
+      --warn: #fbbf24;
+      --error: #f87171;
     }
 
     * { box-sizing: border-box; }
@@ -37,16 +40,14 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 8px;
       padding: 12px 16px;
       border-bottom: 1px solid var(--border);
       -webkit-app-region: drag;
     }
 
-    header h1 {
-      font-size: 14px;
-      font-weight: 600;
-      margin: 0;
-    }
+    header h1 { font-size: 14px; font-weight: 600; margin: 0; }
+    header .spacer { flex: 1; }
 
     button {
       -webkit-app-region: no-drag;
@@ -57,34 +58,42 @@
       padding: 6px 12px;
       font-size: 12px;
       cursor: pointer;
+      white-space: nowrap;
     }
-    button:hover { background: var(--bg-hover); }
+    button:hover:not(:disabled) { background: var(--bg-hover); }
+    button:disabled { opacity: 0.45; cursor: default; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #08080b; font-weight: 600; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
 
-    main {
-      flex: 1;
-      overflow-y: auto;
-      padding: 12px 16px;
-    }
+    main { flex: 1; overflow-y: auto; padding: 12px 16px; }
 
-    .empty {
+    .empty { color: var(--text-secondary); padding: 24px 0; text-align: center; }
+
+    .section-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
       color: var(--text-secondary);
-      padding: 24px 0;
-      text-align: center;
+      margin: 4px 0 8px;
     }
 
     .volume {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 12px;
       padding: 10px 12px;
       border: 1px solid var(--border);
       border-radius: 8px;
       margin-bottom: 8px;
       background: var(--bg-elevated);
     }
+    .volume.is-source { border-color: var(--accent); }
+    .volume.is-dest { border-color: var(--ok); }
 
     .volume .name { font-weight: 600; }
     .volume .meta { color: var(--text-secondary); font-size: 11px; margin-top: 2px; }
+    .volume .roles { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
     .badge {
       font-size: 10px;
@@ -97,69 +106,329 @@
       border: 1px solid var(--accent);
       background: rgba(91, 141, 239, 0.12);
     }
+    .badge.type { color: var(--text-secondary); border-color: var(--border); background: transparent; }
+    .badge.role-source { color: var(--accent); border-color: var(--accent); background: rgba(91,141,239,0.12); }
+    .badge.role-dest { color: var(--ok); border-color: var(--ok); background: rgba(74,222,128,0.12); }
+
+    .role-btn { padding: 4px 8px; font-size: 11px; }
+    .role-btn.active { border-color: var(--accent); color: var(--accent); }
+    .role-btn.active-dest { border-color: var(--ok); color: var(--ok); }
+
+    /* Progress */
+    .progress-wrap { padding: 12px 16px; border-top: 1px solid var(--border); background: var(--bg-elevated); }
+    .bar { height: 6px; border-radius: 999px; background: var(--bg-primary); overflow: hidden; }
+    .bar > div { height: 100%; width: 0%; background: var(--accent); transition: width 120ms linear; }
+    .progress-line { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; font-size: 12px; }
+    .progress-file { color: var(--text-secondary); font-size: 11px; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* Summary */
+    .summary { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 12px; background: var(--bg-elevated); }
+    .summary.ok { border-color: var(--ok); }
+    .summary.bad { border-color: var(--error); }
+    .summary h2 { margin: 0 0 8px; font-size: 13px; }
+    .summary .stat { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
+    .summary .stat span:first-child { color: var(--text-secondary); }
+    .summary ul { margin: 8px 0 0; padding-left: 16px; font-size: 11px; color: var(--error); }
+    .summary .verdict { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; }
+    .verdict.ok { color: var(--ok); }
+    .verdict.bad { color: var(--error); }
+
+    code { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
   </style>
 </head>
 <body>
   <header>
-    <h1>Volumes</h1>
+    <h1>Offload</h1>
+    <span class="spacer"></span>
+    <button id="add-folder">+ Folder…</button>
     <button id="refresh">↻ Refresh</button>
+    <button id="start" class="primary" disabled>Copy &amp; Verify</button>
   </header>
-  <main id="list">
-    <div class="empty">Loading…</div>
+
+  <main>
+    <div id="summary-slot"></div>
+    <div class="section-label" id="assign-hint">Pick one source and at least one destination</div>
+    <div id="list"><div class="empty">Loading…</div></div>
   </main>
+
+  <div class="progress-wrap" id="progress" style="display:none">
+    <div class="progress-line">
+      <strong id="progress-phase">Preparing…</strong>
+      <span id="progress-counts"></span>
+    </div>
+    <div class="bar"><div id="progress-bar"></div></div>
+    <div class="progress-file" id="progress-file"></div>
+  </div>
 
   <script>
     // No Node access here (contextIsolation + sandbox: true in main.js) —
     // window.freeframe is the only thing preload.js exposes.
     const listEl = document.getElementById("list");
+    const summarySlot = document.getElementById("summary-slot");
     const refreshBtn = document.getElementById("refresh");
+    const startBtn = document.getElementById("start");
+    const addFolderBtn = document.getElementById("add-folder");
+    const hintEl = document.getElementById("assign-hint");
+    const progressEl = document.getElementById("progress");
+    const progressPhase = document.getElementById("progress-phase");
+    const progressCounts = document.getElementById("progress-counts");
+    const progressBar = document.getElementById("progress-bar");
+    const progressFile = document.getElementById("progress-file");
+
+    // Assignment state, keyed by mountPoint (paths are the identity here —
+    // two volumes can share a display name, paths can't collide).
+    let volumes = [];
+    let extraFolders = [];   // manually added via the folder picker
+    let sourcePath = null;
+    let destPaths = new Set();
+    let copying = false;
 
     function formatBytes(bytes) {
       if (bytes == null) return "—";
       const units = ["B", "KB", "MB", "GB", "TB"];
       let i = 0;
       let n = bytes;
-      while (n >= 1024 && i < units.length - 1) {
-        n /= 1024;
-        i += 1;
-      }
+      while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
       return `${n.toFixed(1)} ${units[i]}`;
     }
 
-    function render(volumes) {
-      if (!volumes.length) {
-        listEl.innerHTML = '<div class="empty">No volumes found.</div>';
-        return;
+    // User-supplied volume/file names land in the DOM, and this renderer is
+    // deliberately the untrusted side of the IPC boundary — build text
+    // nodes, never innerHTML with interpolated names.
+    function el(tag, opts = {}, children = []) {
+      const node = document.createElement(tag);
+      if (opts.class) node.className = opts.class;
+      if (opts.text != null) node.textContent = opts.text;
+      if (opts.title) node.title = opts.title;
+      if (opts.onClick) node.addEventListener("click", opts.onClick);
+      if (opts.disabled) node.disabled = true;
+      for (const child of children) node.appendChild(child);
+      return node;
+    }
+
+    function setSource(p) {
+      // One source at a time; picking a new one replaces the old. A path
+      // can't be both roles at once, so clear it from destinations.
+      sourcePath = sourcePath === p ? null : p;
+      if (sourcePath) destPaths.delete(sourcePath);
+      render();
+    }
+
+    function toggleDest(p) {
+      if (destPaths.has(p)) destPaths.delete(p);
+      else {
+        if (sourcePath === p) sourcePath = null;
+        destPaths.add(p);
       }
-      listEl.innerHTML = volumes
-        .map(
-          (v) => `
-        <div class="volume">
-          <div>
-            <div class="name">${v.name}</div>
-            <div class="meta">${v.mountPoint} · ${formatBytes(v.freeBytes)} free of ${formatBytes(v.totalBytes)}</div>
-          </div>
-          <span class="badge">${v.type}</span>
-        </div>
-      `
-        )
-        .join("");
+      render();
+    }
+
+    function entries() {
+      // Manually added folders are shown alongside real volumes so they can
+      // be assigned the same way.
+      return [
+        ...volumes.map((v) => ({ ...v, isVolume: true })),
+        ...extraFolders.map((p) => ({
+          name: p.split("/").filter(Boolean).pop() || p,
+          mountPoint: p,
+          type: "folder",
+          totalBytes: null,
+          freeBytes: null,
+          isVolume: false,
+        })),
+      ];
+    }
+
+    function render() {
+      const all = entries();
+      listEl.replaceChildren();
+
+      if (!all.length) {
+        listEl.appendChild(el("div", { class: "empty", text: "No volumes found. Use “+ Folder…” to pick one manually." }));
+      }
+
+      for (const v of all) {
+        const isSource = sourcePath === v.mountPoint;
+        const isDest = destPaths.has(v.mountPoint);
+
+        const info = el("div", {}, [
+          el("div", { class: "name", text: v.name }),
+          el("div", {
+            class: "meta",
+            text: v.totalBytes == null
+              ? v.mountPoint
+              : `${v.mountPoint} · ${formatBytes(v.freeBytes)} free of ${formatBytes(v.totalBytes)}`,
+          }),
+        ]);
+
+        const roles = el("div", { class: "roles" });
+        if (isSource) roles.appendChild(el("span", { class: "badge role-source", text: "Source" }));
+        if (isDest) roles.appendChild(el("span", { class: "badge role-dest", text: "Destination" }));
+        roles.appendChild(el("span", { class: "badge type", text: v.type }));
+        roles.appendChild(el("button", {
+          class: `role-btn${isSource ? " active" : ""}`,
+          text: isSource ? "✓ Source" : "Source",
+          disabled: copying,
+          onClick: () => setSource(v.mountPoint),
+        }));
+        roles.appendChild(el("button", {
+          class: `role-btn${isDest ? " active-dest" : ""}`,
+          text: isDest ? "✓ Dest" : "Dest",
+          disabled: copying,
+          onClick: () => toggleDest(v.mountPoint),
+        }));
+
+        const row = el("div", {
+          class: `volume${isSource ? " is-source" : ""}${isDest ? " is-dest" : ""}`,
+        }, [info, roles]);
+        listEl.appendChild(row);
+      }
+
+      const ready = Boolean(sourcePath) && destPaths.size > 0 && !copying;
+      startBtn.disabled = !ready;
+      startBtn.textContent = destPaths.size > 1
+        ? `Copy & Verify → ${destPaths.size} destinations`
+        : "Copy & Verify";
+
+      hintEl.textContent = copying
+        ? "Copying…"
+        : !sourcePath
+          ? "Pick one source and at least one destination"
+          : destPaths.size === 0
+            ? "Now pick at least one destination"
+            : `SECURE mode · xxHash64 · ${destPaths.size} destination${destPaths.size > 1 ? "s" : ""} in parallel`;
     }
 
     async function refresh() {
-      listEl.innerHTML = '<div class="empty">Loading…</div>';
+      listEl.replaceChildren(el("div", { class: "empty", text: "Loading…" }));
       try {
-        const volumes = await window.freeframe.listVolumes();
-        render(volumes);
+        volumes = await window.freeframe.listVolumes();
       } catch (err) {
         // Previously a failure here just left "Loading…" on screen forever
         // with no way to tell success from stuck (see volumes.js's
         // getDiskutilInfo fix note, 2026-08-01) — always show something.
-        listEl.innerHTML = `<div class="empty">Couldn't load volumes: ${String(err.message || err)}</div>`;
+        volumes = [];
+        listEl.replaceChildren(el("div", { class: "empty", text: `Couldn't load volumes: ${String(err.message || err)}` }));
+        return;
+      }
+      render();
+    }
+
+    function showProgress(p) {
+      progressEl.style.display = "block";
+      if (p.phase === "scanning") {
+        progressPhase.textContent = "Scanning source…";
+      } else if (p.phase === "start") {
+        progressPhase.textContent = `Copying to ${p.destinationCount} destination${p.destinationCount > 1 ? "s" : ""}`;
+        progressCounts.textContent = `${p.totalFiles} files · ${formatBytes(p.totalBytes)}`;
+      } else if (p.phase === "verifying") {
+        progressPhase.textContent = "Verifying checksum…";
+        progressFile.textContent = p.file;
+      } else if (p.phase === "bytes" || p.phase === "file-done") {
+        if (p.phase === "file-done") {
+          progressPhase.textContent = "Copying";
+          progressCounts.textContent = `${p.fileIndex} / ${p.totalFiles} files · ${formatBytes(p.copiedBytes)} of ${formatBytes(p.totalBytes)}`;
+        }
+        if (typeof p.percent === "number") progressBar.style.width = `${p.percent.toFixed(1)}%`;
+        if (p.file) progressFile.textContent = p.file;
+      } else if (p.phase === "file-start") {
+        progressFile.textContent = p.file;
       }
     }
 
+    function renderSummary(s) {
+      const good = s.allVerified;
+      const box = el("div", { class: `summary ${good ? "ok" : "bad"}` });
+      box.appendChild(el("h2", { text: good ? "Copy verified" : "Copy finished with problems" }));
+
+      const stats = [
+        ["Mode", `${s.mode} · ${s.algorithm}`],
+        ["Files copied", `${s.filesCopied} of ${s.totalFiles}`],
+        ["Files verified", String(s.filesVerified)],
+        ["Destinations", String(s.destPaths.length)],
+        ["Data", formatBytes(s.copiedBytes)],
+        // Sub-second copies (a handful of small files, or a test run) read
+        // as a useless "0.0s" when always divided by 1000.
+        ["Duration", s.durationMs < 1000 ? `${s.durationMs} ms` : `${(s.durationMs / 1000).toFixed(1)}s`],
+      ];
+      if (s.mismatches.length) stats.push(["Checksum mismatches", String(s.mismatches.length)]);
+      if (s.errors.length) stats.push(["Errors", String(s.errors.length)]);
+      if (s.cancelled) stats.push(["Cancelled", "yes"]);
+
+      for (const [k, v] of stats) {
+        box.appendChild(el("div", { class: "stat" }, [
+          el("span", { text: k }),
+          el("span", { text: v }),
+        ]));
+      }
+
+      if (s.mismatches.length) {
+        const ul = el("ul");
+        for (const m of s.mismatches.slice(0, 10)) {
+          ul.appendChild(el("li", { text: `${m.file} → ${m.destRoot}: expected ${m.sourceHash}, got ${m.destHash ?? "—"}` }));
+        }
+        if (s.mismatches.length > 10) ul.appendChild(el("li", { text: `…and ${s.mismatches.length - 10} more` }));
+        box.appendChild(ul);
+      }
+      if (s.errors.length) {
+        const ul = el("ul");
+        for (const e of s.errors.slice(0, 10)) {
+          ul.appendChild(el("li", { text: `${e.file}${e.destRoot ? ` → ${e.destRoot}` : ""}: ${e.error}` }));
+        }
+        if (s.errors.length > 10) ul.appendChild(el("li", { text: `…and ${s.errors.length - 10} more` }));
+        box.appendChild(ul);
+      }
+
+      // The one line that answers the only question that matters after an
+      // offload. Deliberately explicit about the card, not just "done".
+      box.appendChild(el("div", {
+        class: `verdict ${good ? "ok" : "bad"}`,
+        text: good
+          ? "Every file was re-read from each destination and matched the source. Safe to wipe the card."
+          : "Not every file verified — do NOT wipe the source until this is resolved.",
+      }));
+
+      summarySlot.replaceChildren(box);
+    }
+
+    async function startCopy() {
+      if (copying) return;
+      copying = true;
+      summarySlot.replaceChildren();
+      progressBar.style.width = "0%";
+      progressFile.textContent = "";
+      progressCounts.textContent = "";
+      render();
+
+      try {
+        const summary = await window.freeframe.startCopy(sourcePath, [...destPaths]);
+        renderSummary(summary);
+      } catch (err) {
+        summarySlot.replaceChildren(
+          el("div", { class: "summary bad" }, [
+            el("h2", { text: "Copy failed to start" }),
+            el("div", { class: "verdict bad", text: String(err.message || err) }),
+          ])
+        );
+      } finally {
+        copying = false;
+        progressEl.style.display = "none";
+        render();
+      }
+    }
+
+    window.freeframe.onCopyProgress(showProgress);
+
     refreshBtn.addEventListener("click", refresh);
+    startBtn.addEventListener("click", startCopy);
+    addFolderBtn.addEventListener("click", async () => {
+      const folder = await window.freeframe.chooseFolder("Choose a source or destination folder");
+      if (folder && !extraFolders.includes(folder)) {
+        extraFolders.push(folder);
+        render();
+      }
+    });
+
     refresh();
   </script>
 </body>

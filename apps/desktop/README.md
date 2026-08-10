@@ -6,14 +6,33 @@ Framework: **Electron**, chosen 2026-08-01 over Tauri — matches [ingesto](http
 
 ## Current state
 
-This is a scaffold, not phase 1. What exists:
+A working checksummed copy tool — one source, many destinations, every file verified. Not yet phase 1 (no FreeFrame upload). What exists:
 
 - App shell (`src/main/main.js`) — window, IPC, secure `contextBridge` preload (`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true` — the renderer has zero direct Node/fs access, everything goes through `preload.js`'s narrow bridge).
 - Volume enumeration (`src/main/volumes.js`) — lists everything mounted under `/Volumes`, classified as `removable` / `internal` / `external` / `network` via `diskutil info -plist` + `plutil` (both ship on every Mac, no extra parsing dependency). Windows will need its own implementation behind the same `listVolumes()` shape later.
-- Minimal renderer UI (`src/renderer/index.html`) — shows the volume list, manual refresh. No source/destination assignment, no copying, no checksums yet.
+- **Copy engine (`src/main/copy-engine.js`) — SECURE tier.** Copies a whole tree to N destinations and verifies every written file by re-reading it off disk and comparing xxHash64 against the source. Two properties worth knowing:
+  - **The source is read exactly once regardless of destination count.** One read stream fans out to N write streams and feeds the hasher simultaneously, with explicit backpressure (a slow destination pauses the source rather than buffering the difference in RAM). This is the "1 source → many destinations in parallel" shape the roadmap's copy-job DAG needs, so it isn't bolted on later.
+  - **Verification re-reads the destination from disk**, rather than re-hashing the buffer already in memory — that's the difference between proving the bytes landed and proving we can hash our own variable. Size is checked alongside the hash, since an empty file has a perfectly valid hash of its own.
+  - Per-file failures don't abort the run; one unreadable file still yields everything else, recorded as an error.
+  - No `electron` import anywhere in it, on purpose — it runs under plain `node` so it can be tested without booting a window.
+- **Source/destination assignment + progress + summary (`src/renderer/index.html`)** — per-volume Source/Dest buttons with role badges, one source and any number of destinations, live progress bar over `copy:progress`, and a completion summary (files copied/verified, mismatches, errors) ending in the only line that matters: whether the card is safe to wipe. `+ Folder…` picks any directory, not just a volume root, since offloading into a dated subfolder is the normal case.
 - `electron-builder.yml` — mac target (universal: arm64 + x64), hardened runtime, entitlements, and a notarization hook (`build-resources/notarize.js`) — all structured correctly but **not wired to a real signing identity yet** (see below).
 
-Not built yet: source/destination assignment, the copy engine, checksum algorithms, ASC MHL export, copy-mode tiers (FAST/VERIFIED/SECURE/PRO), FreeFrame upload integration. Those come next, in the order laid out in `CLAUDE.md`'s "Roadmap" section.
+**Deliberately not built yet** (each a separate follow-up, not an oversight): the FAST / VERIFIED / PRO tiers, ASC MHL manifest export, the multi-algorithm picker and its tradeoff explainer (xxHash64 is hardcoded for now), double source read, folder-naming templates, cascading multi-hop jobs, and FreeFrame upload. See `CLAUDE.md`'s "Roadmap" section for the sequencing.
+
+### Tests
+
+```bash
+pnpm test          # both suites
+pnpm test:engine   # copy engine against real files in temp dirs
+pnpm test:e2e      # launches Electron, drives the real UI over CDP
+```
+
+`test:engine` covers multi-destination copies, structure/unicode preservation, progress monotonicity, the guard rails (destination inside source, etc.), and — most importantly — that a corrupted or truncated destination is actually *caught*, and that `allVerified` goes false when a file genuinely can't be written. A verifier that always passes is worse than no verifier, so that case is asserted explicitly rather than assumed.
+
+`test:e2e` launches the real app, attaches to the renderer over the Chrome DevTools Protocol, clicks the actual buttons, and reads the summary out of the real DOM — so the main-process IPC handler, the preload bridge and the UI are all exercised, not just the module underneath them. It also asserts the security posture on the live renderer (no `window.require`, no `window.process`, no raw `ipcRenderer`, and exactly the intended five bridge methods).
+
+Both suites passed on macOS as of 2026-08-10. Neither has been run on Windows — there is no Windows implementation of `volumes.js` yet.
 
 ## Dev setup
 
