@@ -55,16 +55,25 @@ ipcMain.handle("copy:start", async (event, payload) => {
   }
 
   const sourcePath = typeof payload?.sourcePath === "string" ? payload.sourcePath : null;
-  const destPaths = Array.isArray(payload?.destPaths)
-    ? payload.destPaths.filter((p) => typeof p === "string")
+
+  // The destination tree. Sanitized field-by-field rather than passed
+  // through: the renderer is the untrusted side of this boundary by design
+  // (it renders user-supplied volume names), and copy-engine.js takes raw
+  // filesystem paths. Structural validity — cycles, missing parents,
+  // nesting — is re-checked inside the engine, so a malformed tree can't
+  // get through by going around this handler either.
+  const nodes = Array.isArray(payload?.nodes)
+    ? payload.nodes
+        .filter((n) => n && typeof n.path === "string" && typeof n.id === "string")
+        .map((n) => ({
+          id: n.id,
+          path: n.path,
+          parentId: typeof n.parentId === "string" ? n.parentId : null,
+        }))
     : [];
 
-  // Validated here rather than trusted from the renderer. The renderer is
-  // the untrusted side of this boundary by design — it renders
-  // user-supplied volume names, so it's the part most likely to be turned
-  // against us, and copy-engine.js takes raw paths.
   if (!sourcePath) throw new Error("No source selected");
-  if (destPaths.length === 0) throw new Error("No destination selected");
+  if (nodes.length === 0) throw new Error("No destination selected");
 
   const webContents = event.sender;
   let cancelled = false;
@@ -73,7 +82,7 @@ ipcMain.handle("copy:start", async (event, payload) => {
   try {
     return await runCopyJob({
       sourcePath,
-      destPaths,
+      nodes,
       isCancelled: () => cancelled,
       onProgress: (p) => {
         // The window can be closed mid-copy; sending to a destroyed

@@ -79,14 +79,17 @@ async function main() {
     }));
     check(summary.mode === "SECURE" && summary.algorithm === "xxh64", "reports SECURE / xxh64");
     check(summary.totalFiles === expectedFiles.length, "file count", `${summary.totalFiles} (expected ${expectedFiles.length})`);
-    check(summary.filesVerified === expectedFiles.length, "every file verified", `${summary.filesVerified}`);
+    check(summary.fileCopiesVerified === expectedFiles.length * 2, "every file verified into BOTH destinations",
+      `${summary.fileCopiesVerified} of ${summary.totalFileCopies}`);
+    check(summary.nodes.every((n) => n.status === "verified"), "both destination nodes verified");
     check(summary.mismatches.length === 0 && summary.errors.length === 0, "no mismatches or errors");
 
-    const copiedRel = summary.files.map((f) => f.file).sort();
+    const copiedRel = [...new Set(summary.files.map((f) => f.file))].sort();
     check(JSON.stringify(copiedRel) === JSON.stringify(expectedFiles), ".DS_Store excluded, everything else copied");
 
     // Bytes counted once per source read, not once per destination.
     const srcTotal = Object.values(expected).reduce((a, b) => a + b, 0);
+    const srcFileCount = expectedFiles.length;
     check(summary.totalBytes === srcTotal, "totalBytes = source size", `${summary.totalBytes} vs ${srcTotal}`);
     check(summary.copiedBytes === srcTotal, "copiedBytes not multiplied by destination count", `${summary.copiedBytes}`);
 
@@ -171,10 +174,96 @@ async function main() {
     const failed = await runCopyJob({ sourcePath: source, destPaths: [destE] });
     check(failed.allVerified === false, "allVerified is false when a file cannot be written");
     check(failed.errors.length > 0, "the failure is recorded in errors[]", `${failed.errors.length} error(s)`);
-    check(failed.filesVerified < failed.totalFiles, "filesVerified reflects the failure",
-      `${failed.filesVerified}/${failed.totalFiles}`);
+    check(failed.fileCopiesVerified < failed.totalFileCopies, "verified count reflects the failure",
+      `${failed.fileCopiesVerified}/${failed.totalFileCopies}`);
     check(failed.files.some((f) => f.ok === false), "the specific file is marked not-ok");
     check(failed.files.some((f) => f.ok === true), "other files still copied — one bad file doesn't abort the run");
+    check(failed.nodes[0].status === "failed", "the node itself is marked failed", failed.nodes[0].status);
+
+    // ── 4c. Cascading: source → A → B ──
+    // The ordering guarantee is the whole point: B must not begin until A
+    // has copied AND verified, because cascading from an unverified copy
+    // would propagate corruption while reporting success.
+    console.log("\n4c. Cascade — source → A → B runs in dependency order");
+    const cA = path.join(tmp, "CASCADE_A");
+    const cB = path.join(tmp, "CASCADE_B");
+    const timeline = [];
+    const casc = await runCopyJob({
+      sourcePath: source,
+      nodes: [
+        { id: "A", path: cA, parentId: null },
+        { id: "B", path: cB, parentId: "A" },
+      ],
+      onProgress: (p) => {
+        if (p.phase === "node-status") timeline.push(`${p.node.id}:${p.node.status}`);
+        if (p.phase === "source-released") timeline.push("source-released");
+      },
+    });
+
+    check(casc.allVerified === true, "cascade verified end to end", JSON.stringify({
+      mismatches: casc.mismatches.length, errors: casc.errors.length,
+    }));
+    check(casc.legCount === 2, "counted as two legs, not one", String(casc.legCount));
+
+    const aVerified = timeline.indexOf("A:verified");
+    const bCopying = timeline.indexOf("B:copying");
+    check(aVerified !== -1 && bCopying !== -1, "both legs reported status");
+    check(aVerified < bCopying, "B starts copying only AFTER A verifies",
+      `A:verified@${aVerified} < B:copying@${bCopying}`);
+    check(timeline.indexOf("B:copying") > timeline.indexOf("A:copying"), "A copies before B");
+
+    // Source can be freed once the primary leg verifies — that's the point
+    // of cascading, not a cosmetic detail.
+    const released = timeline.indexOf("source-released");
+    check(released !== -1 && released >= aVerified && released < bCopying,
+      "source released after the primary leg, before the cascade runs", `@${released}`);
+
+    const nodeA = casc.nodes.find((n) => n.id === "A");
+    const nodeB = casc.nodes.find((n) => n.id === "B");
+    check(nodeA.parentId === null && nodeB.parentId === "A", "tree shape survives to the summary");
+    check(nodeA.status === "verified" && nodeB.status === "verified", "both nodes verified");
+
+    let cascadeIdentical = true;
+    for (const rel of expectedFiles) {
+      const s1 = await hashFileOnDisk(path.join(source, rel));
+      const s2 = await hashFileOnDisk(path.join(cB, rel));
+      if (s1 !== s2) cascadeIdentical = false;
+    }
+    check(cascadeIdentical, "cascaded copy is byte-identical to the ORIGINAL source");
+
+    // ── 4d. A failed parent must not cascade ──
+    console.log("\n4d. A cascade whose parent fails must be skipped, not run");
+    const fA = path.join(tmp, "FAIL_A");
+    const fB = path.join(tmp, "FAIL_B");
+    // Park a directory where a file needs to go, so leg A genuinely fails.
+    await fs.mkdir(path.join(fA, "DCIM", "100CANON", "A001C001.MOV"), { recursive: true });
+    const badCasc = await runCopyJob({
+      sourcePath: source,
+      nodes: [
+        { id: "A", path: fA, parentId: null },
+        { id: "B", path: fB, parentId: "A" },
+      ],
+    });
+    const bad_A = badCasc.nodes.find((n) => n.id === "A");
+    const bad_B = badCasc.nodes.find((n) => n.id === "B");
+    check(bad_A.status === "failed", "parent leg marked failed", bad_A.status);
+    check(bad_B.status === "skipped", "child leg SKIPPED, never copied", bad_B.status);
+    check(badCasc.allVerified === false, "allVerified false for the whole job");
+    check(!fssync.existsSync(path.join(fB, "README.txt")) || (await fs.readdir(fB).catch(() => [])).length === 0,
+      "nothing written to the skipped destination");
+
+    // ── 4e. Malformed trees are rejected ──
+    console.log("\n4e. Malformed cascade trees rejected");
+    for (const [label, nodes] of [
+      ["cycle", [{ id: "A", path: path.join(tmp, "X1"), parentId: "B" }, { id: "B", path: path.join(tmp, "X2"), parentId: "A" }]],
+      ["self-parent", [{ id: "A", path: path.join(tmp, "X3"), parentId: "A" }]],
+      ["missing parent", [{ id: "A", path: path.join(tmp, "X4"), parentId: "ghost" }]],
+      ["duplicate destination", [{ id: "A", path: path.join(tmp, "X5"), parentId: null }, { id: "B", path: path.join(tmp, "X5"), parentId: null }]],
+    ]) {
+      let threw = false;
+      try { await runCopyJob({ sourcePath: source, nodes }); } catch { threw = true; }
+      check(threw, `rejects ${label}`);
+    }
 
     // ── 5. Guard rails ──
     console.log("\n5. Refuses dangerous source/destination combinations");
@@ -202,7 +291,9 @@ async function main() {
     const par = await runCopyJob({ sourcePath: source, destPaths: [d1, d2, d3] });
     check(par.copiedBytes === srcTotal, "3 destinations still read the source once", `${par.copiedBytes} bytes`);
     check(par.allVerified === true, "all 3 destinations verified");
-    check(par.files.every((f) => f.destinations.length === 3), "per-file result records all 3 destinations");
+    check(par.nodes.length === 3 && par.nodes.every((n) => n.status === "verified"), "all 3 nodes recorded and verified");
+    check(par.totalFileCopies === srcFileCount * 3, "file-copy denominator scales with destinations",
+      `${par.totalFileCopies}`);
 
     console.log(
       failures === 0

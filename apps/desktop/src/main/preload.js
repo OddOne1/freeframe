@@ -8,10 +8,13 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("freeframe", {
   listVolumes: () => ipcRenderer.invoke("volumes:list"),
 
-  // Resolves with the final summary; per-file progress arrives separately
-  // via onCopyProgress below, since invoke() can only resolve once.
-  startCopy: (sourcePath, destPaths) =>
-    ipcRenderer.invoke("copy:start", { sourcePath, destPaths }),
+  // `nodes` is the destination tree: [{ id, path, parentId }], where
+  // parentId null means "copies from the original source" and a parentId
+  // means "cascades from that destination". Resolves with the final
+  // summary; per-node progress arrives separately via onCopyProgress
+  // below, since invoke() can only resolve once.
+  startCopy: (sourcePath, nodes) =>
+    ipcRenderer.invoke("copy:start", { sourcePath, nodes }),
 
   cancelCopy: () => ipcRenderer.invoke("copy:cancel"),
 

@@ -4,23 +4,30 @@
   <meta charset="UTF-8" />
   <title>FreeFrame Desktop (name TBD)</title>
   <style>
-    /* Same dark-theme tokens as apps/web/app/globals.css, kept in sync by
-       hand for now — no shared design-token package between the two apps
-       yet. If this file and the web app's palette drift, that's a real
-       follow-up (a small shared @freeframe/tokens package), not urgent
-       for a first scaffold. */
+    /* Palette per CLAUDE.md's roadmap "Color coding" decision (2026-07-31):
+       brand accent for chrome/selection, and FreeFrame's *existing* semantic
+       status tokens reused unchanged for process state, so this app and the
+       web app speak the same visual language (green = good, red = bad).
+       Kept in sync with apps/web by hand — a shared @freeframe/tokens
+       package is a real follow-up, not urgent for this app. */
     :root {
       --bg-primary: #0d0d10;
+      --bg-secondary: #17171c;
       --bg-elevated: #24242c;
       --bg-hover: #2a2a34;
       --border: #33333d;
       --text-primary: #f2f2f5;
       --text-secondary: #9a9aa5;
-      --accent: #5b8def;
-      --accent-hover: #7aa3f5;
-      --ok: #4ade80;
-      --warn: #fbbf24;
-      --error: #f87171;
+      --text-tertiary: #6b6b76;
+
+      --accent: #5b8def;          /* brand primary */
+      --accent-2: #2dd4bf;        /* brand secondary (turquoise) */
+
+      --status-success: #34d399;  /* verified */
+      --status-warning: #fbbf24;
+      --status-error: #f87171;    /* mismatch / failed */
+      --status-info: #60a5fa;     /* in progress */
+      --status-draft: #e4e4e7;    /* not started */
     }
 
     * { box-sizing: border-box; }
@@ -34,400 +41,727 @@
       display: flex;
       flex-direction: column;
       height: 100vh;
+      overflow: hidden;
+      user-select: none;
     }
 
     header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 12px 16px;
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 14px;
       border-bottom: 1px solid var(--border);
       -webkit-app-region: drag;
+      flex-shrink: 0;
     }
-
-    header h1 { font-size: 14px; font-weight: 600; margin: 0; }
+    header h1 { font-size: 13px; font-weight: 600; margin: 0; }
     header .spacer { flex: 1; }
+    header .mode {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--text-tertiary); border: 1px solid var(--border);
+      padding: 3px 8px; border-radius: 999px;
+    }
 
     button {
       -webkit-app-region: no-drag;
-      background: var(--bg-elevated);
-      color: var(--text-primary);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 6px 12px;
-      font-size: 12px;
-      cursor: pointer;
-      white-space: nowrap;
+      background: var(--bg-elevated); color: var(--text-primary);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 5px 10px; font-size: 12px; cursor: pointer; white-space: nowrap;
+      font-family: inherit;
     }
     button:hover:not(:disabled) { background: var(--bg-hover); }
-    button:disabled { opacity: 0.45; cursor: default; }
+    button:disabled { opacity: .4; cursor: default; }
     button.primary { background: var(--accent); border-color: var(--accent); color: #08080b; font-weight: 600; }
-    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.primary:hover:not(:disabled) { filter: brightness(1.12); }
 
-    main { flex: 1; overflow-y: auto; padding: 12px 16px; }
-
-    .empty { color: var(--text-secondary); padding: 24px 0; text-align: center; }
-
-    .section-label {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--text-secondary);
-      margin: 4px 0 8px;
+    /* ── Three-zone layout: Sources | volumes | Destinations ── */
+    /* minmax(0,1fr), not 1fr: a plain 1fr column refuses to shrink below its
+       content's min-content width, so one long volume path was blowing the
+       center column out and pushing the Destinations zone off-screen
+       entirely. min-width:0 down the chain is the other half of the same
+       fix — without it the flex children re-introduce the same floor. */
+    .columns { flex: 1; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); gap: 1px; background: var(--border); min-height: 0; }
+    .col { background: var(--bg-primary); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+    .col-head {
+      display: flex; align-items: center; gap: 6px;
+      padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0;
     }
-
-    .volume {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 10px 12px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      margin-bottom: 8px;
-      background: var(--bg-elevated);
+    .col-head h2 {
+      margin: 0; font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .07em; color: var(--text-secondary);
     }
-    .volume.is-source { border-color: var(--accent); }
-    .volume.is-dest { border-color: var(--ok); }
+    .col-head .spacer { flex: 1; }
+    .col-head button { padding: 3px 7px; font-size: 11px; }
+    .col-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px; min-width: 0; }
 
-    .volume .name { font-weight: 600; }
-    .volume .meta { color: var(--text-secondary); font-size: 11px; margin-top: 2px; }
-    .volume .roles { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .zone { min-height: 100%; border-radius: 8px; }
+    /* Drop affordance while a drag is in flight. */
+    .zone.drop-ready { outline: 1px dashed var(--border); outline-offset: -4px; }
+    .zone.drop-active { outline: 2px solid var(--accent); outline-offset: -4px; background: rgba(91,141,239,.06); }
+
+    .hint { color: var(--text-tertiary); font-size: 11px; text-align: center; padding: 20px 8px; line-height: 1.5; }
+
+    /* ── Cards ── */
+    .card {
+      border: 1px solid var(--border); border-radius: 8px;
+      background: var(--bg-elevated); padding: 8px 10px; margin-bottom: 8px;
+      cursor: grab;
+    }
+    .card:active { cursor: grabbing; }
+    .card .name { font-weight: 600; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .card .meta { color: var(--text-secondary); font-size: 10px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .card .row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .card.assigned { opacity: .45; }
+
+    /* A destination card that will accept a cascade drop — the blue outline
+       from Hedge's documented mechanic. */
+    .card.cascade-target { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: 0 0 0 6px rgba(91,141,239,.14); }
 
     .badge {
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-      padding: 3px 8px;
-      border-radius: 999px;
-      color: var(--accent);
-      border: 1px solid var(--accent);
-      background: rgba(91, 141, 239, 0.12);
+      font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+      padding: 2px 6px; border-radius: 999px; border: 1px solid var(--border);
+      color: var(--text-secondary); flex-shrink: 0;
     }
-    .badge.type { color: var(--text-secondary); border-color: var(--border); background: transparent; }
-    .badge.role-source { color: var(--accent); border-color: var(--accent); background: rgba(91,141,239,0.12); }
-    .badge.role-dest { color: var(--ok); border-color: var(--ok); background: rgba(74,222,128,0.12); }
+    .badge.src { color: var(--accent); border-color: var(--accent); background: rgba(91,141,239,.12); }
+    .badge.dst { color: var(--accent-2); border-color: var(--accent-2); background: rgba(45,212,191,.12); }
 
-    .role-btn { padding: 4px 8px; font-size: 11px; }
-    .role-btn.active { border-color: var(--accent); color: var(--accent); }
-    .role-btn.active-dest { border-color: var(--ok); color: var(--ok); }
+    /* Status dot — semantic colors, mapped per the roadmap. */
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--status-draft); }
+    .dot.copying, .dot.verifying { background: var(--status-info); animation: pulse 1s ease-in-out infinite; }
+    .dot.verified { background: var(--status-success); }
+    .dot.failed { background: var(--status-error); }
+    .dot.skipped { background: var(--status-warning); }
+    @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
 
-    /* Progress */
-    .progress-wrap { padding: 12px 16px; border-top: 1px solid var(--border); background: var(--bg-elevated); }
-    .bar { height: 6px; border-radius: 999px; background: var(--bg-primary); overflow: hidden; }
+    .status-text { font-size: 10px; color: var(--text-secondary); }
+    .status-text.verified { color: var(--status-success); }
+    .status-text.failed { color: var(--status-error); }
+    .status-text.skipped { color: var(--status-warning); }
+    .status-text.copying, .status-text.verifying { color: var(--status-info); }
+
+    /* ── Cascade chain rendering ── */
+    .chain { margin-bottom: 10px; }
+    .chain-from {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 10px; color: var(--text-tertiary); padding: 0 2px 4px;
+    }
+    .arrow { color: var(--accent); font-size: 13px; line-height: 1; }
+    .cascaded { margin-left: 18px; border-left: 2px solid var(--accent); padding-left: 10px; position: relative; }
+    .cascaded::before {
+      content: "↳"; position: absolute; left: -10px; top: 6px;
+      color: var(--accent); font-size: 12px;
+    }
+
+    /* Per-node progress bar inside a card. */
+    .node-bar { height: 3px; border-radius: 999px; background: var(--bg-primary); overflow: hidden; margin-top: 6px; }
+    .node-bar > div { height: 100%; width: 0%; background: var(--status-info); transition: width 120ms linear; }
+    .node-bar > div.verified { background: var(--status-success); }
+    .node-bar > div.failed { background: var(--status-error); }
+
+    /* ── Drag ghost ── */
+    #ghost {
+      position: fixed; pointer-events: none; z-index: 999;
+      background: var(--bg-elevated); border: 1px solid var(--accent);
+      border-radius: 8px; padding: 6px 10px; font-size: 12px; font-weight: 600;
+      opacity: .95; box-shadow: 0 8px 24px rgba(0,0,0,.5); display: none;
+    }
+
+    /* ── Context menu (non-drag fallback) ── */
+    #menu {
+      position: fixed; z-index: 1000; display: none;
+      background: var(--bg-elevated); border: 1px solid var(--border);
+      border-radius: 8px; padding: 4px; min-width: 190px;
+      box-shadow: 0 12px 32px rgba(0,0,0,.6);
+    }
+    #menu button {
+      display: block; width: 100%; text-align: left; border: none;
+      background: transparent; padding: 6px 10px; font-size: 12px; border-radius: 5px;
+    }
+    #menu button:hover:not(:disabled) { background: var(--bg-hover); }
+    #menu .sep { height: 1px; background: var(--border); margin: 4px 0; }
+    #menu .label { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-tertiary); padding: 5px 10px 3px; }
+
+    /* ── Footer: progress + summary ── */
+    footer { border-top: 1px solid var(--border); background: var(--bg-secondary); flex-shrink: 0; }
+    .progress { padding: 10px 14px; display: none; }
+    .progress-line { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 6px; }
+    .bar { height: 5px; border-radius: 999px; background: var(--bg-primary); overflow: hidden; }
     .bar > div { height: 100%; width: 0%; background: var(--accent); transition: width 120ms linear; }
-    .progress-line { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; font-size: 12px; }
-    .progress-file { color: var(--text-secondary); font-size: 11px; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .progress-file { color: var(--text-tertiary); font-size: 10px; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .released {
+      margin-top: 6px; font-size: 11px; color: var(--status-success);
+      display: none;
+    }
 
-    /* Summary */
-    .summary { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 12px; background: var(--bg-elevated); }
-    .summary.ok { border-color: var(--ok); }
-    .summary.bad { border-color: var(--error); }
-    .summary h2 { margin: 0 0 8px; font-size: 13px; }
-    .summary .stat { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
-    .summary .stat span:first-child { color: var(--text-secondary); }
-    .summary ul { margin: 8px 0 0; padding-left: 16px; font-size: 11px; color: var(--error); }
-    .summary .verdict { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; }
-    .verdict.ok { color: var(--ok); }
-    .verdict.bad { color: var(--error); }
-
-    code { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+    .summary { padding: 10px 14px; display: none; max-height: 210px; overflow-y: auto; }
+    .summary .head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .summary h3 { margin: 0; font-size: 13px; }
+    .summary h3.ok { color: var(--status-success); }
+    .summary h3.bad { color: var(--status-error); }
+    .summary .stats { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 11px; color: var(--text-secondary); }
+    .summary .stats b { color: var(--text-primary); font-weight: 600; }
+    .summary ul { margin: 6px 0 0; padding-left: 16px; font-size: 10px; color: var(--status-error); }
+    .summary .verdict { margin-top: 8px; font-size: 11px; }
+    .verdict.ok { color: var(--status-success); }
+    .verdict.bad { color: var(--status-error); }
   </style>
 </head>
 <body>
   <header>
     <h1>Offload</h1>
+    <span class="mode">SECURE · xxHash64</span>
     <span class="spacer"></span>
-    <button id="add-folder">+ Folder…</button>
     <button id="refresh">↻ Refresh</button>
+    <button id="clear">Clear</button>
     <button id="start" class="primary" disabled>Copy &amp; Verify</button>
   </header>
 
-  <main>
-    <div id="summary-slot"></div>
-    <div class="section-label" id="assign-hint">Pick one source and at least one destination</div>
-    <div id="list"><div class="empty">Loading…</div></div>
-  </main>
-
-  <div class="progress-wrap" id="progress" style="display:none">
-    <div class="progress-line">
-      <strong id="progress-phase">Preparing…</strong>
-      <span id="progress-counts"></span>
+  <div class="columns">
+    <div class="col">
+      <div class="col-head">
+        <h2>Sources</h2>
+        <span class="spacer"></span>
+        <button data-choose="source">Choose folder…</button>
+      </div>
+      <div class="col-body"><div class="zone" id="zone-source" data-zone="source"></div></div>
     </div>
-    <div class="bar"><div id="progress-bar"></div></div>
-    <div class="progress-file" id="progress-file"></div>
+
+    <div class="col">
+      <div class="col-head"><h2>Volumes</h2></div>
+      <div class="col-body"><div class="zone" id="zone-volumes"></div></div>
+    </div>
+
+    <div class="col">
+      <div class="col-head">
+        <h2>Destinations</h2>
+        <span class="spacer"></span>
+        <button data-choose="dest">Choose folder…</button>
+      </div>
+      <div class="col-body"><div class="zone" id="zone-dest" data-zone="dest"></div></div>
+    </div>
   </div>
+
+  <footer>
+    <div class="progress" id="progress">
+      <div class="progress-line">
+        <strong id="p-phase">Preparing…</strong>
+        <span id="p-counts"></span>
+      </div>
+      <div class="bar"><div id="p-bar"></div></div>
+      <div class="progress-file" id="p-file"></div>
+      <div class="released" id="p-released"></div>
+    </div>
+    <div class="summary" id="summary"></div>
+  </footer>
+
+  <div id="ghost"></div>
+  <div id="menu"></div>
 
   <script>
     // No Node access here (contextIsolation + sandbox: true in main.js) —
     // window.freeframe is the only thing preload.js exposes.
-    const listEl = document.getElementById("list");
-    const summarySlot = document.getElementById("summary-slot");
-    const refreshBtn = document.getElementById("refresh");
-    const startBtn = document.getElementById("start");
-    const addFolderBtn = document.getElementById("add-folder");
-    const hintEl = document.getElementById("assign-hint");
-    const progressEl = document.getElementById("progress");
-    const progressPhase = document.getElementById("progress-phase");
-    const progressCounts = document.getElementById("progress-counts");
-    const progressBar = document.getElementById("progress-bar");
-    const progressFile = document.getElementById("progress-file");
 
-    // Assignment state, keyed by mountPoint (paths are the identity here —
-    // two volumes can share a display name, paths can't collide).
-    let volumes = [];
-    let extraFolders = [];   // manually added via the folder picker
+    const $ = (id) => document.getElementById(id);
+    const zoneSource = $("zone-source");
+    const zoneVolumes = $("zone-volumes");
+    const zoneDest = $("zone-dest");
+    const ghost = $("ghost");
+    const menu = $("menu");
+
+    // ── State ──
+    let volumes = [];            // from volumes:list
+    let extraFolders = [];       // added via Choose folder…
     let sourcePath = null;
-    let destPaths = new Set();
+    /** Destination tree. parentId null = copies from the original source;
+     *  a parentId = cascades from that node. Same shape the engine takes,
+     *  so nothing has to be translated at the IPC boundary. */
+    let destNodes = [];          // [{ id, path, parentId, status, copiedBytes }]
     let copying = false;
+    let nodeStatus = new Map();  // id -> { status, copiedBytes, filesVerified }
+    let sourceReleased = false;
 
+    let nextId = 1;
+    const newId = () => `d${nextId++}`;
+
+    // ── Helpers ──
     function formatBytes(bytes) {
       if (bytes == null) return "—";
-      const units = ["B", "KB", "MB", "GB", "TB"];
-      let i = 0;
-      let n = bytes;
-      while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
-      return `${n.toFixed(1)} ${units[i]}`;
+      const u = ["B", "KB", "MB", "GB", "TB"];
+      let i = 0, n = bytes;
+      while (n >= 1024 && i < u.length - 1) { n /= 1024; i += 1; }
+      return `${n.toFixed(1)} ${u[i]}`;
     }
+    const baseName = (p) => p.split("/").filter(Boolean).pop() || p;
 
-    // User-supplied volume/file names land in the DOM, and this renderer is
-    // deliberately the untrusted side of the IPC boundary — build text
+    // User-supplied volume and file names land in the DOM, and this renderer
+    // is deliberately the untrusted side of the IPC boundary — build text
     // nodes, never innerHTML with interpolated names.
     function el(tag, opts = {}, children = []) {
-      const node = document.createElement(tag);
-      if (opts.class) node.className = opts.class;
-      if (opts.text != null) node.textContent = opts.text;
-      if (opts.title) node.title = opts.title;
-      if (opts.onClick) node.addEventListener("click", opts.onClick);
-      if (opts.disabled) node.disabled = true;
-      for (const child of children) node.appendChild(child);
-      return node;
+      const n = document.createElement(tag);
+      if (opts.class) n.className = opts.class;
+      if (opts.text != null) n.textContent = opts.text;
+      if (opts.title) n.title = opts.title;
+      if (opts.dataset) for (const [k, v] of Object.entries(opts.dataset)) n.dataset[k] = v;
+      if (opts.style) n.setAttribute("style", opts.style);
+      if (opts.onClick) n.addEventListener("click", opts.onClick);
+      if (opts.disabled) n.disabled = true;
+      for (const c of children) if (c) n.appendChild(c);
+      return n;
     }
 
-    function setSource(p) {
-      // One source at a time; picking a new one replaces the old. A path
-      // can't be both roles at once, so clear it from destinations.
-      sourcePath = sourcePath === p ? null : p;
-      if (sourcePath) destPaths.delete(sourcePath);
-      render();
-    }
-
-    function toggleDest(p) {
-      if (destPaths.has(p)) destPaths.delete(p);
-      else {
-        if (sourcePath === p) sourcePath = null;
-        destPaths.add(p);
-      }
-      render();
-    }
-
-    function entries() {
-      // Manually added folders are shown alongside real volumes so they can
-      // be assigned the same way.
+    function allEntries() {
       return [
-        ...volumes.map((v) => ({ ...v, isVolume: true })),
+        ...volumes.map((v) => ({ ...v })),
         ...extraFolders.map((p) => ({
-          name: p.split("/").filter(Boolean).pop() || p,
-          mountPoint: p,
-          type: "folder",
-          totalBytes: null,
-          freeBytes: null,
-          isVolume: false,
+          name: baseName(p), mountPoint: p, type: "folder",
+          totalBytes: null, freeBytes: null,
         })),
       ];
     }
+    const entryFor = (p) => allEntries().find((e) => e.mountPoint === p) || { name: baseName(p), mountPoint: p, type: "folder", totalBytes: null, freeBytes: null };
+
+    const isAssigned = (p) => sourcePath === p || destNodes.some((n) => n.path === p);
+
+    // ── Assignment ──
+    function setSource(p) {
+      if (copying) return;
+      // A path can't hold both roles; assigning as source removes it (and
+      // anything cascading from it) from the destination tree.
+      removeDest(p, true);
+      sourcePath = p;
+      render();
+    }
+    function addDest(p, parentId = null) {
+      if (copying || p === sourcePath) return;
+      if (destNodes.some((n) => n.path === p)) return;
+      destNodes.push({ id: newId(), path: p, parentId });
+      render();
+    }
+    function removeDest(p, silent = false) {
+      const node = destNodes.find((n) => n.path === p);
+      if (!node) return;
+      // Removing a parent would orphan its children into an invalid tree —
+      // promote them to copy from the original source instead of silently
+      // dropping their data.
+      for (const child of destNodes) if (child.parentId === node.id) child.parentId = null;
+      destNodes = destNodes.filter((n) => n.id !== node.id);
+      if (!silent) render();
+    }
+    function cascadeFrom(childPath, parentId) {
+      if (copying) return;
+      const child = destNodes.find((n) => n.path === childPath);
+      if (!child) { addDest(childPath, parentId); return; }
+      if (child.id === parentId) return;
+      // v1 is single-chain: a node that already has children can't also
+      // become a child, or the chain becomes a multi-level tree the UI
+      // doesn't draw yet. The engine handles depth fine — this is a UI
+      // limit, deliberately, and the guard says so.
+      if (destNodes.some((n) => n.parentId === child.id)) return;
+      child.parentId = parentId;
+      render();
+    }
+    function clearAll() {
+      if (copying) return;
+      sourcePath = null; destNodes = []; nodeStatus = new Map(); sourceReleased = false;
+      $("summary").style.display = "none";
+      render();
+    }
+
+    // ── Drag (pointer-based, not HTML5 DnD) ──
+    // HTML5 drag-and-drop can't be driven by synthetic events, which would
+    // make the cascade interaction untestable, and it behaves inconsistently
+    // in Electron. Pointer events give the same UX with full control over
+    // the drop indicator — and are directly exercisable by the e2e test.
+    let drag = null; // { path, fromRole }
+
+    function beginDrag(e, path, fromRole) {
+      if (copying) return;
+      drag = { path, fromRole, moved: false };
+      ghost.textContent = entryFor(path).name;
+      ghost.style.display = "block";
+      moveGhost(e.clientX, e.clientY);
+      document.body.style.cursor = "grabbing";
+      zoneSource.classList.add("drop-ready");
+      zoneDest.classList.add("drop-ready");
+    }
+    function moveGhost(x, y) {
+      ghost.style.left = `${x + 12}px`;
+      ghost.style.top = `${y + 12}px`;
+    }
+    function clearDropIndicators() {
+      zoneSource.classList.remove("drop-active");
+      zoneDest.classList.remove("drop-active");
+      for (const c of document.querySelectorAll(".cascade-target")) c.classList.remove("cascade-target");
+    }
+    /** What's under the cursor: a destination card (cascade), or a zone. */
+    function dropTargetAt(x, y) {
+      const stack = document.elementsFromPoint(x, y);
+      for (const node of stack) {
+        if (node.dataset && node.dataset.destId && drag && node.dataset.path !== drag.path) {
+          return { kind: "cascade", parentId: node.dataset.destId, element: node };
+        }
+      }
+      for (const node of stack) {
+        if (node.dataset && node.dataset.zone) return { kind: "zone", zone: node.dataset.zone, element: node };
+      }
+      return null;
+    }
+
+    window.addEventListener("mousemove", (e) => {
+      if (!drag) return;
+      drag.moved = true;
+      moveGhost(e.clientX, e.clientY);
+      clearDropIndicators();
+      const t = dropTargetAt(e.clientX, e.clientY);
+      if (!t) return;
+      if (t.kind === "cascade") t.element.classList.add("cascade-target");
+      else t.element.classList.add("drop-active");
+    });
+
+    window.addEventListener("mouseup", (e) => {
+      if (!drag) return;
+      const t = dropTargetAt(e.clientX, e.clientY);
+      const dragged = drag.path;
+      const fromRole = drag.fromRole;
+      drag = null;
+      ghost.style.display = "none";
+      document.body.style.cursor = "";
+      zoneSource.classList.remove("drop-ready");
+      zoneDest.classList.remove("drop-ready");
+      clearDropIndicators();
+
+      if (!t) return;
+      if (t.kind === "cascade") {
+        // Dropped onto an existing destination → cascading group.
+        cascadeFrom(dragged, t.parentId);
+      } else if (t.zone === "source") {
+        setSource(dragged);
+      } else if (t.zone === "dest") {
+        if (fromRole === "dest") {
+          // Dragged out of a cascade and into open space → back to copying
+          // from the original source.
+          const n = destNodes.find((x) => x.path === dragged);
+          if (n && n.parentId !== null) { n.parentId = null; render(); }
+        } else {
+          addDest(dragged, null);
+        }
+      }
+    });
+
+    // ── Context menu (non-drag fallback) ──
+    function openMenu(e, path, role) {
+      e.preventDefault();
+      if (copying) return;
+      menu.replaceChildren();
+
+      const add = (label, fn, disabled = false) =>
+        menu.appendChild(el("button", { text: label, disabled, onClick: () => { closeMenu(); fn(); } }));
+
+      add("Set as Source", () => setSource(path), sourcePath === path);
+      add("Set as Destination", () => addDest(path, null), destNodes.some((n) => n.path === path));
+
+      // "Cascade from…" — Hedge's own non-drag path, mirrored here for the
+      // same accessibility reason the drag fallback exists at all.
+      const candidates = destNodes.filter(
+        (n) => n.path !== path && n.parentId === null && !destNodes.some((c) => c.parentId === n.id)
+      );
+      if (candidates.length) {
+        menu.appendChild(el("div", { class: "sep" }));
+        menu.appendChild(el("div", { class: "label", text: "Cascade from…" }));
+        for (const c of candidates) {
+          add(`  ${entryFor(c.path).name}`, () => cascadeFrom(path, c.id));
+        }
+      }
+
+      if (role === "dest" || role === "source") {
+        menu.appendChild(el("div", { class: "sep" }));
+        add("Remove", () => {
+          if (role === "source") { sourcePath = null; render(); }
+          else removeDest(path);
+        });
+      }
+
+      menu.style.display = "block";
+      menu.style.left = `${Math.min(e.clientX, window.innerWidth - 210)}px`;
+      menu.style.top = `${Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 10)}px`;
+    }
+    const closeMenu = () => { menu.style.display = "none"; };
+    window.addEventListener("mousedown", (e) => { if (!menu.contains(e.target)) closeMenu(); });
+
+    // ── Rendering ──
+    function statusLabel(s) {
+      return { pending: "Waiting", copying: "Copying", verifying: "Verifying", verified: "Verified", failed: "Failed", skipped: "Skipped" }[s] || "Ready";
+    }
+
+    function makeCard(entry, { role, node } = {}) {
+      const st = node ? (nodeStatus.get(node.id) || {}) : {};
+      const status = st.status || (node ? "pending" : null);
+
+      const left = el("div", { style: "min-width:0;flex:1" }, [
+        el("div", { class: "name", text: entry.name }),
+        el("div", {
+          class: "meta",
+          text: entry.totalBytes == null
+            ? entry.mountPoint
+            : `${formatBytes(entry.freeBytes)} free of ${formatBytes(entry.totalBytes)}`,
+          title: entry.mountPoint,
+        }),
+      ]);
+
+      const right = el("div", { class: "row", style: "flex-shrink:0;gap:6px" });
+      if (role === "source") right.appendChild(el("span", { class: "badge src", text: "Source" }));
+      if (role === "dest") right.appendChild(el("span", { class: "badge dst", text: "Dest" }));
+      if (!role) right.appendChild(el("span", { class: "badge", text: entry.type }));
+      if (status) {
+        right.appendChild(el("span", { class: `status-text ${status}`, text: statusLabel(status) }));
+        right.appendChild(el("span", { class: `dot ${status}` }));
+      }
+
+      const card = el("div", {
+        class: `card${!role && isAssigned(entry.mountPoint) ? " assigned" : ""}`,
+        dataset: node
+          ? { destId: node.id, path: entry.mountPoint, role: role || "" }
+          : { path: entry.mountPoint, role: role || "" },
+        title: entry.mountPoint,
+      }, [el("div", { class: "row" }, [left, right])]);
+
+      if (node) {
+        const pct = st.percent != null ? st.percent : 0;
+        const bar = el("div", { class: "node-bar" }, [
+          el("div", { class: status === "verified" ? "verified" : status === "failed" ? "failed" : "", style: `width:${pct}%` }),
+        ]);
+        card.appendChild(bar);
+      }
+
+      card.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        beginDrag(e, entry.mountPoint, role);
+      });
+      card.addEventListener("contextmenu", (e) => openMenu(e, entry.mountPoint, role));
+      return card;
+    }
 
     function render() {
-      const all = entries();
-      listEl.replaceChildren();
-
-      if (!all.length) {
-        listEl.appendChild(el("div", { class: "empty", text: "No volumes found. Use “+ Folder…” to pick one manually." }));
+      // Sources column
+      zoneSource.replaceChildren();
+      if (sourcePath) {
+        zoneSource.appendChild(makeCard(entryFor(sourcePath), { role: "source" }));
+        if (sourceReleased) {
+          zoneSource.appendChild(el("div", {
+            class: "hint",
+            style: "color:var(--status-success);padding:6px 8px",
+            text: "✓ Card can be ejected — the cascade now reads from the local copy.",
+          }));
+        }
+      } else {
+        zoneSource.appendChild(el("div", { class: "hint", text: "Drag a volume here, or right-click one → Set as Source." }));
       }
 
-      for (const v of all) {
-        const isSource = sourcePath === v.mountPoint;
-        const isDest = destPaths.has(v.mountPoint);
-
-        const info = el("div", {}, [
-          el("div", { class: "name", text: v.name }),
-          el("div", {
-            class: "meta",
-            text: v.totalBytes == null
-              ? v.mountPoint
-              : `${v.mountPoint} · ${formatBytes(v.freeBytes)} free of ${formatBytes(v.totalBytes)}`,
-          }),
-        ]);
-
-        const roles = el("div", { class: "roles" });
-        if (isSource) roles.appendChild(el("span", { class: "badge role-source", text: "Source" }));
-        if (isDest) roles.appendChild(el("span", { class: "badge role-dest", text: "Destination" }));
-        roles.appendChild(el("span", { class: "badge type", text: v.type }));
-        roles.appendChild(el("button", {
-          class: `role-btn${isSource ? " active" : ""}`,
-          text: isSource ? "✓ Source" : "Source",
-          disabled: copying,
-          onClick: () => setSource(v.mountPoint),
-        }));
-        roles.appendChild(el("button", {
-          class: `role-btn${isDest ? " active-dest" : ""}`,
-          text: isDest ? "✓ Dest" : "Dest",
-          disabled: copying,
-          onClick: () => toggleDest(v.mountPoint),
-        }));
-
-        const row = el("div", {
-          class: `volume${isSource ? " is-source" : ""}${isDest ? " is-dest" : ""}`,
-        }, [info, roles]);
-        listEl.appendChild(row);
+      // Center column
+      zoneVolumes.replaceChildren();
+      const entries = allEntries();
+      if (!entries.length) {
+        zoneVolumes.appendChild(el("div", { class: "hint", text: "No volumes mounted. Use “Choose folder…” to pick one." }));
+      } else {
+        for (const e of entries) zoneVolumes.appendChild(makeCard(e, {}));
       }
 
-      const ready = Boolean(sourcePath) && destPaths.size > 0 && !copying;
-      startBtn.disabled = !ready;
-      startBtn.textContent = destPaths.size > 1
-        ? `Copy & Verify → ${destPaths.size} destinations`
-        : "Copy & Verify";
+      // Destinations column, grouped into chains.
+      zoneDest.replaceChildren();
+      if (!destNodes.length) {
+        zoneDest.appendChild(el("div", {
+          class: "hint",
+          text: "Drag volumes here to copy in parallel.\n\nDrop one onto another to cascade — it will copy from that destination instead of the card, once the first leg verifies.",
+          style: "white-space:pre-line",
+        }));
+      } else {
+        const roots = destNodes.filter((n) => n.parentId === null);
+        for (const root of roots) {
+          const chain = el("div", { class: "chain" });
+          chain.appendChild(el("div", { class: "chain-from" }, [
+            el("span", { text: sourcePath ? entryFor(sourcePath).name : "Source" }),
+            el("span", { class: "arrow", text: "→" }),
+            el("span", { text: entryFor(root.path).name }),
+          ]));
+          chain.appendChild(makeCard(entryFor(root.path), { role: "dest", node: root }));
 
-      hintEl.textContent = copying
-        ? "Copying…"
-        : !sourcePath
-          ? "Pick one source and at least one destination"
-          : destPaths.size === 0
-            ? "Now pick at least one destination"
-            : `SECURE mode · xxHash64 · ${destPaths.size} destination${destPaths.size > 1 ? "s" : ""} in parallel`;
+          const kids = destNodes.filter((n) => n.parentId === root.id);
+          for (const kid of kids) {
+            const wrap = el("div", { class: "cascaded" });
+            wrap.appendChild(el("div", { class: "chain-from" }, [
+              el("span", { text: entryFor(root.path).name }),
+              el("span", { class: "arrow", text: "→" }),
+              el("span", { text: entryFor(kid.path).name }),
+            ]));
+            wrap.appendChild(makeCard(entryFor(kid.path), { role: "dest", node: kid }));
+            chain.appendChild(wrap);
+          }
+          zoneDest.appendChild(chain);
+        }
+      }
+
+      const ready = Boolean(sourcePath) && destNodes.length > 0 && !copying;
+      $("start").disabled = !ready;
+      const cascades = destNodes.filter((n) => n.parentId !== null).length;
+      $("start").textContent = cascades
+        ? `Copy & Verify (${destNodes.length}, ${cascades} cascaded)`
+        : destNodes.length > 1
+          ? `Copy & Verify → ${destNodes.length}`
+          : "Copy & Verify";
+      $("clear").disabled = copying || (!sourcePath && !destNodes.length);
+      $("refresh").disabled = copying;
     }
 
     async function refresh() {
-      listEl.replaceChildren(el("div", { class: "empty", text: "Loading…" }));
       try {
         volumes = await window.freeframe.listVolumes();
       } catch (err) {
-        // Previously a failure here just left "Loading…" on screen forever
-        // with no way to tell success from stuck (see volumes.js's
-        // getDiskutilInfo fix note, 2026-08-01) — always show something.
         volumes = [];
-        listEl.replaceChildren(el("div", { class: "empty", text: `Couldn't load volumes: ${String(err.message || err)}` }));
+        zoneVolumes.replaceChildren(el("div", { class: "hint", text: `Couldn't load volumes: ${String(err.message || err)}` }));
         return;
       }
       render();
     }
 
-    function showProgress(p) {
-      progressEl.style.display = "block";
-      if (p.phase === "scanning") {
-        progressPhase.textContent = "Scanning source…";
-      } else if (p.phase === "start") {
-        progressPhase.textContent = `Copying to ${p.destinationCount} destination${p.destinationCount > 1 ? "s" : ""}`;
-        progressCounts.textContent = `${p.totalFiles} files · ${formatBytes(p.totalBytes)}`;
-      } else if (p.phase === "verifying") {
-        progressPhase.textContent = "Verifying checksum…";
-        progressFile.textContent = p.file;
-      } else if (p.phase === "bytes" || p.phase === "file-done") {
-        if (p.phase === "file-done") {
-          progressPhase.textContent = "Copying";
-          progressCounts.textContent = `${p.fileIndex} / ${p.totalFiles} files · ${formatBytes(p.copiedBytes)} of ${formatBytes(p.totalBytes)}`;
+    // ── Progress ──
+    function onProgress(p) {
+      if (p.phase === "start") {
+        $("progress").style.display = "block";
+        $("p-phase").textContent = p.legCount > 1 ? `Copying · ${p.legCount} legs` : "Copying";
+        $("p-counts").textContent = `${p.totalFiles} files · ${formatBytes(p.totalBytes)}`;
+      } else if (p.phase === "scanning") {
+        $("progress").style.display = "block";
+        $("p-phase").textContent = "Scanning source…";
+      } else if (p.phase === "node-status") {
+        const prev = nodeStatus.get(p.node.id) || {};
+        nodeStatus.set(p.node.id, { ...prev, status: p.node.status, filesVerified: p.node.filesVerified });
+        if (p.node.status === "verified") nodeStatus.get(p.node.id).percent = 100;
+        render();
+      } else if (p.phase === "bytes") {
+        if (typeof p.percent === "number") $("p-bar").style.width = `${p.percent.toFixed(1)}%`;
+        $("p-file").textContent = p.file || "";
+        // Per-node bars: every node in this leg shares the leg's progress.
+        for (const id of p.nodeIds || []) {
+          const prev = nodeStatus.get(id) || {};
+          nodeStatus.set(id, { ...prev, percent: p.percent });
         }
-        if (typeof p.percent === "number") progressBar.style.width = `${p.percent.toFixed(1)}%`;
-        if (p.file) progressFile.textContent = p.file;
-      } else if (p.phase === "file-start") {
-        progressFile.textContent = p.file;
+        render();
+      } else if (p.phase === "verifying") {
+        $("p-phase").textContent = "Verifying checksums…";
+        $("p-file").textContent = p.file || "";
+      } else if (p.phase === "source-released") {
+        // The actual payoff of cascading: the card is free before the whole
+        // chain finishes.
+        sourceReleased = true;
+        $("p-released").style.display = "block";
+        $("p-released").textContent = "✓ Source verified — the card can be ejected now; remaining legs read from the local copy.";
+        render();
       }
     }
 
     function renderSummary(s) {
+      const box = $("summary");
+      box.replaceChildren();
+      box.style.display = "block";
       const good = s.allVerified;
-      const box = el("div", { class: `summary ${good ? "ok" : "bad"}` });
-      box.appendChild(el("h2", { text: good ? "Copy verified" : "Copy finished with problems" }));
 
-      const stats = [
-        ["Mode", `${s.mode} · ${s.algorithm}`],
-        ["Files copied", `${s.filesCopied} of ${s.totalFiles}`],
-        ["Files verified", String(s.filesVerified)],
-        ["Destinations", String(s.destPaths.length)],
-        ["Data", formatBytes(s.copiedBytes)],
-        // Sub-second copies (a handful of small files, or a test run) read
-        // as a useless "0.0s" when always divided by 1000.
-        ["Duration", s.durationMs < 1000 ? `${s.durationMs} ms` : `${(s.durationMs / 1000).toFixed(1)}s`],
-      ];
-      if (s.mismatches.length) stats.push(["Checksum mismatches", String(s.mismatches.length)]);
-      if (s.errors.length) stats.push(["Errors", String(s.errors.length)]);
-      if (s.cancelled) stats.push(["Cancelled", "yes"]);
+      box.appendChild(el("div", { class: "head" }, [
+        el("h3", { class: good ? "ok" : "bad", text: good ? "Copy verified" : "Copy finished with problems" }),
+      ]));
 
-      for (const [k, v] of stats) {
-        box.appendChild(el("div", { class: "stat" }, [
-          el("span", { text: k }),
-          el("span", { text: v }),
+      const stats = el("div", { class: "stats" });
+      const stat = (k, v) => stats.appendChild(el("span", {}, [
+        document.createTextNode(`${k} `), el("b", { text: v }),
+      ]));
+      stat("Files", `${s.totalFiles}`);
+      stat("Verified", `${s.fileCopiesVerified}/${s.totalFileCopies}`);
+      stat("Destinations", `${s.nodes.length}`);
+      stat("Legs", `${s.legCount}`);
+      stat("Data", formatBytes(s.copiedBytes));
+      stat("Duration", s.durationMs < 1000 ? `${s.durationMs} ms` : `${(s.durationMs / 1000).toFixed(1)}s`);
+      if (s.mismatches.length) stat("Mismatches", `${s.mismatches.length}`);
+      if (s.errors.length) stat("Errors", `${s.errors.length}`);
+      box.appendChild(stats);
+
+      // Per-node outcome, so a partially-failed cascade is legible at a
+      // glance rather than hidden behind one aggregate number.
+      for (const n of s.nodes) {
+        const parent = n.parentId ? s.nodes.find((x) => x.id === n.parentId) : null;
+        box.appendChild(el("div", { class: "stats", style: "margin-top:4px" }, [
+          el("span", { class: `dot ${n.status}`, style: "display:inline-block;margin-right:6px" }),
+          el("span", { text: `${baseName(n.path)}${parent ? ` (from ${baseName(parent.path)})` : ""} — ${statusLabel(n.status)}` }),
         ]));
       }
 
-      if (s.mismatches.length) {
+      const problems = [...s.mismatches, ...s.errors];
+      if (problems.length) {
         const ul = el("ul");
-        for (const m of s.mismatches.slice(0, 10)) {
-          ul.appendChild(el("li", { text: `${m.file} → ${m.destRoot}: expected ${m.sourceHash}, got ${m.destHash ?? "—"}` }));
+        for (const p of problems.slice(0, 8)) {
+          ul.appendChild(el("li", {
+            text: p.destHash !== undefined
+              ? `${p.file} → ${baseName(p.destRoot)}: expected ${p.sourceHash}, got ${p.destHash ?? "—"}`
+              : `${p.file ? p.file + " " : ""}${p.destRoot ? "→ " + baseName(p.destRoot) : ""}: ${p.error}`,
+          }));
         }
-        if (s.mismatches.length > 10) ul.appendChild(el("li", { text: `…and ${s.mismatches.length - 10} more` }));
-        box.appendChild(ul);
-      }
-      if (s.errors.length) {
-        const ul = el("ul");
-        for (const e of s.errors.slice(0, 10)) {
-          ul.appendChild(el("li", { text: `${e.file}${e.destRoot ? ` → ${e.destRoot}` : ""}: ${e.error}` }));
-        }
-        if (s.errors.length > 10) ul.appendChild(el("li", { text: `…and ${s.errors.length - 10} more` }));
+        if (problems.length > 8) ul.appendChild(el("li", { text: `…and ${problems.length - 8} more` }));
         box.appendChild(ul);
       }
 
-      // The one line that answers the only question that matters after an
-      // offload. Deliberately explicit about the card, not just "done".
       box.appendChild(el("div", {
         class: `verdict ${good ? "ok" : "bad"}`,
         text: good
           ? "Every file was re-read from each destination and matched the source. Safe to wipe the card."
-          : "Not every file verified — do NOT wipe the source until this is resolved.",
+          : "Not every destination verified — do NOT wipe the source until this is resolved.",
       }));
-
-      summarySlot.replaceChildren(box);
     }
 
     async function startCopy() {
-      if (copying) return;
+      if (copying || !sourcePath || !destNodes.length) return;
       copying = true;
-      summarySlot.replaceChildren();
-      progressBar.style.width = "0%";
-      progressFile.textContent = "";
-      progressCounts.textContent = "";
+      sourceReleased = false;
+      nodeStatus = new Map();
+      $("summary").style.display = "none";
+      $("p-released").style.display = "none";
+      $("p-bar").style.width = "0%";
       render();
 
       try {
-        const summary = await window.freeframe.startCopy(sourcePath, [...destPaths]);
+        const summary = await window.freeframe.startCopy(
+          sourcePath,
+          destNodes.map((n) => ({ id: n.id, path: n.path, parentId: n.parentId }))
+        );
         renderSummary(summary);
       } catch (err) {
-        summarySlot.replaceChildren(
-          el("div", { class: "summary bad" }, [
-            el("h2", { text: "Copy failed to start" }),
-            el("div", { class: "verdict bad", text: String(err.message || err) }),
-          ])
+        const box = $("summary");
+        box.replaceChildren(
+          el("div", { class: "head" }, [el("h3", { class: "bad", text: "Copy failed to start" })]),
+          el("div", { class: "verdict bad", text: String(err.message || err) })
         );
+        box.style.display = "block";
       } finally {
         copying = false;
-        progressEl.style.display = "none";
+        $("progress").style.display = "none";
         render();
       }
     }
 
-    window.freeframe.onCopyProgress(showProgress);
-
-    refreshBtn.addEventListener("click", refresh);
-    startBtn.addEventListener("click", startCopy);
-    addFolderBtn.addEventListener("click", async () => {
-      const folder = await window.freeframe.chooseFolder("Choose a source or destination folder");
-      if (folder && !extraFolders.includes(folder)) {
-        extraFolders.push(folder);
-        render();
-      }
-    });
+    // ── Wiring ──
+    window.freeframe.onCopyProgress(onProgress);
+    $("refresh").addEventListener("click", refresh);
+    $("clear").addEventListener("click", clearAll);
+    $("start").addEventListener("click", startCopy);
+    for (const btn of document.querySelectorAll("[data-choose]")) {
+      btn.addEventListener("click", async () => {
+        const which = btn.dataset.choose;
+        const folder = await window.freeframe.chooseFolder(
+          which === "source" ? "Choose a source folder" : "Choose a destination folder"
+        );
+        if (!folder) return;
+        if (!extraFolders.includes(folder) && !volumes.some((v) => v.mountPoint === folder)) {
+          extraFolders.push(folder);
+        }
+        if (which === "source") setSource(folder);
+        else addDest(folder, null);
+      });
+    }
 
     refresh();
   </script>

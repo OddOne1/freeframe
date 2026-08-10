@@ -172,158 +172,56 @@ async function hashFileOnDisk(filePath) {
 }
 
 /**
- * Copy every file under `sourcePath` into each of `destPaths`, verifying
- * every written file by re-reading it and comparing xxHash64 against the
- * source.
+ * Copy `relFiles` from one root into N destination roots, from a single
+ * source read, verifying each written file.
  *
- * Destinations are written **in parallel from one source read**, not one
- * after another — this is the "1 source → many destinations" shape the
- * roadmap's copy-job DAG is built around, so it must not be bolted on
- * later.
- *
- * Per-file failures do not abort the run: a card with one unreadable file
- * should still yield everything else, with the failure recorded. That's
- * the difference between a bad file and a lost offload.
- *
- * @param {object} opts
- * @param {string} opts.sourcePath
- * @param {string[]} opts.destPaths
- * @param {(p: object) => void} [opts.onProgress]
- * @param {() => boolean} [opts.isCancelled]
+ * Split out of runCopyJob so a cascaded leg (A → B) runs the exact same
+ * code path as the primary leg (source → A) — the only difference is which
+ * root it reads from.
  */
-async function runCopyJob({ sourcePath, destPaths, onProgress = () => {}, isCancelled = () => false }) {
-  const startedAt = Date.now();
-
-  if (!destPaths || destPaths.length === 0) {
-    throw new Error("At least one destination is required");
-  }
-
-  const sourceStat = await fsp.stat(sourcePath);
-  if (!sourceStat.isDirectory()) {
-    throw new Error(`Source is not a directory: ${sourcePath}`);
-  }
-
-  // Copying a destination into itself, or into a subdirectory of the
-  // source, produces infinite recursion or silent self-overwrite. Cheap to
-  // check, miserable to debug.
-  const srcResolved = path.resolve(sourcePath);
-  for (const dest of destPaths) {
-    const destResolved = path.resolve(dest);
-    if (destResolved === srcResolved) {
-      throw new Error(`Destination is the same as the source: ${dest}`);
-    }
-    if (destResolved.startsWith(srcResolved + path.sep)) {
-      throw new Error(`Destination is inside the source: ${dest}`);
-    }
-    if (srcResolved.startsWith(destResolved + path.sep)) {
-      throw new Error(`Source is inside the destination: ${dest}`);
-    }
-  }
-
-  onProgress({ phase: "scanning", sourcePath, destPaths });
-
-  const relFiles = await listFilesRecursive(sourcePath);
-  let totalBytes = 0;
-  const sizes = new Map();
-  for (const rel of relFiles) {
-    const st = await fsp.stat(path.join(sourcePath, rel));
-    sizes.set(rel, st.size);
-    totalBytes += st.size;
-  }
-
-  onProgress({
-    phase: "start",
-    totalFiles: relFiles.length,
-    totalBytes,
-    destinationCount: destPaths.length,
-  });
-
-  /** @type {Array<object>} */
+async function runLeg({ fromRoot, toRoots, relFiles, sizes, onFileEvent, isCancelled }) {
   const fileResults = [];
-  let copiedBytes = 0;
-  let filesDone = 0;
-  let cancelled = false;
 
   for (const rel of relFiles) {
-    if (isCancelled()) {
-      cancelled = true;
-      break;
-    }
+    if (isCancelled()) break;
 
-    const srcFile = path.join(sourcePath, rel);
-    const destFiles = destPaths.map((d) => path.join(d, rel));
+    const srcFile = path.join(fromRoot, rel);
+    const destFiles = toRoots.map((d) => path.join(d, rel));
     const size = sizes.get(rel) ?? 0;
 
-    onProgress({
-      phase: "file-start",
-      file: rel,
-      fileIndex: filesDone,
-      totalFiles: relFiles.length,
-      bytes: size,
-    });
+    onFileEvent({ type: "file-start", file: rel, bytes: size });
 
-    const entry = {
-      file: rel,
-      bytes: size,
-      sourceHash: null,
-      destinations: [],
-      ok: false,
-      error: null,
-    };
+    const entry = { file: rel, bytes: size, sourceHash: null, destinations: [], ok: false, error: null };
 
     try {
-      // Relative structure is preserved by recreating each file's parent
-      // chain under every destination.
-      await Promise.all(
-        destFiles.map((f) => fsp.mkdir(path.dirname(f), { recursive: true }))
-      );
+      await Promise.all(destFiles.map((f) => fsp.mkdir(path.dirname(f), { recursive: true })));
 
       const { sourceHash } = await copyOneFileFanOut(srcFile, destFiles, (n) => {
-        copiedBytes += n;
-        onProgress({
-          phase: "bytes",
-          file: rel,
-          copiedBytes,
-          totalBytes,
-          // Bytes are counted once per source read, not once per
-          // destination — otherwise "copied" would exceed the source size
-          // by a factor of N and the progress bar would be nonsense.
-          percent: totalBytes > 0 ? Math.min(100, (copiedBytes / totalBytes) * 100) : 100,
-        });
+        onFileEvent({ type: "bytes", file: rel, delta: n });
       });
       entry.sourceHash = sourceHash;
 
-      onProgress({ phase: "verifying", file: rel });
+      onFileEvent({ type: "verifying", file: rel });
 
-      // Verify every destination in parallel too — they're independent
-      // devices, so serializing here would waste exactly the time the
-      // parallel write just saved.
       const verifications = await Promise.all(
         destFiles.map(async (destFile, i) => {
           try {
             const destHash = await hashFileOnDisk(destFile);
             const destSize = (await fsp.stat(destFile)).size;
             return {
-              destRoot: destPaths[i],
+              destRoot: toRoots[i],
               path: destFile,
               hash: destHash,
               bytes: destSize,
-              // Size is checked alongside the hash because a zero-byte
-              // file has a valid, stable hash of its own — matching hashes
-              // alone wouldn't catch source and destination both being
-              // empty for different reasons.
+              // Size is checked alongside the hash because a zero-byte file
+              // has a valid, stable hash of its own — matching hashes alone
+              // wouldn't catch source and destination both being empty for
+              // different reasons.
               ok: destHash === sourceHash && destSize === size,
               error: null,
             };
           } catch (err) {
-            return {
-              destRoot: destPaths[i],
-              path: destFile,
-              hash: null,
-              bytes: null,
-              ok: false,
-              error: String(err.message || err),
-            };
+            return { destRoot: toRoots[i], path: destFile, hash: null, bytes: null, ok: false, error: String(err.message || err) };
           }
         })
       );
@@ -336,72 +234,334 @@ async function runCopyJob({ sourcePath, destPaths, onProgress = () => {}, isCanc
     }
 
     fileResults.push(entry);
-    filesDone += 1;
-
-    onProgress({
-      phase: "file-done",
-      file: rel,
-      ok: entry.ok,
-      fileIndex: filesDone,
-      totalFiles: relFiles.length,
-      copiedBytes,
-      totalBytes,
-      percent: totalBytes > 0 ? Math.min(100, (copiedBytes / totalBytes) * 100) : 100,
-    });
+    onFileEvent({ type: "file-done", file: rel, ok: entry.ok });
   }
 
-  const verifiedFiles = fileResults.filter((f) => f.ok).length;
+  return fileResults;
+}
+
+/** Per-destination-root outcome extracted from one leg's file results. */
+function summarizeRoot(root, fileResults, expectedFileCount) {
   const mismatches = [];
   const errors = [];
+  let verified = 0;
+
   for (const f of fileResults) {
     if (f.error) {
-      errors.push({ file: f.file, error: f.error });
+      errors.push({ file: f.file, destRoot: root, error: f.error });
       continue;
     }
-    for (const d of f.destinations) {
-      if (d.error) {
-        errors.push({ file: f.file, destRoot: d.destRoot, error: d.error });
-      } else if (!d.ok) {
-        mismatches.push({
-          file: f.file,
-          destRoot: d.destRoot,
-          sourceHash: f.sourceHash,
-          destHash: d.hash,
-        });
-      }
+    const d = f.destinations.find((x) => x.destRoot === root);
+    if (!d) continue;
+    if (d.error) errors.push({ file: f.file, destRoot: root, error: d.error });
+    else if (!d.ok) mismatches.push({ file: f.file, destRoot: root, sourceHash: f.sourceHash, destHash: d.hash });
+    else verified += 1;
+  }
+
+  return {
+    filesVerified: verified,
+    mismatches,
+    errors,
+    ok: verified === expectedFileCount && mismatches.length === 0 && errors.length === 0,
+  };
+}
+
+/**
+ * Run a copy job over a **tree** of destinations.
+ *
+ * `nodes` is a flat list where each node optionally names a `parentId`:
+ *
+ *   parentId === null  → copies from the original source
+ *   parentId === "x"   → copies from node x, and only after x has copied
+ *                        AND verified successfully (a cascade)
+ *
+ * Why a parent-per-node tree rather than, say, an explicit list of chains:
+ * it expresses today's flat 1→N case, v1's single cascade (source → A → B),
+ * and Hedge's fan-out (one destination feeding several children) with no
+ * structural change — fan-out falls out for free as "several nodes sharing
+ * a parentId". Multiple independent cascading groups likewise. Neither is
+ * built in the UI for v1, but the data model doesn't have to be revisited
+ * to add them.
+ *
+ * Execution is by dependency wave: every node whose parent is finished and
+ * verified becomes ready, ready nodes are grouped by the root they read
+ * from, and each group runs as one fan-out copy — so nodes sharing a source
+ * still read that source exactly once, and independent groups run in
+ * parallel. A node whose parent failed is marked `skipped` and never
+ * copies: cascading from an unverified copy would propagate corruption
+ * while reporting success, which is the one thing this tool must not do.
+ *
+ * **Cascaded legs copy this job's file list, not the parent's whole
+ * contents.** If destination A already held unrelated footage, cascading
+ * A → B must not sweep that up too — the user asked to pass *this offload*
+ * onward, not to mirror the drive.
+ *
+ * @param {object} opts
+ * @param {string} opts.sourcePath
+ * @param {Array<{id: string, path: string, parentId?: string|null}>} [opts.nodes]
+ * @param {string[]} [opts.destPaths] - legacy flat form, treated as parentless nodes
+ * @param {(p: object) => void} [opts.onProgress]
+ * @param {() => boolean} [opts.isCancelled]
+ */
+async function runCopyJob({ sourcePath, nodes, destPaths, onProgress = () => {}, isCancelled = () => false }) {
+  const startedAt = Date.now();
+
+  // Accept the old flat shape so existing callers/tests keep working; it's
+  // exactly a tree where every node is parentless.
+  const jobNodes =
+    Array.isArray(nodes) && nodes.length
+      ? nodes.map((n, i) => ({ id: n.id || `n${i}`, path: n.path, parentId: n.parentId ?? null }))
+      : (destPaths || []).map((p, i) => ({ id: `n${i}`, path: p, parentId: null }));
+
+  if (jobNodes.length === 0) throw new Error("At least one destination is required");
+
+  const byId = new Map(jobNodes.map((n) => [n.id, n]));
+  for (const n of jobNodes) {
+    if (n.parentId !== null && !byId.has(n.parentId)) {
+      throw new Error(`Destination ${n.path} references a parent that isn't in the job`);
+    }
+    if (n.parentId === n.id) throw new Error("A destination cannot cascade from itself");
+  }
+  // Cycles would deadlock the wave loop below rather than erroring.
+  for (const n of jobNodes) {
+    const seen = new Set([n.id]);
+    let cur = n.parentId;
+    while (cur) {
+      if (seen.has(cur)) throw new Error("Cascade chain contains a cycle");
+      seen.add(cur);
+      cur = byId.get(cur)?.parentId ?? null;
     }
   }
+
+  const sourceStat = await fsp.stat(sourcePath);
+  if (!sourceStat.isDirectory()) throw new Error(`Source is not a directory: ${sourcePath}`);
+
+  // Copying a destination into itself, or into a subdirectory of the
+  // source, produces infinite recursion or silent self-overwrite. Cheap to
+  // check, miserable to debug. Applied against each node's own effective
+  // parent too, so a cascade can't nest into its own parent either.
+  const srcResolved = path.resolve(sourcePath);
+  const seenPaths = new Set();
+  for (const n of jobNodes) {
+    const destResolved = path.resolve(n.path);
+    const parentRoot = n.parentId ? path.resolve(byId.get(n.parentId).path) : srcResolved;
+    if (destResolved === parentRoot) throw new Error(`Destination is the same as the source it copies from: ${n.path}`);
+    if (destResolved.startsWith(parentRoot + path.sep)) throw new Error(`Destination is inside the source it copies from: ${n.path}`);
+    if (parentRoot.startsWith(destResolved + path.sep)) throw new Error(`Source is inside the destination: ${n.path}`);
+    if (seenPaths.has(destResolved)) throw new Error(`Duplicate destination: ${n.path}`);
+    seenPaths.add(destResolved);
+  }
+
+  onProgress({ phase: "scanning", sourcePath, nodes: jobNodes });
+
+  const relFiles = await listFilesRecursive(sourcePath);
+  const sizes = new Map();
+  let totalBytes = 0;
+  for (const rel of relFiles) {
+    const st = await fsp.stat(path.join(sourcePath, rel));
+    sizes.set(rel, st.size);
+    totalBytes += st.size;
+  }
+
+  // Every leg moves the same payload, so total work scales with the number
+  // of legs, not with destination count within a leg (a fan-out leg reads
+  // once no matter how wide it is).
+  const legCount = new Set(jobNodes.map((n) => n.parentId ?? "__root__")).size;
+
+  const state = new Map(
+    jobNodes.map((n) => [
+      n.id,
+      { ...n, status: "pending", filesVerified: 0, mismatches: [], errors: [], copiedBytes: 0, startedAt: null, finishedAt: null },
+    ])
+  );
+
+  onProgress({
+    phase: "start",
+    totalFiles: relFiles.length,
+    totalBytes,
+    legCount,
+    nodes: [...state.values()].map(publicNode),
+  });
+
+  let overallCopiedBytes = 0;
+  const totalWork = totalBytes * legCount;
+  let cancelled = false;
+
+  // Dependency waves: keep running whatever is ready until nothing is.
+  for (;;) {
+    if (isCancelled()) {
+      cancelled = true;
+      break;
+    }
+
+    const ready = [...state.values()].filter((n) => {
+      if (n.status !== "pending") return false;
+      if (n.parentId === null) return true;
+      return state.get(n.parentId).status === "verified";
+    });
+
+    if (ready.length === 0) {
+      // Anything still pending is downstream of a parent that didn't
+      // verify. Mark it skipped rather than silently leaving it "pending"
+      // in the summary.
+      let changed = false;
+      for (const n of state.values()) {
+        if (n.status !== "pending") continue;
+        const parent = state.get(n.parentId);
+        if (parent && (parent.status === "failed" || parent.status === "skipped")) {
+          n.status = "skipped";
+          n.errors.push({ error: `Skipped — the destination it cascades from (${parent.path}) did not verify` });
+          onProgress({ phase: "node-status", node: publicNode(n) });
+          changed = true;
+        }
+      }
+      if (!changed) break;
+      continue;
+    }
+
+    // Group by the root each ready node reads from, so nodes sharing a
+    // source still get a single fan-out read.
+    const groups = new Map();
+    for (const n of ready) {
+      const from = n.parentId === null ? sourcePath : state.get(n.parentId).path;
+      if (!groups.has(from)) groups.set(from, []);
+      groups.get(from).push(n);
+    }
+
+    await Promise.all(
+      [...groups.entries()].map(async ([fromRoot, groupNodes]) => {
+        for (const n of groupNodes) {
+          n.status = "copying";
+          n.startedAt = Date.now();
+          onProgress({ phase: "node-status", node: publicNode(n) });
+        }
+
+        const toRoots = groupNodes.map((n) => n.path);
+        const fileResults = await runLeg({
+          fromRoot,
+          toRoots,
+          relFiles,
+          sizes,
+          isCancelled,
+          onFileEvent: (ev) => {
+            if (ev.type === "bytes") {
+              overallCopiedBytes += ev.delta;
+              for (const n of groupNodes) n.copiedBytes += ev.delta;
+              onProgress({
+                phase: "bytes",
+                file: ev.file,
+                nodeIds: groupNodes.map((n) => n.id),
+                copiedBytes: overallCopiedBytes,
+                totalBytes: totalWork,
+                percent: totalWork > 0 ? Math.min(100, (overallCopiedBytes / totalWork) * 100) : 100,
+              });
+            } else if (ev.type === "verifying") {
+              for (const n of groupNodes) {
+                if (n.status !== "verifying") {
+                  n.status = "verifying";
+                  onProgress({ phase: "node-status", node: publicNode(n) });
+                }
+              }
+              onProgress({ phase: "verifying", file: ev.file, nodeIds: groupNodes.map((n) => n.id) });
+            } else {
+              onProgress({ phase: ev.type, file: ev.file, ok: ev.ok, nodeIds: groupNodes.map((n) => n.id) });
+            }
+          },
+        });
+
+        for (const n of groupNodes) {
+          const rollup = summarizeRoot(n.path, fileResults, relFiles.length);
+          n.filesVerified = rollup.filesVerified;
+          n.mismatches = rollup.mismatches;
+          n.errors.push(...rollup.errors);
+          n.status = rollup.ok && !isCancelled() ? "verified" : "failed";
+          n.finishedAt = Date.now();
+          n.files = fileResults.map((f) => ({
+            file: f.file,
+            bytes: f.bytes,
+            sourceHash: f.sourceHash,
+            ok: f.destinations.find((d) => d.destRoot === n.path)?.ok ?? false,
+          }));
+          onProgress({ phase: "node-status", node: publicNode(n) });
+
+          // The whole point of cascading (per Hedge's docs, and the reason
+          // the user asked for it): once the primary leg verifies, the card
+          // is free — the remaining hops read from the local copy, not the
+          // card. Announce that explicitly rather than making the user
+          // infer it from a progress bar.
+          if (n.status === "verified" && n.parentId === null) {
+            const anyRootStillRunning = [...state.values()].some(
+              (o) => o.parentId === null && (o.status === "copying" || o.status === "verifying" || o.status === "pending")
+            );
+            if (!anyRootStillRunning) {
+              onProgress({ phase: "source-released", sourcePath });
+            }
+          }
+        }
+      })
+    );
+  }
+
+  const nodesOut = [...state.values()].map(publicNode);
+  const allMismatches = nodesOut.flatMap((n) => n.mismatches);
+  const allErrors = nodesOut.flatMap((n) => n.errors);
 
   const summary = {
     mode: "SECURE",
     algorithm: "xxh64",
     sourcePath,
-    destPaths,
+    nodes: nodesOut,
+    // Kept for callers that only care about "where did it all go".
+    destPaths: jobNodes.map((n) => n.path),
     cancelled,
     totalFiles: relFiles.length,
-    filesCopied: fileResults.length,
-    filesVerified: verifiedFiles,
     totalBytes,
-    copiedBytes,
-    mismatches,
-    errors,
+    copiedBytes: overallCopiedBytes,
+    legCount,
+    // With a tree there is no single "files verified" number — one file
+    // verified into three destinations is three verifications. Counted as
+    // (file, destination) pairs, with the matching denominator, so the UI
+    // can't accidentally show "4 of 4" for a job that only finished one of
+    // three legs.
+    fileCopiesVerified: nodesOut.reduce((sum, n) => sum + n.filesVerified, 0),
+    totalFileCopies: relFiles.length * nodesOut.length,
+    mismatches: allMismatches,
+    errors: allErrors,
     // The only line that should decide whether a card is safe to wipe.
     allVerified:
       !cancelled &&
-      fileResults.length === relFiles.length &&
-      verifiedFiles === relFiles.length &&
-      mismatches.length === 0 &&
-      errors.length === 0,
+      nodesOut.length > 0 &&
+      nodesOut.every((n) => n.status === "verified") &&
+      allMismatches.length === 0 &&
+      allErrors.length === 0,
     durationMs: Date.now() - startedAt,
-    files: fileResults,
+    // Flattened per-file view across every node, for callers that want it.
+    files: nodesOut.flatMap((n) => (n.files || []).map((f) => ({ ...f, nodeId: n.id, destRoot: n.path }))),
   };
 
   onProgress({ phase: "done", summary });
   return summary;
 }
 
+/** Strip internals before a node crosses the IPC boundary. */
+function publicNode(n) {
+  return {
+    id: n.id,
+    path: n.path,
+    parentId: n.parentId,
+    status: n.status,
+    filesVerified: n.filesVerified,
+    copiedBytes: n.copiedBytes,
+    mismatches: n.mismatches,
+    errors: n.errors,
+    files: n.files || [],
+    durationMs: n.startedAt && n.finishedAt ? n.finishedAt - n.startedAt : null,
+  };
+}
+
 module.exports = {
   runCopyJob,
+  runLeg,
   // Exported for the standalone test script and for reuse by the future
   // VERIFIED/PRO tiers and the ASC MHL writer.
   listFilesRecursive,
