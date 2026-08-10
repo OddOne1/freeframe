@@ -44,9 +44,51 @@
     header h1 { font-size: 13px; font-weight: 600; margin: 0; }
     header .spacer { flex: 1; }
     header .mode {
+      -webkit-app-region: no-drag;
       font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
       color: var(--text-tertiary); border: 1px solid var(--border);
-      padding: 3px 8px; border-radius: 999px;
+      padding: 0 10px; height: 22px; border-radius: 999px;
+      background: transparent; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 5px;
+    }
+    header .mode:hover { color: var(--text-secondary); border-color: var(--text-tertiary); }
+
+    /* Algorithm picker — a menu, not a bare <select>, because each option
+       carries a paragraph of explanation. Somebody choosing between MD5,
+       SHA-1, xxHash and C4 from four names alone will just pick the first
+       one or whatever they've heard of. */
+    #algo-menu {
+      position: fixed; z-index: 1000; display: none;
+      background: var(--bg-elevated); border: 1px solid var(--border);
+      border-radius: 10px; padding: 6px; width: 380px;
+      box-shadow: 0 16px 40px rgba(0,0,0,.6);
+      max-height: 70vh; overflow-y: auto;
+    }
+    /* white-space:normal is load-bearing: the global `button` rule below
+       sets nowrap, and these options are buttons, so without this every
+       blurb is clipped mid-word instead of wrapping — and a readable
+       explanation is the entire point of this menu. */
+    .algo-opt {
+      display: block; width: 100%; text-align: left; border: none;
+      background: transparent; padding: 8px 10px; border-radius: 7px; cursor: pointer;
+      white-space: normal;
+    }
+    .algo-opt:hover { background: var(--bg-hover); }
+    .algo-opt .algo-top { display: flex; align-items: center; gap: 8px; }
+    .algo-opt .algo-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+    .algo-opt .algo-tag {
+      font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+      padding: 1px 6px; border-radius: 999px;
+      color: var(--status-success); border: 1px solid var(--status-success);
+    }
+    .algo-opt .algo-check { margin-left: auto; color: var(--accent); display: flex; }
+    .algo-opt .algo-check svg { height: 14px; width: 14px; }
+    .algo-opt .algo-blurb {
+      margin-top: 3px; font-size: 11px; line-height: 1.45; color: var(--text-secondary);
+    }
+    .algo-guidance {
+      padding: 8px 10px 4px; font-size: 10px; line-height: 1.5;
+      color: var(--text-tertiary); border-top: 1px solid var(--border); margin-top: 4px;
     }
 
     button {
@@ -78,7 +120,15 @@
       text-transform: uppercase; letter-spacing: .07em; color: var(--text-secondary);
     }
     .col-head .spacer { flex: 1; }
-    .col-head button { padding: 3px 7px; font-size: 11px; }
+    /* Item 2 — both header controls pinned to one explicit height.
+       Previously the "Choose folder…" button landed at ~21px (11px font +
+       3px padding + 1px border) while the Volumes column's .view-toggle
+       came to ~24px (a 14px icon + 3px button padding + 2px wrapper
+       padding). Same row, different tallest child, so the border-bottom
+       under Volumes sat ~3px lower than under the other two columns.
+       Pinning beats keeping two padding sums coincidentally equal. */
+    .col-head { min-height: 40px; }
+    .col-head button { padding: 0 7px; font-size: 11px; height: 24px; }
     .col-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px; min-width: 0; }
 
     /* Item 4 — overlay scrollbars.
@@ -259,10 +309,10 @@
     .tile-meta { font-size: 10px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* View toggle in the Volumes column header. */
-    .view-toggle { display: flex; gap: 2px; background: var(--bg-tertiary); border-radius: 6px; padding: 2px; }
+    .view-toggle { display: flex; align-items: center; gap: 2px; background: var(--bg-tertiary); border-radius: 6px; padding: 2px; height: 24px; }
     .view-toggle button {
-      border: none; background: transparent; padding: 3px 6px; border-radius: 4px;
-      color: var(--text-tertiary); display: flex; align-items: center;
+      border: none; background: transparent; padding: 0 6px; border-radius: 4px;
+      color: var(--text-tertiary); display: flex; align-items: center; height: 20px;
     }
     .view-toggle button.active { background: var(--bg-elevated); color: var(--text-primary); }
     .view-toggle button svg { height: 14px; width: 14px; }
@@ -351,7 +401,10 @@
 <body>
   <header>
     <h1>Offload</h1>
-    <span class="mode">SECURE · xxHash64</span>
+    <button class="mode" id="algo-btn" title="Checksum algorithm">
+      <span id="algo-label">SECURE · xxHash64</span>
+      <span class="icon sm" data-icon="viewList" style="display:none"></span>
+    </button>
     <span class="spacer"></span>
     <button id="refresh"><span class="icon" data-icon="refresh"></span> Refresh</button>
     <button id="clear">Clear</button>
@@ -405,6 +458,8 @@
     <div class="summary" id="summary"></div>
   </footer>
 
+  <div id="algo-menu"></div>
+
   <div id="modal-backdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="modal-head">
@@ -452,6 +507,11 @@
     let nodeStatus = new Map();  // id -> { status, copiedBytes, filesVerified }
     let sourceReleased = false;
 
+    /** Checksum algorithm for the next job. Defaults to xxHash64, so
+     *  nothing changes for anyone who never opens the picker. */
+    let algorithms = [];
+    let algorithm = "xxhash64";
+
     /** "line" | "square" — Volumes column only. */
     let volumesView = "line";
 
@@ -461,6 +521,55 @@
 
     let nextId = 1;
     const newId = () => `d${nextId++}`;
+
+    // ── Checksum algorithm picker ──
+    function algoLabel() {
+      const a = algorithms.find((x) => x.id === algorithm);
+      return `SECURE · ${a ? a.short : "xxHash64"}`;
+    }
+
+    function renderAlgoMenu() {
+      const menuEl = $("algo-menu");
+      menuEl.replaceChildren();
+      for (const a of algorithms) {
+        const top = el("div", { class: "algo-top" }, [
+          el("span", { class: "algo-name", text: a.label }),
+          a.recommended ? el("span", { class: "algo-tag", text: "Default" }) : null,
+        ]);
+        if (a.id === algorithm) {
+          const chk = el("span", { class: "algo-check" });
+          chk.appendChild(icon("check"));
+          top.appendChild(chk);
+        }
+        const opt = el("button", {
+          class: "algo-opt",
+          onClick: () => {
+            algorithm = a.id;
+            $("algo-label").textContent = algoLabel();
+            closeAlgoMenu();
+            render();
+          },
+        }, [top, el("div", { class: "algo-blurb", text: a.blurb })]);
+        menuEl.appendChild(opt);
+      }
+      // The one-line summary from the roadmap's own guidance, kept as the
+      // takeaway under the detail rather than instead of it.
+      menuEl.appendChild(el("div", {
+        class: "algo-guidance",
+        text: "xxHash for speed (default) · MD5/SHA-1 to match an existing pipeline · C4 when the checksum itself might need to prove something in a dispute.",
+      }));
+    }
+
+    function openAlgoMenu() {
+      if (copying) return;
+      renderAlgoMenu();
+      const menuEl = $("algo-menu");
+      const r = $("algo-btn").getBoundingClientRect();
+      menuEl.style.display = "block";
+      menuEl.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 396))}px`;
+      menuEl.style.top = `${r.bottom + 6}px`;
+    }
+    const closeAlgoMenu = () => { $("algo-menu").style.display = "none"; };
 
     // ── Icons ──
     // window.FF_ICONS comes from the generated icons.js (lucide@0.511.0,
@@ -804,6 +913,24 @@
         }
       }
 
+      // Item 1 — eject/disconnect. Only for real volumes (a picked folder
+      // has nothing to eject), never for the internal drive, and never
+      // mid-copy. The main process refuses internal independently.
+      const vol = volumes.find((v) => v.mountPoint === path);
+      if (vol && vol.type !== "internal") {
+        menu.appendChild(el("div", { class: "sep" }));
+        const isNetwork = vol.type === "network";
+        const inUseBySource = copying && sourcePath === path;
+        add(
+          isNetwork ? "Disconnect" : "Eject",
+          () => ejectVolume(vol),
+          // Disabled during any copy; the source of an in-flight copy is
+          // called out separately because that's the one people will
+          // actually try to do.
+          copying || inUseBySource
+        );
+      }
+
       if (role === "dest" || role === "source") {
         menu.appendChild(el("div", { class: "sep" }));
         add("Remove", () => {
@@ -820,7 +947,37 @@
       menu.style.top = `${Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 10)}px`;
     }
     const closeMenu = () => { menu.style.display = "none"; };
-    window.addEventListener("mousedown", (e) => { if (!menu.contains(e.target)) closeMenu(); });
+
+    /** Eject or disconnect, surfacing diskutil's own reason on failure —
+     *  "volume in use" names the app to quit, which "eject failed" doesn't. */
+    async function ejectVolume(vol) {
+      const res = await window.freeframe.ejectVolume(vol.mountPoint);
+      if (res && res.ok) {
+        // No refresh here: the /Volumes watcher fires when the mount
+        // actually disappears. Refreshing now would just race it.
+        if (sourcePath === vol.mountPoint) sourcePath = null;
+        for (const n of destNodes.filter((n) => n.path === vol.mountPoint)) removeDest(n.path, true);
+        render();
+        return;
+      }
+      showEjectError(vol, res && res.error);
+    }
+
+    function showEjectError(vol, message) {
+      const box = $("summary");
+      box.replaceChildren(
+        el("div", { class: "head" }, [
+          el("h3", { class: "bad", text: `Couldn't eject ${vol.name}` }),
+        ]),
+        el("div", { class: "verdict bad", text: message || "diskutil reported no reason." })
+      );
+      box.style.display = "block";
+    }
+    window.addEventListener("mousedown", (e) => {
+      if (!menu.contains(e.target)) closeMenu();
+      const am = $("algo-menu");
+      if (!am.contains(e.target) && e.target !== $("algo-btn") && !$("algo-btn").contains(e.target)) closeAlgoMenu();
+    });
 
     // ── Rendering ──
     function statusLabel(s) {
@@ -1121,7 +1278,8 @@
       try {
         const summary = await window.freeframe.startCopy(
           sourcePath,
-          destNodes.map((n) => ({ id: n.id, path: n.path, parentId: n.parentId }))
+          destNodes.map((n) => ({ id: n.id, path: n.path, parentId: n.parentId })),
+          algorithm
         );
         renderSummary(summary);
       } catch (err) {
@@ -1212,6 +1370,17 @@
     // renderer just re-lists, rather than trusting a diff computed
     // elsewhere.
     window.freeframe.onVolumesChanged(() => { refresh(); });
+
+    $("algo-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      if ($("algo-menu").style.display === "block") closeAlgoMenu();
+      else openAlgoMenu();
+    });
+    window.freeframe.getAlgorithms().then(({ algorithms: list, default: def }) => {
+      algorithms = list || [];
+      algorithm = def || "xxhash64";
+      $("algo-label").textContent = algoLabel();
+    }).catch(() => {});
 
     window.freeframe.getRecentFolders().then((r) => { recentFolders = r || {}; }).catch(() => {});
     refresh();

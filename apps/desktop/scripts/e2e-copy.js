@@ -152,7 +152,7 @@ async function main() {
 
     const bridge = await cdp.eval("Object.keys(window.freeframe).sort().join(',')");
     check(
-      bridge === "cancelCopy,chooseFolder,getRecentFolders,listVolumes,onCopyProgress,onVolumesChanged,rememberFolder,startCopy",
+      bridge === "cancelCopy,chooseFolder,ejectVolume,getAlgorithms,getRecentFolders,listVolumes,onCopyProgress,onVolumesChanged,rememberFolder,startCopy",
       "contextBridge exposes exactly the intended API", bridge);
     check(await cdp.eval("typeof window.require") === "undefined", "no window.require");
     check(await cdp.eval("typeof window.process") === "undefined", "no window.process");

@@ -16,6 +16,7 @@ const os = require("node:os");
 const crypto = require("node:crypto");
 
 const { runCopyJob, hashFileOnDisk } = require("../src/main/copy-engine");
+const { listAlgorithms, getHasherFactory, c4Digest } = require("../src/main/hashers");
 
 let failures = 0;
 function check(ok, label, detail = "") {
@@ -264,6 +265,82 @@ async function main() {
       try { await runCopyJob({ sourcePath: source, nodes }); } catch { threw = true; }
       check(threw, `rejects ${label}`);
     }
+
+    // ── 4f. Selectable checksum algorithms ──
+    // Each one is checked against an independent reference digest, not just
+    // against itself — a hasher that returns a stable wrong value would
+    // pass a self-consistency test perfectly.
+    console.log("\n4f. Checksum algorithms produce correct, independently-verifiable digests");
+
+    const KNOWN = "The quick brown fox jumps over the lazy dog";
+    const refs = {
+      md5: crypto.createHash("md5").update(KNOWN).digest("hex"),
+      sha1: crypto.createHash("sha1").update(KNOWN).digest("hex"),
+      xxhash64: "0b242d361fda71bc",   // published xxHash64 vector
+      // Published C4 vector from the reference implementation (cccc.io).
+      c4: null,
+    };
+    for (const id of ["md5", "sha1", "xxhash64"]) {
+      const make = await getHasherFactory(id);
+      const h = make();
+      h.update(Buffer.from(KNOWN));
+      const got = h.digest();
+      check(got === refs[id], `${id} matches an independent reference digest`, `${got}`);
+    }
+    // C4 against the reference implementation's own published vector for
+    // "hello" — this encoding is exactly the kind where a subtly wrong
+    // alphabet or pad length still looks like a valid identifier.
+    {
+      const C4_HELLO = "c447Fm3BJZQ62765jMZJH4m28hrDM7Szbj9CUmj4F4gnvyDYXYz4WfnK2nYRhFvRgYEectEXYBYWLDpLo6XGNAfKdt";
+      const make = await getHasherFactory("c4");
+      const h = make();
+      h.update(Buffer.from("hello"));
+      const got = h.digest();
+      check(got === C4_HELLO, "c4 matches the published reference vector", `${got.slice(0, 24)}…`);
+      check(got.length === 90 && got.startsWith("c4"), "c4 is 90 chars with the c4 prefix", `${got.length} chars`);
+    }
+
+    // Chunk-boundary independence, per algorithm: the engine hashes in 4MiB
+    // stream chunks, so a hasher that only works on one-shot input would
+    // corrupt every large file while passing the checks above.
+    for (const id of ["md5", "sha1", "xxhash64", "c4"]) {
+      const make = await getHasherFactory(id);
+      const big = Buffer.alloc(300000);
+      for (let i = 0; i < big.length; i++) big[i] = (i * 11) & 0xff;
+      const one = make(); one.update(big);
+      const many = make();
+      for (let o = 0; o < big.length; o += 7919) many.update(big.subarray(o, Math.min(o + 7919, big.length)));
+      check(one.digest() === many.digest(), `${id}: chunked == one-shot`);
+    }
+
+    // And a real copy driven end to end with a non-default algorithm.
+    for (const id of ["md5", "sha1", "c4"]) {
+      const dst = path.join(tmp, `ALGO_${id.toUpperCase()}`);
+      const sum = await runCopyJob({ sourcePath: source, destPaths: [dst], algorithm: id });
+      check(sum.allVerified === true, `real copy verified end to end with ${id}`);
+      check(sum.algorithmId === id, `summary reports the algorithm used (${id})`, String(sum.algorithmId));
+      // The stored hash must actually be that algorithm's, not xxHash's.
+      const rel = "DCIM/100CANON/A001C002.MOV";
+      const engineHash = sum.files.find((f) => f.file === rel)?.sourceHash;
+      const independent = await hashFileOnDisk(path.join(source, rel), id);
+      check(engineHash === independent, `${id}: engine hash == independent re-hash with the same algorithm`);
+      if (id !== "c4") {
+        const viaNode = crypto.createHash(id).update(await fs.readFile(path.join(source, rel))).digest("hex");
+        check(engineHash === viaNode, `${id}: engine hash == node crypto over the whole file`);
+      }
+    }
+
+    // Unknown algorithm must fail loudly, before anything is written.
+    {
+      let threw = false;
+      try { await runCopyJob({ sourcePath: source, destPaths: [path.join(tmp, "NOPE")], algorithm: "sha3-999" }); }
+      catch { threw = true; }
+      check(threw, "unknown algorithm rejected before any file is written");
+      check(!fssync.existsSync(path.join(tmp, "NOPE", "README.txt")), "nothing written for a rejected algorithm");
+    }
+    check(listAlgorithms().length === 4, "picker offers all four algorithms",
+      listAlgorithms().map((a) => a.id).join(","));
+    check(listAlgorithms().every((a) => a.blurb && a.blurb.length > 80), "every algorithm ships an explainer blurb");
 
     // ── 5. Guard rails ──
     console.log("\n5. Refuses dangerous source/destination combinations");

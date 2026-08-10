@@ -13,10 +13,21 @@ contextBridge.exposeInMainWorld("freeframe", {
   // means "cascades from that destination". Resolves with the final
   // summary; per-node progress arrives separately via onCopyProgress
   // below, since invoke() can only resolve once.
-  startCopy: (sourcePath, nodes) =>
-    ipcRenderer.invoke("copy:start", { sourcePath, nodes }),
+  startCopy: (sourcePath, nodes, algorithm) =>
+    ipcRenderer.invoke("copy:start", { sourcePath, nodes, algorithm }),
 
   cancelCopy: () => ipcRenderer.invoke("copy:cancel"),
+
+  /** Eject physical media / disconnect a network share. Resolves
+   *  { ok, error? } rather than throwing — a busy volume is an expected
+   *  outcome the UI should show, not an exception. */
+  // No `type` argument: the main process re-derives it from the live
+  // volume list, because a renderer-supplied type is not something an
+  // irreversible action should trust.
+  ejectVolume: (mountPoint) => ipcRenderer.invoke("volumes:eject", { mountPoint }),
+
+  /** Available checksum algorithms + their explainer text. */
+  getAlgorithms: () => ipcRenderer.invoke("checksum:algorithms"),
 
   // defaultPath roots the native dialog inside one device (item 3) —
   // omitted for the general header buttons, supplied for the per-device

@@ -1,9 +1,14 @@
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const { execFile } = require("node:child_process");
+const { promisify } = require("node:util");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
 const { listVolumes } = require("./volumes");
 const { runCopyJob } = require("./copy-engine");
+const { listAlgorithms, isSupported, DEFAULT_ALGORITHM } = require("./hashers");
+
+const execFileAsync = promisify(execFile);
 
 let mainWindow = null;
 
@@ -74,6 +79,59 @@ ipcMain.handle("volumes:list", async () => {
   return listVolumes();
 });
 
+// Eject / disconnect. Finder makes the same distinction and users already
+// have the vocabulary: physical media is "ejected", a network share is
+// "disconnected", and the diskutil verbs differ accordingly.
+//
+// The internal refusal is enforced HERE, not just hidden in the UI.
+// Unmounting the boot/data volume is never a sane action no matter what
+// triggered the call, and a renderer bug (or a future caller) shouldn't be
+// able to reach it.
+ipcMain.handle("volumes:eject", async (_event, { mountPoint } = {}) => {
+  if (typeof mountPoint !== "string" || !mountPoint.startsWith("/Volumes/")) {
+    return { ok: false, error: "Refusing to eject a path outside /Volumes" };
+  }
+
+  // Ejecting a volume mid-copy would corrupt the transfer. The renderer
+  // already hides the option, but this is the guard that actually holds.
+  if (activeJob) {
+    return { ok: false, error: "A copy is in progress — cancel it before ejecting." };
+  }
+
+  // The type is re-derived from the real volume list rather than taken from
+  // the caller. Trusting the renderer's `type` meant a caller claiming
+  // "removable" got `diskutil eject` genuinely run against the boot volume
+  // — it failed only because macOS itself dissented, which is luck, not a
+  // guard. Caught by the test that lies about the type on purpose.
+  const known = (await listVolumes()).find((v) => v.mountPoint === mountPoint);
+  if (!known) {
+    return { ok: false, error: "That volume isn't mounted." };
+  }
+  if (known.type === "internal") {
+    return { ok: false, error: "The internal system drive can't be ejected." };
+  }
+
+  const verb = known.type === "network" ? "unmount" : "eject";
+  try {
+    await execFileAsync("diskutil", [verb, mountPoint]);
+    // No refresh pushed from here: the /Volumes watcher already fires when
+    // the mount disappears, and duplicating it would double-refresh.
+    return { ok: true, verb };
+  } catch (err) {
+    // diskutil's own stderr is the useful part -- "Unmount failed... because
+    // it is in use" tells the user which app to quit. Swallowing it and
+    // saying "eject failed" would waste their time.
+    const detail = String(err.stderr || err.stdout || err.message || "").trim();
+    return { ok: false, error: detail || `diskutil ${verb} failed` };
+  }
+});
+
+// Checksum algorithms + their explainer text, for the picker.
+ipcMain.handle("checksum:algorithms", async () => ({
+  algorithms: listAlgorithms(),
+  default: DEFAULT_ALGORITHM,
+}));
+
 // Copy job. The renderer sends plain path strings; every filesystem
 // operation happens here, in the main process, exactly like volumes:list.
 //
@@ -106,6 +164,10 @@ ipcMain.handle("copy:start", async (event, payload) => {
   if (!sourcePath) throw new Error("No source selected");
   if (nodes.length === 0) throw new Error("No destination selected");
 
+  // Validated rather than passed through: an unknown name would otherwise
+  // surface as a mid-copy throw after files had already been written.
+  const algorithm = isSupported(payload?.algorithm) ? payload.algorithm : DEFAULT_ALGORITHM;
+
   const webContents = event.sender;
   let cancelled = false;
   activeJob = { cancel: () => { cancelled = true; } };
@@ -114,6 +176,7 @@ ipcMain.handle("copy:start", async (event, payload) => {
     return await runCopyJob({
       sourcePath,
       nodes,
+      algorithm,
       isCancelled: () => cancelled,
       onProgress: (p) => {
         // The window can be closed mid-copy; sending to a destroyed

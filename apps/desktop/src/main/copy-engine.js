@@ -27,24 +27,17 @@
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
-const xxhash = require("xxhash-wasm");
+const { getHasherFactory, DEFAULT_ALGORITHM, ALGORITHMS } = require("./hashers");
 
 // 4 MiB. Large enough that per-chunk overhead is irrelevant on big media
 // files, small enough that N destinations * this stays modest in memory.
 const CHUNK_SIZE = 4 * 1024 * 1024;
 
-let hasherFactoryPromise = null;
-/** xxhash-wasm compiles a WASM module on first use; do it once per process. */
-function getHasherFactory() {
-  if (!hasherFactoryPromise) hasherFactoryPromise = xxhash();
-  return hasherFactoryPromise;
-}
-
-/** BigInt digest -> canonical 16-char lowercase hex, matching how xxh64
- *  values are written in ASC MHL manifests and by `xxhsum`. */
-function toHex(digest) {
-  return digest.toString(16).padStart(16, "0");
-}
+// The live hasher factory for the current job. Set once at the start of
+// runCopyJob and read by the copy and verify paths, which MUST agree: a
+// file hashed with one algorithm and verified with another would report a
+// mismatch on a perfectly good copy.
+let makeHasher = null;
 
 /** Recursively list every file under `root`, as paths relative to it.
  *  Directories are not returned as entries — they're recreated implicitly
@@ -85,14 +78,14 @@ async function listFilesRecursive(root) {
  * @returns {Promise<{sourceHash: string, bytes: number}>}
  */
 async function copyOneFileFanOut(sourcePath, destPaths, onBytes) {
-  // Awaited outside the Promise constructor deliberately: an `async`
+  // Resolved before the Promise constructor deliberately: an `async`
   // executor swallows its own rejections (the constructor ignores the
-  // returned promise), so a WASM-init failure in here would hang the copy
-  // forever instead of surfacing.
-  const { create64 } = await getHasherFactory();
+  // returned promise), so a hasher-init failure in here would hang the
+  // copy forever instead of surfacing.
+  const factory = makeHasher || (await getHasherFactory(DEFAULT_ALGORITHM));
 
   return new Promise((resolve, reject) => {
-    const hasher = create64();
+    const hasher = factory();
 
     const readStream = fs.createReadStream(sourcePath, { highWaterMark: CHUNK_SIZE });
     const writeStreams = destPaths.map((p) => fs.createWriteStream(p));
@@ -153,7 +146,7 @@ async function copyOneFileFanOut(sourcePath, destPaths, onBytes) {
           // underlying fd has been closed.
           if (--remaining === 0 && !settled) {
             settled = true;
-            resolve({ sourceHash: toHex(hasher.digest()), bytes });
+            resolve({ sourceHash: hasher.digest(), bytes });
           }
         });
       }
@@ -163,12 +156,14 @@ async function copyOneFileFanOut(sourcePath, destPaths, onBytes) {
 
 /** Read a file back off disk and hash it. Separate pass on purpose — see
  *  the module header. */
-async function hashFileOnDisk(filePath) {
-  const { create64 } = await getHasherFactory();
-  const hasher = create64();
+async function hashFileOnDisk(filePath, algorithm = null) {
+  const factory = algorithm
+    ? await getHasherFactory(algorithm)
+    : makeHasher || (await getHasherFactory(DEFAULT_ALGORITHM));
+  const hasher = factory();
   const stream = fs.createReadStream(filePath, { highWaterMark: CHUNK_SIZE });
   for await (const chunk of stream) hasher.update(chunk);
-  return toHex(hasher.digest());
+  return hasher.digest();
 }
 
 /**
@@ -303,8 +298,16 @@ function summarizeRoot(root, fileResults, expectedFileCount) {
  * @param {(p: object) => void} [opts.onProgress]
  * @param {() => boolean} [opts.isCancelled]
  */
-async function runCopyJob({ sourcePath, nodes, destPaths, onProgress = () => {}, isCancelled = () => false }) {
+async function runCopyJob({
+  sourcePath, nodes, destPaths, algorithm = DEFAULT_ALGORITHM,
+  onProgress = () => {}, isCancelled = () => false,
+}) {
   const startedAt = Date.now();
+
+  // Resolved once, up front, so every leg of this job — copy and verify
+  // alike — uses the same algorithm. Throws here rather than mid-copy if
+  // the name is unknown.
+  makeHasher = await getHasherFactory(algorithm);
 
   // Accept the old flat shape so existing callers/tests keep working; it's
   // exactly a tree where every node is parentless.
@@ -508,7 +511,9 @@ async function runCopyJob({ sourcePath, nodes, destPaths, onProgress = () => {},
 
   const summary = {
     mode: "SECURE",
-    algorithm: "xxh64",
+    algorithm: ALGORITHMS[algorithm]?.mhlName || algorithm,
+    algorithmId: algorithm,
+    algorithmLabel: ALGORITHMS[algorithm]?.label || algorithm,
     sourcePath,
     nodes: nodesOut,
     // Kept for callers that only care about "where did it all go".
@@ -562,10 +567,10 @@ function publicNode(n) {
 module.exports = {
   runCopyJob,
   runLeg,
+  DEFAULT_ALGORITHM,
   // Exported for the standalone test script and for reuse by the future
   // VERIFIED/PRO tiers and the ASC MHL writer.
   listFilesRecursive,
   hashFileOnDisk,
   copyOneFileFanOut,
-  toHex,
 };

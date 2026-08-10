@@ -315,6 +315,52 @@ async function main() {
     check(await cdp.eval(`destNodes[0] && destNodes[0].path`) === pickedA + "/DST", "destination became the chosen subfolder");
     check(await cdp.eval(`sourcePath !== destNodes[0].path`), "the two roles no longer share a path");
 
+    // ── 8. Header alignment (all three col-heads must line up) ───────────
+    console.log("\n8. Header row alignment across the three columns");
+    const heads = await cdp.eval(`
+      [...document.querySelectorAll('.col-head')].map(h => {
+        const r = h.getBoundingClientRect();
+        return { bottom: Math.round(r.bottom * 100) / 100, height: Math.round(r.height * 100) / 100 };
+      })`);
+    check(heads.length === 3, "three column headers", `${heads.length}`);
+    const bottoms = heads.map((h) => h.bottom);
+    check(new Set(bottoms).size === 1, "all three header bottoms are identical", bottoms.join(" / "));
+    check(new Set(heads.map((h) => h.height)).size === 1, "all three header heights are identical",
+      heads.map((h) => h.height).join(" / "));
+    const ctrlHeights = await cdp.eval(`
+      JSON.stringify({
+        button: Math.round(document.querySelector('.col-head button').getBoundingClientRect().height * 100) / 100,
+        toggle: Math.round(document.querySelector('.view-toggle').getBoundingClientRect().height * 100) / 100,
+      })`).then(JSON.parse);
+    check(ctrlHeights.button === ctrlHeights.toggle,
+      "the two tallest-child controls are the same height (the actual root cause)",
+      `button=${ctrlHeights.button} toggle=${ctrlHeights.toggle}`);
+
+    // ── 9. Checksum picker ───────────────────────────────────────────────
+    console.log("\n9. Checksum algorithm picker");
+    check(await cdp.eval(`document.getElementById('algo-label').textContent`) === "SECURE · xxHash64",
+      "defaults to xxHash64 so nothing changes for anyone who ignores it");
+    await cdp.eval(`document.getElementById('algo-btn').click(); true`);
+    await sleep(120);
+    const opts = await cdp.eval(`[...document.querySelectorAll('.algo-opt .algo-name')].map(e => e.textContent)`);
+    check(JSON.stringify(opts) === JSON.stringify(["xxHash64", "MD5", "SHA-1", "C4"]),
+      "all four algorithms offered", opts.join(", "));
+    const blurbs = await cdp.eval(`[...document.querySelectorAll('.algo-blurb')].map(e => e.textContent.length)`);
+    check(blurbs.every((n) => n > 80), "each option carries the researched explainer, not just a name",
+      `lengths ${blurbs.join("/")}`);
+    check(await cdp.eval(`document.querySelector('.algo-guidance').textContent.includes('xxHash for speed')`),
+      "the one-line guidance summary is present");
+    // Pick SHA-1 and confirm it sticks.
+    // Match the option NAME, not its text: xxHash64's own blurb mentions
+    // "MD5/SHA-1/C4", so a substring match on the whole option hits it first.
+    await cdp.eval(`[...document.querySelectorAll('.algo-opt')].find(o => o.querySelector('.algo-name').textContent === 'SHA-1').click(); true`);
+    await sleep(100);
+    check(await cdp.eval("algorithm") === "sha1", "selecting SHA-1 updates the live choice");
+    check(await cdp.eval(`document.getElementById('algo-label').textContent`) === "SECURE · SHA-1",
+      "header pill reflects the selection");
+    check(await cdp.eval(`document.getElementById('algo-menu').style.display`) === "none", "menu closes on selection");
+    await cdp.eval(`algorithm = 'xxhash64'; document.getElementById('algo-label').textContent = algoLabel(); true`);
+
     // ── 1. Live volume detection ─────────────────────────────────────────
     // Left until last: it mutates the machine's real mount table.
     console.log("\n1. Auto-refresh on a REAL mount/unmount (hdiutil)");
@@ -344,6 +390,105 @@ async function main() {
         "the newly mounted volume also reports real space", `total=${mountedVol.totalBytes} free=${mountedVol.freeBytes}`);
     }
 
+    // ── 10. Eject, on the real disk image we just mounted ────────────────
+    console.log("\n10. Eject / disconnect");
+    const internal = (await cdp.eval("JSON.stringify(volumes)").then(JSON.parse)).find((v) => v.type === "internal");
+    if (internal) {
+      const refused = await cdp.eval(
+        `window.freeframe.ejectVolume(${JSON.stringify(internal.mountPoint)})`);
+      check(refused && refused.ok === false, "main process REFUSES to eject the internal drive", JSON.stringify(refused));
+      // The refusal must come from OUR guard, not from macOS happening to
+      // dissent — so assert the reason, not just the failure. Passing a
+      // bogus type is the point: the handler must ignore it entirely.
+      const lied = await cdp.eval(
+        `window.freeframe.ejectVolume(${JSON.stringify(internal.mountPoint)}, "removable")`);
+      check(lied && lied.ok === false && /internal system drive/i.test(lied.error || ""),
+        "refusal comes from our own type check, not from diskutil failing", JSON.stringify(lied));
+    }
+    const outside = await cdp.eval(`window.freeframe.ejectVolume("/etc", "removable")`);
+    check(outside && outside.ok === false, "refuses a path outside /Volumes", JSON.stringify(outside));
+
+    // Menu entry wording + disabled-during-copy.
+    await cdp.eval(`clearAll(); render(); true`);
+    {
+      const box = await cdp.centerOf(`#zone-volumes .card[data-path="/Volumes/FFTESTVOL"]`);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "right", buttons: 2, clickCount: 1 });
+      await sleep(80);
+      const items = await cdp.eval(`[...document.querySelectorAll('#menu button')].map(b => b.textContent.trim())`);
+      check(items.includes("Eject"), "removable volume offers Eject", items.join(" | "));
+      // The whole context menu is suppressed during a copy, which is a
+      // stronger guarantee than a disabled entry — assert that, and assert
+      // the main process refuses independently of any UI state.
+      const menuDuringCopy = await cdp.eval(`(() => {
+        closeMenu(); copying = true;
+        openMenu({ preventDefault(){}, clientX: 100, clientY: 100 }, "/Volumes/FFTESTVOL", undefined);
+        const count = document.querySelectorAll('#menu button').length;
+        const shown = document.getElementById('menu').style.display;
+        copying = false; closeMenu(); return { count, shown };
+      })()`);
+      check(menuDuringCopy.count === 0 || menuDuringCopy.shown !== "block",
+        "context menu (and so Eject) unreachable while a copy is running", JSON.stringify(menuDuringCopy));
+    }
+    const netVol = (await cdp.eval("JSON.stringify(volumes)").then(JSON.parse)).find((v) => v.type === "network");
+    if (netVol) {
+      await cdp.eval(`closeMenu(); openMenu({preventDefault(){},clientX:100,clientY:100}, ${JSON.stringify(netVol.mountPoint)}, undefined); true`);
+      await sleep(60);
+      const netItems = await cdp.eval(`[...document.querySelectorAll('#menu button')].map(b => b.textContent.trim())`);
+      check(netItems.includes("Disconnect") && !netItems.includes("Eject"),
+        "network share says Disconnect, not Eject (matches Finder)", netItems.join(" | "));
+      await cdp.eval(`closeMenu(); true`);
+    }
+
+    // And the main process refuses on its own while a job is live, with no
+    // help from the UI — the renderer could be bypassed entirely.
+    // The job needs real work: an empty source finishes in under a
+    // millisecond, so the first attempt at this test ejected successfully
+    // and proved nothing. 80 files gives it enough per-file overhead to
+    // still be running when the eject lands.
+    {
+      const busySrc = path.join(tmp, "BUSY_SRC");
+      const busyDst = path.join(tmp, "BUSY_DST");
+      await fs.mkdir(busySrc, { recursive: true });
+      await fs.mkdir(busyDst, { recursive: true });
+      for (let i = 0; i < 80; i++) {
+        await fs.writeFile(path.join(busySrc, `f${i}.bin`), Buffer.alloc(64 * 1024, i));
+      }
+      const duringJob = await cdp.eval(`(async () => {
+        const p = window.freeframe.startCopy(${JSON.stringify(busySrc)}, [{ id: 'x', path: ${JSON.stringify(busyDst)}, parentId: null }]);
+        // Wait until the job is genuinely in flight rather than guessing.
+        for (let i = 0; i < 100; i++) {
+          const r = await window.freeframe.ejectVolume("/Volumes/FFTESTVOL");
+          if (r && r.ok === false && /copy is in progress/i.test(r.error || "")) { try { await p; } catch {} return r; }
+          if (r && r.ok === true) { try { await p; } catch {} return { ok: true, note: "ejected before the guard could apply" }; }
+          await new Promise(res => setTimeout(res, 5));
+        }
+        try { await p; } catch {}
+        return { ok: false, error: "job never observed as active" };
+      })()`);
+      check(duringJob && duringJob.ok === false && /copy is in progress/i.test(duringJob.error || ""),
+        "main process refuses to eject while a copy job is active", JSON.stringify(duringJob));
+    }
+
+    // Now actually eject it through the app and confirm the watcher notices.
+    const ejectRes = await cdp.eval(`window.freeframe.ejectVolume("/Volumes/FFTESTVOL", "removable")`);
+    check(ejectRes && ejectRes.ok === true, "ejected the mounted disk image through the app", JSON.stringify(ejectRes));
+    attached = false;
+    let goneAfterEject = false;
+    for (let i = 0; i < 40; i++) {
+      const names = await cdp.eval("volumes.map(v => v.name)");
+      if (!names.includes("FFTESTVOL")) { goneAfterEject = true; break; }
+      await sleep(250);
+    }
+    check(goneAfterEject, "UI dropped it on its own after eject — no renderer-side refresh needed");
+
+    // Re-attach so the detach-based check below still has something to do.
+    await execFileAsync("hdiutil", ["attach", dmg]);
+    attached = true;
+    for (let i = 0; i < 40; i++) {
+      if ((await cdp.eval("volumes.map(v => v.name)")).includes("FFTESTVOL")) break;
+      await sleep(250);
+    }
+
     await execFileAsync("hdiutil", ["detach", "/Volumes/FFTESTVOL"]);
     attached = false;
     let vanished = false;
@@ -355,9 +500,13 @@ async function main() {
     check(vanished, "unmounted volume disappeared with ZERO manual clicks");
 
     const refreshCount = await cdp.eval("window.__refreshes");
-    check(refreshCount >= 2, "watcher fired for both mount and unmount", `${refreshCount} refreshes`);
-    // Debounce: one physical action must not produce a burst.
-    check(refreshCount <= 6, "debounced — not one refresh per raw fs event", `${refreshCount} refreshes for 2 actions`);
+    check(refreshCount >= 4, "watcher fired for every mount-table change", `${refreshCount} refreshes`);
+    // Four mount-table actions happen in this section (attach, eject,
+    // re-attach, detach). Undebounced, each fires 3-5 raw fs events; the
+    // ceiling here is deliberately below that floor so a broken debounce
+    // still fails rather than being absorbed by a loose bound.
+    check(refreshCount <= 12, "debounced — not one refresh per raw fs event",
+      `${refreshCount} refreshes for 4 mount-table actions`);
 
     console.log(failures === 0 ? "\nALL 7 POLISH ITEMS EXERCISED — PASSED" : `\n${failures} CHECK(S) FAILED`);
   } finally {
