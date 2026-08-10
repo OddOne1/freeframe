@@ -653,6 +653,27 @@
     #menu .sep { height: 1px; background: var(--border); margin: 4px 0; }
     #menu .label { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-tertiary); padding: 5px 10px 3px; }
 
+    /* ── Submenus ("Source Folder ▸" / "Destination Folder ▸") ── */
+    #menu .has-sub { position: relative; }
+    /* The trigger is a row, not a plain label: the caret has to sit hard
+       right regardless of how long the label is. */
+    #menu .sub-trigger { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    #menu .has-sub:hover > .sub-trigger { background: var(--bg-hover); }
+    #menu .sub-trigger .icon { color: var(--text-tertiary); }
+    #menu .submenu {
+      position: absolute; top: -4px; left: 100%;
+      display: none; z-index: 1001;
+      background: var(--bg-elevated); border: 1px solid var(--border);
+      border-radius: 8px; padding: 4px; min-width: 190px; max-width: 280px;
+      box-shadow: 0 12px 32px rgba(0,0,0,.6);
+    }
+    #menu .submenu.open { display: block; }
+    /* Flipped to the other side when it would leave the window — applied
+       from JS, which is the only place the measurement exists. */
+    #menu .submenu.flip { left: auto; right: 100%; }
+    /* Long folder names shouldn't widen the panel indefinitely. */
+    #menu .submenu button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
     /* ── Footer: progress + summary ── */
     footer { border-top: 1px solid var(--border); background: var(--bg-secondary); flex-shrink: 0; }
     .progress { padding: 10px 14px; display: none; }
@@ -1285,17 +1306,36 @@
 
     /** Opens the native picker, optionally rooted inside `device`, and
      *  records the result as that device's recent folder. */
-    async function pickFolder({ title, device = null }) {
+    async function pickFolder({ title, device = null, role = null }) {
       const folder = await window.freeframe.chooseFolder(title, device || undefined);
       if (!folder) return null;
       if (!extraFolders.includes(folder) && !volumes.some((v) => v.mountPoint === folder)) {
         extraFolders.push(folder);
       }
-      if (device) {
-        recentFolders[device] = folder;
-        window.freeframe.rememberFolder(device, folder);
-      }
+      // `role` is required to record a recent: a folder filed under the
+      // wrong heading is worse than one not remembered at all.
+      if (device && role) rememberRecent(device, role, folder);
       return folder;
+    }
+
+    /** Recents for one device and one role, newest first. Keyed by the
+     *  volume's own mountPoint, so one drive's history can't appear under
+     *  another — that scoping was already right and is carried through
+     *  unchanged; only the role split is new. */
+    function recentsFor(device, role) {
+      const entry = recentFolders[device];
+      return (entry && entry[role]) || [];
+    }
+
+    function rememberRecent(device, role, folder) {
+      const entry = recentFolders[device] || (recentFolders[device] = {});
+      entry[role] = [folder, ...(entry[role] || []).filter((f) => f !== folder)].slice(0, 5);
+      window.freeframe.rememberFolder(device, role, folder);
+    }
+
+    function clearRecents(device, role) {
+      if (recentFolders[device]) delete recentFolders[device][role];
+      window.freeframe.clearRecentFolders(device, role);
     }
 
     // ── Item 2: in-project folder picker ──────────────────────────────────
@@ -1560,13 +1600,70 @@
       if (copying) return;
       menu.replaceChildren();
 
-      const add = (label, fn, disabled = false) =>
-        menu.appendChild(el("button", { text: label, disabled, onClick: () => { closeMenu(); fn(); } }));
+      const addTo = (host, label, fn, disabled = false) =>
+        host.appendChild(el("button", { text: label, disabled, onClick: () => { closeMenu(); fn(); } }));
+      const add = (label, fn, disabled = false) => addTo(menu, label, fn, disabled);
 
+      /**
+       * A "Label ▸" row whose panel opens beside the menu. Returns the
+       * panel to fill.
+       *
+       * Opens on hover (matching the reference) and on click, because
+       * hover-only submenus are unusable with a trackpad at the edge of a
+       * row and undrivable by anything but a mouse — the same reason every
+       * drag action in this app also has a menu path.
+       */
+      const addSubmenu = (label) => {
+        const wrap = el("div", { class: "has-sub" });
+        const trigger = el("button", { class: "sub-trigger" }, [
+          el("span", { text: label }),
+        ]);
+        trigger.appendChild(icon("chevronRight"));
+        const panel = el("div", { class: "submenu" });
+        wrap.appendChild(trigger);
+        wrap.appendChild(panel);
+
+        const open = () => {
+          for (const p of menu.querySelectorAll(".submenu.open")) {
+            if (p !== panel) p.classList.remove("open");
+          }
+          panel.classList.add("open");
+          // Measured after it's visible — a display:none panel has no box.
+          panel.classList.remove("flip");
+          panel.style.top = "";
+          // Flip to the left rather than run off the right edge.
+          if (panel.getBoundingClientRect().right > window.innerWidth - 8) {
+            panel.classList.add("flip");
+          }
+          // And pull it up rather than off the bottom. Nudged relative to
+          // its default -4px offset, so it stays anchored near its trigger
+          // instead of jumping to the top of the window.
+          const over = panel.getBoundingClientRect().bottom - (window.innerHeight - 8);
+          if (over > 0) panel.style.top = `${-4 - over}px`;
+        };
+        wrap.addEventListener("mouseenter", open);
+        wrap.addEventListener("mouseleave", () => panel.classList.remove("open"));
+        trigger.addEventListener("click", (ev) => { ev.stopPropagation(); open(); });
+        menu.appendChild(wrap);
+        return panel;
+      };
+
+      // Which roles this exact path already holds. Deliberately an exact
+      // match, not deviceFor(): a drive that merely *contains* a source
+      // subfolder is still freely assignable itself, and hiding its
+      // actions would be wrong.
+      const heldSource = sourcePath === path;
+      const heldDest = destNodes.some((n) => n.path === path);
+
+      // Item 1 — the opposite role's plain actions are hidden once a card
+      // holds a role. They were fully enabled and simply noise: nobody
+      // right-clicks the card they just made the source in order to read
+      // three destination-flavoured entries.
+      //
       // isProject() used to hard-disable "Set as Source". It no longer
-      // does — copy-engine has a FreeFrame source provider (item 3).
-      add("Set as Source", () => setSource(path), sourcePath === path);
-      add("Set as Destination", () => addDest(path, null), destNodes.some((n) => n.path === path));
+      // does — copy-engine has a FreeFrame source provider.
+      if (!heldDest) add("Set as Source", () => setSource(path), heldSource);
+      if (!heldSource) add("Set as Destination", () => addDest(path, null), heldDest);
 
       // Item 2 — the project counterpart of the per-device folder pickers
       // below. Offered for a project whichever role it holds: the same
@@ -1593,25 +1690,57 @@
       // more than one card is being offloaded at once.
       const isVolume = volumes.some((v) => v.mountPoint === path);
       if (isVolume) {
-        menu.appendChild(el("div", { class: "sep" }));
-        add("Choose folder here as Source…", async () => {
-          const f = await pickFolder({ title: `Choose a source folder on ${entryFor(path).name}`, device: path });
-          if (f) setSource(f);
-        });
-        add("Choose folder here as Destination…", async () => {
-          const f = await pickFolder({ title: `Choose a destination folder on ${entryFor(path).name}`, device: path });
-          if (f) addDest(f, null);
-        });
+        // Item 2 — "Source Folder ▸" / "Destination Folder ▸", each holding
+        // Browse…, that role's own recents, and Clear Recents. This
+        // replaces both the flat "Choose folder here as…" pair and the
+        // separate shared "Recent on this device" section: a recent
+        // belongs to a role, so it belongs in that role's submenu.
+        const roleSubmenu = (roleKey, label, apply) => {
+          const panel = addSubmenu(label);
+          addTo(panel, "Browse…", async () => {
+            const f = await pickFolder({
+              title: `Choose a ${roleKey} folder on ${entryFor(path).name}`,
+              device: path,
+              role: roleKey,
+            });
+            if (f) apply(f);
+          });
 
-        // Item 6 — offer the last folder used on this device, so picking the
-        // same destination twice doesn't mean browsing to it twice.
-        const recent = recentFolders[path];
-        if (recent) {
-          const short = recent.replace(path, "").replace(/^\//, "") || recent;
+          const recents = recentsFor(path, roleKey);
+          if (recents.length) {
+            panel.appendChild(el("div", { class: "sep" }));
+            panel.appendChild(el("div", { class: "label", text: "Recent Folders:" }));
+            for (const r of recents) {
+              // Shown relative to the drive, since the mount point is
+              // already the thing you right-clicked.
+              const short = r.replace(path, "").replace(/^\//, "") || r;
+              addTo(panel, short, () => apply(r));
+            }
+            panel.appendChild(el("div", { class: "sep" }));
+            addTo(panel, "Clear Recents", () => clearRecents(path, roleKey));
+          }
+        };
+
+        menu.appendChild(el("div", { class: "sep" }));
+        if (!heldDest) roleSubmenu("source", "Source Folder", (f) => setSource(f));
+        if (!heldSource) roleSubmenu("destination", "Destination Folder", (f) => addDest(f, null));
+
+        // Item 1's judgement call: one explicit, distinctly-worded entry
+        // for the same-volume-both-roles case, rather than relying on drag
+        // alone. Kept because this app states the principle twice already —
+        // every drag action has a menu path, since drag-only is a real
+        // precision and accessibility problem — and this would otherwise
+        // have been the one capability reachable by drag and nothing else.
+        // One entry, below a separator, instead of the three redundant
+        // opposite-role items it replaces.
+        //
+        // Both route through the existing conflict modal, which is what
+        // makes the user pick a subfolder per role; a bare volume root on
+        // both sides would copy a folder into itself.
+        if (heldSource || heldDest) {
           menu.appendChild(el("div", { class: "sep" }));
-          menu.appendChild(el("div", { class: "label", text: "Recent on this device" }));
-          add(`Source: ${short}`, () => setSource(recent));
-          add(`Destination: ${short}`, () => addDest(recent, null));
+          if (heldSource) add("Also use as Destination…", () => addDest(path, null));
+          else add("Also use as Source…", () => setSource(path));
         }
       }
 
@@ -2196,12 +2325,10 @@
         if (!folder) return;
         // The general picker can land anywhere, so attribute the result to
         // whichever device it turned out to be on — that's what makes it
-        // show up under "Recent on this device" later.
+        // show up in that drive's own submenu later. The role comes from
+        // which button was pressed, so it files under the right heading.
         const dev = deviceFor(folder);
-        if (dev) {
-          recentFolders[dev] = folder;
-          window.freeframe.rememberFolder(dev, folder);
-        }
+        if (dev) rememberRecent(dev, which === "source" ? "source" : "destination", folder);
         if (which === "source") setSource(folder);
         else addDest(folder, null);
       });
@@ -2210,14 +2337,14 @@
     // ── Item 5: modal buttons ──
     on("modal-src", "click", async () => {
       if (!modalState) return;
-      const f = await pickFolder({ title: "Choose a source folder", device: modalState.volumePath });
+      const f = await pickFolder({ title: "Choose a source folder", device: modalState.volumePath, role: "source" });
       if (!f) return;
       modalState.src = f;
       updateModalChosen();
     });
     on("modal-dst", "click", async () => {
       if (!modalState) return;
-      const f = await pickFolder({ title: "Choose a destination folder", device: modalState.volumePath });
+      const f = await pickFolder({ title: "Choose a destination folder", device: modalState.volumePath, role: "destination" });
       if (!f) return;
       modalState.dst = f;
       updateModalChosen();

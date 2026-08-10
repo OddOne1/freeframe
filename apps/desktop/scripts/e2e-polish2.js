@@ -153,9 +153,13 @@ async function main() {
     await sleep(150);
     const opened = await ev(`document.getElementById("menu").style.display`);
     check(opened === "block", "left-clicking it opens the menu", opened);
-    const items = await ev(`[...document.querySelectorAll("#menu button")].map(b => b.textContent.trim())`);
-    check(items.some((t) => t.includes("Choose folder here as Source")),
-      "the per-device folder pickers are now reachable without right-click");
+    // The flat "Choose folder here as…" pair is now the "Source Folder ▸"
+    // / "Destination Folder ▸" submenus. What this item is actually about
+    // is unchanged: the per-device pickers must be reachable by left-click,
+    // without knowing to right-click.
+    const items = await ev(`[...document.querySelectorAll("#menu .has-sub .sub-trigger span")].map(b => b.textContent.trim())`);
+    check(items.includes("Source Folder") && items.includes("Destination Folder"),
+      "the per-device folder pickers are now reachable without right-click", items.join(" | "));
     await ev(`closeMenu(); true`);
     // Grid view too.
     await ev(`volumesView = "square"; render(); true`);

@@ -217,12 +217,20 @@ async function main() {
       check(stillListed, "a real mounted volume is never pruned from the list");
     }
 
+    // rememberFolder takes a role now, and recents are stored per role —
+    // a single per-device value meant the last folder used for either role
+    // was offered under both. Per-role behaviour itself is covered in
+    // depth by e2e-menu.js; this stays a round-trip check.
     const roundTrip = await cdp.eval(`(async () => {
-      await window.freeframe.rememberFolder(${JSON.stringify(pickedA)}, ${JSON.stringify(pickedB)});
+      await window.freeframe.rememberFolder(${JSON.stringify(pickedA)}, "source", ${JSON.stringify(pickedB)});
       const r = await window.freeframe.getRecentFolders();
-      return r[${JSON.stringify(pickedA)}];
+      return (r[${JSON.stringify(pickedA)}] || {}).source;
     })()`);
-    check(roundTrip === pickedB, "recent folder round-trips through the main process", String(roundTrip));
+    check(
+      Array.isArray(roundTrip) && roundTrip[0] === pickedB,
+      "recent folder round-trips through the main process",
+      JSON.stringify(roundTrip)
+    );
     recentsPath = await cdp.eval(`window.freeframe.getRecentFolders().then(() => null)`).then(() => null);
 
     // ── 3. Per-device picker ─────────────────────────────────────────────
@@ -252,13 +260,21 @@ async function main() {
       const box = await cdp.centerOf(volSel(dev));
       await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "right", buttons: 2, clickCount: 1 });
       await sleep(80);
-      const items = await cdp.eval(`[...document.querySelectorAll('#menu button')].map(b => b.textContent.trim())`);
-      check(items.some((t) => t.includes("Choose folder here as Source")), "context menu offers per-device Source picker", items.join(" | "));
-      check(items.some((t) => t.includes("Choose folder here as Destination")), "context menu offers per-device Destination picker");
+      // The flat "Choose folder here as Source/Destination…" pair became
+      // "Source Folder ▸" / "Destination Folder ▸" submenus, each holding
+      // Browse… plus that role's own recents. Same capability, different
+      // shape — so this asserts the shape it actually has now.
+      const items = await cdp.eval(`[...document.querySelectorAll('#menu .has-sub .sub-trigger span')].map(b => b.textContent.trim())`);
+      check(items.includes("Source Folder"), "context menu offers per-device Source picker", items.join(" | "));
+      check(items.includes("Destination Folder"), "context menu offers per-device Destination picker");
 
-      // "as Source" also matches "Set as Source", which is a different
-      // entry — match the per-device one specifically.
-      await cdp.eval(`[...document.querySelectorAll('#menu button')].find(b => b.textContent.includes('Choose folder here as Source')).click(); true`);
+      await cdp.eval(`(() => {
+        const wrap = [...document.querySelectorAll('#menu .has-sub')]
+          .find(w => w.querySelector('span').textContent === 'Source Folder');
+        wrap.querySelector('.sub-trigger').click();
+        [...wrap.querySelectorAll('.submenu button')].find(b => b.textContent === 'Browse…').click();
+        return true;
+      })()`);
       await sleep(120);
       const calls = await cdp.eval("window.__pickCalls") || [];
       check(calls.length > 0 && calls[calls.length - 1]?.defaultPath === dev,

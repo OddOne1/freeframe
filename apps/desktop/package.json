@@ -23,6 +23,7 @@
     "test:polish": "node scripts/e2e-polish.js",
     "test:polish2": "node scripts/e2e-polish2.js",
     "test:subfolder": "node scripts/e2e-subfolder.js",
+    "test:menu": "node scripts/e2e-menu.js",
     "test:ff-ui": "node scripts/e2e-freeframe-ui.js",
     "test:ff-source": "node scripts/e2e-ff-source.js"
   },

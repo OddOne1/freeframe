@@ -473,24 +473,57 @@ ipcMain.handle("copy:cancel", async () => {
 // stable for the life of a mount; a drive that comes back under a
 // different /Volumes name simply has no memory yet, which is correct
 // rather than wrong.
+//
+// Recents are kept **per device AND per role**: { mountPoint: { source: [],
+// destination: [] } }. One shared value per device was actively wrong, not
+// just limited — the last folder picked for either role overwrote the
+// other's memory, so a drive whose source was "PROG" and destination was
+// "Prints" offered "Prints" under both labels.
 function recentsFile() {
   return path.join(app.getPath("userData"), "recent-folders.json");
 }
 
+const RECENT_ROLES = ["source", "destination"];
+const RECENTS_PER_ROLE = 5;
+
+/**
+ * Coerce whatever is on disk into the current shape.
+ *
+ * The legacy `{ mountPoint: "/some/folder" }` form is **dropped**, not
+ * migrated. That value was "the last folder used for either role" — which
+ * role is unrecoverable, and copying it into both slots would reproduce on
+ * first launch exactly the duplicated "Source: Prints / Destination:
+ * Prints" listing this change exists to fix. One-time loss of a
+ * convenience, in exchange for never showing a folder under a role it was
+ * never used for.
+ */
+function normalizeRecents(raw) {
+  const out = {};
+  for (const [device, value] of Object.entries(raw || {})) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const entry = {};
+    for (const role of RECENT_ROLES) {
+      const v = value[role];
+      // A single string is the intermediate two-slot shape; both it and a
+      // list normalize to a list.
+      const list = typeof v === "string" ? [v] : Array.isArray(v) ? v : [];
+      const clean = list.filter((f) => typeof f === "string" && f).slice(0, RECENTS_PER_ROLE);
+      if (clean.length) entry[role] = clean;
+    }
+    if (entry.source || entry.destination) out[device] = entry;
+  }
+  return out;
+}
+
 async function readRecents() {
   try {
-    return JSON.parse(await fsp.readFile(recentsFile(), "utf8"));
+    return normalizeRecents(JSON.parse(await fsp.readFile(recentsFile(), "utf8")));
   } catch {
     return {};
   }
 }
 
-ipcMain.handle("recent-folders:get", async () => readRecents());
-
-ipcMain.handle("recent-folders:remember", async (_event, { device, folder } = {}) => {
-  if (typeof device !== "string" || typeof folder !== "string" || !device || !folder) return {};
-  const recents = await readRecents();
-  recents[device] = folder;
+async function writeRecents(recents) {
   try {
     await fsp.mkdir(path.dirname(recentsFile()), { recursive: true });
     await fsp.writeFile(recentsFile(), JSON.stringify(recents, null, 2));
@@ -499,6 +532,34 @@ ipcMain.handle("recent-folders:remember", async (_event, { device, folder } = {}
     // actual assignment the user just made.
   }
   return recents;
+}
+
+ipcMain.handle("recent-folders:get", async () => readRecents());
+
+ipcMain.handle("recent-folders:remember", async (_event, { device, role, folder } = {}) => {
+  const recents = await readRecents();
+  // The role is required. Guessing one would put a folder under a heading
+  // it was never used for, which is the bug being fixed.
+  if (!RECENT_ROLES.includes(role)) return recents;
+  if (typeof device !== "string" || typeof folder !== "string" || !device || !folder) return recents;
+
+  const entry = recents[device] || (recents[device] = {});
+  // Re-picking a folder promotes it rather than duplicating it.
+  entry[role] = [folder, ...(entry[role] || []).filter((f) => f !== folder)].slice(0, RECENTS_PER_ROLE);
+  return writeRecents(recents);
+});
+
+// Clears one role's list on one device — the scope of the submenu the
+// "Clear Recents" item sits in. Deliberately not global: nothing in that
+// submenu suggests it would wipe the other role, or other drives.
+ipcMain.handle("recent-folders:clear", async (_event, { device, role } = {}) => {
+  const recents = await readRecents();
+  if (!RECENT_ROLES.includes(role) || typeof device !== "string") return recents;
+  if (recents[device]) {
+    delete recents[device][role];
+    if (!recents[device].source && !recents[device].destination) delete recents[device];
+  }
+  return writeRecents(recents);
 });
 
 // ── Item 8: cosmetic display-name override ──

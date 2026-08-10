@@ -60,10 +60,14 @@ contextBridge.exposeInMainWorld("freeframe", {
   setDisplayName: (mountPoint, name) =>
     ipcRenderer.invoke("display-names:set", { mountPoint, name }),
 
-  /** Item 6 — last folder chosen per device, persisted in userData. */
+  /** Recently-chosen folders, per device AND per role — `role` is
+   *  "source" or "destination". A single per-device value meant the last
+   *  folder used for either role was offered under both. */
   getRecentFolders: () => ipcRenderer.invoke("recent-folders:get"),
-  rememberFolder: (device, folder) =>
-    ipcRenderer.invoke("recent-folders:remember", { device, folder }),
+  rememberFolder: (device, role, folder) =>
+    ipcRenderer.invoke("recent-folders:remember", { device, role, folder }),
+  clearRecentFolders: (device, role) =>
+    ipcRenderer.invoke("recent-folders:clear", { device, role }),
 
   /** Fires when /Volumes changes — a drive plugged in or ejected.
    *  Returns an unsubscribe function. Carries no payload: the renderer
