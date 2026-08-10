@@ -3,16 +3,20 @@
   "productName": "FreeFrame Desktop (name TBD)",
   "version": "0.1.0",
   "private": true,
-  "description": "Camera/drive offload app for FreeFrame — capture, upload, verify. Mac first, Windows to follow.",
+  "description": "Camera/drive offload app for FreeFrame \u2014 capture, upload, verify. Mac first, Windows to follow.",
   "main": "src/main/main.js",
   "scripts": {
-    "dev": "electron .",
-    "test": "node scripts/test-copy.js && node scripts/e2e-copy.js",
-    "test:engine": "node scripts/test-copy.js",
-    "test:e2e": "node scripts/e2e-copy.js",
     "build": "electron-builder --mac",
     "build:mac": "electron-builder --mac --universal",
-    "build:mac:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --universal"
+    "build:mac:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --universal",
+    "dev": "electron .",
+    "prebuild": "node scripts/sync-tokens.js && node scripts/sync-icons.js",
+    "predev": "node scripts/sync-tokens.js && node scripts/sync-icons.js",
+    "pretest": "node scripts/sync-tokens.js && node scripts/sync-icons.js",
+    "sync": "node scripts/sync-tokens.js && node scripts/sync-icons.js",
+    "test": "node scripts/test-copy.js && node scripts/e2e-copy.js",
+    "test:e2e": "node scripts/e2e-copy.js",
+    "test:engine": "node scripts/test-copy.js"
   },
   "devDependencies": {
     "@electron/notarize": "^2.5.0",
@@ -30,6 +34,7 @@
     ]
   },
   "dependencies": {
+    "lucide": "0.511.0",
     "xxhash-wasm": "^1.1.0"
   }
 }

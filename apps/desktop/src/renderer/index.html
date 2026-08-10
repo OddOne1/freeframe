@@ -3,31 +3,20 @@
 <head>
   <meta charset="UTF-8" />
   <title>FreeFrame Desktop (name TBD)</title>
+  <!-- Canonical colors from packages/design-tokens, copied here by
+       scripts/sync-tokens.js on predev/prebuild. Generated + gitignored —
+       edit the package, not this copy. Same for icons.js (lucide@0.511.0,
+       the exact release apps/web pins via lucide-react). -->
+  <link rel="stylesheet" href="tokens.css" />
+  <script src="icons.js"></script>
   <style>
-    /* Palette per CLAUDE.md's roadmap "Color coding" decision (2026-07-31):
-       brand accent for chrome/selection, and FreeFrame's *existing* semantic
-       status tokens reused unchanged for process state, so this app and the
-       web app speak the same visual language (green = good, red = bad).
-       Kept in sync with apps/web by hand — a shared @freeframe/tokens
-       package is a real follow-up, not urgent for this app. */
+    /* Colors come from tokens.css (linked above). Only the aliases this
+       renderer needs on top of the shared set live here — the shared file
+       names its border tokens --border-primary/--border-secondary, and this
+       UI referred to a single --border throughout. */
     :root {
-      --bg-primary: #0d0d10;
-      --bg-secondary: #17171c;
-      --bg-elevated: #24242c;
-      --bg-hover: #2a2a34;
-      --border: #33333d;
-      --text-primary: #f2f2f5;
-      --text-secondary: #9a9aa5;
-      --text-tertiary: #6b6b76;
-
-      --accent: #5b8def;          /* brand primary */
-      --accent-2: #2dd4bf;        /* brand secondary (turquoise) */
-
-      --status-success: #34d399;  /* verified */
-      --status-warning: #fbbf24;
-      --status-error: #f87171;    /* mismatch / failed */
-      --status-info: #60a5fa;     /* in progress */
-      --status-draft: #e4e4e7;    /* not started */
+      --border: var(--border-primary);
+      --accent-2: var(--status-turquoise);
     }
 
     * { box-sizing: border-box; }
@@ -156,6 +145,113 @@
     .node-bar > div.verified { background: var(--status-success); }
     .node-bar > div.failed { background: var(--status-error); }
 
+    /* ── Square (grid) view for the Volumes column ──
+       Deliberately matched to apps/web/components/projects/asset-card.tsx
+       rather than approximated, so a desktop tile and a web asset tile read
+       as the same component family:
+         group flex flex-col rounded-lg overflow-hidden
+         transition-all duration-150 cursor-pointer
+         border-2 border-transparent hover:border-border-focus
+         (selected → border-accent bg-accent/5 shadow-lg shadow-accent/10)
+         image area: aspect-[16/10] bg-bg-tertiary, centered fallback tile
+                     h-14 w-14 rounded-2xl bg-bg-hover text-text-secondary
+                     with a h-7 w-7 icon
+         info: px-2 pt-2 pb-1.5, gap-1, title text-sm font-medium leading-tight
+       Tailwind values translated to plain CSS: rounded-lg = 8px,
+       rounded-2xl = 16px, border-2 = 2px, h-14 = 56px, h-7 = 28px,
+       text-sm = 14px, px-2 = 8px, pt-2 = 8px, pb-1.5 = 6px, gap-1 = 4px. */
+    .grid-view {
+      display: grid;
+      /* 118px, not 150px: this column is only ~300px wide, and two 150px
+         tracks plus the gap overflow it — auto-fill then collapses to a
+         single full-width tile whose 16:10 media area is enormous. At 118px
+         two tiles fit comfortably with room for the gap. */
+      grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+      gap: 10px;
+      align-content: start;
+    }
+    .tile {
+      display: flex; flex-direction: column;
+      border-radius: 8px; overflow: hidden;
+      border: 2px solid transparent;
+      transition: all 150ms;
+      cursor: grab;
+      background: transparent;
+    }
+    .tile:hover { border-color: var(--border-focus); }
+    .tile:active { cursor: grabbing; }
+    .tile.assigned {
+      border-color: var(--accent);
+      background: rgba(91, 141, 239, .05);
+      box-shadow: 0 10px 15px -3px rgba(91,141,239,.10), 0 4px 6px -4px rgba(91,141,239,.10);
+    }
+    /* Same blue-outline cascade affordance the list cards use. */
+    .tile.cascade-target { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: 0 0 0 6px rgba(91,141,239,.14); }
+
+    .tile-media {
+      position: relative; width: 100%;
+      aspect-ratio: 16 / 10;
+      background: var(--bg-tertiary);
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+    }
+    .tile-icon {
+      height: 56px; width: 56px;
+      border-radius: 16px;
+      background: var(--bg-hover);
+      color: var(--text-secondary);
+      display: flex; align-items: center; justify-content: center;
+      transition: transform 200ms;
+    }
+    .tile:hover .tile-icon { transform: scale(1.02); }
+    /* Two classes, not one: the generic `.icon svg { 14px }` rule below has
+       equal specificity and is defined later, so a plain `.tile-icon svg`
+       loses to it and these render at half size (asset-card.tsx's fallback
+       glyph is h-7 w-7 = 28px). */
+    .tile-icon .icon svg { height: 28px; width: 28px; }
+
+    .tile-badge {
+      position: absolute; top: 8px; right: 8px;
+      border-radius: 4px;
+      background: rgba(0,0,0,.55);
+      backdrop-filter: blur(4px);
+      padding: 2px 6px;
+      font-size: 9px; font-weight: 600; letter-spacing: .04em;
+      text-transform: uppercase; color: rgba(255,255,255,.85);
+    }
+    .tile-role {
+      position: absolute; top: 8px; left: 8px;
+      border-radius: 4px; padding: 2px 6px;
+      font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    }
+    .tile-role.src { background: var(--accent); color: var(--accent-foreground); }
+    .tile-role.dst { background: var(--status-turquoise); color: var(--accent-foreground); }
+
+    .tile-info { display: flex; flex-direction: column; gap: 4px; padding: 8px 8px 6px; }
+    .tile-name {
+      font-size: 14px; font-weight: 500; color: var(--text-primary);
+      line-height: 1.25;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .tile-meta { font-size: 10px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* View toggle in the Volumes column header. */
+    .view-toggle { display: flex; gap: 2px; background: var(--bg-tertiary); border-radius: 6px; padding: 2px; }
+    .view-toggle button {
+      border: none; background: transparent; padding: 3px 6px; border-radius: 4px;
+      color: var(--text-tertiary); display: flex; align-items: center;
+    }
+    .view-toggle button.active { background: var(--bg-elevated); color: var(--text-primary); }
+    .view-toggle button svg { height: 14px; width: 14px; }
+
+    /* Inline icons in list rows / buttons. */
+    .icon { display: inline-flex; align-items: center; justify-content: center; }
+    .icon svg { height: 14px; width: 14px; }
+    .icon.sm svg { height: 12px; width: 12px; }
+    .card-grip { color: var(--text-tertiary); flex-shrink: 0; opacity: .5; }
+    .card:hover .card-grip { opacity: 1; }
+
     /* ── Drag ghost ── */
     #ghost {
       position: fixed; pointer-events: none; z-index: 999;
@@ -209,7 +305,7 @@
     <h1>Offload</h1>
     <span class="mode">SECURE · xxHash64</span>
     <span class="spacer"></span>
-    <button id="refresh">↻ Refresh</button>
+    <button id="refresh"><span class="icon" data-icon="refresh"></span> Refresh</button>
     <button id="clear">Clear</button>
     <button id="start" class="primary" disabled>Copy &amp; Verify</button>
   </header>
@@ -225,7 +321,16 @@
     </div>
 
     <div class="col">
-      <div class="col-head"><h2>Volumes</h2></div>
+      <div class="col-head">
+        <h2>Volumes</h2>
+        <span class="spacer"></span>
+        <!-- Toggle applies to this column only — Sources and Destinations
+             keep their list layout regardless. -->
+        <div class="view-toggle" id="view-toggle">
+          <button data-view="line" title="List view" aria-label="List view"><span data-icon="viewList"></span></button>
+          <button data-view="square" title="Grid view" aria-label="Grid view"><span data-icon="viewGrid"></span></button>
+        </div>
+      </div>
       <div class="col-body"><div class="zone" id="zone-volumes"></div></div>
     </div>
 
@@ -278,8 +383,33 @@
     let nodeStatus = new Map();  // id -> { status, copiedBytes, filesVerified }
     let sourceReleased = false;
 
+    /** "line" | "square" — Volumes column only. */
+    let volumesView = "line";
+
     let nextId = 1;
     const newId = () => `d${nextId++}`;
+
+    // ── Icons ──
+    // window.FF_ICONS comes from the generated icons.js (lucide@0.511.0,
+    // the same release apps/web pins). Inserted as innerHTML deliberately:
+    // the values are static markup from a build-time codegen step, never
+    // user input — unlike volume names, which stay text nodes throughout.
+    function icon(name) {
+      const span = document.createElement("span");
+      span.className = "icon";
+      span.innerHTML = (window.FF_ICONS && window.FF_ICONS[name]) || "";
+      return span;
+    }
+    function paintStaticIcons(root = document) {
+      for (const holder of root.querySelectorAll("[data-icon]")) {
+        const svg = window.FF_ICONS && window.FF_ICONS[holder.dataset.icon];
+        if (svg) holder.innerHTML = svg;
+      }
+    }
+    /** Volume type → icon key. Falls back to the generic drive icon rather
+     *  than rendering an empty box for a type we don't recognize. */
+    const typeIcon = (t) =>
+      ({ removable: "removable", internal: "internal", external: "external", network: "network", folder: "folder" }[t] || "internal");
 
     // ── Helpers ──
     function formatBytes(bytes) {
@@ -506,6 +636,13 @@
         }),
       ]);
 
+      // Type glyph sits beside the name/meta stack, not inside it — `left`
+      // is a vertical block, so the icon needs its own row wrapper or the
+      // two lines end up side by side.
+      const typeGlyph = icon(typeIcon(entry.type));
+      typeGlyph.classList.add("card-grip");
+      const leftWithIcon = el("div", { class: "row", style: "min-width:0;flex:1;gap:8px" }, [typeGlyph, left]);
+
       const right = el("div", { class: "row", style: "flex-shrink:0;gap:6px" });
       if (role === "source") right.appendChild(el("span", { class: "badge src", text: "Source" }));
       if (role === "dest") right.appendChild(el("span", { class: "badge dst", text: "Dest" }));
@@ -521,7 +658,7 @@
           ? { destId: node.id, path: entry.mountPoint, role: role || "" }
           : { path: entry.mountPoint, role: role || "" },
         title: entry.mountPoint,
-      }, [el("div", { class: "row" }, [left, right])]);
+      }, [el("div", { class: "row" }, [leftWithIcon, right])]);
 
       if (node) {
         const pct = st.percent != null ? st.percent : 0;
@@ -537,6 +674,45 @@
       });
       card.addEventListener("contextmenu", (e) => openMenu(e, entry.mountPoint, role));
       return card;
+    }
+
+    /** Square tile for the Volumes grid. Structure mirrors
+     *  apps/web's asset-card.tsx: media area with a centered icon tile,
+     *  then a compact info block. */
+    function makeTile(entry) {
+      const assigned = isAssigned(entry.mountPoint);
+      const isSrc = sourcePath === entry.mountPoint;
+      const node = destNodes.find((n) => n.path === entry.mountPoint);
+
+      const iconTile = el("div", { class: "tile-icon" });
+      iconTile.appendChild(icon(typeIcon(entry.type)));
+
+      const media = el("div", { class: "tile-media" }, [iconTile]);
+      if (isSrc) media.appendChild(el("span", { class: "tile-role src", text: "Source" }));
+      else if (node) media.appendChild(el("span", { class: "tile-role dst", text: "Dest" }));
+      media.appendChild(el("span", { class: "tile-badge", text: entry.type }));
+
+      const info = el("div", { class: "tile-info" }, [
+        el("div", { class: "tile-name", text: entry.name }),
+        el("div", {
+          class: "tile-meta",
+          text: entry.totalBytes == null ? entry.mountPoint : `${formatBytes(entry.freeBytes)} free`,
+          title: entry.mountPoint,
+        }),
+      ]);
+
+      const tile = el("div", {
+        class: `tile${assigned ? " assigned" : ""}`,
+        dataset: { path: entry.mountPoint, role: "" },
+        title: entry.mountPoint,
+      }, [media, info]);
+
+      tile.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        beginDrag(e, entry.mountPoint, undefined);
+      });
+      tile.addEventListener("contextmenu", (e) => openMenu(e, entry.mountPoint, undefined));
+      return tile;
     }
 
     function render() {
@@ -555,13 +731,26 @@
         zoneSource.appendChild(el("div", { class: "hint", text: "Drag a volume here, or right-click one → Set as Source." }));
       }
 
-      // Center column
+      // Center column — the only one with a view toggle.
       zoneVolumes.replaceChildren();
+      zoneVolumes.className = `zone${volumesView === "square" ? " grid-view" : ""}`;
       const entries = allEntries();
       if (!entries.length) {
-        zoneVolumes.appendChild(el("div", { class: "hint", text: "No volumes mounted. Use “Choose folder…” to pick one." }));
+        zoneVolumes.appendChild(el("div", {
+          class: "hint",
+          text: "No volumes mounted. Use “Choose folder…” to pick one.",
+          // The hint must not become a grid cell, or it renders as a narrow
+          // column instead of centered text.
+          style: volumesView === "square" ? "grid-column:1/-1" : "",
+        }));
+      } else if (volumesView === "square") {
+        for (const e of entries) zoneVolumes.appendChild(makeTile(e));
       } else {
         for (const e of entries) zoneVolumes.appendChild(makeCard(e, {}));
+      }
+
+      for (const b of document.querySelectorAll("#view-toggle button")) {
+        b.classList.toggle("active", b.dataset.view === volumesView);
       }
 
       // Destinations column, grouped into chains.
@@ -744,6 +933,11 @@
     }
 
     // ── Wiring ──
+    paintStaticIcons();
+    for (const b of document.querySelectorAll("#view-toggle button")) {
+      b.addEventListener("click", () => { volumesView = b.dataset.view; render(); });
+    }
+
     window.freeframe.onCopyProgress(onProgress);
     $("refresh").addEventListener("click", refresh);
     $("clear").addEventListener("click", clearAll);

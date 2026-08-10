@@ -1,0 +1,109 @@
+/**
+ * FreeFrame design tokens — THE canonical source.
+ *
+ * Consumed by:
+ *   - apps/web    → imported at the top of app/globals.css
+ *   - apps/desktop → copied to src/renderer/tokens.css by its predev/prebuild
+ *                    script and loaded with a plain <link>, because that
+ *                    renderer has no bundler to resolve a package import.
+ *
+ * **Do not hand-edit apps/desktop/src/renderer/tokens.css** — it is
+ * generated and gitignored. Edit this file; both apps pick it up.
+ *
+ * This file exists because the two apps had already drifted: the desktop
+ * copy carried --bg-secondary #17171c vs the web's #16161a, a single
+ * --border instead of the three real border tokens, and text colors that
+ * were close but wrong. Divergence you can't see side by side is exactly
+ * the kind that survives review.
+ */
+
+:root,
+[data-theme="dark"] {
+  /* Background — dark theme */
+  --bg-primary: #0d0d10;
+  --bg-secondary: #16161a;
+  --bg-tertiary: #1e1e24;
+  --bg-elevated: #24242c;
+  --bg-hover: #2a2a34;
+
+  /* Borders */
+  --border-primary: #2e2e3a;
+  --border-secondary: #222230;
+  --border-focus: #5b8def;
+
+  /* Text */
+  --text-primary: #eaeaed;
+  --text-secondary: #94949e;
+  --text-tertiary: #5e5e6e;
+  --text-inverse: #0d0d10;
+
+  /* Accent — blue */
+  --accent: #5b8def;
+  --accent-hover: #7aa3f5;
+  --accent-muted: #253556;
+  /* Text drawn on top of --accent-colored surfaces (buttons, badges, etc). */
+  --accent-foreground: #0d0d10;
+
+  /* Chrome (top bar + left nav rail). Defaults follow the rest of the theme
+     via var() indirection — a custom nav color (set in Branding settings ->
+     Theme colors) overrides these three with solid hex values; until then
+     the nav rail just looks like the rest of the chrome, same as before the
+     navy/ivory test. See theme-colors-initializer.tsx. */
+  --nav-bg: var(--bg-secondary);
+  --nav-border: var(--border-primary);
+  --nav-text: var(--text-primary);
+
+  /* Status */
+  --status-success: #34d399;
+  --status-warning: #fbbf24;
+  --status-error: #f87171;
+  --status-info: #60a5fa;
+  --status-turquoise: #2dd4bf;
+  --status-draft: #e4e4e7;
+
+  /* Fonts */
+  --font-sans: var(--font-geist), system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+
+  /* Spacing rhythm */
+  --space-unit: 4px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+}
+
+[data-theme="light"] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8f8fa;
+  --bg-tertiary: #f0f0f4;
+  --bg-elevated: #ffffff;
+  --bg-hover: #eaeaef;
+
+  --border-primary: #e0e0e6;
+  --border-secondary: #d0d0d8;
+  --border-focus: #4a7de8;
+
+  --text-primary: #1a1a2e;
+  --text-secondary: #5a5a6e;
+  --text-tertiary: #8a8a9e;
+  --text-inverse: #ffffff;
+
+  --accent: #4a7de8;
+  --accent-hover: #3a6dd8;
+  --accent-muted: #e8eef8;
+  --accent-foreground: #ffffff;
+
+  --nav-bg: var(--bg-secondary);
+  --nav-border: var(--border-primary);
+  --nav-text: var(--text-primary);
+
+  --status-success: #16a34a;
+  --status-warning: #ca8a04;
+  --status-error: #dc2626;
+  --status-info: #2563eb;
+  --status-turquoise: #0d9488;
+  --status-draft: #71717a;
+}
