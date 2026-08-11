@@ -23,6 +23,8 @@ import uuid
 from .celery_app import celery_app
 from ..database import SessionLocal
 from ..models.asset import Asset, AssetVersion, MediaFile, TranscriptionStatus
+from ..models.project import Project
+from ..services.storage_prefix import prefix_for_project
 from ..services.s3_service import get_s3_client, put_object
 from ..config import settings
 from .transcode_tasks import _publish_event
@@ -164,7 +166,9 @@ def transcribe_asset(self, asset_id: str, version_id: str):
                 "segments": segments,
             }
 
-            output_prefix = f"processed/{asset.project_id}/{asset_id}/{version_id}"
+            # Frozen at upload initiation (§14); read, never re-derived.
+            project = db.query(Project).filter(Project.id == asset.project_id).first()
+            output_prefix = f"processed/{prefix_for_project(project)}/{asset_id}/{version_id}"
             transcript_key = f"{output_prefix}/transcript.json"
             captions_key = f"{output_prefix}/captions.vtt"
 

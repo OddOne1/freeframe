@@ -41,8 +41,33 @@ class Project(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     storage_limit_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # Human-readable S3 prefix (§14): keys become
+    # raw/{storage_date_prefix}_{storage_slug}_{id}/... instead of
+    # raw/{id}/... Both NULL until the project's first upload, which sets
+    # them together and freezes them -- an in-flight multipart upload's key
+    # must not be able to stop matching its project.
+    #
+    # unique=True is at the DB level on purpose: app-level checking alone
+    # loses the race this feature is otherwise careful about, and the whole
+    # point of the slug is telling projects apart at a glance.
+    storage_slug: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, unique=True)
+    # YYMMDD of the FIRST UPLOAD, not of project creation -- a project can
+    # sit empty for weeks, so creation date says little about the contents.
+    # Also the lock sentinel: the slug may be set by hand well before any
+    # upload, this is written only by lock_storage_prefix().
+    storage_date_prefix: Mapped[Optional[str]] = mapped_column(String(6), nullable=True)
     archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     archived_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    @property
+    def storage_locked(self) -> bool:
+        """Is the S3 prefix frozen? (§14)
+
+        A property rather than something each endpoint sets, because
+        ProjectResponse is built in six places and the seventh would have
+        forgotten. Pydantic's from_attributes picks it up like a column.
+        """
+        return self.storage_date_prefix is not None
 
 class ProjectMember(Base):
     __tablename__ = "project_members"

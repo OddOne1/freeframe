@@ -29,6 +29,13 @@ export function ProjectSettingsDialog({
 }: ProjectSettingsDialogProps) {
   const [name, setName] = React.useState(project.name)
   const [description, setDescription] = React.useState(project.description || '')
+  // §14. Locked once the project's first upload has frozen the prefix.
+  // `storage_locked` comes from the server rather than being re-derived
+  // here, and the server rejects a locked change regardless — this only
+  // saves the user a pointless round-trip.
+  const [storageSlug, setStorageSlug] = React.useState(project.storage_slug || '')
+  const [slugError, setSlugError] = React.useState('')
+  const storageLocked = Boolean(project.storage_locked)
   const [isPublic, setIsPublic] = React.useState(project.is_public ?? false)
   const [posterPreview, setPosterPreview] = React.useState<string | null>(resolveApiMediaUrl(project.poster_url))
   const [posterFile, setPosterFile] = React.useState<File | null>(null)
@@ -92,6 +99,19 @@ export function ProjectSettingsDialog({
 
   const handleSave = async () => {
     setStorageError('')
+    setSlugError('')
+    const trimmedSlug = storageSlug.trim().toLowerCase()
+    // Same rule as validate_slug server-side: case is normalised, but
+    // spaces and punctuation are rejected rather than silently rewritten,
+    // because this string ends up visible in the bucket.
+    if (!storageLocked && trimmedSlug && !/^[a-z0-9]+(?:_[a-z0-9]+)*$/.test(trimmedSlug)) {
+      setSlugError('Lowercase letters, numbers and single underscores only — no spaces, and not at either end.')
+      return
+    }
+    if (!storageLocked && trimmedSlug.length > 40) {
+      setSlugError('Must be at most 40 characters.')
+      return
+    }
     const trimmedStorage = storageLimitGB.trim()
     if (trimmedStorage && (Number.isNaN(parseFloat(trimmedStorage)) || parseFloat(trimmedStorage) <= 0)) {
       setStorageError('Enter a positive number, or leave empty to use your remaining storage.')
@@ -126,12 +146,19 @@ export function ProjectSettingsDialog({
         description: description.trim() || null,
         is_public: isPublic,
         storage_limit_bytes: storageBytes,
+        // Omitted entirely once locked: sending an unchanged value would
+        // still trip the server's 409, failing a save of unrelated fields.
+        ...(storageLocked ? {} : { storage_slug: trimmedSlug || null }),
       })
 
       onUpdated()
       onOpenChange(false)
     } catch (err: unknown) {
-      setStorageError(err instanceof Error ? err.message : 'Failed to save changes')
+      const message = err instanceof Error ? err.message : 'Failed to save changes'
+      // A taken slug is a slug problem, so it belongs under that field
+      // rather than in the storage-limit error slot.
+      if (/slug/i.test(message)) setSlugError(message)
+      else setStorageError(message)
     } finally {
       setSaving(false)
     }
@@ -210,6 +237,45 @@ export function ProjectSettingsDialog({
                   placeholder="Optional project description..."
                   className="w-full rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors"
                 />
+              </div>
+
+              {/* Storage folder name (§14) */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-text-tertiary uppercase tracking-wider">
+                  Storage folder name
+                </label>
+                <input
+                  type="text"
+                  value={storageSlug}
+                  disabled={storageLocked}
+                  onChange={(e) => { setStorageSlug(e.target.value); setSlugError('') }}
+                  placeholder="auto-generated from the project name"
+                  className={cn(
+                    'w-full rounded-lg border bg-bg-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary font-mono transition-colors',
+                    'focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent',
+                    slugError ? 'border-status-error' : 'border-border',
+                    storageLocked && 'opacity-60 cursor-not-allowed',
+                  )}
+                />
+                {slugError ? (
+                  <p className="text-2xs text-status-error">{slugError}</p>
+                ) : storageLocked ? (
+                  <p className="text-2xs text-text-tertiary">
+                    Locked — set when this project&apos;s first upload started, so
+                    that already-stored files keep matching it.{' '}
+                    {project.storage_date_prefix && project.storage_slug && (
+                      <span className="font-mono text-text-secondary">
+                        {project.storage_date_prefix}_{project.storage_slug}
+                      </span>
+                    )}
+                  </p>
+                ) : (
+                  <p className="text-2xs text-text-tertiary">
+                    Used to name this project&apos;s folder in storage. Lowercase
+                    letters, numbers and underscores. Editable until the first
+                    upload, then locked.
+                  </p>
+                )}
               </div>
 
               {/* Public / Private toggle */}

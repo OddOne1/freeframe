@@ -71,10 +71,24 @@ this is the part most likely to look finished while leaking storage:
 So derivatives are removed by **prefix**, which covers everything written
 under an asset regardless of whether a column happens to point at it:
 
-  raw/{project_id}/{asset_id}/...          original uploads, per version
-  processed/{project_id}/{asset_id}/...    HLS, mp3, webp, thumbs,
-                                           transcript.json, captions.vtt
-  sidecars/{project_id}/{asset_id}/...     CDL / ALE / camera XML
+  raw/{project}/{asset_id}/...          original uploads, per version
+  processed/{project}/{asset_id}/...    HLS, mp3, webp, thumbs,
+                                        transcript.json, captions.vtt
+  sidecars/{project}/{asset_id}/...     CDL / ALE / camera XML
+
+**`{project}` is not just the project id.** Since §14 it is either
+`{project_id}` (everything written before that change) or
+`{YYMMDD}_{slug}_{project_id}` (everything after). Nothing was migrated,
+so both formats coexist permanently — and they coexist *within a single
+asset*, because an asset uploaded beforehand keeps its old-format v1 and
+gets a new-format v2 the next time someone uploads to it.
+
+That is why the segment is recovered from the keys stored on this asset's
+own rows (`candidate_project_prefixes`), never recomputed from
+`project_id`. Both computed candidates are included as a backstop for an
+asset whose media rows are gone. Listing a prefix that holds nothing
+costs one no-op call; missing one leaks storage silently and invisibly,
+and that asymmetry is what this module exists to respect.
 
 Comment attachments are keyed by comment, not asset
 (`comment-attachments/{comment_id}/...`, routers/comments.py:401), so
@@ -99,11 +113,13 @@ from ..models.approval import Approval
 from ..models.asset import Asset, AssetVersion, CarouselItem, MediaFile
 from ..models.comment import Annotation, Comment, CommentAttachment, CommentReaction
 from ..models.folder import Folder
+from ..models.project import Project
 from ..models.metadata import AssetMetadata
 from ..models.share import AssetShare, ShareLink, ShareLinkActivity, ShareLinkItem
 from ..models.sidecar import SidecarFile
 from ..models.vote import Vote
 from ..services import s3_service
+from ..services.storage_prefix import candidate_project_prefixes
 
 logger = logging.getLogger(__name__)
 
@@ -190,14 +206,35 @@ def purge_asset(db: Session, asset: Asset) -> dict:
 
     comment_ids = [c.id for c in db.query(Comment.id).filter(Comment.asset_id == asset_id).all()]
 
+    # Sidecar keys carry their own project prefix, chosen when the sidecar
+    # was uploaded — which may differ from the media files' if this asset
+    # straddles the §14 change.
+    sidecar_keys = [
+        row.s3_key for row in
+        db.query(SidecarFile.s3_key).filter(SidecarFile.asset_id == asset_id).all()
+    ]
+
     # ── Storage ──
+    #
+    # The project-level segment is NOT recomputed from project_id. Since
+    # §14 it can be either `{project_id}` or
+    # `{YYMMDD}_{slug}_{project_id}`, both formats coexist permanently
+    # (nothing was migrated), and they coexist *within one asset* — an
+    # asset uploaded before the change has an old-format v1 and gets a
+    # new-format v2 the next time someone uploads to it.
+    #
+    # So the prefixes come from the keys actually stored on this asset's
+    # rows, plus both computed candidates as a backstop for an asset whose
+    # media rows are missing. Listing a prefix that holds nothing is a
+    # cheap no-op; missing one leaks storage silently, and that asymmetry
+    # is the whole lesson of this module's history.
+    project = db.query(Project).filter(Project.id == project_id).first()
+    project_prefixes = candidate_project_prefixes(project, stored_keys + sidecar_keys)
+
     objects = 0
-    for prefix in (
-        f"raw/{project_id}/{asset_id}",
-        f"processed/{project_id}/{asset_id}",
-        f"sidecars/{project_id}/{asset_id}",
-    ):
-        objects += _delete_prefix(prefix)
+    for project_prefix in project_prefixes:
+        for area in ("raw", "processed", "sidecars"):
+            objects += _delete_prefix(f"{area}/{project_prefix}/{asset_id}")
     for cid in comment_ids:
         objects += _delete_prefix(f"comment-attachments/{cid}")
     # Anything an older code path put outside those prefixes.

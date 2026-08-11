@@ -12,7 +12,9 @@ from .celery_app import celery_app
 from ..database import SessionLocal
 from ..models.asset import AssetVersion, MediaFile, ProcessingStatus, AssetType
 from ..models.asset import Asset
+from ..models.project import Project
 from ..services.s3_service import get_s3_client
+from ..services.storage_prefix import prefix_for_project
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -52,7 +54,11 @@ def process_asset(self, asset_id: str, version_id: str):
         version.processing_status = ProcessingStatus.processing
         db.commit()
 
-        output_prefix = f"processed/{asset.project_id}/{asset_id}/{version_id}"
+        # The project's prefix is already frozen -- upload initiation locks
+        # it before this task can ever be dispatched (§14) -- so this reads
+        # the stored value rather than deriving anything.
+        project = db.query(Project).filter(Project.id == asset.project_id).first()
+        output_prefix = f"processed/{prefix_for_project(project)}/{asset_id}/{version_id}"
         s3 = get_s3_client()
 
         try:

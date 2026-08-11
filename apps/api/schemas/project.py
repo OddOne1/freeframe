@@ -7,9 +7,15 @@ class ProjectCreate(BaseModel):
     name: str
     description: str | None = None
     project_type: ProjectType = ProjectType.personal
+    # Optional. Left unset, one is generated from the name at first upload
+    # (§14). Settable up front for anyone who wants to choose it.
+    storage_slug: str | None = None
 
 class ProjectUpdate(BaseModel):
     name: str | None = None
+    # Rejected once the project's first upload has frozen the prefix --
+    # enforced in the router, not merely greyed out in the UI.
+    storage_slug: str | None = None
     description: str | None = None
     is_public: bool | None = None
     storage_limit_bytes: int | None = None
@@ -32,6 +38,12 @@ class ProjectResponse(BaseModel):
     storage_bytes: int = 0
     member_count: int = 0
     role: ProjectRole | None = None
+    # §14. `storage_locked` saves the client re-deriving the rule; the
+    # date is what actually freezes it, and it is set only by the first
+    # upload.
+    storage_slug: str | None = None
+    storage_date_prefix: str | None = None
+    storage_locked: bool = False
     model_config = {"from_attributes": True}
     storage_limit_bytes: int | None = None
     ratings_visible_to_all: bool = False

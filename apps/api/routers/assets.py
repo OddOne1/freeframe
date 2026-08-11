@@ -24,6 +24,7 @@ from .hls_proxy import create_hls_token, proxy_url_for
 from ..schemas.upload import InitiateUploadRequest, InitiateUploadResponse, ALLOWED_MIME_TYPES, MAX_FILE_SIZE_BYTES, mime_to_asset_type
 from ..services.s3_service import create_multipart_upload
 from .folders import _get_descendant_ids as _get_descendant_folder_ids
+from ..services.storage_prefix import lock_storage_prefix, prefix_for_project
 
 router = APIRouter(tags=["assets"])
 
@@ -496,8 +497,13 @@ def initiate_new_version(
     db.add(version)
     db.flush()
 
+    # Same lock-at-initiation as the new-asset path in upload.py. A
+    # project whose first upload predates §14 locks here instead, which is
+    # exactly how one project ends up holding both key formats.
+    project = lock_storage_prefix(db, asset.project_id)
+
     ext = os.path.splitext(body.original_filename)[1].lower()
-    s3_key = f"raw/{asset.project_id}/{asset_id}/{version.id}/original{ext}"
+    s3_key = f"raw/{prefix_for_project(project)}/{asset_id}/{version.id}/original{ext}"
     upload_id = create_multipart_upload(s3_key, body.mime_type)
 
     file_type_map = {AssetType.image: FileType.image, AssetType.audio: FileType.audio, AssetType.video: FileType.video, AssetType.image_carousel: FileType.image}

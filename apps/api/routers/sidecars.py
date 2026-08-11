@@ -25,11 +25,12 @@ from ..database import get_db
 from ..middleware.auth import get_current_user
 from ..models.user import User
 from ..models.asset import Asset, AssetVersion, MediaFile
-from ..models.project import ProjectRole
+from ..models.project import Project, ProjectRole
 from ..models.sidecar import SidecarFile, SidecarType
 from ..schemas.sidecar import SidecarResponse
 from ..services import s3_service
 from ..services.permissions import require_project_role, require_asset_access
+from ..services.storage_prefix import prefix_for_project
 from ..services.sidecar_parsers import (
     SIDECAR_EXTENSIONS,
     SidecarParseError,
@@ -121,7 +122,11 @@ async def _store_sidecar(
         # like success and then display nothing.
         raise HTTPException(status_code=400, detail=str(exc))
 
-    key = f"sidecars/{asset.project_id}/{asset.id}/{uuid.uuid4()}_{os.path.basename(filename)}"
+    # Reads the project's frozen prefix rather than re-deriving it: by the
+    # time a sidecar can be attached, the asset exists, so the project's
+    # first upload has already locked this (§14).
+    project = db.query(Project).filter(Project.id == asset.project_id).first()
+    key = f"sidecars/{prefix_for_project(project)}/{asset.id}/{uuid.uuid4()}_{os.path.basename(filename)}"
     s3_service.put_object(key, body, content_type="text/plain", cache_control="max-age=86400")
 
     row = SidecarFile(

@@ -467,3 +467,181 @@ def test_purge_endpoint_refuses_a_live_asset(client, auth_headers, mock_db, test
 
     resp = client.post(f"/assets/{uuid.uuid4()}/purge", headers=auth_headers)
     assert resp.status_code == 404, resp.text
+
+
+# ── §14: purge across BOTH key formats ───────────────────────────────────
+#
+# Since the human-readable-prefix change, an object's project segment is
+# either `{project_id}` or `{YYMMDD}_{slug}_{project_id}`. Nothing was
+# migrated, so both coexist permanently — and they coexist within a single
+# asset, because an asset uploaded before the change keeps its old-format
+# v1 and gets a new-format v2 the next time someone uploads to it.
+#
+# Purge must follow what was actually WRITTEN, not what would be written
+# today. These are the tests for that; the prefix-building itself is
+# covered in test_storage_prefix.py.
+
+def _seed_versions_with_prefixes(db, project, asset, prefixes):
+    """Give `asset` one version per project-prefix, keyed accordingly."""
+    from apps.api.models.asset import (
+        AssetVersion, MediaFile, FileType, ProcessingStatus,
+    )
+    for i, prefix in enumerate(prefixes, start=2):
+        v = AssetVersion(
+            id=uuid.uuid4(), asset_id=asset.id, version_number=i,
+            processing_status=ProcessingStatus.ready, created_by=asset.created_by,
+        )
+        db.add(v)
+        db.flush()
+        db.add(MediaFile(
+            id=uuid.uuid4(), version_id=v.id, file_type=FileType.video,
+            original_filename="clip.mov", mime_type="video/quicktime",
+            file_size_bytes=1,
+            s3_key_raw=f"raw/{prefix}/{asset.id}/{v.id}/original.mov",
+            s3_key_processed=f"processed/{prefix}/{asset.id}/{v.id}/hls",
+        ))
+    db.commit()
+
+
+def test_purge_clears_old_format_only_project(real_db, s3_recorder):
+    from apps.api.services.purge_service import purge_expired
+
+    project, asset, _v, _c = _seed_asset(real_db, deleted_days_ago=31)
+    project_id, asset_id = project.id, asset.id
+
+    purge_expired(real_db)
+
+    prefixes = s3_recorder["prefixes"]
+    for area in ("raw", "processed", "sidecars"):
+        assert f"{area}/{project_id}/{asset_id}/" in prefixes
+
+
+def test_purge_clears_new_format_only_project(real_db, s3_recorder):
+    """A project whose very first upload postdates §14 has no old-format
+    objects at all — but the bare-id prefix is still swept as a harmless
+    backstop, which is the deliberate bias: a no-op list call costs
+    nothing, a missed prefix leaks silently."""
+    from apps.api.models.project import Project
+    from apps.api.services.purge_service import purge_expired
+
+    project, asset, version, _c = _seed_asset(real_db, deleted_days_ago=31)
+    project_id, asset_id = project.id, asset.id
+    new_prefix = f"260811_beach_{project_id}"
+
+    real_db.query(Project).filter(Project.id == project_id).update(
+        {"storage_slug": "beach", "storage_date_prefix": "260811"}
+    )
+    # Re-key the only version onto the new format, as a genuinely
+    # post-§14 project would be.
+    from apps.api.models.asset import MediaFile
+    real_db.query(MediaFile).filter(MediaFile.version_id == version.id).update({
+        "s3_key_raw": f"raw/{new_prefix}/{asset_id}/{version.id}/original.mov",
+        "s3_key_processed": f"processed/{new_prefix}/{asset_id}/{version.id}/hls",
+        "s3_key_thumbnail": None,
+    })
+    real_db.commit()
+
+    purge_expired(real_db)
+
+    prefixes = s3_recorder["prefixes"]
+    for area in ("raw", "processed", "sidecars"):
+        assert f"{area}/{new_prefix}/{asset_id}/" in prefixes, f"missed {area} under the new format"
+
+
+def test_purge_clears_BOTH_formats_for_a_straddling_asset(real_db, s3_recorder):
+    """An asset straddling the §14 change: old-format v1, new-format v2.
+
+    Recomputing a SINGLE prefix from the project reaches one and strands
+    the other, silently. Note this particular case is also covered by the
+    computed backstop, since for a locked project the two computed
+    candidates happen to be exactly the two formats — verified by
+    mutation-testing, which leaves this test passing. The stored-key
+    derivation is what carries the cases below, where the computed
+    candidates cannot help.
+    """
+    from apps.api.models.project import Project
+    from apps.api.services.purge_service import purge_expired
+
+    project, asset, _v, _c = _seed_asset(real_db, deleted_days_ago=31)
+    project_id, asset_id = project.id, asset.id
+    new_prefix = f"260811_beach_{project_id}"
+
+    real_db.query(Project).filter(Project.id == project_id).update(
+        {"storage_slug": "beach", "storage_date_prefix": "260811"}
+    )
+    real_db.commit()
+    # v1 (from _seed_asset) is old-format; add a new-format v2.
+    _seed_versions_with_prefixes(real_db, project, asset, [new_prefix])
+
+    purge_expired(real_db)
+
+    prefixes = s3_recorder["prefixes"]
+    for area in ("raw", "processed", "sidecars"):
+        assert f"{area}/{project_id}/{asset_id}/" in prefixes, f"stranded OLD-format {area}"
+        assert f"{area}/{new_prefix}/{asset_id}/" in prefixes, f"stranded NEW-format {area}"
+
+
+def test_purge_follows_a_sidecar_uploaded_under_a_different_prefix(real_db, s3_recorder):
+    """A sidecar carries whichever prefix was current when IT was
+    uploaded, independently of the asset's media files — so its prefix is
+    read off its own stored key, not inferred from the asset."""
+    from apps.api.models.sidecar import SidecarFile
+    from apps.api.services.purge_service import purge_expired
+
+    project, asset, _v, _c = _seed_asset(real_db, deleted_days_ago=31)
+    asset_id = asset.id
+    odd_prefix = f"260811_beach_{project.id}"
+
+    real_db.query(SidecarFile).filter(SidecarFile.asset_id == asset_id).update(
+        {"s3_key": f"sidecars/{odd_prefix}/{asset_id}/a.cdl"}
+    )
+    real_db.commit()
+
+    purge_expired(real_db)
+
+    assert f"sidecars/{odd_prefix}/{asset_id}/" in s3_recorder["prefixes"]
+
+
+def test_purge_does_not_delete_a_prefix_twice(real_db, s3_recorder):
+    """The backstop must not turn into double work: an unlocked project's
+    computed prefix and its stored keys are the same string, and each
+    prefix should be listed once."""
+    from apps.api.services.purge_service import purge_expired
+
+    project, asset, _v, _c = _seed_asset(real_db, deleted_days_ago=31)
+    project_id, asset_id = project.id, asset.id
+
+    purge_expired(real_db)
+
+    raw = [p for p in s3_recorder["prefixes"] if p == f"raw/{project_id}/{asset_id}/"]
+    assert len(raw) == 1, f"prefix listed {len(raw)} times"
+
+
+def test_purge_uses_stored_keys_when_the_project_no_longer_computes_them(real_db, s3_recorder):
+    """The case only the stored key can solve.
+
+    Here the object lives under a prefix the project would NOT generate
+    today — its slug/date are absent, so the computed candidates are just
+    the bare id. Recomputation reaches nothing; the stored key is the only
+    record of where the bytes actually are. Mutation-tested: disabling the
+    stored-key derivation fails this.
+    """
+    from apps.api.models.asset import MediaFile
+    from apps.api.services.purge_service import purge_expired
+
+    project, asset, version, _c = _seed_asset(real_db, deleted_days_ago=31)
+    asset_id = asset.id
+    written_prefix = f"260811_beach_{project.id}"   # project has no slug set
+
+    real_db.query(MediaFile).filter(MediaFile.version_id == version.id).update({
+        "s3_key_raw": f"raw/{written_prefix}/{asset_id}/{version.id}/original.mov",
+        "s3_key_processed": f"processed/{written_prefix}/{asset_id}/{version.id}/hls",
+        "s3_key_thumbnail": None,
+    })
+    real_db.commit()
+
+    purge_expired(real_db)
+
+    prefixes = s3_recorder["prefixes"]
+    assert f"raw/{written_prefix}/{asset_id}/" in prefixes
+    assert f"processed/{written_prefix}/{asset_id}/" in prefixes

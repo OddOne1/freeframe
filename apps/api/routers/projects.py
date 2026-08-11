@@ -12,6 +12,7 @@ from ..schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse, Pro
 from ..tasks.email_tasks import send_project_added_email
 from ..tasks.celery_app import send_task_safe
 from ..services.s3_service import put_object, delete_object
+from ..services.storage_prefix import SlugUnavailable, claim_user_slug, is_locked
 from .hls_proxy import proxy_url_for
 from ..config import settings
 
@@ -106,6 +107,18 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db), current_u
     )
     db.add(project)
     db.flush()
+
+    # §14. Optional at creation; if omitted, first upload generates one
+    # from the name. A hand-typed slug that's taken is a 409 rather than a
+    # silent rename -- see claim_user_slug.
+    if body.storage_slug is not None:
+        try:
+            project.storage_slug = claim_user_slug(db, project, body.storage_slug)
+        except SlugUnavailable as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        db.flush()
     member = ProjectMember(project_id=project.id, user_id=current_user.id, role=ProjectRole.owner)
     db.add(member)
     db.commit()
@@ -327,6 +340,25 @@ def update_project(project_id: uuid.UUID, body: ProjectUpdate, db: Session = Dep
             # resolves back to None when the owner's own personal total is
             # itself unlimited.
             project.storage_limit_bytes = _owner_remaining_storage_budget(db, project_id)
+    if "storage_slug" in fields_set:
+        # §14. Enforced HERE, not merely disabled in the UI -- the whole
+        # point of freezing it is that an in-flight or already-written
+        # object's key keeps matching its project, and a client that skips
+        # the form can't be allowed to break that.
+        if is_locked(project):
+            raise HTTPException(
+                status_code=409,
+                detail="Storage slug is locked -- it was set when this project's first upload started and can't change.",
+            )
+        if body.storage_slug is None:
+            project.storage_slug = None
+        else:
+            try:
+                project.storage_slug = claim_user_slug(db, project, body.storage_slug)
+            except SlugUnavailable as e:
+                raise HTTPException(status_code=409, detail=str(e))
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
     if body.ratings_visible_to_all is not None:
         project.ratings_visible_to_all = body.ratings_visible_to_all
     db.commit()

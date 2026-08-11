@@ -16,6 +16,7 @@ from ..services.s3_service import (
 from ..services.permissions import get_project_member, require_project_role
 from ..models.project import ProjectRole
 from .site_settings import _get_or_create_settings
+from ..services.storage_prefix import lock_storage_prefix, prefix_for_project
 from ..schemas.upload import (
     InitiateUploadRequest, InitiateUploadResponse,
     PresignPartRequest, PresignPartResponse,
@@ -106,8 +107,15 @@ def initiate_upload(
     db.add(version)
     db.flush()
 
+    # Freeze the project's storage prefix now, at multipart CREATE rather
+    # than at completion (§14). If the slug could still change while this
+    # upload were in flight, the key below would reference a prefix that
+    # stopped matching the project, orphaning the object. Row-locked
+    # inside, so two simultaneous first uploads can't mint two prefixes.
+    project = lock_storage_prefix(db, project.id)
+
     ext = os.path.splitext(body.original_filename)[1].lower()
-    s3_key = f"raw/{body.project_id}/{asset.id}/{version.id}/original{ext}"
+    s3_key = f"raw/{prefix_for_project(project)}/{asset.id}/{version.id}/original{ext}"
 
     # Initiate S3 multipart upload
     upload_id = create_multipart_upload(s3_key, body.mime_type)

@@ -100,6 +100,12 @@ export interface Project {
   storage_limit_bytes?: number | null;
   member_count?: number;
   role?: string | null;
+  // §14 — the human-readable S3 prefix. Both null until the project's
+  // first upload, which freezes them; `storage_locked` is the server's
+  // own verdict rather than a rule the client re-derives.
+  storage_slug?: string | null;
+  storage_date_prefix?: string | null;
+  storage_locked?: boolean;
   archived_at?: string | null;
   archived_by?: string | null;
   archived_by_is_superadmin?: boolean;
