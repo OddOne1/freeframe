@@ -3,6 +3,7 @@ First-time setup / onboarding endpoints.
 These are only available when no superadmin exists in the system.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
 
@@ -71,8 +72,14 @@ def create_superadmin(body: CreateSuperAdminRequest, db: Session = Depends(get_d
             detail="Setup already completed. Superadmin already exists.",
         )
     
-    # Check if email is already taken
-    existing = db.query(User).filter(User.email == body.email, User.deleted_at.is_(None)).first()
+    # Check if email is already taken -- case-insensitively, so this can't
+    # mint a second account that differs from an existing one only by
+    # capitalisation. Same reasoning as auth_service.get_user_by_email;
+    # this is the one email lookup that doesn't route through it.
+    existing = db.query(User).filter(
+        func.lower(User.email) == body.email.strip().lower(),
+        User.deleted_at.is_(None),
+    ).first()
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

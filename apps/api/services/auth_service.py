@@ -3,6 +3,7 @@ from typing import Optional
 import uuid
 from jose import JWTError, jwt
 import bcrypt
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from ..config import settings
 from ..models.user import User, UserStatus
@@ -39,7 +40,35 @@ def decode_token(token: str) -> Optional[dict]:
         return None
 
 def get_user_by_email(db: Session, email: str) -> Optional[User]:
-    return db.query(User).filter(User.email == email, User.deleted_at.is_(None)).first()
+    """Look a user up by email, case-insensitively.
+
+    `users.email` is a plain case-sensitive unique column, so
+    `Mathias@yon.studio` and `mathias@yon.studio` were two different
+    accounts as far as this lookup was concerned — which is exactly how
+    one person ended up with two, holding different project grants (see
+    CLAUDE.md §13a and scripts/merge_user_accounts.sql).
+
+    **The comparison is normalised, not the stored value.** Existing rows
+    legitimately contain uppercase, so lowercasing the *input* against a
+    `==` on the raw column would stop matching them and lock those people
+    out on their next login. Nothing here rewrites what is stored; new
+    signups keep whatever capitalisation the person typed.
+
+    The `deleted_at` filter is load-bearing now in a way it wasn't before:
+    the retired half of a merged pair keeps its lowercase address forever,
+    and without this filter the case-insensitive comparison would match
+    both rows and could authenticate someone into the dead account.
+
+    This is the single choke point for login, magic-code, the register and
+    invite duplicate-checks, and share access — eight call sites across
+    auth.py, users.py and share.py — so they all become case-insensitive
+    together. `routers/setup.py` has its own inline copy of this query and
+    is fixed alongside.
+    """
+    return db.query(User).filter(
+        func.lower(User.email) == email.strip().lower(),
+        User.deleted_at.is_(None),
+    ).first()
 
 def get_user_by_id(db: Session, user_id: uuid.UUID) -> Optional[User]:
     return db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
