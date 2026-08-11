@@ -624,7 +624,10 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const currentRole = currentMember?.role ?? 'viewer'
   const canComment = currentRole !== 'viewer'
   const canVote = currentRole !== 'viewer'
-  const canEditStatus = currentRole === 'owner' || currentRole === 'editor'
+  // Same omission as the five flags on the project page: `update_asset`
+  // gates on ProjectRole.editor, which owner, admin and editor all clear.
+  const canEditStatus =
+    currentRole === 'owner' || currentRole === 'admin' || currentRole === 'editor'
   const canArchive = isSuperAdmin
   // Who can manually restart a stuck/failed version — the person who
   // uploaded it, the project owner, or a superadmin. Not opened up to
@@ -1538,10 +1541,14 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                     {/* Sidecar-derived metadata. Kept visually separate from
                         the block above: that is derived from the file itself,
                         this is user-supplied. */}
+                    {/* canEdit was `canEditStatus || currentRole === 'admin'`
+                        — a local patch for the omission now fixed at the
+                        source, which TS flags as dead once canEditStatus
+                        covers admin itself. */}
                     {asset && (
                       <SidecarMetadata
                         assetId={asset.id}
-                        canEdit={canEditStatus || currentRole === 'admin'}
+                        canEdit={canEditStatus}
                       />
                     )}
 

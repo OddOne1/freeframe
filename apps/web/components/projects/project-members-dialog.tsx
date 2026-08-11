@@ -300,7 +300,7 @@ function ManageView({
   projectId,
   projectName,
   members,
-  isOwner,
+  canManageMembers,
   currentUserId,
   onBack,
   onMembersChanged,
@@ -308,7 +308,8 @@ function ManageView({
   projectId: string
   projectName: string
   members: MemberWithUser[]
-  isOwner: boolean
+  /** Owner or admin — see the note where this is computed. */
+  canManageMembers: boolean
   currentUserId: string
   onBack: () => void
   onMembersChanged: () => void
@@ -376,7 +377,7 @@ function ManageView({
 
               {/* Role control */}
               <div className="flex items-center gap-2">
-                {isOwner && !isCurrentUser ? (
+                {canManageMembers && !isCurrentUser ? (
                   <RoleDropdown
                     value={m.role}
                     onChange={(r) => handleRoleChange(m.user_id, r)}
@@ -392,7 +393,7 @@ function ManageView({
                   </span>
                 )}
 
-                {isOwner && !isCurrentUser && (
+                {canManageMembers && !isCurrentUser && (
                   <button
                     type="button"
                     onClick={() => handleRemove(m.user_id)}
@@ -467,7 +468,14 @@ export function ProjectMembersDialog({
     }
   }, [open, fetchMembers])
 
-  const isOwner = members.some((m) => m.user_id === user?.id && m.role === 'owner')
+  // Gates the role dropdown and the remove button, both of which go
+  // through `_require_project_owner` server-side (routers/projects.py) —
+  // and that admits owner AND admin. Named for what it actually controls:
+  // as `isOwner` it read as a fact about the viewer, which is why the
+  // admin case was missed.
+  const canManageMembers = members.some(
+    (m) => m.user_id === user?.id && (m.role === 'owner' || m.role === 'admin'),
+  )
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -498,7 +506,7 @@ export function ProjectMembersDialog({
               projectId={projectId}
               projectName={projectName}
               members={members}
-              isOwner={isOwner}
+              canManageMembers={canManageMembers}
               currentUserId={user?.id ?? ''}
               onBack={() => setView('add')}
               onMembersChanged={fetchMembers}

@@ -395,17 +395,38 @@ export default function ProjectDetailPage() {
   // ─── Role-based permissions ───────────────────────────────────────────────
   const currentMember = members?.find((m) => m.user_id === user?.id);
   const currentRole = currentMember?.role ?? "viewer";
-  // owner → Full Access, editor → Edit & Share, reviewer → Comment Only, viewer → View Only
-  const canUpload = currentRole === "owner" || currentRole === "editor";
-  const canCreateFolder = currentRole === "owner" || currentRole === "editor";
-  const canShare = currentRole === "owner" || currentRole === "editor";
-  const canManageMembers = currentRole === "owner";
+  // owner → Full Access, admin → Manager, editor → Edit & Share,
+  // reviewer → Comment Only, viewer → View Only
+  //
+  // `admin` ranks equal to `owner` — that is the backend's own design
+  // (`ROLE_RANK` in services/permissions.py puts both at 4, with a
+  // docstring justifying it) and what project-card.tsx's `isProjectAdmin`
+  // already does for the home-grid menu. Every flag below had simply never
+  // been updated after the role was added, so a Manager silently lost
+  // upload, folder creation, sharing and the entire Settings/Members
+  // toolbar while the API would have accepted all of them.
+  //
+  // Named once rather than repeated inline: five copies of the same
+  // comparison is how the role got missed from all five in the first
+  // place.
+  const isProjectManager = currentRole === "owner" || currentRole === "admin";
+
+  // Gated on ProjectRole.editor server-side (upload.py, folders.py's
+  // create_folder, share.py) — so owner, admin and editor all clear it.
+  const canUpload = isProjectManager || currentRole === "editor";
+  const canCreateFolder = isProjectManager || currentRole === "editor";
+  const canShare = isProjectManager || currentRole === "editor";
+  // Membership changes go through `_require_project_owner`
+  // (routers/projects.py:31-39), which admits owner and admin only —
+  // deliberately NOT editor. This also gates the in-project Settings and
+  // Members buttons, which is why a Manager saw neither.
+  const canManageMembers = isProjectManager;
   // Skipping the 30-day wait destroys footage immediately, so it sits one
   // level above the editor gate the rest of the trash uses. "admin" is the
   // role labelled "Manager" in the UI — there is no separate role by that
   // name. The API enforces this independently; hiding the button is only a
   // courtesy.
-  const canPurge = currentRole === "owner" || currentRole === "admin";
+  const canPurge = isProjectManager;
 
   // Only while the trash is actually on screen — nothing else on this page
   // shows a countdown, so an always-on interval would be pure wakeups.
@@ -414,7 +435,7 @@ export default function ProjectDetailPage() {
     const t = setInterval(() => setCountdownTick((n) => n + 1), 60_000);
     return () => clearInterval(t);
   }, [showTrash]);
-  const canSeeShareLinks = currentRole === "owner" || currentRole === "editor";
+  const canSeeShareLinks = isProjectManager || currentRole === "editor";
   const canComment = currentRole !== "viewer";
 
   function openShareDialog(assetIds: string[], folderIds: string[]) {

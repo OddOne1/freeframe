@@ -22,6 +22,7 @@ import {
   ChevronDown,
   MoreHorizontal,
   Settings,
+  Crown,
 } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -41,6 +42,79 @@ interface MemberWithUser {
   user_id: string;
   role: ProjectRole;
   user: User;
+}
+
+/**
+ * Who actually owns each of these projects.
+ *
+ * The table previously showed only the *viewer's own* role, so a Manager
+ * looking at a project they don't own had no way to see whose it was
+ * without opening an unlabelled member-count badge — and nothing on the
+ * page said that badge contained the answer.
+ *
+ * Same two-step fetch `ProjectMembersPopover` already uses
+ * (`/projects/{id}/members` then `/users?ids=`), rather than a new
+ * endpoint. Members have to be fetched per project — there is no bulk
+ * members route — but the user lookup is batched into a single request
+ * for every owner at once, so this costs N+1 rather than 2N.
+ *
+ * Failure is silent by design: not knowing the owner should leave a dash
+ * in one column, not break the projects table.
+ */
+function useProjectOwners(projectIds: string[]) {
+  const key = projectIds.length ? `owners:${[...projectIds].sort().join(",")}` : null;
+
+  const { data } = useSWR(key, async () => {
+    const perProject = await Promise.all(
+      projectIds.map(async (id) => {
+        try {
+          const members = await api.get<{ user_id: string; role: ProjectRole }[]>(
+            `/projects/${id}/members`,
+          );
+          return [id, members.find((m) => m.role === "owner")?.user_id ?? null] as const;
+        } catch {
+          return [id, null] as const;
+        }
+      }),
+    );
+
+    const ownerIds = Array.from(
+      new Set(perProject.map(([, uid]) => uid).filter((uid): uid is string => Boolean(uid))),
+    );
+    if (ownerIds.length === 0) return {} as Record<string, User>;
+
+    let users: User[] = [];
+    try {
+      users = await api.get<User[]>(`/users?ids=${ownerIds.join(",")}`);
+    } catch {
+      return {} as Record<string, User>;
+    }
+    const byId = new Map(users.map((u) => [u.id, u]));
+
+    const out: Record<string, User> = {};
+    for (const [projectId, ownerId] of perProject) {
+      const u = ownerId ? byId.get(ownerId) : undefined;
+      if (u) out[projectId] = u;
+    }
+    return out;
+  });
+
+  return data ?? {};
+}
+
+/** Owner cell — crown + name, matching `OWNER_LABEL`'s visual language in
+ *  project-members-dialog.tsx rather than inventing a second one. */
+function OwnerCell({ owner, isSelf }: { owner?: User; isSelf: boolean }) {
+  if (!owner) return <span className="text-xs text-text-tertiary">—</span>;
+  return (
+    <div className="flex items-center gap-1.5 min-w-0" title={owner.email}>
+      <Crown className="h-3 w-3 shrink-0 text-accent" />
+      <span className="truncate text-xs text-text-secondary">
+        {owner.name}
+        {isSelf && <span className="text-text-tertiary"> (you)</span>}
+      </span>
+    </div>
+  );
 }
 
 // Reused by both the superadmin "All Projects" table and the non-superadmin
@@ -524,6 +598,11 @@ function OwnedProjectsView() {
     [managedProjects],
   );
 
+  const owners = useProjectOwners(React.useMemo(
+    () => managedProjects.map((p) => p.id),
+    [managedProjects],
+  ));
+
   // NULL (unlimited) sibling projects contribute 0 to this sum rather than
   // being unbounded -- same simplification as the backend's SQL SUM, kept
   // consistent on purpose so the client-side check below never disagrees
@@ -607,11 +686,12 @@ function OwnedProjectsView() {
         </div>
       ) : (
         <div className="rounded-lg border border-border bg-bg-secondary overflow-x-auto">
-          <table className="w-full text-sm min-w-[720px]">
+          <table className="w-full text-sm min-w-[860px]">
             <thead>
               <tr className="border-b border-border bg-bg-tertiary">
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Project</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Role</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Owner</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Your Role</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Members</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Used</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Storage Limit</th>
@@ -631,6 +711,9 @@ function OwnedProjectsView() {
                     >
                       {p.name}
                     </Link>
+                  </td>
+                  <td className="px-4 py-3 max-w-[180px]">
+                    <OwnerCell owner={owners[p.id]} isSelf={owners[p.id]?.id === user?.id} />
                   </td>
                   <td className="px-4 py-3">
                     <span className="text-xs text-text-secondary">
