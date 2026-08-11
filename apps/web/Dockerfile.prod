@@ -1,16 +1,53 @@
+# Built from the REPO ROOT as context (docker-compose.prod.yml: `context: .`),
+# not from apps/web. It was the latter until 2026-08-11, which made this
+# image unbuildable from 2026-08-10 onward — see CLAUDE.md §13c.
+#
+# Why the root: apps/web/package.json declares
+#   "@freeframe/design-tokens": "file:../../packages/design-tokens"
+# and that directory lives at the repo root, outside an ./apps/web context.
+# pnpm resolved the specifier to /packages/design-tokens (from /app, the
+# ../.. clamps at the filesystem root) and failed:
+#   ENOENT: no such file or directory, scandir '/packages/design-tokens'
+#
+# So the container mirrors the repo's own layout — /repo/apps/web with
+# /repo/packages alongside — rather than copying the package to some
+# special-cased absolute path. `../../packages/anything` then resolves the
+# same inside the image as it does in a checkout, and the next shared
+# package added to apps/web needs one COPY line here, not a rethink.
+#
+# This is NOT a pnpm workspace build: there is no pnpm-workspace.yaml (the
+# root package.json's `workspaces` field is npm/yarn syntax, which pnpm
+# ignores), and apps/web carries its own pnpm-lock.yaml. Installing it
+# standalone is the model this repo already uses; --filter would require
+# converting the whole repo to a workspace first.
+
 # Stage 1: Install dependencies
 FROM node:20-alpine AS deps
 RUN corepack enable && corepack prepare pnpm@10 --activate
-WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
+WORKDIR /repo/apps/web
+
+# The linked package must be present BEFORE install: pnpm reads its
+# package.json to resolve the `file:` specifier, and the lockfile pins it
+# as `directory: ../../packages/design-tokens`, so --frozen-lockfile fails
+# if it can't be reached at exactly that relative offset.
+COPY packages/design-tokens /repo/packages/design-tokens
+COPY apps/web/package.json apps/web/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Stage 2: Build the application
 FROM node:20-alpine AS builder
 RUN corepack enable && corepack prepare pnpm@10 --activate
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+WORKDIR /repo/apps/web
+
+# node_modules/@freeframe/design-tokens is a RELATIVE symlink into
+# ../../packages/design-tokens, so the target has to exist here too or the
+# CSS import resolves to a dangling link at build time.
+COPY packages/design-tokens /repo/packages/design-tokens
+COPY --from=deps /repo/apps/web/node_modules ./node_modules
+# Trailing slash: copy the CONTENTS of apps/web into the workdir. Without
+# the root .dockerignore excluding **/node_modules, this line would drop
+# the host's node_modules on top of the one just installed above.
+COPY apps/web/ ./
 
 ARG NEXT_PUBLIC_API_URL=/api
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
@@ -41,9 +78,13 @@ ENV NEXT_PUBLIC_API_URL=/api
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# Source paths follow the builder's deeper workdir. The runner keeps /app:
+# Next's standalone output is self-contained and its tracing root is
+# apps/web (that's where the lockfile is), so server.js still lands at the
+# top of .next/standalone and nothing here depends on the repo layout.
+COPY --from=builder /repo/apps/web/public ./public
+COPY --from=builder --chown=nextjs:nodejs /repo/apps/web/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /repo/apps/web/.next/static ./.next/static
 
 USER nextjs
 

@@ -169,8 +169,14 @@ services:
 
   web:
     build:
-      context: ./apps/web
-      dockerfile: Dockerfile.prod
+      # Repo root, matching api/worker/beat/email_worker/transcribe_worker.
+      # It was ./apps/web, which put packages/design-tokens outside the
+      # context entirely — apps/web/package.json depends on it via
+      # `file:../../packages/design-tokens`, so every build failed at
+      # `pnpm install` with ENOENT on /packages/design-tokens, and had done
+      # since 2026-08-10 (CLAUDE.md §13c).
+      context: .
+      dockerfile: apps/web/Dockerfile.prod
       args:
         NEXT_PUBLIC_API_URL: /api
     env_file:
