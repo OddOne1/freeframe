@@ -3,7 +3,7 @@
 import * as React from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { X, ChevronDown, ArrowLeft, Users, Crown, Loader2, Check } from 'lucide-react'
+import { X, ChevronDown, ArrowLeft, Users, Crown, Loader2, Check, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/shared/avatar'
@@ -18,6 +18,16 @@ interface ProjectMembersDialogProps {
   onOpenChange: (open: boolean) => void
   projectId: string
   projectName: string
+  /** Supplied by whichever parent renders both dialogs, so this one never
+   *  has to import and render the other. Absent = no cross-nav offered. */
+  onOpenSettings?: () => void
+}
+
+interface BulkResult {
+  userId: string
+  name: string
+  ok: boolean
+  error?: string
 }
 
 interface MemberWithUser {
@@ -49,10 +59,15 @@ function RoleDropdown({
   value,
   onChange,
   compact,
+  triggerLabel,
 }: {
   value: ProjectRole
   onChange: (role: ProjectRole) => void
   compact?: boolean
+  /** Overrides the trigger text. The bulk setter has no single current
+   *  role to show, and rendering one would claim the selection already
+   *  shares it. */
+  triggerLabel?: string
 }) {
   return (
     <DropdownMenu.Root>
@@ -64,7 +79,7 @@ function RoleDropdown({
             compact ? 'text-xs' : 'text-sm',
           )}
         >
-          {roleLabelFor(value)}
+          {triggerLabel ?? roleLabelFor(value)}
           <ChevronDown className="h-3.5 w-3.5" />
         </button>
       </DropdownMenu.Trigger>
@@ -104,12 +119,16 @@ function AddView({
   members: membersList,
   onSwitchToManage,
   onMemberAdded,
+  canOpenSettings,
+  onOpenSettings,
 }: {
   projectId: string
   projectName: string
   members: MemberWithUser[]
   onSwitchToManage: () => void
   onMemberAdded: () => void
+  canOpenSettings: boolean
+  onOpenSettings?: () => void
 }) {
   const [query, setQuery] = React.useState('')
   const [role, setRole] = React.useState<ProjectRole>('editor')
@@ -282,13 +301,26 @@ function AddView({
             {membersList.length} Member{membersList.length !== 1 ? 's' : ''}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={onSwitchToManage}
-          className="text-sm text-text-secondary hover:text-text-primary font-medium transition-colors"
-        >
-          Manage
-        </button>
+        <div className="flex items-center gap-4">
+          {/* Same isProjectAdmin gate as everywhere else Settings opens. */}
+          {canOpenSettings && onOpenSettings && (
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="flex items-center gap-1.5 text-sm text-text-secondary hover:text-text-primary font-medium transition-colors"
+            >
+              <Settings className="h-3.5 w-3.5" />
+              Settings
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onSwitchToManage}
+            className="text-sm text-text-secondary hover:text-text-primary font-medium transition-colors"
+          >
+            Manage
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -304,6 +336,8 @@ function ManageView({
   currentUserId,
   onBack,
   onMembersChanged,
+  canOpenSettings,
+  onOpenSettings,
 }: {
   projectId: string
   projectName: string
@@ -311,10 +345,99 @@ function ManageView({
   /** Owner or admin — see the note where this is computed. */
   canManageMembers: boolean
   currentUserId: string
-  onBack: () => void
+  /** Undefined when the viewer can't add members, so there is no Add tab
+   *  to go back to. */
+  onBack?: () => void
   onMembersChanged: () => void
+  canOpenSettings: boolean
+  onOpenSettings?: () => void
 }) {
   const [removing, setRemoving] = React.useState<string | null>(null)
+  const [selected, setSelected] = React.useState<Set<string>>(new Set())
+  const [bulkBusy, setBulkBusy] = React.useState(false)
+  const [confirmingRemove, setConfirmingRemove] = React.useState(false)
+  const [results, setResults] = React.useState<BulkResult[] | null>(null)
+
+  // A member removed by someone else shouldn't stay selected and then be
+  // acted on again; reconcile against whatever the list now says.
+  React.useEffect(() => {
+    const present = new Set(members.map((m) => m.user_id))
+    setSelected((prev) => {
+      const next = new Set(Array.from(prev).filter((id) => present.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [members])
+
+  /** Rows a bulk action may touch: never yourself, never the owner —
+   *  mirroring the per-row guards rather than restating them, so the two
+   *  can't drift apart. */
+  const selectableIds = members
+    .filter((m) => m.user_id !== currentUserId && m.role !== 'owner')
+    .map((m) => m.user_id)
+  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id))
+
+  function toggle(userId: string) {
+    setResults(null)
+    setConfirmingRemove(false)
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(userId)) next.delete(userId)
+      else next.add(userId)
+      return next
+    })
+  }
+
+  const nameFor = (userId: string) =>
+    members.find((m) => m.user_id === userId)?.user.name ?? 'Unknown member'
+
+  /**
+   * Run one request per selected member against the EXISTING single-member
+   * endpoints.
+   *
+   * Deliberately not a new bulk endpoint (CLAUDE.md §15): the single
+   * endpoints already enforce owner protection and the
+   * superadmin-must-have-joined rule, and reimplementing those server-side
+   * is exactly the one-gate-checked-in-two-places drift that produced the
+   * §13 `currentRole === "owner"` bug. This is an admin table, not a hot
+   * path — correctness beats round-trip count.
+   *
+   * allSettled, not all: a partial failure must not discard the rows that
+   * did succeed, and the caller needs to know WHICH failed and why.
+   */
+  async function runBulk(action: (userId: string) => Promise<unknown>) {
+    const ids = Array.from(selected)
+    if (ids.length === 0) return
+    setBulkBusy(true)
+    setResults(null)
+    try {
+      const settled = await Promise.allSettled(ids.map((id) => action(id)))
+      const collected: BulkResult[] = settled.map((r, i) => ({
+        userId: ids[i],
+        name: nameFor(ids[i]),
+        ok: r.status === 'fulfilled',
+        // The API's own message, not a generic one -- "can't remove the
+        // project owner" is the useful part.
+        error:
+          r.status === 'rejected'
+            ? (r.reason instanceof Error ? r.reason.message : String(r.reason))
+            : undefined,
+      }))
+      setResults(collected)
+      // Keep only what failed selected, so a retry doesn't re-run the
+      // successes.
+      setSelected(new Set(collected.filter((c) => !c.ok).map((c) => c.userId)))
+      onMembersChanged()
+    } finally {
+      setBulkBusy(false)
+      setConfirmingRemove(false)
+    }
+  }
+
+  const bulkSetRole = (role: ProjectRole) =>
+    runBulk((userId) => api.patch(`/projects/${projectId}/members/${userId}`, { role }))
+
+  const bulkRemove = () =>
+    runBulk((userId) => api.delete(`/projects/${projectId}/members/${userId}`))
 
   async function handleRoleChange(userId: string, newRole: ProjectRole) {
     try {
@@ -341,17 +464,115 @@ function ManageView({
     <div className="flex flex-col">
       {/* Header */}
       <div className="flex items-center gap-3 px-6 pt-5 pb-4">
-        <button
-          type="button"
-          onClick={onBack}
-          className="h-8 w-8 rounded-lg bg-bg-tertiary hover:bg-bg-hover flex items-center justify-center transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4 text-text-secondary" />
-        </button>
-        <Dialog.Title className="text-base font-semibold text-text-primary">
+        {onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            className="h-8 w-8 rounded-lg bg-bg-tertiary hover:bg-bg-hover flex items-center justify-center transition-colors"
+          >
+            <ArrowLeft className="h-4 w-4 text-text-secondary" />
+          </button>
+        )}
+        <Dialog.Title className="flex-1 text-base font-semibold text-text-primary truncate">
           Members of {projectName}
         </Dialog.Title>
+        {/* Gated on isProjectAdmin — the same rule that gates opening
+            Settings anywhere else. A member who can view but not manage
+            shouldn't be offered a button that leads to a 403. */}
+        {canOpenSettings && onOpenSettings && (
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="mr-6 flex items-center gap-1.5 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors"
+          >
+            <Settings className="h-3.5 w-3.5" />
+            Settings
+          </button>
+        )}
       </div>
+
+      {/* Selection toolbar — only once something is selected, so the
+          common single-member case is unchanged. */}
+      {canManageMembers && selected.size > 0 && (
+        <div className="mx-6 mb-3 rounded-lg border border-border bg-bg-tertiary px-3 py-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-medium text-text-primary">
+              {selected.size} selected
+            </span>
+            <button
+              type="button"
+              onClick={() => { setSelected(new Set()); setResults(null); setConfirmingRemove(false) }}
+              className="text-xs text-text-tertiary hover:text-text-primary transition-colors"
+            >
+              Clear
+            </button>
+            <div className="flex-1" />
+            {confirmingRemove ? (
+              <>
+                <span className="text-xs text-status-error">
+                  Remove {selected.size} member{selected.size !== 1 ? 's' : ''}?
+                </span>
+                <Button size="sm" variant="secondary" onClick={() => setConfirmingRemove(false)}>
+                  Cancel
+                </Button>
+                <Button size="sm" variant="destructive" loading={bulkBusy} onClick={bulkRemove}>
+                  Remove
+                </Button>
+              </>
+            ) : (
+              <>
+                <RoleDropdown
+                  // No member is "the" current role for a mixed selection,
+                  // so nothing is shown as selected.
+                  value={'' as ProjectRole}
+                  onChange={bulkSetRole}
+                  compact
+                  triggerLabel="Set role"
+                />
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={bulkBusy}
+                  onClick={() => setConfirmingRemove(true)}
+                >
+                  Remove selected
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Per-member outcome. An aggregate "3 of 4 succeeded" would leave
+          the user guessing which one failed and why. */}
+      {results && (
+        <div className="mx-6 mb-3 rounded-lg border border-border bg-bg-tertiary px-3 py-2 space-y-1">
+          <p className="text-xs font-medium text-text-primary">
+            {results.filter((r) => r.ok).length} of {results.length} updated
+          </p>
+          {results.filter((r) => !r.ok).map((r) => (
+            <p key={r.userId} className="text-xs text-status-error">
+              {r.name}: {r.error}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {canManageMembers && selectableIds.length > 0 && (
+        <div className="px-6 pb-2">
+          <button
+            type="button"
+            onClick={() => {
+              setResults(null)
+              setConfirmingRemove(false)
+              setSelected(allSelected ? new Set() : new Set(selectableIds))
+            }}
+            className="text-xs text-text-tertiary hover:text-text-primary transition-colors"
+          >
+            {allSelected ? 'Deselect all' : `Select all (${selectableIds.length})`}
+          </button>
+        </div>
+      )}
 
       {/* Members list */}
       <div className="px-6 pb-4 space-y-1 max-h-[400px] overflow-y-auto">
@@ -364,6 +585,26 @@ function ManageView({
               key={m.id}
               className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-bg-hover/50 transition-colors group"
             >
+              {/* Omitted entirely rather than disabled, for exactly the
+                  rows the single-member actions already refuse: yourself
+                  and the owner. Reuses those same two booleans so the bulk
+                  and single paths cannot drift apart. */}
+              {canManageMembers && (
+                isCurrentUser || isProjectOwner ? (
+                  // A spacer, not a hidden or disabled checkbox: there is
+                  // nothing to select here, and the width keeps the rows
+                  // aligned with the ones that do have one.
+                  <span className="h-4 w-4 shrink-0" aria-hidden="true" />
+                ) : (
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${m.user.name}`}
+                    checked={selected.has(m.user_id)}
+                    onChange={() => toggle(m.user_id)}
+                    className="h-4 w-4 shrink-0 rounded border-border accent-accent cursor-pointer"
+                  />
+                )
+              )}
               <Avatar name={m.user.name} src={m.user.avatar_url} size="md" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
@@ -427,10 +668,17 @@ export function ProjectMembersDialog({
   onOpenChange,
   projectId,
   projectName,
+  onOpenSettings,
 }: ProjectMembersDialogProps) {
   const [view, setView] = React.useState<'add' | 'manage'>('add')
   const [members, setMembers] = React.useState<MemberWithUser[]>([])
   const [loading, setLoading] = React.useState(false)
+  // Distinguishes the first load from a post-action refresh. Without it
+  // the whole dialog swaps to a spinner every time the list is refetched,
+  // which UNMOUNTS ManageView -- discarding the per-member bulk results
+  // the user is meant to read, and their selection with it. Caught by the
+  // partial-failure test, which could not see its own error output.
+  const [hasLoaded, setHasLoaded] = React.useState(false)
   const { user } = useAuthStore()
 
   const fetchMembers = React.useCallback(async () => {
@@ -458,24 +706,56 @@ export function ProjectMembersDialog({
       setMembers([])
     } finally {
       setLoading(false)
+      setHasLoaded(true)
     }
   }, [projectId])
 
   React.useEffect(() => {
     if (open) {
       setView('add')
+      setHasLoaded(false)
       fetchMembers()
     }
   }, [open, fetchMembers])
+
+  const { isSuperAdmin } = useAuthStore()
+
+  // The viewer's own membership row on this project, which is what every
+  // gate below turns on. `_require_project_member_manager`
+  // (routers/projects.py:42-58) requires a row to exist at all before it
+  // considers anything else, so "not joined" is the first thing to know.
+  const ownMembership = members.find((m) => m.user_id === user?.id)
+  const isJoined = Boolean(ownMembership)
+  const isProjectAdmin = ownMembership?.role === 'owner' || ownMembership?.role === 'admin'
 
   // Gates the role dropdown and the remove button, both of which go
   // through `_require_project_owner` server-side (routers/projects.py) —
   // and that admits owner AND admin. Named for what it actually controls:
   // as `isOwner` it read as a fact about the viewer, which is why the
   // admin case was missed.
+  //
+  // KNOWN DIVERGENCE, deliberate and pre-existing (CLAUDE.md §15): the
+  // server also accepts a superadmin who has merely JOINED this project at
+  // any role, so a superadmin sitting at viewer level is refused here but
+  // would be accepted by the API. Left stricter on purpose rather than
+  // quietly loosened — §15 records it as an open decision, and resolving
+  // it is not this change's call to make.
   const canManageMembers = members.some(
     (m) => m.user_id === user?.id && (m.role === 'owner' || m.role === 'admin'),
   )
+
+  // Adding a member, mirroring `_require_project_member_manager` exactly:
+  // owner/admin membership, OR a superadmin who has joined at ANY role.
+  //
+  // AddView previously had no check at all. That was survivable only
+  // because its single entry point (project-card.tsx's 3-dot menu) was
+  // itself gated upstream; opening this dialog from the superadmin
+  // projects table would have exposed a live search-and-add UI that
+  // 403s on submit.
+  const canAddMembers = isProjectAdmin || (isSuperAdmin && isJoined)
+
+  // Hiding the Add tab means there has to be somewhere else to land.
+  const effectiveView: 'add' | 'manage' = canAddMembers ? view : 'manage'
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -489,17 +769,19 @@ export function ProjectMembersDialog({
             Add or manage project members
           </Dialog.Description>
 
-          {loading ? (
+          {loading && !hasLoaded ? (
             <div className="flex items-center justify-center py-16">
               <Loader2 className="h-6 w-6 animate-spin text-text-tertiary" />
             </div>
-          ) : view === 'add' ? (
+          ) : effectiveView === 'add' ? (
             <AddView
               projectId={projectId}
               projectName={projectName}
               members={members}
               onSwitchToManage={() => setView('manage')}
               onMemberAdded={fetchMembers}
+              canOpenSettings={isProjectAdmin}
+              onOpenSettings={onOpenSettings}
             />
           ) : (
             <ManageView
@@ -508,8 +790,11 @@ export function ProjectMembersDialog({
               members={members}
               canManageMembers={canManageMembers}
               currentUserId={user?.id ?? ''}
-              onBack={() => setView('add')}
+              // No way back to a tab that isn't there.
+              onBack={canAddMembers ? () => setView('add') : undefined}
               onMembersChanged={fetchMembers}
+              canOpenSettings={isProjectAdmin}
+              onOpenSettings={onOpenSettings}
             />
           )}
         </Dialog.Content>

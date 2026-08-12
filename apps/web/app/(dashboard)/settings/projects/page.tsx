@@ -34,6 +34,7 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { useAuthStore } from "@/stores/auth-store";
 import { useHasProjectPrivilege } from "@/hooks/use-project-privilege";
 import { ProjectSettingsDialog } from "@/components/projects/project-settings-dialog";
+import { ProjectMembersDialog } from "@/components/projects/project-members-dialog";
 import { TransferOwnershipDialog } from "@/components/projects/transfer-ownership-dialog";
 import type { AdminProject, Project, ProjectRole, User } from "@/types";
 
@@ -862,6 +863,11 @@ export default function SettingsProjectsPage() {
   const [renameTarget, setRenameTarget] = React.useState<AdminProject | null>(null);
   const [transferTarget, setTransferTarget] = React.useState<AdminProject | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<AdminProject | null>(null);
+  // §15 -- the Members control now opens the same full dialog used
+  // everywhere else, rather than a separate read-only popover. Safe to do
+  // now that AddView has its own permission check (§16); before that, an
+  // unjoined superadmin would have been shown a live add UI that 403s.
+  const [membersTarget, setMembersTarget] = React.useState<AdminProject | null>(null);
   const [joining, setJoining] = React.useState<string | null>(null);
   const [leaving, setLeaving] = React.useState<string | null>(null);
   const [archiving, setArchiving] = React.useState<string | null>(null);
@@ -1012,7 +1018,15 @@ export default function SettingsProjectsPage() {
                       </p>
                     </td>
                     <td className="px-4 py-3">
-                      <ProjectMembersPopover projectId={p.id} count={p.member_count} />
+                      <button
+                        type="button"
+                        onClick={() => setMembersTarget(p)}
+                        className="flex items-center gap-1.5 rounded-md border border-border h-7 px-2 text-2xs text-text-primary hover:bg-bg-hover transition-colors"
+                      >
+                        <Users className="h-3 w-3 text-text-tertiary" />
+                        {typeof p.member_count === "number" ? p.member_count : "—"}
+                        <ChevronDown className="h-3 w-3 text-text-tertiary shrink-0" />
+                      </button>
                     </td>
                     <td className="px-4 py-3 text-text-secondary">{p.asset_count}</td>
                     <td className="px-4 py-3 text-text-secondary">
@@ -1110,6 +1124,19 @@ export default function SettingsProjectsPage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {membersTarget && (
+        <ProjectMembersDialog
+          open={!!membersTarget}
+          onOpenChange={(o) => !o && setMembersTarget(null)}
+          projectId={membersTarget.id}
+          projectName={membersTarget.name}
+          // No Settings cross-nav from here: this table's own row menu
+          // already has a Project Settings item, and the dialog's gate is
+          // isProjectAdmin (a membership role), which a superadmin
+          // browsing a project they haven't joined does not have.
+        />
       )}
 
       {renameTarget && (

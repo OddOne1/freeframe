@@ -223,11 +223,15 @@ export function ProjectCard({
       </div>
 
       {/* Project Settings Dialog */}
+      {/* Cross-navigation is wired here rather than inside either dialog:
+          the parent already owns both open-states, so swapping between
+          them is a state change, not one dialog importing the other. */}
       <ProjectSettingsDialog
         project={project}
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         onUpdated={() => onMutate?.()}
+        onOpenMembers={() => { setSettingsOpen(false); setMembersOpen(true) }}
       />
 
       <ProjectMembersDialog
@@ -235,6 +239,7 @@ export function ProjectCard({
         onOpenChange={setMembersOpen}
         projectId={project.id}
         projectName={project.name}
+        onOpenSettings={isProjectAdmin ? () => { setMembersOpen(false); setSettingsOpen(true) } : undefined}
       />
 
       {isTrueOwner && (

@@ -1530,11 +1530,18 @@ export default function ProjectDetailPage() {
       />
 
       {/* Project members dialog */}
+      {/* Cross-navigation lives here, where both open-states already are.
+          isProjectManager is the same gate the toolbar buttons use. */}
       <ProjectMembersDialog
         open={membersDialogOpen}
         onOpenChange={setMembersDialogOpen}
         projectId={projectId}
         projectName={project?.name ?? ""}
+        onOpenSettings={
+          isProjectManager
+            ? () => { setMembersDialogOpen(false); setSettingsOpen(true) }
+            : undefined
+        }
       />
       {project && (
         <ProjectSettingsDialog
@@ -1542,6 +1549,7 @@ export default function ProjectDetailPage() {
           open={settingsOpen}
           onOpenChange={setSettingsOpen}
           onUpdated={mutateProject}
+          onOpenMembers={() => { setSettingsOpen(false); setMembersDialogOpen(true) }}
         />
       )}
 

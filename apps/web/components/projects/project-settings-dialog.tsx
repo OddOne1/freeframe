@@ -4,7 +4,7 @@ import * as React from 'react'
 import useSWR from 'swr'
 import * as Dialog from '@radix-ui/react-dialog'
 import * as Switch from '@radix-ui/react-switch'
-import { X, ImagePlus, Globe, Lock, Star } from 'lucide-react'
+import { X, ImagePlus, Globe, Lock, Star, Users } from 'lucide-react'
 import { cn, resolveApiMediaUrl, formatBytes } from '@/lib/utils'
 import { getGradientForProject } from '@/lib/gradient-utils'
 import { api } from '@/lib/api'
@@ -15,6 +15,12 @@ import type { Project } from '@/types'
 const GB = 1024 ** 3
 
 interface ProjectSettingsDialogProps {
+  /** Supplied by whichever parent renders both dialogs. Rendered
+   *  unconditionally within Settings: today, opening Settings at all
+   *  already requires isProjectAdmin, which is the same rule that gates
+   *  managing members — so anyone who can see this can already use it.
+   *  If those two gates ever diverge, this needs its own check. */
+  onOpenMembers?: () => void
   project: Project
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -26,6 +32,7 @@ export function ProjectSettingsDialog({
   open,
   onOpenChange,
   onUpdated,
+  onOpenMembers,
 }: ProjectSettingsDialogProps) {
   const [name, setName] = React.useState(project.name)
   const [description, setDescription] = React.useState(project.description || '')
@@ -388,7 +395,21 @@ export function ProjectSettingsDialog({
         </div>
 
           {/* Footer */}
-          <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-border">
+          <div className="flex items-center gap-2 px-6 py-4 border-t border-border">
+            {/* Unconditional within Settings -- see the prop's doc comment:
+                opening Settings already requires isProjectAdmin, the same
+                rule that gates managing members. */}
+            {onOpenMembers && (
+              <button
+                type="button"
+                onClick={onOpenMembers}
+                className="flex items-center gap-1.5 text-sm text-text-secondary hover:text-text-primary font-medium transition-colors"
+              >
+                <Users className="h-3.5 w-3.5" />
+                Members
+              </button>
+            )}
+            <div className="flex-1" />
             <Dialog.Close asChild>
               <Button variant="secondary" size="sm">Cancel</Button>
             </Dialog.Close>
