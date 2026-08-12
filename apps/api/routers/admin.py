@@ -251,6 +251,24 @@ def purge_user(
         if not other_superadmin:
             raise HTTPException(status_code=400, detail="Cannot delete the only remaining superadmin")
 
+    # Deactivate first, always (CLAUDE.md 17d). Until now this endpoint had
+    # no status check at all -- a superadmin could permanently delete a
+    # fully active account with nothing in between but a typed "DELETE",
+    # and the frontend's Delete button rendered for every non-self user
+    # regardless of status.
+    #
+    # Applied to EVERY status, not just `active`: pending_invite and
+    # pending_verification accounts deserve the same deliberate two-step,
+    # and deactivate_user already accepts a non-active user (it filters on
+    # deleted_at only), so no extra endpoint is needed to get there.
+    #
+    # This is the real gate. Hiding the button is a courtesy on top of it.
+    if user.status != UserStatus.deactivated:
+        raise HTTPException(
+            status_code=400,
+            detail="User must be deactivated before they can be permanently deleted",
+        )
+
     owned_memberships = db.query(ProjectMember).filter(
         ProjectMember.user_id == user_id,
         ProjectMember.role == ProjectRole.owner,

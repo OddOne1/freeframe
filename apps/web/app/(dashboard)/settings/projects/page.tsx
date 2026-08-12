@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import useSWR, { mutate } from "swr";
 import * as Dialog from "@radix-ui/react-dialog";
-import * as Popover from "@radix-ui/react-popover";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   X,
@@ -19,7 +18,6 @@ import {
   LogIn,
   LogOut,
   Users,
-  ChevronDown,
   MoreHorizontal,
   Settings,
   Crown,
@@ -38,13 +36,6 @@ import { ProjectMembersDialog } from "@/components/projects/project-members-dial
 import { TransferOwnershipDialog } from "@/components/projects/transfer-ownership-dialog";
 import type { AdminProject, Project, ProjectRole, User } from "@/types";
 
-interface MemberWithUser {
-  id: string;
-  user_id: string;
-  role: ProjectRole;
-  user: User;
-}
-
 /**
  * Who actually owns each of these projects.
  *
@@ -53,9 +44,8 @@ interface MemberWithUser {
  * without opening an unlabelled member-count badge — and nothing on the
  * page said that badge contained the answer.
  *
- * Same two-step fetch `ProjectMembersPopover` already uses
- * (`/projects/{id}/members` then `/users?ids=`), rather than a new
- * endpoint. Members have to be fetched per project — there is no bulk
+ * Two-step fetch — `/projects/{id}/members`, then `/users?ids=` to
+ * hydrate names — rather than a new endpoint. Members have to be fetched per project — there is no bulk
  * members route — but the user lookup is batched into a single request
  * for every owner at once, so this costs N+1 rather than 2N.
  *
@@ -115,100 +105,6 @@ function OwnerCell({ owner, isSelf }: { owner?: User; isSelf: boolean }) {
         {isSelf && <span className="text-text-tertiary"> (you)</span>}
       </span>
     </div>
-  );
-}
-
-// Reused by both the superadmin "All Projects" table and the non-superadmin
-// "Your Projects" table (OwnedProjectsView) -- same lazy-fetch-on-expand
-// pattern as the (reverted) project-card.tsx version: GET
-// /projects/{id}/members, then GET /users?ids=... to hydrate names/avatars,
-// only once the popover is actually opened.
-function ProjectMembersPopover({
-  projectId,
-  count,
-}: {
-  projectId: string;
-  count?: number;
-}) {
-  const [open, setOpen] = React.useState(false);
-  const [members, setMembers] = React.useState<MemberWithUser[]>([]);
-  const [loading, setLoading] = React.useState(false);
-  const [fetched, setFetched] = React.useState(false);
-
-  const fetchMembers = React.useCallback(async () => {
-    setLoading(true);
-    try {
-      const rawMembers = await api.get<{ id: string; user_id: string; role: ProjectRole }[]>(
-        `/projects/${projectId}/members`,
-      );
-      if (rawMembers.length === 0) {
-        setMembers([]);
-        return;
-      }
-      const userIds = rawMembers.map((m) => m.user_id);
-      const users = await api.get<User[]>(`/users?ids=${userIds.join(",")}`);
-      const userMap = new Map(users.map((u) => [u.id, u]));
-      setMembers(
-        rawMembers
-          .filter((m) => userMap.has(m.user_id))
-          .map((m) => ({ ...m, user: userMap.get(m.user_id)! })),
-      );
-    } catch {
-      setMembers([]);
-    } finally {
-      setLoading(false);
-      setFetched(true);
-    }
-  }, [projectId]);
-
-  return (
-    <Popover.Root
-      open={open}
-      onOpenChange={(o) => {
-        setOpen(o);
-        if (o && !fetched) fetchMembers();
-      }}
-    >
-      <Popover.Trigger asChild>
-        <button
-          type="button"
-          className="flex items-center gap-1.5 rounded-md border border-border h-7 px-2 text-2xs text-text-primary hover:bg-bg-hover transition-colors"
-        >
-          <Users className="h-3 w-3 text-text-tertiary" />
-          {typeof count === "number" ? count : "—"}
-          <ChevronDown className="h-3 w-3 text-text-tertiary shrink-0" />
-        </button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          side="bottom"
-          align="start"
-          sideOffset={6}
-          className="z-50 w-60 max-h-72 overflow-y-auto rounded-lg border border-border bg-bg-elevated shadow-xl p-2 space-y-1"
-        >
-          {loading ? (
-            <p className="px-2 py-1.5 text-xs text-text-tertiary">Loading…</p>
-          ) : members.length === 0 ? (
-            <p className="px-2 py-1.5 text-xs text-text-tertiary">No members</p>
-          ) : (
-            members.map((m) => (
-              <div
-                key={m.id}
-                className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-bg-hover"
-              >
-                <Avatar src={m.user.avatar_url} name={m.user.name} size="sm" />
-                <span className="min-w-0 flex-1 truncate text-xs text-text-primary">
-                  {m.user.name}
-                </span>
-                <span className="shrink-0 text-[10px] capitalize text-text-tertiary">
-                  {m.role === "admin" ? "Manager" : m.role}
-                </span>
-              </div>
-            ))
-          )}
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
   );
 }
 
@@ -623,6 +519,11 @@ function OwnedProjectsView() {
   const refresh = () => mutate("/projects");
 
   const [settingsTarget, setSettingsTarget] = React.useState<Project | null>(null);
+  // Same real dialog the superadmin table opens (commit 1d676bb). An owner
+  // or manager looking at their OWN project had a read-only popover while a
+  // superadmin got full management on the table below — one control, two
+  // behaviours, decided by who was looking.
+  const [membersTarget, setMembersTarget] = React.useState<Project | null>(null);
   const [transferTarget, setTransferTarget] = React.useState<Project | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<Project | null>(null);
   const [archiving, setArchiving] = React.useState<string | null>(null);
@@ -722,7 +623,14 @@ function OwnedProjectsView() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <ProjectMembersPopover projectId={p.id} count={p.member_count} />
+                    <button
+                      type="button"
+                      onClick={() => setMembersTarget(p)}
+                      className="flex items-center gap-1.5 rounded-md border border-border h-7 px-2 text-2xs text-text-primary hover:bg-bg-hover transition-colors"
+                    >
+                      <Users className="h-3 w-3 text-text-tertiary" />
+                      {typeof p.member_count === "number" ? p.member_count : "—"}
+                    </button>
                   </td>
                   <td className="px-4 py-3 text-text-secondary">{formatBytes(p.storage_bytes ?? 0)}</td>
                   <td className="px-4 py-3">
@@ -804,12 +712,33 @@ function OwnedProjectsView() {
         </div>
       )}
 
+      {membersTarget && (
+        <ProjectMembersDialog
+          open={!!membersTarget}
+          onOpenChange={(o) => !o && setMembersTarget(null)}
+          projectId={membersTarget.id}
+          projectName={membersTarget.name}
+          // Both open-states live here, so cross-navigation is a state
+          // swap rather than one dialog rendering the other (§16).
+          onOpenSettings={() => {
+            const target = membersTarget;
+            setMembersTarget(null);
+            setSettingsTarget(target);
+          }}
+        />
+      )}
+
       {settingsTarget && (
         <ProjectSettingsDialog
           project={settingsTarget}
           open={!!settingsTarget}
           onOpenChange={(o) => !o && setSettingsTarget(null)}
           onUpdated={refresh}
+          onOpenMembers={() => {
+            const target = settingsTarget;
+            setSettingsTarget(null);
+            setMembersTarget(target);
+          }}
         />
       )}
       {transferTarget && (
@@ -927,48 +856,14 @@ export default function SettingsProjectsPage() {
     return null;
   }
 
-  return (
-    <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-lg font-semibold text-text-primary">All Projects</h1>
-        <p className="mt-0.5 text-sm text-text-tertiary">
-          Every project on the platform, including ones you&apos;re not a
-          member of. You can manage any of them from here, but you&apos;ll
-          need to join a project to see its actual contents.
-        </p>
-      </div>
+  // §17b. Same distinction `hasAccess` already made per-row, surfaced as
+  // structure instead of being buried in which menu items appear.
+  const joinedProjects = (projectsResp ?? []).filter((p) => !!p.current_user_role);
+  const generalProjects = (projectsResp ?? []).filter((p) => !p.current_user_role);
 
-      {isLoading ? (
-        <div className="space-y-2">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-12 animate-pulse rounded-lg bg-bg-tertiary" />
-          ))}
-        </div>
-      ) : !projectsResp || projectsResp.length === 0 ? (
-        <div className="rounded-lg border border-border bg-bg-secondary">
-          <EmptyState
-            icon={FolderKanban}
-            title="No projects"
-            description="Projects will appear here once created."
-          />
-        </div>
-      ) : (
-        <div className="rounded-lg border border-border bg-bg-secondary overflow-x-auto">
-          <table className="w-full text-sm min-w-[760px]">
-            <thead>
-              <tr className="border-b border-border bg-bg-tertiary">
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Project</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Owner</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Members</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Assets</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Storage</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Status</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Created</th>
-                <th className="px-4 py-2.5 text-right text-xs font-medium text-text-tertiary">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {projectsResp.map((p) => {
+  /** One row, hoisted out of the map so both tables render from a single
+   *  definition — splitting the table must not fork the row logic. */
+  const renderRow = (p: AdminProject) => {
                 const hasAccess = !!p.current_user_role;
                 const isPeekOnly = p.current_user_role === "viewer";
                 const projectIcon = p.poster_url ? (
@@ -1023,9 +918,11 @@ export default function SettingsProjectsPage() {
                         onClick={() => setMembersTarget(p)}
                         className="flex items-center gap-1.5 rounded-md border border-border h-7 px-2 text-2xs text-text-primary hover:bg-bg-hover transition-colors"
                       >
+                        {/* No chevron: this opens a dialog, not a
+                            dropdown, and the caret promised a menu that
+                            never existed. */}
                         <Users className="h-3 w-3 text-text-tertiary" />
                         {typeof p.member_count === "number" ? p.member_count : "—"}
-                        <ChevronDown className="h-3 w-3 text-text-tertiary shrink-0" />
                       </button>
                     </td>
                     <td className="px-4 py-3 text-text-secondary">{p.asset_count}</td>
@@ -1119,10 +1016,95 @@ export default function SettingsProjectsPage() {
                       </DropdownMenu.Root>
                     </td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
+    );
+  };
+
+  const ProjectsTable = ({ rows }: { rows: AdminProject[] }) => (
+    <div className="rounded-lg border border-border bg-bg-secondary overflow-x-auto">
+      <table className="w-full text-sm min-w-[760px]">
+        <thead>
+          <tr className="border-b border-border bg-bg-tertiary">
+            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Project</th>
+            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Owner</th>
+            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Members</th>
+            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Assets</th>
+            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Storage</th>
+            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Status</th>
+            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Created</th>
+            <th className="px-4 py-2.5 text-right text-xs font-medium text-text-tertiary">Actions</th>
+          </tr>
+        </thead>
+        <tbody>{rows.map(renderRow)}</tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <div className="p-6 space-y-6">
+      <div>
+        <h1 className="text-lg font-semibold text-text-primary">All Projects</h1>
+        <p className="mt-0.5 text-sm text-text-tertiary">
+          Every project on the platform, including ones you&apos;re not a
+          member of. You can manage any of them from here, but you&apos;ll
+          need to join a project to see its actual contents.
+        </p>
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-12 animate-pulse rounded-lg bg-bg-tertiary" />
+          ))}
+        </div>
+      ) : !projectsResp || projectsResp.length === 0 ? (
+        <div className="rounded-lg border border-border bg-bg-secondary">
+          <EmptyState
+            icon={FolderKanban}
+            title="No projects"
+            description="Projects will appear here once created."
+          />
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {/* Joined first — these are the ones this superadmin can actually
+              open and work in. Pure client-side grouping of data already
+              fetched: `current_user_role` was on every row already, and
+              `hasAccess` already split them per-row. No new API call, no
+              change to AdminProject. */}
+          <div>
+            <h2 className="mb-2 text-sm font-medium text-text-primary">
+              Joined Projects
+              <span className="ml-2 text-xs font-normal text-text-tertiary">
+                {joinedProjects.length}
+              </span>
+            </h2>
+            {joinedProjects.length === 0 ? (
+              // Shown, not hidden: an empty section states "you've joined
+              // nothing", which an absent section cannot.
+              <div className="rounded-lg border border-border bg-bg-secondary px-4 py-6 text-center text-sm text-text-tertiary">
+                You haven&apos;t joined any projects yet. Use Join &amp; View
+                on one below to see its contents.
+              </div>
+            ) : (
+              <ProjectsTable rows={joinedProjects} />
+            )}
+          </div>
+
+          <div>
+            <h2 className="mb-2 text-sm font-medium text-text-primary">
+              General Projects
+              <span className="ml-2 text-xs font-normal text-text-tertiary">
+                {generalProjects.length}
+              </span>
+            </h2>
+            {generalProjects.length === 0 ? (
+              <div className="rounded-lg border border-border bg-bg-secondary px-4 py-6 text-center text-sm text-text-tertiary">
+                You&apos;ve joined every project on the platform.
+              </div>
+            ) : (
+              <ProjectsTable rows={generalProjects} />
+            )}
+          </div>
         </div>
       )}
 

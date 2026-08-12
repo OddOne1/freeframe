@@ -361,6 +361,19 @@ function EmailSettingsSection() {
             : "Using the settings saved here. Any field you leave empty falls back to the server environment."}
       </p>
 
+      {/* The sentence above says WHICH config is active; this says which
+          address actually results from it. Unconditional — the saved-
+          settings branch never showed a From address at all, and the env
+          branch only ever showed the SMTP host. */}
+      {!isLoading && settings?.effective_from_address && (
+        <p className="text-xs text-text-secondary">
+          Currently sending as{" "}
+          <span className="font-medium text-text-primary">
+            {settings.effective_from_address}
+          </span>
+        </p>
+      )}
+
       <div className="flex items-center gap-2">
         <label className="text-xs font-medium text-text-tertiary w-28 shrink-0">Provider</label>
         <select
@@ -1117,7 +1130,12 @@ export default function AdminPage() {
           ) : u.id === user?.id ? (
             <span className="text-xs text-text-tertiary italic">You</span>
           ) : null}
-          {u.id !== user?.id && (
+          {/* Deactivated only (CLAUDE.md 17d). Permanent deletion now
+              requires an explicit deactivate step first, enforced by the
+              API — this hides the shortcut rather than being the control
+              itself. Hidden rather than disabled, matching the
+              Deactivate/Reactivate mutual exclusivity just above. */}
+          {u.id !== user?.id && u.status === "deactivated" && (
             <DeleteUserDialog
               targetUser={u}
               currentUserName={user?.name ?? "You"}
