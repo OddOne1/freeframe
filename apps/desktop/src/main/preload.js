@@ -19,8 +19,21 @@ contextBridge.exposeInMainWorld("freeframe", {
   // that project (null = the whole project).
   // `sourceFiles` is the alternative to `sourcePath`: individually-chosen
   // files with no directory to walk.
-  startCopy: (sourcePath, nodes, algorithm, sourceFolderId, sourceFiles) =>
-    ipcRenderer.invoke("copy:start", { sourcePath, nodes, algorithm, sourceFolderId, sourceFiles }),
+  startCopy: (sourcePath, nodes, algorithm, sourceFolderId, sourceFiles, naming) =>
+    ipcRenderer.invoke("copy:start", {
+      sourcePath, nodes, algorithm, sourceFolderId, sourceFiles,
+      // { folderTemplate, fileTemplate, fields, values } or null. Main
+      // re-validates required fields and unknown tokens regardless of what
+      // the renderer allowed through.
+      naming,
+    }),
+
+  /** Naming presets (§10 / §18b) — local JSON in userData, no login. */
+  listPresets: () => ipcRenderer.invoke("presets:list"),
+  savePreset: (preset) => ipcRenderer.invoke("presets:save", { preset }),
+  deletePreset: (id) => ipcRenderer.invoke("presets:delete", { id }),
+  previewNaming: (folderTemplate, fileTemplate, values, sourceLabel) =>
+    ipcRenderer.invoke("presets:preview", { folderTemplate, fileTemplate, values, sourceLabel }),
 
   cancelCopy: () => ipcRenderer.invoke("copy:cancel"),
 

@@ -6,6 +6,8 @@ const fsp = require("node:fs/promises");
 const path = require("node:path");
 const { listVolumes } = require("./volumes");
 const { runCopyJob } = require("./copy-engine");
+const presets = require("./presets");
+const { buildRelMapper, unknownTokens } = require("./naming");
 const { listAlgorithms, isSupported, DEFAULT_ALGORITHM } = require("./hashers");
 const freeframe = require("./freeframe");
 const { listFilesRecursive } = require("./copy-engine");
@@ -125,6 +127,35 @@ ipcMain.handle("volumes:eject", async (_event, { mountPoint } = {}) => {
     // saying "eject failed" would waste their time.
     const detail = String(err.stderr || err.stdout || err.message || "").trim();
     return { ok: false, error: detail || `diskutil ${verb} failed` };
+  }
+});
+
+// ── Naming presets (§10 / §18b) ──
+// Local only: one JSON file in userData, no login, no server. Everything
+// here is preferences-shaped, so a failure returns a value rather than
+// throwing — a broken preferences file must never block a copy.
+ipcMain.handle("presets:list", async () => presets.list());
+ipcMain.handle("presets:save", async (_e, { preset } = {}) => presets.save(preset || {}));
+ipcMain.handle("presets:delete", async (_e, { id } = {}) => presets.remove(id));
+
+/**
+ * Preview what a template will produce, for the editor's live example.
+ *
+ * Rendered by the same code the copy will use rather than a
+ * lookalike — a preview that agrees with a separate implementation is
+ * worse than no preview, because it builds confidence in the wrong thing.
+ */
+ipcMain.handle("presets:preview", async (_e, { folderTemplate, fileTemplate, values, sourceLabel } = {}) => {
+  try {
+    const mapper = buildRelMapper({
+      folderTemplate, fileTemplate,
+      values: values || {},
+      sourceLabel: sourceLabel || "/Volumes/A001",
+    });
+    const sample = "DCIM/100MEDIA/CLIP0001.MOV";
+    return { ok: true, sample, result: mapper ? mapper(sample) : sample };
+  } catch (err) {
+    return { ok: false, error: String(err.message || err) };
   }
 });
 
@@ -449,6 +480,50 @@ ipcMain.handle("copy:start", async (event, payload) => {
   // surface as a mid-copy throw after files had already been written.
   const algorithm = isSupported(payload?.algorithm) ? payload.algorithm : DEFAULT_ALGORITHM;
 
+  // ── Naming template (§10 / §18b) ──
+  //
+  // Validated HERE, before a single byte moves. The renderer blocks the
+  // Start button on the same rules, but that's a courtesy: the failure
+  // this prevents is writing a folder literally named "{operator}" onto
+  // someone's drive, which only looks wrong hours later — by which point
+  // the card may already be back in the camera.
+  const naming = payload?.naming && typeof payload.naming === "object" ? payload.naming : null;
+  let mapRel = null;
+  if (naming) {
+    const values = naming.values && typeof naming.values === "object" ? naming.values : {};
+    const fields = Array.isArray(naming.fields) ? naming.fields : [];
+
+    const missing = fields
+      .filter((f) => f && f.required && !String(values[f.key] ?? "").trim())
+      .map((f) => f.label || f.key);
+    if (missing.length) {
+      throw new Error(
+        `Fill in ${missing.join(", ")} before starting — ${missing.length === 1 ? "it is" : "they are"} used in the folder name.`,
+      );
+    }
+
+    // A token nothing can fill would otherwise render literally.
+    for (const [label, tpl] of [["Folder name", naming.folderTemplate], ["File name", naming.fileTemplate]]) {
+      const unknown = unknownTokens(tpl || "", Object.keys(values));
+      if (unknown.length) {
+        throw new Error(
+          `${label} pattern uses ${unknown.map((t) => `{${t}}`).join(", ")}, which ${unknown.length === 1 ? "is not a" : "are not"} known field${unknown.length === 1 ? "" : "s"}.`,
+        );
+      }
+    }
+
+    mapRel = buildRelMapper({
+      folderTemplate: naming.folderTemplate,
+      fileTemplate: naming.fileTemplate,
+      values,
+      sourceLabel: sourcePath || (sourceFiles && sourceFiles[0]) || "",
+    });
+
+    // Only remembered once a job actually starts, so half-typed names
+    // never end up in the suggestion list.
+    presets.recordValues(values).catch(() => {});
+  }
+
   const webContents = event.sender;
   let cancelled = false;
   activeJob = { cancel: () => { cancelled = true; } };
@@ -460,6 +535,7 @@ ipcMain.handle("copy:start", async (event, payload) => {
       source: projectSource,
       nodes,
       algorithm,
+      mapRel,
       isCancelled: () => cancelled,
       onProgress: (p) => {
         // The window can be closed mid-copy; sending to a destroyed

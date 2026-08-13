@@ -270,13 +270,19 @@ async function hashFileOnDisk(filePath, algorithm = null) {
  * source provider it reads from. A cascaded leg is always a local one; only
  * the primary leg can be reading from FreeFrame.
  */
-async function runLeg({ from, toRoots, relFiles, sizes, onFileEvent, isCancelled }) {
+async function runLeg({ from, toRoots, relFiles, sizes, onFileEvent, isCancelled, mapRel }) {
   const fileResults = [];
 
   for (const rel of relFiles) {
     if (isCancelled()) break;
 
-    const destFiles = toRoots.map((d) => path.join(d, rel));
+    // `mapRel` applies the job's naming template. Only the ROOT leg gets
+    // one: a cascaded leg reads from a destination whose layout is already
+    // the mapped one, so applying it again would nest the template inside
+    // itself and, worse, break the byte-for-byte correspondence the
+    // cascade's verification depends on.
+    const destRel = mapRel ? mapRel(rel) : rel;
+    const destFiles = toRoots.map((d) => path.join(d, destRel));
     const size = sizes.get(rel) ?? 0;
 
     onFileEvent({ type: "file-start", file: rel, bytes: size });
@@ -396,6 +402,10 @@ function summarizeRoot(root, fileResults, expectedFileCount) {
 async function runCopyJob({
   sourcePath, sourceFiles, source, nodes, destPaths, algorithm = DEFAULT_ALGORITHM,
   onProgress = () => {}, isCancelled = () => false,
+  // (rel) => destination-relative path. Null keeps the pre-existing
+  // behaviour of mirroring the source tree exactly, so every existing
+  // caller and test is untouched.
+  mapRel = null,
 }) {
   const startedAt = Date.now();
 
@@ -578,6 +588,8 @@ async function runCopyJob({
         const toRoots = groupNodes.map((n) => n.path);
         const fileResults = await runLeg({
           from,
+          // Root leg only -- see the note in runLeg.
+          mapRel: groupNodes[0].parentId === null ? mapRel : null,
           toRoots,
           relFiles,
           sizes,

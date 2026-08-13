@@ -139,7 +139,9 @@
        center column out and pushing the Destinations zone off-screen
        entirely. min-width:0 down the chain is the other half of the same
        fix — without it the flex children re-introduce the same floor. */
-    .columns { flex: 1; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); gap: 1px; background: var(--border); min-height: 0; }
+    /* Volumes (middle) takes 60% — it's where all real browsing happens,
+       while Sources/Destinations are short lists of assigned items. */
+    .columns { flex: 1; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,3fr) minmax(0,1fr); gap: 1px; background: var(--border); min-height: 0; }
     .col { background: var(--bg-primary); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
     .col-head {
       display: flex; align-items: center; gap: 6px;
@@ -618,6 +620,73 @@
 
     .login-tagline { margin: 20px 0 0; font-size: 11px; color: var(--text-tertiary); }
 
+    /* ── Naming presets (§10 / §18b) ── */
+    #preset-backdrop {
+      position: fixed; inset: 0; z-index: 1100; display: none;
+      background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
+      align-items: center; justify-content: center;
+      overflow-y: auto; padding: 24px 0;
+    }
+    #preset-backdrop.open { display: flex; }
+    /* .ff-backdrop carries no styles -- every backdrop in this file is
+       styled by id. Matching that rather than introducing a shared class
+       only this one would use. */
+    #values-backdrop {
+      position: fixed; inset: 0; z-index: 1100; display: none;
+      background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
+      align-items: center; justify-content: center;
+    }
+    #values-backdrop.open { display: flex; }
+    .preset-modal { width: 620px; max-width: calc(100vw - 40px); margin: auto; }
+    .preset-cols { display: grid; grid-template-columns: 180px minmax(0,1fr); gap: 12px; }
+    .preset-list { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-secondary); padding: 4px; max-height: 320px; overflow-y: auto; }
+    .preset-list button {
+      display: block; width: 100%; text-align: left; border: none; background: transparent;
+      color: var(--text-primary); font-size: 12px; font-family: inherit;
+      padding: 6px 8px; border-radius: 4px;
+    }
+    .preset-list button:hover { background: var(--bg-hover); }
+    .preset-list button.active { background: var(--accent-muted); }
+    .preset-pane { min-width: 0; }
+    .field-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+    .field-row input[type="text"] {
+      height: 28px; border-radius: 6px; padding: 0 8px; font-size: 12px; font-family: inherit;
+      background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);
+      min-width: 0;
+    }
+    .field-row select {
+      height: 28px; border-radius: 6px; font-size: 12px; font-family: inherit;
+      background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);
+    }
+    .field-row .tok { font-size: 10px; color: var(--text-tertiary); font-family: ui-monospace, monospace; white-space: nowrap; }
+    .field-row .req { font-size: 10px; color: var(--text-tertiary); display: flex; align-items: center; gap: 3px; white-space: nowrap; }
+    .icon-btn {
+      height: 24px; width: 24px; border: none; background: transparent; border-radius: 4px;
+      color: var(--text-tertiary); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .tpl-input {
+      width: 100%; height: 30px; border-radius: 6px; padding: 0 9px; box-sizing: border-box;
+      background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);
+      font-size: 12px; font-family: ui-monospace, monospace;
+    }
+    .tpl-preview {
+      font-size: 11px; color: var(--text-tertiary); font-family: ui-monospace, monospace;
+      margin-top: 4px; word-break: break-all;
+    }
+    .tpl-preview.bad { color: var(--status-error); }
+    .token-help { font-size: 10px; color: var(--text-tertiary); margin-top: 4px; line-height: 1.5; }
+    .token-help code {
+      font-family: ui-monospace, monospace; background: var(--bg-tertiary);
+      padding: 1px 4px; border-radius: 3px; cursor: pointer;
+    }
+    .token-help code:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .values-grid { display: grid; grid-template-columns: 120px minmax(0,1fr); gap: 6px 8px; align-items: center; }
+    .values-grid label { font-size: 11px; color: var(--text-secondary); }
+    .values-grid input { height: 28px; border-radius: 6px; padding: 0 8px; font-size: 12px; font-family: inherit;
+      background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary); width: 100%; box-sizing: border-box; }
+    .values-grid .missing { border-color: var(--status-error); }
+
     #modal-backdrop {
       position: fixed; inset: 0; z-index: 1100; display: none;
       background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
@@ -712,6 +781,12 @@
     <h1>Offload</h1>
     <button class="mode" id="algo-btn" title="Change checksum algorithm">
       <span id="algo-label">SECURE · xxHash64</span>
+      <span class="icon caret" data-icon="chevronDown"></span>
+    </button>
+    <!-- Naming preset (§10 / §18b). Sits beside the checksum pill because
+         both are "how this job runs" settings chosen before starting. -->
+    <button class="mode" id="preset-btn" title="Folder and file naming">
+      <span id="preset-label">No naming preset</span>
       <span class="icon caret" data-icon="chevronDown"></span>
     </button>
     <span class="spacer"></span>
@@ -826,6 +901,52 @@
       <div class="modal-actions"><div class="row2">
         <button id="ffdir-cancel">Cancel</button>
         <button id="ffdir-save" class="primary">Use this folder</button>
+      </div></div>
+    </div>
+  </div>
+
+  <!-- Naming presets (§10 / §18b). Left pane: saved presets. Right pane:
+       the selected preset's fields and name patterns, with a live preview
+       rendered by the SAME code the copy will use. -->
+  <div id="preset-backdrop">
+    <div class="modal preset-modal" role="dialog" aria-modal="true" aria-labelledby="preset-title">
+      <div class="modal-head"><h3 id="preset-title">Naming presets</h3></div>
+      <p>
+        Build the destination folder and file names from fields you define.
+        Values are filled in per job, and everything stays on this machine.
+      </p>
+
+      <div class="preset-cols">
+        <div>
+          <div id="preset-list" class="preset-list"></div>
+          <button id="preset-new" style="margin-top:6px;width:100%">New preset</button>
+        </div>
+
+        <div id="preset-pane" class="preset-pane"></div>
+      </div>
+
+      <div class="modal-actions">
+        <div class="row2">
+          <button id="preset-close">Close</button>
+          <button id="preset-save" class="primary">Save preset</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Per-job field values. Separate from the editor on purpose: editing
+       the shape of a preset and filling it in for tonight's card are
+       different tasks, done at different moments. -->
+  <div id="values-backdrop" class="ff-backdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="values-title">
+      <div class="modal-head"><h3 id="values-title">Naming</h3></div>
+      <p id="values-sub"></p>
+      <div id="values-grid" class="values-grid"></div>
+      <div id="values-preview" class="tpl-preview"></div>
+      <div id="values-error" class="ff-error"></div>
+      <div class="modal-actions"><div class="row2">
+        <button id="values-cancel">Cancel</button>
+        <button id="values-save" class="primary">Use these values</button>
       </div></div>
     </div>
   </div>
@@ -2376,6 +2497,24 @@
 
     async function startCopy() {
       if (copying || !sourcePath || !destNodes.length) return;
+
+      // A required field left blank would otherwise render as a literal
+      // {token} in a folder name on someone's drive — visible only hours
+      // later. Main re-checks this; the dialog just means you find out
+      // now, with the fields in front of you.
+      if (missingRequired().length) {
+        openValuesDialog((ok) => { if (ok) startCopy(); });
+        const err = $("values-error");
+        err.textContent = `Fill in ${missingRequired().join(", ")} — used in the folder name.`;
+        for (const input of document.querySelectorAll("#values-grid input[data-key]")) {
+          const preset = activePreset();
+          const field = preset && preset.fields.find((f) => f.key === input.dataset.key);
+          if (field && field.required && !String(presetValues[field.key] ?? "").trim()) {
+            input.classList.add("missing");
+          }
+        }
+        return;
+      }
       copying = true;
       sourceReleased = false;
       nodeStatus = new Map();
@@ -2400,7 +2539,8 @@
             localNodes.map((n) => ({ id: n.id, path: n.path, parentId: n.parentId })),
             algorithm,
             isProject(sourcePath) ? uploadFolderIdFor(projectIdOf(sourcePath)) : null,
-            sourceFiles
+            sourceFiles,
+            namingPayload()
           );
           renderSummary(summary);
         }
@@ -2464,6 +2604,313 @@
         if (which === "source") setSource(folder);
         else addDest(folder, null);
       });
+    }
+
+    // ── Naming presets (§10 / §18b) ──────────────────────────────────────
+    //
+    // Local-only: presets live in a JSON file in userData, no login, no
+    // server. Values feed the destination folder/file names at copy time
+    // and nothing else — deliberately NOT written into FreeFrame's asset
+    // metadata, which §10 scopes as a separate future addition.
+
+    let presetStore = { presets: [], history: {} };
+    let activePresetId = null;
+    let presetValues = {};      // { fieldKey: value } for the current job
+    let editingPreset = null;   // the preset open in the editor
+
+    const activePreset = () => presetStore.presets.find((p) => p.id === activePresetId) || null;
+
+    function updatePresetLabel() {
+      const label = $("preset-label");
+      if (!label) return;
+      const p = activePreset();
+      label.textContent = p ? p.name : "No naming preset";
+    }
+
+    async function reloadPresets() {
+      presetStore = (await window.freeframe.listPresets()) || { presets: [], history: {} };
+      if (activePresetId && !activePreset()) activePresetId = null;
+      updatePresetLabel();
+      renderPresetList();
+    }
+
+    const BUILTIN_TOKENS = [
+      "date", "yyyy", "yy", "mm", "dd", "time", "datetime",
+      "cardname", "counter", "name", "ext",
+    ];
+
+    function renderPresetList() {
+      const host = $("preset-list");
+      if (!host) return;
+      host.replaceChildren();
+      if (presetStore.presets.length === 0) {
+        host.appendChild(el("div", { class: "token-help", style: "padding:6px", text: "No presets yet." }));
+      }
+      for (const p of presetStore.presets) {
+        const b = el("button", {
+          text: p.name,
+          class: editingPreset && editingPreset.id === p.id ? "active" : "",
+          onClick: () => { editingPreset = JSON.parse(JSON.stringify(p)); renderPresetList(); renderPresetPane(); },
+        });
+        host.appendChild(b);
+      }
+    }
+
+    function newPresetDraft() {
+      return {
+        id: null,
+        name: "",
+        folderTemplate: "{date}_{cardname}",
+        fileTemplate: "",
+        fields: [],
+      };
+    }
+
+    /** Live preview, rendered by main using the same code the copy runs —
+     *  a preview computed by a lookalike would build confidence in the
+     *  wrong thing. */
+    async function refreshPresetPreview() {
+      const out = $("tpl-preview");
+      if (!out || !editingPreset) return;
+      const sample = {};
+      for (const f of editingPreset.fields) sample[f.key] = f.label || f.key;
+      const res = await window.freeframe.previewNaming(
+        editingPreset.folderTemplate, editingPreset.fileTemplate, sample,
+        sourcePath && !isProject(sourcePath) ? sourcePath : "/Volumes/A001",
+      );
+      out.classList.toggle("bad", !res.ok);
+      out.textContent = res.ok
+        ? `${res.sample}  →  ${res.result}`
+        : res.error;
+    }
+
+    function renderPresetPane() {
+      const host = $("preset-pane");
+      if (!host) return;
+      host.replaceChildren();
+      if (!editingPreset) {
+        host.appendChild(el("div", { class: "token-help", text: "Pick a preset on the left, or create a new one." }));
+        return;
+      }
+
+      const nameWrap = el("div", { class: "field" });
+      nameWrap.appendChild(el("label", { text: "Preset name" }));
+      const nameInput = el("input", { dataset: { role: "preset-name" } });
+      nameInput.type = "text";
+      nameInput.value = editingPreset.name;
+      nameInput.addEventListener("input", () => { editingPreset.name = nameInput.value; });
+      nameWrap.appendChild(nameInput);
+      host.appendChild(nameWrap);
+
+      // ── Fields ──
+      host.appendChild(el("label", {
+        style: "display:block;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-tertiary);margin:10px 0 4px",
+        text: "Fields",
+      }));
+
+      editingPreset.fields.forEach((f, i) => {
+        const row = el("div", { class: "field-row" });
+
+        const label = el("input", { style: "flex:1" });
+        label.type = "text";
+        label.placeholder = "Field name (e.g. Operator)";
+        label.value = f.label;
+        label.addEventListener("input", () => {
+          f.label = label.value;
+          // The token follows the label until the user has typed one, so
+          // {operator} appears as they name the field.
+          f.key = label.value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+          tok.textContent = f.key ? `{${f.key}}` : "";
+        });
+        row.appendChild(label);
+
+        const tok = el("span", { class: "tok", text: f.key ? `{${f.key}}` : "" });
+        row.appendChild(tok);
+
+        const type = el("select");
+        for (const [v, t] of [["text", "Text"], ["select", "Suggesting"]]) {
+          const o = el("option", { text: t });
+          o.value = v;
+          if (f.type === v) o.selected = true;
+          type.appendChild(o);
+        }
+        type.title = "Suggesting fields offer what you've typed before";
+        type.addEventListener("change", () => { f.type = type.value; });
+        row.appendChild(type);
+
+        const reqWrap = el("label", { class: "req" });
+        const req = el("input");
+        req.type = "checkbox";
+        req.checked = Boolean(f.required);
+        req.addEventListener("change", () => { f.required = req.checked; });
+        reqWrap.appendChild(req);
+        reqWrap.appendChild(el("span", { text: "Required" }));
+        row.appendChild(reqWrap);
+
+        const up = el("button", { class: "icon-btn", title: "Move up", disabled: i === 0,
+          onClick: () => {
+            const [m] = editingPreset.fields.splice(i, 1);
+            editingPreset.fields.splice(i - 1, 0, m);
+            renderPresetPane();
+          } });
+        up.textContent = "↑";
+        row.appendChild(up);
+
+        const down = el("button", { class: "icon-btn", title: "Move down", disabled: i === editingPreset.fields.length - 1,
+          onClick: () => {
+            const [m] = editingPreset.fields.splice(i, 1);
+            editingPreset.fields.splice(i + 1, 0, m);
+            renderPresetPane();
+          } });
+        down.textContent = "↓";
+        row.appendChild(down);
+
+        const del = el("button", { class: "icon-btn", title: "Remove field",
+          onClick: () => { editingPreset.fields.splice(i, 1); renderPresetPane(); refreshPresetPreview(); } });
+        del.appendChild(icon("close"));
+        row.appendChild(del);
+
+        host.appendChild(row);
+      });
+
+      const addField = el("button", {
+        text: "Add field",
+        onClick: () => {
+          editingPreset.fields.push({ key: "", label: "", type: "text", required: false });
+          renderPresetPane();
+        },
+      });
+      host.appendChild(addField);
+
+      // ── Patterns ──
+      for (const [key, title, placeholder, hint] of [
+        ["folderTemplate", "Destination folder", "{date}_{cardname}", "Subfolder created under each destination. Use / for nesting."],
+        ["fileTemplate", "File name (optional)", "leave empty to keep original names", "The extension is always kept from the source."],
+      ]) {
+        host.appendChild(el("label", {
+          style: "display:block;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-tertiary);margin:12px 0 4px",
+          text: title,
+        }));
+        const input = el("input", { class: "tpl-input" });
+        input.type = "text";
+        input.placeholder = placeholder;
+        input.value = editingPreset[key] || "";
+        input.addEventListener("input", () => { editingPreset[key] = input.value; refreshPresetPreview(); });
+        host.appendChild(input);
+        host.appendChild(el("div", { class: "token-help", text: hint }));
+      }
+
+      const help = el("div", { class: "token-help" });
+      help.appendChild(document.createTextNode("Click to insert: "));
+      const fieldTokens = editingPreset.fields.map((f) => f.key).filter(Boolean);
+      for (const t of [...fieldTokens, ...BUILTIN_TOKENS]) {
+        const code = el("code", { text: `{${t}}` });
+        code.addEventListener("click", () => {
+          editingPreset.folderTemplate = `${editingPreset.folderTemplate || ""}{${t}}`;
+          renderPresetPane();
+          refreshPresetPreview();
+        });
+        help.appendChild(code);
+        help.appendChild(document.createTextNode(" "));
+      }
+      host.appendChild(help);
+
+      host.appendChild(el("div", { id: "tpl-preview", class: "tpl-preview" }));
+
+      if (editingPreset.id) {
+        const del = el("button", {
+          style: "margin-top:10px",
+          text: "Delete preset",
+          onClick: async () => {
+            await window.freeframe.deletePreset(editingPreset.id);
+            if (activePresetId === editingPreset.id) activePresetId = null;
+            editingPreset = null;
+            await reloadPresets();
+            renderPresetPane();
+          },
+        });
+        host.appendChild(del);
+      }
+
+      refreshPresetPreview();
+    }
+
+    /** Per-job field values, asked for before the copy starts. */
+    function openValuesDialog(onDone) {
+      const preset = activePreset();
+      if (!preset) { onDone(true); return; }
+
+      $("values-sub").textContent = `${preset.name} — used to name folders on each destination.`;
+      $("values-error").textContent = "";
+      const grid = $("values-grid");
+      grid.replaceChildren();
+
+      for (const f of preset.fields) {
+        grid.appendChild(el("label", { text: f.label + (f.required ? " *" : "") }));
+        const input = el("input", { dataset: { key: f.key } });
+        input.type = "text";
+        input.value = presetValues[f.key] ?? "";
+        // A "suggesting" field offers what has been typed into it before,
+        // via a datalist — it grows its own options rather than needing a
+        // fixed enum declared up front.
+        if (f.type === "select") {
+          const listId = `sugg-${f.key}`;
+          const dl = el("datalist");
+          dl.id = listId;
+          for (const v of (presetStore.history || {})[f.key] || []) {
+            const o = el("option");
+            o.value = v;
+            dl.appendChild(o);
+          }
+          grid.appendChild(dl);
+          input.setAttribute("list", listId);
+        }
+        input.addEventListener("input", () => {
+          presetValues[f.key] = input.value;
+          input.classList.remove("missing");
+          updateValuesPreview();
+        });
+        grid.appendChild(input);
+      }
+
+      updateValuesPreview();
+      valuesDone = onDone;
+      $("values-backdrop").classList.add("open");
+    }
+
+    let valuesDone = null;
+
+    async function updateValuesPreview() {
+      const preset = activePreset();
+      const out = $("values-preview");
+      if (!preset || !out) return;
+      const res = await window.freeframe.previewNaming(
+        preset.folderTemplate, preset.fileTemplate, presetValues,
+        sourcePath && !isProject(sourcePath) ? sourcePath : "",
+      );
+      out.classList.toggle("bad", !res.ok);
+      out.textContent = res.ok ? `→ ${res.result}` : res.error;
+    }
+
+    /** The naming payload for a job, or null when no preset is active. */
+    function namingPayload() {
+      const preset = activePreset();
+      if (!preset) return null;
+      return {
+        folderTemplate: preset.folderTemplate,
+        fileTemplate: preset.fileTemplate,
+        fields: preset.fields,
+        values: presetValues,
+      };
+    }
+
+    /** Names of required fields with nothing in them. */
+    function missingRequired() {
+      const preset = activePreset();
+      if (!preset) return [];
+      return preset.fields
+        .filter((f) => f.required && !String(presetValues[f.key] ?? "").trim())
+        .map((f) => f.label || f.key);
     }
 
     // ── Item 6: native OS drag-and-drop from Finder ──
@@ -2734,6 +3181,56 @@
         render();
       });
       on("ffdir-backdrop", "keydown", (e) => { if (e.key === "Escape") closeFolderPicker(); });
+    });
+
+    initStep("naming presets", () => {
+      on("preset-btn", "click", async () => {
+        await reloadPresets();
+        // Open on the active preset if there is one, so the button leads
+        // to what it names rather than a blank pane.
+        const current = activePreset();
+        editingPreset = current ? JSON.parse(JSON.stringify(current)) : null;
+        renderPresetList();
+        renderPresetPane();
+        $("preset-backdrop").classList.add("open");
+      });
+      on("preset-close", "click", () => $("preset-backdrop").classList.remove("open"));
+      on("preset-new", "click", () => {
+        editingPreset = newPresetDraft();
+        renderPresetList();
+        renderPresetPane();
+      });
+      on("preset-save", "click", async () => {
+        if (!editingPreset) return;
+        presetStore = await window.freeframe.savePreset(editingPreset);
+        // Saving selects it: the reason to build a preset is to use it.
+        const saved = presetStore.presets.find((p) => p.name === (editingPreset.name || "Untitled preset"));
+        if (saved) activePresetId = saved.id;
+        editingPreset = saved ? JSON.parse(JSON.stringify(saved)) : null;
+        updatePresetLabel();
+        renderPresetList();
+        renderPresetPane();
+      });
+      on("preset-backdrop", "keydown", (e) => {
+        if (e.key === "Escape") $("preset-backdrop").classList.remove("open");
+      });
+
+      on("values-cancel", "click", () => {
+        $("values-backdrop").classList.remove("open");
+        const done = valuesDone; valuesDone = null;
+        if (done) done(false);
+      });
+      on("values-save", "click", () => {
+        if (missingRequired().length) {
+          $("values-error").textContent = `Fill in ${missingRequired().join(", ")} — used in the folder name.`;
+          return;
+        }
+        $("values-backdrop").classList.remove("open");
+        const done = valuesDone; valuesDone = null;
+        if (done) done(true);
+      });
+
+      reloadPresets().catch(() => {});
     });
 
     initStep("rename", () => {
