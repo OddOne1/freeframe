@@ -217,7 +217,7 @@ export function ProjectSettingsDialog({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/jpeg,image/png,image/webp,image/gif"
+                  accept="image/jpeg,image/png,image/webp,image/avif"
                   className="hidden"
                   onChange={handlePosterSelect}
                 />

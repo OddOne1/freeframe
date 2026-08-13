@@ -1,5 +1,23 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 import io
+
+# Registers AVIF with Pillow's codec registry (§19d). Core Pillow has no
+# AVIF decoder, and the plugin is not picked up just by being installed --
+# it has to be imported once, before any Image.open(), which is why this
+# sits at module scope rather than next to the one function that needs it.
+#
+# GUARDED, deliberately, and this is a deviation from the spec's literal
+# "add import pillow_avif". A bare import makes the entire API fail to boot
+# if that one wheel is missing from an image -- and this project has a
+# documented history of stale/partial rebuilds and migration crash-loops.
+# Degrading to "AVIF posters get no thumbnail" (they still upload, and
+# poster_thumb_url falls back to the original) is strictly better than an
+# api container that won't start. Same reasoning as the lazy PIL import in
+# _build_poster_thumbnail.
+try:
+    import pillow_avif  # noqa: F401
+except ImportError:  # pragma: no cover
+    pillow_avif = None
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import uuid
@@ -573,7 +591,7 @@ def transfer_project_ownership(project_id: uuid.UUID, body: TransferOwnershipReq
     apply_poster_urls(resp, project)
     return resp
 
-ALLOWED_POSTER_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+ALLOWED_POSTER_TYPES = {"image/jpeg", "image/png", "image/webp", "image/avif"}
 MAX_POSTER_SIZE = 10 * 1024 * 1024  # 10MB
 
 # Long edge of the generated thumbnail (§19c). Sized from the actual render
@@ -589,22 +607,19 @@ POSTER_THUMB_QUALITY = 85
 def _build_poster_thumbnail(data: bytes, content_type: str | None) -> bytes | None:
     """Downscaled JPEG copy of an uploaded poster, or None to skip.
 
-    GIF RETURNS None DELIBERATELY, and this is a product decision, not an
-    implementation shortcut. Every place a poster renders is a plain <img>,
-    so an animated GIF poster does animate today. Pillow would happily
-    resize its first frame, but serving that would silently freeze a poster
-    someone chose specifically because it moves. So GIFs keep being served
-    as the uploaded original everywhere, and lose the bandwidth win. They're
-    capped at 10MB like everything else. Revisit if animated posters turn
-    out to be common enough that the cost matters more than the animation.
+    There is no per-format special case any more. §19c returned None for
+    GIF to preserve animation; §19d removed GIF from ALLOWED_POSTER_TYPES
+    entirely (no animated images anywhere), so that branch became
+    unreachable and was deleted rather than adapted. AVIF took GIF's place
+    and needs nothing of its own -- it decodes through the same Image.open()
+    path as every other static format, given the plugin import at module
+    scope (see the note there; core Pillow has no AVIF codec).
 
     Returns None rather than raising if Pillow can't read the file: the
     upload has already been validated and stored, and failing the whole
     request over a missing derivative would be worse than serving the
     original, which every caller already falls back to.
     """
-    if content_type == "image/gif":
-        return None
     try:
         from PIL import Image, ImageOps
 
@@ -645,7 +660,7 @@ async def upload_project_poster(
     _require_project_owner(db, project_id, current_user)
 
     if file.content_type not in ALLOWED_POSTER_TYPES:
-        raise HTTPException(status_code=400, detail="File must be JPEG, PNG, WebP, or GIF")
+        raise HTTPException(status_code=400, detail="File must be JPEG, PNG, WebP, or AVIF")
 
     data = await file.read()
     if len(data) > MAX_POSTER_SIZE:

@@ -34,3 +34,8 @@ faster-whisper==1.0.3
 # the only pixel-level image work in the API; exiftool (already present)
 # reads metadata, not pixels.
 Pillow==10.4.0
+# AVIF decoding for poster uploads (§19d). Core Pillow ships no AVIF codec,
+# so this plugin is what makes Image.open() accept one; it registers itself
+# on import (see routers/projects.py). Verified against the pinned
+# Pillow 10.4.0, with a manylinux_2_28_x86_64 wheel for the server.
+pillow-avif-plugin==1.6.0

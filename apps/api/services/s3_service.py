@@ -12,6 +12,11 @@ CONTENT_TYPE_MAP = {
     ".jpg": ("image/jpeg", "max-age=86400"),
     ".jpeg": ("image/jpeg", "max-age=86400"),
     ".webp": ("image/webp", "max-age=86400"),
+    # AVIF replaced GIF as an accepted poster format (§19d). Without this
+    # entry the proxy falls back to application/octet-stream + no-cache, so
+    # the original would be served untyped AND re-downloaded on every render
+    # -- a caching regression that would have hit only AVIF posters.
+    ".avif": ("image/avif", "max-age=86400"),
     ".mp3": ("audio/mpeg", "max-age=86400"),
     ".json": ("application/json", "max-age=86400"),
     ".png": ("image/png", "max-age=86400"),

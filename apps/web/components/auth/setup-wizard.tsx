@@ -8,14 +8,16 @@ import { Input } from '@/components/ui/input'
 
 interface FormState {
   email: string
-  name: string
+  firstName: string
+  lastName: string
   password: string
   confirmPassword: string
 }
 
 interface FormErrors {
   email?: string
-  name?: string
+  firstName?: string
+  lastName?: string
   password?: string
   confirmPassword?: string
   general?: string
@@ -28,8 +30,10 @@ function validate(form: FormState): FormErrors {
   } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
     errors.email = 'Enter a valid email address'
   }
-  if (!form.name.trim()) {
-    errors.name = 'Name is required'
+  // Only last name is required, matching User.last_name's NOT NULL and
+  // first_name's nullable -- the same split the profile form already uses.
+  if (!form.lastName.trim()) {
+    errors.lastName = 'Last name is required'
   }
   if (!form.password) {
     errors.password = 'Password is required'
@@ -48,7 +52,8 @@ export function SetupWizard() {
   const router = useRouter()
   const [form, setForm] = useState<FormState>({
     email: '',
-    name: '',
+    firstName: '',
+    lastName: '',
     password: '',
     confirmPassword: '',
   })
@@ -79,7 +84,8 @@ export function SetupWizard() {
     try {
       await api.post('/setup/create-superadmin', {
         email: form.email,
-        name: form.name,
+        first_name: form.firstName.trim() || null,
+        last_name: form.lastName.trim(),
         password: form.password,
       })
       setSuccess(true)
@@ -127,15 +133,26 @@ export function SetupWizard() {
           </div>
         )}
 
-        <Input
-          label="Full name"
-          type="text"
-          placeholder="Alex Johnson"
-          autoComplete="name"
-          value={form.name}
-          onChange={handleChange('name')}
-          error={errors.name}
-        />
+        <div className="grid grid-cols-2 gap-4">
+          <Input
+            label="First name"
+            type="text"
+            placeholder="Optional"
+            autoComplete="given-name"
+            value={form.firstName}
+            onChange={handleChange('firstName')}
+            error={errors.firstName}
+          />
+          <Input
+            label="Last name"
+            type="text"
+            placeholder="Required"
+            autoComplete="family-name"
+            value={form.lastName}
+            onChange={handleChange('lastName')}
+            error={errors.lastName}
+          />
+        </div>
 
         <Input
           label="Email address"

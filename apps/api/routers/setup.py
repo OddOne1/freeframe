@@ -23,7 +23,13 @@ class SetupStatusResponse(BaseModel):
 
 class CreateSuperAdminRequest(BaseModel):
     email: EmailStr
-    name: str
+    # Two explicit fields, matching User's own columns rather than a single
+    # name split server-side. split_full_name (services/auth_service.py)
+    # exists and the invite-accept flow uses it, but this form deliberately
+    # collects both parts -- see CLAUDE.md §20. Nullability mirrors the
+    # model exactly: first_name is optional, last_name is NOT NULL.
+    first_name: str | None = None
+    last_name: str
     password: str
 
 
@@ -86,10 +92,28 @@ def create_superadmin(body: CreateSuperAdminRequest, db: Session = Depends(get_d
             detail="Email already registered",
         )
     
-    # Create superadmin user
+    # Same rule update_user already enforces for the same column
+    # (routers/users.py) -- last_name is NOT NULL, and a whitespace-only
+    # value would satisfy pydantic while failing at commit.
+    last_name = body.last_name.strip()
+    if not last_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Last name cannot be empty",
+        )
+
+    # Create superadmin user.
+    #
+    # first_name/last_name, never name=. User.name is a read-only @property
+    # computed from these two (since the name-split migration), so passing
+    # name= to the declarative constructor raised AttributeError and 500'd
+    # every fresh install's very first request. last_name was additionally
+    # never passed at all, which would have failed the NOT NULL constraint
+    # even if the property had accepted a write.
     user = User(
         email=body.email,
-        name=body.name,
+        first_name=(body.first_name or "").strip() or None,
+        last_name=last_name,
         password_hash=hash_password(body.password),
         status=UserStatus.active,
         role=UserGlobalRole.superadmin,
