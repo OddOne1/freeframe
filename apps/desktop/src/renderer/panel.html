@@ -44,14 +44,14 @@
     // Renders from the same broadcast the docked panel uses — this window
     // holds no job state of its own, so closing it can't lose anything.
     const host = document.getElementById("jobs");
-    const expanded = new Set();
     let snapshot = [];
 
     function draw() {
+      // No expand state here either: detached, "more rows" is just a
+      // taller window, which the OS already provides.
       window.JobPanel.renderJobs(host, snapshot, {
-        expanded,
         onCancel: (id) => window.freeframe.cancelCopy(id),
-        onToggle: (id) => { expanded.has(id) ? expanded.delete(id) : expanded.add(id); draw(); },
+        onOpenLog: (id) => window.freeframe.openJobLog(id),
       });
       const running = snapshot.filter((j) => j.status === "running").length;
       const queued = snapshot.filter((j) => j.status === "queued").length;

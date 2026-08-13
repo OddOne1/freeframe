@@ -45,6 +45,9 @@ contextBridge.exposeInMainWorld("freeframe", {
   /** The job queue (§18c). State lives in main and is broadcast, so the
    *  docked panel and the detached window can never disagree. */
   listJobs: () => ipcRenderer.invoke("jobs:list"),
+  // By job id, not by path — main resolves the path from its own record,
+  // so this can only ever open a log this app wrote.
+  openJobLog: (id) => ipcRenderer.invoke("jobs:open-log", { id }),
   onJobsChanged: (callback) => {
     const listener = (_event, snapshot) => callback(snapshot);
     ipcRenderer.on("jobs:changed", listener);

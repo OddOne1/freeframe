@@ -25,6 +25,16 @@
     return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
   }
 
+  // Wall-clock, local, 24h. "Started 14:32:08" answers a different
+  // question from "12.4s" — which of tonight's offloads this row is —
+  // so both are shown, not one instead of the other.
+  function fmtClock(ts) {
+    if (!ts) return "";
+    return new Date(ts).toLocaleTimeString(undefined, {
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    });
+  }
+
   const STATUS_LABEL = {
     queued: "Queued", running: "Running", done: "Done",
     failed: "Failed", cancelled: "Cancelled",
@@ -48,11 +58,13 @@
   /**
    * Render the whole job list into `host`.
    *
-   * `expanded` is a Set of job ids whose detail is open, owned by the
-   * caller so it survives re-renders (a job updating twice a second must
-   * not close a row the user just opened).
+   * Every row shows its full state permanently — there is no per-row
+   * expand. Seeing more means making the PANEL taller (the drag handle on
+   * its top edge), not opening one row at a time. That also removes a
+   * hazard the click-toggle had: the verification verdict, the one thing
+   * this app exists to report, was hidden behind a click.
    */
-  function renderJobs(host, snapshot, { expanded, onCancel, onToggle } = {}) {
+  function renderJobs(host, snapshot, { onCancel, onOpenLog } = {}) {
     host.replaceChildren();
 
     if (!snapshot || snapshot.length === 0) {
@@ -71,7 +83,6 @@
 
     for (const j of rows) {
       const p = j.progress || {};
-      const isOpen = expanded && expanded.has(j.id);
 
       const head = el("div", { class: "job-head" }, [
         el("span", { class: `job-dot ${j.status}` }),
@@ -104,8 +115,16 @@
         }));
       }
 
-      const row = el("div", { class: `job-row${isOpen ? " open" : ""}` }, [head]);
-      row.addEventListener("click", () => onToggle && onToggle(j.id));
+      // From / to / mode live in the tooltip: useful, but not worth a
+      // line of every row once the row can no longer be expanded.
+      const row = el("div", {
+        class: "job-row",
+        title: [
+          `From  ${j.sourceLabel || "—"}`,
+          `To    ${(j.destLabels || []).join(", ") || "—"}`,
+          `Runs alongside  ${MODE_LABEL[j.mode] || j.mode}`,
+        ].join("\n"),
+      }, [head]);
 
       if (j.status === "running") {
         const pct = typeof p.percent === "number" ? Math.max(0, Math.min(100, p.percent)) : 0;
@@ -114,32 +133,50 @@
         ]));
       }
 
-      if (isOpen) {
-        const detail = el("div", { class: "job-detail" });
-        detail.appendChild(el("div", { text: `From  ${j.sourceLabel || "—"}` }));
-        detail.appendChild(el("div", { text: `To    ${(j.destLabels || []).join(", ") || "—"}` }));
-        detail.appendChild(el("div", { text: `Runs alongside  ${MODE_LABEL[j.mode] || j.mode}` }));
-        if (p.file) detail.appendChild(el("div", { text: `Current  ${p.file}` }));
-        if (p.phase) detail.appendChild(el("div", { text: `Phase  ${p.phase}` }));
-        if (j.error) detail.appendChild(el("div", { class: "job-error", text: j.error }));
-        if (j.summary) {
-          const s = j.summary;
-          if (s.uploadOnly) {
-            detail.appendChild(el("div", {
-              class: "job-warn",
-              text: `Uploaded ${s.filesCopied ?? 0}/${s.totalFiles ?? 0} — not verified against FreeFrame.`,
-            }));
-          } else {
-            detail.appendChild(el("div", {
-              class: s.allVerified ? "job-ok" : "job-error",
-              text: s.allVerified
-                ? `Verified ${s.fileCopiesVerified}/${s.totalFileCopies} — safe to wipe the source.`
-                : `Not fully verified — ${s.mismatches?.length ?? 0} mismatch(es), ${s.errors?.length ?? 0} error(s).`,
-            }));
-          }
+      // ── Always-visible second line: when, and how it went ──
+      const times = [];
+      if (j.startedAt) times.push(`Started ${fmtClock(j.startedAt)}`);
+      else if (j.createdAt) times.push(`Queued ${fmtClock(j.createdAt)}`);
+      if (j.finishedAt) times.push(`Finished ${fmtClock(j.finishedAt)}`);
+
+      const sub = el("div", { class: "job-sub" }, [
+        el("span", { class: "job-times", text: times.join(" · ") }),
+      ]);
+
+      let state = null;
+      if (j.status === "running" && p.file) {
+        state = el("span", { class: "job-state", text: p.file, title: p.file });
+      } else if (j.status === "running" && p.phase) {
+        state = el("span", { class: "job-state", text: p.phase });
+      } else if (j.error) {
+        state = el("span", { class: "job-state job-error", text: j.error });
+      } else if (j.summary) {
+        const s = j.summary;
+        if (s.uploadOnly) {
+          state = el("span", {
+            class: "job-state job-warn",
+            text: `Uploaded ${s.filesCopied ?? 0}/${s.totalFiles ?? 0} — not verified against FreeFrame.`,
+          });
+        } else {
+          state = el("span", {
+            class: `job-state ${s.allVerified ? "job-ok" : "job-error"}`,
+            text: s.allVerified
+              ? `Verified ${s.fileCopiesVerified}/${s.totalFileCopies} — safe to wipe the source.`
+              : `Not fully verified — ${s.mismatches?.length ?? 0} mismatch(es), ${s.errors?.length ?? 0} error(s).`,
+          });
         }
-        row.appendChild(detail);
       }
+      if (state) sub.appendChild(state);
+
+      // Only once the log actually exists on disk — an "Open Log" button
+      // that opens nothing is worse than no button.
+      if (j.logPath) {
+        sub.appendChild(el("button", {
+          class: "job-log", text: "Open Log", title: j.logPath,
+          onClick: (e) => { e.stopPropagation(); onOpenLog && onOpenLog(j.id); },
+        }));
+      }
+      row.appendChild(sub);
 
       host.appendChild(row);
     }

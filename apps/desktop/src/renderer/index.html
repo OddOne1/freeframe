@@ -702,14 +702,30 @@
     }
     #jobs-tab button:hover { background: var(--bg-hover); color: var(--text-primary); }
     #jobs-toggle { color: var(--text-primary); font-weight: 500; display: flex; align-items: center; gap: 5px; }
+    /* Drag handle on the panel's top edge. Sits outside #jobs-panel on
+       purpose — the panel scrolls, and a handle inside it would scroll
+       away the moment there were enough rows to want to resize for. */
+    #jobs-resize {
+      display: none; flex-shrink: 0; height: 7px; cursor: ns-resize;
+      border-top: 1px solid var(--border); background: var(--bg-secondary);
+    }
+    #jobs-resize.open { display: block; }
+    #jobs-resize::after {
+      content: ""; display: block; width: 34px; height: 3px; margin: 2px auto 0;
+      border-radius: 999px; background: var(--border-primary);
+    }
+    #jobs-resize:hover::after, #jobs-resize.dragging::after { background: var(--accent); }
+    /* No text selection anywhere while dragging the splitter. */
+    body.resizing-jobs, body.resizing-jobs * { user-select: none !important; cursor: ns-resize !important; }
+
     #jobs-panel {
       display: none; flex-shrink: 0;
       border-top: 1px solid var(--border); background: var(--bg-secondary);
-      overflow-y: auto; max-height: 180px;
+      overflow-y: auto; height: 180px;
     }
     #jobs-panel.open { display: block; }
-    /* The "expanded" state the spec asks for: same panel, more of it. */
-    #jobs-panel.tall { max-height: 420px; }
+    /* The handle replaces the panel's own top border when it's showing. */
+    #jobs-resize.open + #jobs-panel { border-top: none; }
     #jobs-detached-note {
       display: none; padding: 10px 12px; font-size: 11px; color: var(--text-tertiary);
     }
@@ -868,6 +884,7 @@
 
   <!-- Job panel (§18c): a docked tab, not a modal. Rows come from main's
        queue snapshot, so this and the detached window always agree. -->
+  <div id="jobs-resize" title="Drag to resize"></div>
   <div id="jobs-panel">
     <div id="jobs-list"></div>
     <div id="jobs-detached-note">
@@ -881,7 +898,6 @@
       <span id="jobs-tab-label">Transfers</span>
     </button>
     <span class="spacer"></span>
-    <button id="jobs-taller" title="Show more rows">Expand</button>
     <button id="jobs-detach" title="Open in a separate window">Detach</button>
   </div>
 
@@ -2978,8 +2994,33 @@
     // what is running.
 
     let jobSnapshot = [];
-    const jobExpanded = new Set();
     let panelDetached = false;
+
+    // Panel height is a real drag-resized dimension now, not a two-state
+    // Expand/Shrink toggle. Clamped so the splitter can neither collapse
+    // the panel to an invisible sliver nor push the columns off screen.
+    const JOBS_MIN_H = 46;   // roughly one row, so the top row stays legible
+    const jobsMaxH = () => Math.max(JOBS_MIN_H, Math.round(window.innerHeight * 0.7));
+    let jobsPanelH = 180;
+
+    function setJobsPanelHeight(px) {
+      jobsPanelH = Math.round(Math.min(jobsMaxH(), Math.max(JOBS_MIN_H, px)));
+      $("jobs-panel").style.height = `${jobsPanelH}px`;
+    }
+
+    function setJobsPanelOpen(open) {
+      // The handle and the panel are siblings, so their visibility is
+      // toggled together rather than each caller remembering both.
+      $("jobs-panel").classList.toggle("open", open);
+      $("jobs-resize").classList.toggle("open", open);
+      if (open) setJobsPanelHeight(jobsPanelH);
+    }
+
+    // Shrinking the window must not leave the panel taller than the clamp
+    // now allows.
+    window.addEventListener("resize", () => {
+      if ($("jobs-panel")?.classList.contains("open")) setJobsPanelHeight(jobsPanelH);
+    });
 
     // Which other jobs this one tolerates. Default "source": a second
     // offload of the SAME card can run alongside, anything else waits.
@@ -3009,12 +3050,8 @@
       const host = $("jobs-list");
       if (!host || !window.JobPanel) return;
       window.JobPanel.renderJobs(host, jobSnapshot, {
-        expanded: jobExpanded,
         onCancel: (id) => window.freeframe.cancelCopy(id),
-        onToggle: (id) => {
-          jobExpanded.has(id) ? jobExpanded.delete(id) : jobExpanded.add(id);
-          drawJobs();
-        },
+        onOpenLog: (id) => window.freeframe.openJobLog(id),
       });
 
       const running = jobSnapshot.filter((j) => j.status === "running").length;
@@ -3298,13 +3335,28 @@
     });
 
     initStep("job panel", () => {
-      on("jobs-toggle", "click", () => $("jobs-panel").classList.toggle("open"));
-      on("jobs-taller", "click", () => {
-        const panel = $("jobs-panel");
-        panel.classList.add("open");
-        panel.classList.toggle("tall");
-        $("jobs-taller").textContent = panel.classList.contains("tall") ? "Shrink" : "Expand";
+      on("jobs-toggle", "click", () => setJobsPanelOpen(!$("jobs-panel").classList.contains("open")));
+
+      // Drag-resize, replacing the old Expand/Shrink button. Taller shows
+      // more rows; dragging down collapses toward the tab strip.
+      $("jobs-resize").addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        const startY = e.clientY;
+        const startH = $("jobs-panel").getBoundingClientRect().height;
+        $("jobs-resize").classList.add("dragging");
+        document.body.classList.add("resizing-jobs");
+        // Dragging UP (a smaller clientY) makes the panel taller.
+        const move = (ev) => setJobsPanelHeight(startH + (startY - ev.clientY));
+        const up = () => {
+          $("jobs-resize").classList.remove("dragging");
+          document.body.classList.remove("resizing-jobs");
+          window.removeEventListener("mousemove", move);
+          window.removeEventListener("mouseup", up);
+        };
+        window.addEventListener("mousemove", move);
+        window.addEventListener("mouseup", up);
       });
+
       on("jobs-detach", "click", () => window.freeframe.detachPanel());
       on("jobs-redock", "click", () => window.freeframe.dockPanel());
 
@@ -3314,7 +3366,7 @@
         // Open the panel the first time something is actually running, so
         // a job never runs with no visible sign of it.
         if (snapshot.some((j) => j.status === "running" || j.status === "queued")) {
-          $("jobs-panel").classList.add("open");
+          setJobsPanelOpen(true);
         }
       });
       window.freeframe.onPanelDockChanged((detached) => {
@@ -3322,7 +3374,7 @@
         $("jobs-panel").classList.toggle("detached", detached);
         $("jobs-detach").textContent = detached ? "Detached" : "Detach";
         $("jobs-detach").disabled = detached;
-        if (detached) $("jobs-panel").classList.add("open");
+        if (detached) setJobsPanelOpen(true);
       });
       window.freeframe.listJobs().then((s) => { jobSnapshot = s; drawJobs(); }).catch(() => {});
     });

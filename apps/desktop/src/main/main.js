@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const fs = require("node:fs");
@@ -27,7 +27,81 @@ let panelWindow = null;
 let jobs = new JobQueue({
   run: (job) => job.payload.run(job),
   onChange: () => broadcastJobs(),
+  onFinish: (job) => { writeJobLog(job).catch(() => {}); },
 });
+
+// ── Transfer logs (§18c) ──────────────────────────────────────────────
+//
+// runCopyJob's summary already carries everything a log needs — per-file
+// results, mismatches, errors, timing, the verification verdict — it was
+// simply never written anywhere. Nothing in this app persisted a log
+// before this.
+//
+// NOT ASC MHL. That is a separate, still-unbuilt XML checksum manifest
+// meant to be re-verified by other tools (§1). This is a plain readable
+// record of what one job did, for a human opening it afterwards.
+const LOG_DIR = () => path.join(app.getPath("userData"), "logs");
+
+function stampFor(ms) {
+  const d = new Date(ms || Date.now());
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+}
+
+function buildJobLog(job) {
+  return {
+    freeframeTransferLog: 1,
+    job: {
+      id: job.id,
+      kind: job.kind,
+      label: job.label,
+      status: job.status,
+      concurrencyMode: job.mode,
+      source: job.sourceLabel,
+      destinations: job.destPaths && job.destPaths.length ? job.destPaths : job.destLabels,
+      createdAt: new Date(job.createdAt).toISOString(),
+      startedAt: job.startedAt ? new Date(job.startedAt).toISOString() : null,
+      finishedAt: job.finishedAt ? new Date(job.finishedAt).toISOString() : null,
+      durationMs: job.startedAt && job.finishedAt ? job.finishedAt - job.startedAt : null,
+      error: job.error || null,
+    },
+    summary: job.summary || null,
+  };
+}
+
+/**
+ * Write one job's log. The copy under userData always happens; copies
+ * beside the footage are best-effort.
+ *
+ * The destination copies go in a "FreeFrame Logs" subfolder rather than
+ * loose in the destination root: the root is frequently a card offload
+ * that someone later uses as a SOURCE, and a stray .json at its top level
+ * would then be copied onward as if it were footage.
+ */
+async function writeJobLog(job) {
+  if (job.status === "queued" || job.status === "running") return;
+
+  const body = JSON.stringify(buildJobLog(job), null, 2);
+  const name = `${stampFor(job.finishedAt)}_${(job.label || "transfer").replace(/[^\w.-]+/g, "_")}.json`;
+
+  await fsp.mkdir(LOG_DIR(), { recursive: true });
+  const local = path.join(LOG_DIR(), `${job.id}.json`);
+  await fsp.writeFile(local, body, "utf8");
+  job.logPath = local;
+  broadcastJobs();
+
+  for (const dest of job.destPaths || []) {
+    if (!dest || dest.startsWith("freeframe://")) continue;
+    try {
+      const dir = path.join(dest, "FreeFrame Logs");
+      await fsp.mkdir(dir, { recursive: true });
+      await fsp.writeFile(path.join(dir, name), body, "utf8");
+    } catch {
+      // A full or read-only destination must not turn a completed copy
+      // into a reported failure. The userData copy above already exists.
+    }
+  }
+}
 
 /** Every window that should see job state. The docked panel and the
  *  detached window render from the same broadcast, so they cannot
@@ -649,6 +723,7 @@ ipcMain.handle("copy:start", async (event, payload) => {
     label: path.basename(sourcePath || (sourceFiles && sourceFiles[0]) || "Copy") || "Copy",
     sourceLabel: sourcePath || (sourceFiles ? `${sourceFiles.length} files` : ""),
     destLabels: destPathsForKeys.map((p) => path.basename(p) || p),
+    destPaths: destPathsForKeys,
     sourceKey: volumeKeyOf(sourcePath || (sourceFiles && sourceFiles[0]), volumes),
     destKeys: Array.from(new Set(destPathsForKeys.map((p) => volumeKeyOf(p, volumes)).filter(Boolean))),
     payload: { run: async (self) => {
@@ -696,6 +771,17 @@ ipcMain.handle("copy:cancel", async (_e, { id } = {}) => {
 });
 
 ipcMain.handle("jobs:list", async () => jobs.snapshot());
+
+// Takes a job id, never a path. The renderer asking main to open an
+// arbitrary filesystem path it supplied would be a real hole; looking the
+// path up from our own job record means only files this app wrote are
+// reachable through it.
+ipcMain.handle("jobs:open-log", async (_e, { id } = {}) => {
+  const job = jobs.jobs.find((j) => j.id === id);
+  if (!job || !job.logPath) return { ok: false, error: "No log for that job." };
+  const err = await shell.openPath(job.logPath);
+  return err ? { ok: false, error: err } : { ok: true, path: job.logPath };
+});
 
 // ── Detachable panel (§18c) ──
 // The panel is a tab in the main window by default. Detaching moves it to

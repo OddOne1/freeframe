@@ -189,9 +189,14 @@ const check = (ok, label, detail = "") => {
 
   // ── 5. THE ACTUAL CHECK: names on disk ──
   console.log("\n5. Substituted values are on disk");
+  // "FreeFrame Logs" is the per-job transfer log the copy now drops in
+  // each destination (§18c). Skipped here: this test is about what the
+  // NAMING TEMPLATE produced, and counting the log as a copied file would
+  // make every assertion below off by one.
   const walk = async (dir, base = "") => {
     const out = [];
     for (const e of await fsp.readdir(dir, { withFileTypes: true })) {
+      if (e.name === "FreeFrame Logs") continue;
       const rel = base ? `${base}/${e.name}` : e.name;
       if (e.isDirectory()) out.push(...await walk(path.join(dir, e.name), rel));
       else out.push(rel);

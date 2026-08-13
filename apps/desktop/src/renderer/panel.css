@@ -9,7 +9,6 @@
 }
 .job-row:last-child { border-bottom: none; }
 .job-row:hover { background: var(--bg-hover); }
-.job-row.open { background: var(--bg-tertiary); }
 
 .job-head { display: flex; align-items: center; gap: 8px; }
 .job-dot { height: 7px; width: 7px; border-radius: 50%; flex-shrink: 0; background: var(--text-tertiary); }
@@ -31,12 +30,26 @@
 .job-bar { height: 3px; border-radius: 999px; background: var(--bg-primary); overflow: hidden; margin-top: 5px; }
 .job-bar > div { height: 100%; background: var(--accent); transition: width 120ms linear; }
 
-.job-detail {
-  margin-top: 6px; padding-left: 15px;
+/* Second line of every row. Permanent: there is no per-row expand, so
+   nothing here may depend on a click to become visible. */
+.job-sub {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 4px; padding-left: 15px;
   font-size: 10px; color: var(--text-tertiary);
-  font-family: ui-monospace, monospace; line-height: 1.6;
-  word-break: break-all;
+  line-height: 1.5;
 }
-.job-detail .job-ok    { color: var(--status-success); }
-.job-detail .job-error { color: var(--status-error); }
-.job-detail .job-warn  { color: var(--status-warning); }
+.job-times { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.job-state {
+  flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.job-ok    { color: var(--status-success); }
+.job-error { color: var(--status-error); }
+.job-warn  { color: var(--status-warning); }
+
+.job-log {
+  flex-shrink: 0; border: 1px solid var(--border); background: transparent;
+  font-family: inherit; font-size: 10px; color: var(--text-secondary);
+  padding: 1px 7px; border-radius: 4px;
+}
+.job-log:hover { background: var(--bg-hover); color: var(--text-primary); }

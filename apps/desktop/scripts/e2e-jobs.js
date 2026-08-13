@@ -267,7 +267,9 @@ const check = (ok, label, detail = "") => {
     // Verification already re-reads each file from disk, so "verified"
     // covers this — but check the bytes independently, since not
     // clobbering each other is the specific claim being made.
-    const landed = (await fsp.readdir(shared)).sort();
+    // .bin only: each job also drops a "FreeFrame Logs" folder here, which
+    // is a real (intended) artifact of the destination-side log copy.
+    const landed = (await fsp.readdir(shared)).filter((f) => f.endsWith(".bin")).sort();
     check(landed.length === 16, "all 16 files from both jobs are present", `${landed.length}`);
     let intact = 0;
     for (const f of landed) {
@@ -376,6 +378,100 @@ const check = (ok, label, detail = "") => {
     check(after === before, "no job state was lost in the move", `${before} → ${after}`);
     const rowsDocked = await main.eval(`document.querySelectorAll("#jobs-list .job-row").length`);
     check(rowsDocked === after, "and the docked list is rendering them", `${rowsDocked} rows`);
+  }
+
+  // ── 5. The three corrections: drag-resize, clock times, Open Log ─────
+  console.log("\n5. Drag-resize, start/end times, Open Log");
+  {
+    // (a) The per-row expand is gone, not merely unused.
+    const toggles = await ev(`(() => {
+      const before = document.querySelectorAll("#jobs-list .job-row.open").length;
+      const row = document.querySelector("#jobs-list .job-row");
+      if (row) row.click();
+      return { before, after: document.querySelectorAll("#jobs-list .job-row.open").length,
+               handle: !!$("jobs-resize"), oldButton: !!$("jobs-taller") };
+    })()`);
+    check(toggles.handle, "the panel has a drag handle");
+    check(!toggles.oldButton, "the old Expand/Shrink button is gone");
+    check(toggles.before === 0 && toggles.after === 0,
+      "clicking a row no longer expands it", JSON.stringify(toggles));
+
+    // (b) Drag it, and confirm it clamps at BOTH ends rather than
+    // collapsing to nothing or growing past the window.
+    const drag = async (dy) => ev(`(() => {
+      const h = $("jobs-resize");
+      const r = h.getBoundingClientRect();
+      const y = r.top + r.height / 2;
+      h.dispatchEvent(new MouseEvent("mousedown", { clientY: y, bubbles: true, cancelable: true }));
+      window.dispatchEvent(new MouseEvent("mousemove", { clientY: y + ${JSON.stringify(0)} + (${dy}), bubbles: true }));
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      return $("jobs-panel").getBoundingClientRect().height;
+    })()`);
+
+    await ev(`setJobsPanelOpen(true); true`);
+    const base = await ev(`$("jobs-panel").getBoundingClientRect().height`);
+    const taller = await drag(-120);           // drag up = grow
+    check(taller > base, "dragging up makes the panel taller", `${base} → ${taller}`);
+    const shorter = await drag(200);           // drag down = shrink
+    check(shorter < taller, "dragging down makes it shorter", `${taller} → ${shorter}`);
+
+    const floor = await drag(5000);            // far past the bottom
+    check(floor >= 40 && floor <= 60,
+      "it clamps at a usable minimum instead of collapsing to nothing", `${floor}px`);
+    const ceiling = await drag(-5000);         // far past the top
+    const winH = await ev(`window.innerHeight`);
+    check(ceiling <= Math.round(winH * 0.7) + 1 && ceiling > 100,
+      "and at ~70% of the window instead of pushing the columns off screen",
+      `${ceiling}px of ${winH}px`);
+    check(await ev(`!document.body.classList.contains("resizing-jobs")`),
+      "the drag releases cleanly — no stuck resize cursor or text-select block");
+
+    // (c) Clock times, not just a duration.
+    const rowText = await ev(`(() => {
+      const done = [...document.querySelectorAll("#jobs-list .job-row")]
+        .find(r => r.querySelector(".job-dot.done"));
+      return done ? done.querySelector(".job-times").textContent : "";
+    })()`);
+    check(/Started \d{2}:\d{2}:\d{2}/.test(rowText), "a finished row shows its start clock time", rowText);
+    check(/Finished \d{2}:\d{2}:\d{2}/.test(rowText), "and its finish clock time", rowText);
+    const dur = await ev(`(() => {
+      const done = [...document.querySelectorAll("#jobs-list .job-row")]
+        .find(r => r.querySelector(".job-dot.done"));
+      return done ? done.querySelector(".job-meta").textContent : "";
+    })()`);
+    check(/\d/.test(dur) && /(ms|s)\b/.test(dur),
+      "alongside the existing duration, not instead of it", dur);
+
+    // (d) A real log file with this job's real data.
+    const logged = await ev(`(() => {
+      const done = [...document.querySelectorAll("#jobs-list .job-row")]
+        .find(r => r.querySelector(".job-dot.done"));
+      const btn = done && done.querySelector(".job-log");
+      return btn ? btn.title : null;
+    })()`);
+    check(Boolean(logged), "a finished row offers Open Log", logged || "(no button)");
+    check(Boolean(logged) && (await fsp.stat(logged)).size > 0,
+      "and the file it points at actually exists on disk", logged);
+
+    const parsed = JSON.parse(await fsp.readFile(logged, "utf8"));
+    check(parsed.job && parsed.summary, "the log is readable JSON with job + summary");
+    check(parsed.job.status === "done" && Boolean(parsed.job.startedAt) && Boolean(parsed.job.finishedAt),
+      "carrying this job's real outcome and timing, not a stub",
+      JSON.stringify({ status: parsed.job.status, dur: parsed.job.durationMs }));
+    check(parsed.summary.totalFiles > 0 && Array.isArray(parsed.summary.nodes),
+      "and the real per-file transfer detail",
+      `${parsed.summary.totalFiles} files, ${parsed.summary.nodes?.length} node(s)`);
+
+    // Written beside the footage too, not only in userData.
+    const beside = path.join(raid2, "FreeFrame Logs");
+    const besideFiles = await fsp.readdir(beside).catch(() => []);
+    check(besideFiles.length > 0 && besideFiles.every((f) => f.endsWith(".json")),
+      "a copy is written to the destination as well", besideFiles.join(", ") || "(none)");
+
+    // The IPC takes an id, so a path from the renderer can't be opened.
+    const byPath = await ev(`window.freeframe.openJobLog("/etc/passwd")`);
+    check(byPath && byPath.ok === false,
+      "openJobLog refuses anything that isn't a known job id", JSON.stringify(byPath));
   }
 
   console.log(`\n${fail === 0 ? "ALL PASS" : fail + " FAILED"}`);

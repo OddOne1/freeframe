@@ -81,10 +81,15 @@ class JobQueue {
    * @param {object} opts
    * @param {(job) => Promise<any>} opts.run    Executes one job.
    * @param {() => void} [opts.onChange]        Fired on any state change.
+   * @param {(job) => void} [opts.onFinish]     Fired once a job settles.
    */
-  constructor({ run, onChange = () => {} }) {
+  constructor({ run, onChange = () => {}, onFinish = () => {} }) {
     this.run = run;
     this.onChange = onChange;
+    // Writing the transfer log is main-process work (a filesystem write),
+    // and this class stays I/O-free so the scheduler remains testable with
+    // fake jobs. So it hands the finished job back out instead.
+    this.onFinish = onFinish;
     this.jobs = [];
     // Kept so the panel has history without growing without bound. The
     // running/queued jobs are never trimmed — only finished ones.
@@ -118,6 +123,10 @@ class JobQueue {
       destKeys: spec.destKeys || [],
       sourceLabel: spec.sourceLabel || "",
       destLabels: spec.destLabels || [],
+      // Real filesystem paths, kept apart from destLabels (basenames, for
+      // display) and destKeys (volume keys, for scheduling). The log
+      // writer needs actual paths to drop a copy beside the footage.
+      destPaths: spec.destPaths || [],
       payload: spec.payload,
       progress: null,
       summary: null,
@@ -125,6 +134,7 @@ class JobQueue {
       createdAt: Date.now(),
       startedAt: null,
       finishedAt: null,
+      logPath: null,
       _cancel: null,
     };
 
@@ -233,6 +243,11 @@ class JobQueue {
     this._trimHistory();
     this.onChange();
     this._schedule();
+
+    // After onChange, so the row is already showing its final state — the
+    // log is an artefact of the job, not a step the user waits on. A
+    // failure to write it must never change the job's own outcome.
+    try { this.onFinish(job); } catch { /* logging is never load-bearing */ }
   }
 
   _trimHistory() {
@@ -263,6 +278,7 @@ class JobQueue {
       createdAt: j.createdAt,
       startedAt: j.startedAt,
       finishedAt: j.finishedAt,
+      logPath: j.logPath,
       // Why a queued job is waiting, so the panel can say so rather than
       // showing an unexplained "Queued" forever.
       blockedBy: j.status === "queued"
