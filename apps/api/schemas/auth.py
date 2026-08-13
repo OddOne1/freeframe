@@ -106,6 +106,20 @@ class UpdateProfileRequest(BaseModel):
 class UpdateUserRoleRequest(BaseModel):
     is_admin: bool
 
+class UpdateUserStorageLimitRequest(BaseModel):
+    """A superadmin setting one user's personal storage budget.
+
+    `None` means UNLIMITED, not "reset to the 200GB default". That is the
+    reading the rest of the codebase already commits to: routers/projects.py's
+    _check_owner_storage_allocation returns early on a NULL personal limit,
+    and the web UI renders NULL as "Unlimited". The 200GB in
+    add_user_global_role.py is a column server_default, which only applies
+    when a row is INSERTed -- it is not a fallback for NULL. So sending null
+    here grants unlimited storage; to put someone back on the default, send
+    the 200GB value explicitly.
+    """
+    storage_limit_bytes: int | None
+
 class DeactivateUserRequest(BaseModel):
     user_id: uuid.UUID
 

@@ -754,6 +754,99 @@ function roleBadgeClass(role: ProjectRole): string {
   }
 }
 
+// ─── Per-user storage limit (§19a) ─────────────────────────────────────────
+// User.storage_limit_bytes has been enforced since task 12 (it caps what a
+// user can allocate across the projects they own) but until now nothing
+// could write it -- none of admin.py's user endpoints and none of users.py's
+// touched the field, so the only way to change someone's quota was a manual
+// UPDATE against the database.
+//
+// EMPTY MEANS UNLIMITED, not "back to 200GB". That's what NULL already means
+// to the server (_check_owner_storage_allocation returns early on it) and to
+// the rest of this UI, so the input says so out loud rather than letting a
+// superadmin clear the field expecting the default and hand out unlimited
+// storage instead. The 200GB is a column server_default that only ever
+// applied at INSERT.
+
+const DEFAULT_USER_STORAGE_GB = 200;
+
+function UserStorageLimit({ user }: { user: AdminUser }) {
+  const toField = React.useCallback(
+    (bytes: number | null | undefined) =>
+      bytes === null || bytes === undefined ? "" : String(Math.round(bytes / GB)),
+    [],
+  );
+  const [value, setValue] = React.useState(() => toField(user.storage_limit_bytes));
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  React.useEffect(() => {
+    setValue(toField(user.storage_limit_bytes));
+  }, [user.storage_limit_bytes, toField]);
+
+  const dirty = value.trim() !== toField(user.storage_limit_bytes);
+
+  const handleSave = async () => {
+    setError("");
+    const trimmed = value.trim();
+    if (trimmed && (Number.isNaN(parseFloat(trimmed)) || parseFloat(trimmed) < 0)) {
+      setError("Enter a positive number, or leave empty for unlimited.");
+      return;
+    }
+    const bytes = trimmed ? Math.round(parseFloat(trimmed) * GB) : null;
+    setSaving(true);
+    try {
+      await api.patch(`/admin/users/${user.id}/storage-limit`, {
+        storage_limit_bytes: bytes,
+      });
+      mutate("/admin/users");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to update storage limit");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1.5">
+        <input
+          type="number"
+          min="0"
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setError("");
+          }}
+          placeholder="Unlimited"
+          aria-label={`Storage limit in GB for ${user.name}`}
+          className="w-20 rounded-md border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus"
+        />
+        <span className="text-[10px] text-text-tertiary">GB</span>
+        {dirty && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleSave}
+            loading={saving}
+            className="h-6 px-2 text-xs"
+          >
+            Save
+          </Button>
+        )}
+      </div>
+      <p className="text-[10px] text-text-tertiary">
+        {user.storage_limit_bytes === null || user.storage_limit_bytes === undefined
+          ? "Currently unlimited"
+          : `Currently ${formatBytes(user.storage_limit_bytes)}`}
+        {" · "}
+        {DEFAULT_USER_STORAGE_GB} GB default
+      </p>
+      {error && <p className="max-w-[200px] text-[10px] text-status-error">{error}</p>}
+    </div>
+  );
+}
+
 // ─── Per-user project list: inline chips, or a hover popover once there ─────
 // are more than PROJECT_HOVER_THRESHOLD projects to keep rows readable. ─────
 
@@ -816,7 +909,7 @@ function UserProjects({ projects }: { projects: AdminUserProjectSummary[] }) {
           sideOffset={6}
           onMouseEnter={openNow}
           onMouseLeave={closeSoon}
-          className="z-50 w-64 max-h-72 overflow-y-auto rounded-xl border border-white/10 bg-[#1a1a1f] shadow-2xl p-2 space-y-1
+          className="z-50 w-64 max-h-72 overflow-y-auto rounded-xl border border-border bg-bg-secondary shadow-xl p-2 space-y-1
             data-[state=open]:animate-in data-[state=closed]:animate-out
             data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0
             data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
@@ -824,7 +917,7 @@ function UserProjects({ projects }: { projects: AdminUserProjectSummary[] }) {
           {projects.map((p) => (
             <div
               key={p.project_id}
-              className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-white/5"
+              className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-bg-hover"
             >
               <span className="truncate text-text-primary">
                 {p.project_name}
@@ -853,6 +946,7 @@ const USER_TABLE_COLUMNS = [
   { key: "role", label: "Role", align: "left" as const },
   { key: "status", label: "Status", align: "left" as const },
   { key: "joined", label: "Joined", align: "left" as const },
+  { key: "storage", label: "Storage", align: "left" as const },
   { key: "actions", label: "Actions", align: "right" as const },
 ];
 
@@ -1079,6 +1173,9 @@ export default function AdminPage() {
       <td className="px-4 py-3">{userStatusBadge(u.status)}</td>
       <td className="px-4 py-3 text-xs text-text-tertiary">
         {u.created_at ? new Date(u.created_at).toLocaleDateString() : "—"}
+      </td>
+      <td className="px-4 py-3">
+        <UserStorageLimit user={u} />
       </td>
       <td className="px-4 py-3">
         <div className="flex items-center justify-end gap-2">

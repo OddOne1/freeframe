@@ -83,7 +83,7 @@ export function ProjectCard({
             {project.poster_url ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={resolveApiMediaUrl(project.poster_url) ?? undefined}
+                src={resolveApiMediaUrl(project.poster_thumb_url ?? project.poster_url) ?? undefined}
                 alt={project.name}
                 className="h-full w-full object-cover"
               />

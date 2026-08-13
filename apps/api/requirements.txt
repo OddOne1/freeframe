@@ -27,3 +27,10 @@ kombu==5.4.2
 # increases the api-family image size, which is why transcription runs in
 # its own transcribe_worker service.
 faster-whisper==1.0.3
+
+# Poster thumbnails (§19c). Project posters were stored exactly as
+# uploaded -- up to 10MB of full-resolution original -- and then fetched
+# in full to render a 32px table icon and a grid of small cards. This is
+# the only pixel-level image work in the API; exiftool (already present)
+# reads metadata, not pixels.
+Pillow==10.4.0

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+import io
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import uuid
@@ -28,6 +29,27 @@ def _resolve_poster_url(project: Project) -> str | None:
     if project.poster_s3_key:
         return proxy_url_for(project.poster_s3_key)
     return None
+
+def _resolve_poster_thumb_url(project: Project) -> str | None:
+    """Small variant of the poster (§19c).
+
+    Falls back to the original, which covers both posters uploaded before
+    thumbnails existed and GIFs (deliberately not thumbnailed -- see
+    upload_project_poster). Callers can therefore always use this one and
+    never have to branch.
+    """
+    key = project.poster_thumb_s3_key or project.poster_s3_key
+    return proxy_url_for(key) if key else None
+
+def apply_poster_urls(resp, project: Project) -> None:
+    """Set both poster fields on a response.
+
+    Shared so admin.py can't drift: it had its own inline copy of the
+    poster_url logic, which is exactly how the superadmin table would have
+    kept serving full-size originals after this change.
+    """
+    resp.poster_url = _resolve_poster_url(project)
+    resp.poster_thumb_url = _resolve_poster_thumb_url(project)
 
 def _require_project_owner(db: Session, project_id: uuid.UUID, user: User) -> ProjectMember:
     member = db.query(ProjectMember).filter(
@@ -196,7 +218,7 @@ def list_projects(db: Session = Depends(get_db), current_user: User = Depends(ge
     result = []
     for p in projects:
         resp = ProjectResponse.model_validate(p)
-        resp.poster_url = _resolve_poster_url(p)
+        apply_poster_urls(resp, p)
         resp.asset_count = asset_counts.get(p.id, 0)
         resp.storage_bytes = storage_map.get(p.id, 0)
         resp.member_count = member_counts.get(p.id, 0)
@@ -225,7 +247,7 @@ def get_project(project_id: uuid.UUID, db: Session = Depends(get_db), current_us
         raise HTTPException(status_code=403, detail="This project has been archived")
 
     resp = ProjectResponse.model_validate(project)
-    resp.poster_url = _resolve_poster_url(project)
+    apply_poster_urls(resp, project)
     resp.archived_by_is_superadmin = archiver_is_superadmin
     if member:
         resp.role = member.role
@@ -364,7 +386,7 @@ def update_project(project_id: uuid.UUID, body: ProjectUpdate, db: Session = Dep
     db.commit()
     db.refresh(project)
     resp = ProjectResponse.model_validate(project)
-    resp.poster_url = _resolve_poster_url(project)
+    apply_poster_urls(resp, project)
     return resp
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -482,7 +504,7 @@ def archive_project(project_id: uuid.UUID, db: Session = Depends(get_db), curren
     db.commit()
     db.refresh(project)
     resp = ProjectResponse.model_validate(project)
-    resp.poster_url = _resolve_poster_url(project)
+    apply_poster_urls(resp, project)
     resp.archived_by_is_superadmin = current_user.role == UserGlobalRole.superadmin
     return resp
 
@@ -511,7 +533,7 @@ def reactivate_project(project_id: uuid.UUID, db: Session = Depends(get_db), cur
     db.commit()
     db.refresh(project)
     resp = ProjectResponse.model_validate(project)
-    resp.poster_url = _resolve_poster_url(project)
+    apply_poster_urls(resp, project)
     return resp
 
 @router.post("/{project_id}/transfer-ownership", response_model=ProjectResponse)
@@ -548,11 +570,69 @@ def transfer_project_ownership(project_id: uuid.UUID, body: TransferOwnershipReq
     db.commit()
     project = _get_project(db, project_id)
     resp = ProjectResponse.model_validate(project)
-    resp.poster_url = _resolve_poster_url(project)
+    apply_poster_urls(resp, project)
     return resp
 
 ALLOWED_POSTER_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_POSTER_SIZE = 10 * 1024 * 1024  # 10MB
+
+# Long edge of the generated thumbnail (§19c). Sized from the actual render
+# sizes in the frontend rather than picked round: the largest a poster is
+# ever drawn is the projects grid, which is aspect-square across 2-5 columns
+# (apps/web/app/(dashboard)/projects/page.tsx) -- roughly 300-480 CSS px on a
+# wide display. 800 covers a 400px card at 2x DPR. The other two call sites
+# are far smaller: a 32px table icon and the settings-dialog preview.
+POSTER_THUMB_MAX_EDGE = 800
+POSTER_THUMB_QUALITY = 85
+
+
+def _build_poster_thumbnail(data: bytes, content_type: str | None) -> bytes | None:
+    """Downscaled JPEG copy of an uploaded poster, or None to skip.
+
+    GIF RETURNS None DELIBERATELY, and this is a product decision, not an
+    implementation shortcut. Every place a poster renders is a plain <img>,
+    so an animated GIF poster does animate today. Pillow would happily
+    resize its first frame, but serving that would silently freeze a poster
+    someone chose specifically because it moves. So GIFs keep being served
+    as the uploaded original everywhere, and lose the bandwidth win. They're
+    capped at 10MB like everything else. Revisit if animated posters turn
+    out to be common enough that the cost matters more than the animation.
+
+    Returns None rather than raising if Pillow can't read the file: the
+    upload has already been validated and stored, and failing the whole
+    request over a missing derivative would be worse than serving the
+    original, which every caller already falls back to.
+    """
+    if content_type == "image/gif":
+        return None
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(io.BytesIO(data)) as im:
+            im.load()
+            # Honour EXIF orientation before measuring, or a rotated phone
+            # photo gets a thumbnail cropped against its displayed shape.
+            im = ImageOps.exif_transpose(im) or im
+            if max(im.size) <= POSTER_THUMB_MAX_EDGE and content_type == "image/jpeg":
+                # Already small and already JPEG -- re-encoding would only
+                # lose quality for no saving.
+                return None
+            im.thumbnail((POSTER_THUMB_MAX_EDGE, POSTER_THUMB_MAX_EDGE), Image.LANCZOS)
+            if im.mode in ("RGBA", "LA", "P"):
+                # JPEG has no alpha. Composite onto white rather than letting
+                # the converter fill with black, which turns a transparent
+                # logo poster into a black square.
+                im = im.convert("RGBA")
+                flat = Image.new("RGB", im.size, (255, 255, 255))
+                flat.paste(im, mask=im.split()[-1])
+                im = flat
+            elif im.mode != "RGB":
+                im = im.convert("RGB")
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=POSTER_THUMB_QUALITY, optimize=True)
+            return buf.getvalue()
+    except Exception:
+        return None
 
 @router.post("/{project_id}/poster", response_model=ProjectResponse)
 async def upload_project_poster(
@@ -572,22 +652,31 @@ async def upload_project_poster(
         raise HTTPException(status_code=400, detail="File must be under 10MB")
 
     # Delete old poster if exists
-    if project.poster_s3_key:
-        try:
-            delete_object(project.poster_s3_key)
-        except Exception:
-            pass
+    for old_key in (project.poster_s3_key, project.poster_thumb_s3_key):
+        if old_key:
+            try:
+                delete_object(old_key)
+            except Exception:
+                pass
 
     ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else "jpg"
     s3_key = f"posters/{project_id}/poster.{ext}"
     put_object(s3_key, data, content_type=file.content_type, cache_control="max-age=86400")
 
+    thumb_key = f"posters/{project_id}/poster_thumb.jpg"
+    thumb = _build_poster_thumbnail(data, file.content_type)
+    if thumb is not None:
+        put_object(thumb_key, thumb, content_type="image/jpeg", cache_control="max-age=86400")
+    else:
+        thumb_key = None
+
     project.poster_s3_key = s3_key
+    project.poster_thumb_s3_key = thumb_key
     db.commit()
     db.refresh(project)
 
     resp = ProjectResponse.model_validate(project)
-    resp.poster_url = _resolve_poster_url(project)
+    apply_poster_urls(resp, project)
     return resp
 
 @router.delete("/{project_id}/poster", status_code=status.HTTP_204_NO_CONTENT)
@@ -599,10 +688,13 @@ def remove_project_poster(
     project = _get_project(db, project_id)
     _require_project_owner(db, project_id, current_user)
 
-    if project.poster_s3_key:
-        try:
-            delete_object(project.poster_s3_key)
-        except Exception:
-            pass
+    if project.poster_s3_key or project.poster_thumb_s3_key:
+        for key in (project.poster_s3_key, project.poster_thumb_s3_key):
+            if key:
+                try:
+                    delete_object(key)
+                except Exception:
+                    pass
         project.poster_s3_key = None
+        project.poster_thumb_s3_key = None
         db.commit()

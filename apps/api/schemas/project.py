@@ -33,6 +33,11 @@ class ProjectResponse(BaseModel):
     created_by: uuid.UUID | None = None
     created_at: datetime
     poster_url: str | None = None
+    # Small variant, for the many places a poster renders at icon/card size
+    # (§19c). Additive on purpose: poster_url keeps meaning "the original",
+    # so nothing that already consumes it silently changes resolution.
+    # Falls back to the original when no thumbnail exists.
+    poster_thumb_url: str | None = None
     is_public: bool = False
     asset_count: int = 0
     storage_bytes: int = 0

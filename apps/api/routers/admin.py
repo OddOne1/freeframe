@@ -12,11 +12,13 @@ from ..models.user import User, UserStatus, UserGlobalRole
 from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.asset import Asset, AssetVersion, MediaFile
 from ..schemas.auth import (
-    UserResponse, UpdateUserRoleRequest, AdminUserResponse, AdminUserProjectSummary,
+    UserResponse, UpdateUserRoleRequest, UpdateUserStorageLimitRequest,
+    AdminUserResponse, AdminUserProjectSummary,
     PurgeUserPreviewResponse, PurgeUserOwnedProject, PurgeUserOwnerCandidate, PurgeUserRequest,
 )
 from ..schemas.project import ProjectUpdate, AdminProjectResponse, TransferOwnershipRequest
 from .hls_proxy import proxy_url_for
+from .projects import apply_poster_urls
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -152,6 +154,45 @@ def update_user_role(
     db.commit()
     db.refresh(user)
     return user
+
+@router.patch("/users/{user_id}/storage-limit", response_model=UserResponse)
+def update_user_storage_limit(
+    user_id: uuid.UUID,
+    body: UpdateUserStorageLimitRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Set a user's personal storage budget.
+
+    User.storage_limit_bytes has existed and been enforced since task 12
+    (routers/projects.py caps the total a user can allocate across the
+    projects they own) but nothing anywhere could write it -- there was no
+    endpoint on any user-mutating route. This is that endpoint.
+
+    `null` means unlimited. See UpdateUserStorageLimitRequest for why that
+    is not the same as "reset to the 200GB default".
+
+    Deliberately does NOT reject a limit lower than what the user has
+    already allocated to their existing projects. A superadmin reducing
+    someone's quota is a legitimate action and is the documented escalation
+    path in both directions; blocking it would mean a quota could only ever
+    go up. Existing over-allocation simply stops them allocating more --
+    _check_owner_storage_allocation runs on the next project edit.
+    """
+    _require_superadmin(current_user)
+
+    if body.storage_limit_bytes is not None and body.storage_limit_bytes < 0:
+        raise HTTPException(status_code=400, detail="Storage limit cannot be negative")
+
+    user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.storage_limit_bytes = body.storage_limit_bytes
+    db.commit()
+    db.refresh(user)
+    return user
+
 
 @router.get("/users/{user_id}/purge-preview", response_model=PurgeUserPreviewResponse)
 def purge_user_preview(
@@ -328,7 +369,7 @@ def purge_user(
 # ── Project overview & management ────────────────────────────────────────────
 
 def _apply_project_stats(db: Session, resp: AdminProjectResponse, project: Project, owners: dict) -> None:
-    resp.poster_url = proxy_url_for(project.poster_s3_key) if project.poster_s3_key else None
+    apply_poster_urls(resp, project)
     owner = owners.get(project.created_by)
     resp.owner_name = owner.name if owner else None
     resp.owner_email = owner.email if owner else None

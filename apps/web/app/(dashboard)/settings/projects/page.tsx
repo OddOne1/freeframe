@@ -22,7 +22,7 @@ import {
   Settings,
   Crown,
 } from "lucide-react";
-import { cn, formatBytes } from "@/lib/utils";
+import { cn, formatBytes, resolveApiMediaUrl } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -866,10 +866,16 @@ export default function SettingsProjectsPage() {
   const renderRow = (p: AdminProject) => {
                 const hasAccess = !!p.current_user_role;
                 const isPeekOnly = p.current_user_role === "viewer";
+                // resolveApiMediaUrl is not optional here. poster_url comes
+                // back from proxy_url_for as a RELATIVE path
+                // ("/stream/hls/...?token="), and in production the API is
+                // mounted under /api -- so an unresolved src resolves against
+                // the page origin and 404s. This was the only <img> in the app
+                // using an API media URL raw; every other one already wraps it.
                 const projectIcon = p.poster_url ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
-                    src={p.poster_url}
+                    src={resolveApiMediaUrl(p.poster_thumb_url ?? p.poster_url) ?? undefined}
                     alt=""
                     className="h-8 w-8 rounded-md object-cover"
                   />

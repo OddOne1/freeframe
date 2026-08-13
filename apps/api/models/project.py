@@ -36,6 +36,11 @@ class Project(Base):
     created_by_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_by_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     poster_s3_key: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    # Small derivative of the poster (§19c). NULL for posters uploaded
+    # before this existed, and for GIFs -- see upload_project_poster for
+    # why animated posters deliberately have no thumbnail. Callers fall
+    # back to poster_s3_key, so NULL is always safe.
+    poster_thumb_s3_key: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     ratings_visible_to_all: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

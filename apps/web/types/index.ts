@@ -92,6 +92,11 @@ export interface Project {
   project_type: ProjectType;
   team_id?: string | null;
   poster_url?: string | null;
+  // Small variant of the poster (§19c). Additive: poster_url still means
+  // the full-size original. Falls back to the original server-side when no
+  // thumbnail exists, so this is safe to use unconditionally wherever a
+  // poster renders small.
+  poster_thumb_url?: string | null;
   is_public?: boolean;
   created_at: string;
   deleted_at: string | null;
