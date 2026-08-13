@@ -4,10 +4,12 @@ const { promisify } = require("node:util");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { listVolumes } = require("./volumes");
 const { runCopyJob } = require("./copy-engine");
 const presets = require("./presets");
 const { buildRelMapper, unknownTokens } = require("./naming");
+const { JobQueue } = require("./job-queue");
 const { listAlgorithms, isSupported, DEFAULT_ALGORITHM } = require("./hashers");
 const freeframe = require("./freeframe");
 const { listFilesRecursive } = require("./copy-engine");
@@ -15,12 +17,53 @@ const { listFilesRecursive } = require("./copy-engine");
 const execFileAsync = promisify(execFile);
 
 let mainWindow = null;
+// The detached progress panel, when the user has popped it out (§18c).
+let panelWindow = null;
 
-// One copy job at a time, deliberately. Concurrent jobs against the same
-// source would fight over the same device queue and make the progress
-// numbers meaningless; the roadmap's multi-hop DAG is a scheduler on top
-// of this, not several uncoordinated runs.
-let activeJob = null;
+// §18c replaced the single `activeJob` with a real queue. Jobs run
+// concurrently when their chosen modes permit it; see job-queue.js for
+// the rule. `activeJob` is gone -- anything that needs "is anything
+// running" asks the queue.
+let jobs = new JobQueue({
+  run: (job) => job.payload.run(job),
+  onChange: () => broadcastJobs(),
+});
+
+/** Every window that should see job state. The docked panel and the
+ *  detached window render from the same broadcast, so they cannot
+ *  disagree about what is running. */
+function broadcastJobs() {
+  const snapshot = jobs ? jobs.snapshot() : [];
+  for (const w of [mainWindow, panelWindow]) {
+    if (w && !w.isDestroyed()) w.webContents.send("jobs:changed", snapshot);
+  }
+}
+
+/**
+ * Which physical volume a path belongs to.
+ *
+ * The concurrency modes talk about sharing a *drive*, not a path, so
+ * "/Volumes/CARD/DCIM" and "/Volumes/CARD" must resolve to the same key.
+ * A FreeFrame project is its own key -- it isn't a mount, but two jobs
+ * touching one project genuinely do share a target.
+ *
+ * `volumes` is passed in so one listVolumes() call serves a whole
+ * enqueue; it shells out to diskutil and is far too slow to call per
+ * path.
+ */
+function volumeKeyOf(p, volumes) {
+  if (typeof p !== "string" || !p) return null;
+  if (p.startsWith("freeframe://")) return p;
+  let best = null;
+  for (const v of volumes) {
+    if (p === v.mountPoint || p.startsWith(v.mountPoint + path.sep)) {
+      if (!best || v.mountPoint.length > best.length) best = v.mountPoint;
+    }
+  }
+  // Not under /Volumes at all (a temp dir, the home folder) -- the boot
+  // volume. Using "/" keeps those jobs sharing one key, which is true.
+  return best || path.parse(p).root || p;
+}
 
 // ── Live volume detection ──
 // Mounting or ejecting a disk fires several fs events in quick succession
@@ -30,12 +73,40 @@ const VOLUME_DEBOUNCE_MS = 300;
 let volumeWatcher = null;
 let volumeDebounce = null;
 
+// Last known volume list, kept so that submitting a job doesn't have to
+// wait on diskutil.
+//
+// This is not an optimisation. listVolumes() shells out to `diskutil`
+// once per mounted volume, and a network share can make that take over a
+// second. Deriving a job's concurrency keys from a fresh call meant the
+// job did not exist -- not queued, not in the panel, not cancellable --
+// for that whole window. Pressing Start and seeing nothing happen is
+// exactly the failure the job panel was added to remove.
+//
+// Volume identity is also the slowest-changing thing in this app: it
+// only changes when a drive is plugged in or ejected, which is precisely
+// what the watcher below already notices.
+let cachedVolumes = [];
+
+async function volumesForKeys() {
+  // Cold start only: the renderer populates this via volumes:list on
+  // load, so in practice this await never happens for a real job.
+  if (!cachedVolumes.length) {
+    cachedVolumes = await listVolumes().catch(() => []);
+  }
+  return cachedVolumes;
+}
+
 function startVolumeWatcher() {
   if (volumeWatcher) return;
   try {
     volumeWatcher = fs.watch("/Volumes", () => {
       clearTimeout(volumeDebounce);
       volumeDebounce = setTimeout(() => {
+        // Refresh the cache here rather than waiting for the renderer to
+        // ask: a job submitted right after a drive is plugged in should
+        // key off the drive that is actually there now.
+        listVolumes().then((v) => { cachedVolumes = v; }).catch(() => {});
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send("volumes:changed");
         }
@@ -80,7 +151,9 @@ function createWindow() {
 // that fires the first time this app actually reads file contents from a
 // removable volume, not on directory listing/diskutil info.
 ipcMain.handle("volumes:list", async () => {
-  return listVolumes();
+  const v = await listVolumes();
+  cachedVolumes = v;
+  return v;
 });
 
 // Eject / disconnect. Finder makes the same distinction and users already
@@ -96,10 +169,26 @@ ipcMain.handle("volumes:eject", async (_event, { mountPoint } = {}) => {
     return { ok: false, error: "Refusing to eject a path outside /Volumes" };
   }
 
-  // Ejecting a volume mid-copy would corrupt the transfer. The renderer
-  // already hides the option, but this is the guard that actually holds.
-  if (activeJob) {
-    return { ok: false, error: "A copy is in progress — cancel it before ejecting." };
+  // Ejecting mid-copy would corrupt the transfer. With a queue this can be
+  // asked precisely -- is any live job touching THIS volume -- so a job
+  // copying an unrelated card no longer blocks ejecting this one. That was
+  // the old behaviour and it was needlessly broad: with several jobs in
+  // flight it would have made eject useless.
+  //
+  // QUEUED jobs count, not just running ones. A queued job has already been
+  // told which volumes it will read and write; ejecting one out from under
+  // it means it starts later and immediately fails on a path that no longer
+  // exists. From the user's side that is the same accident the guard exists
+  // to prevent, and it is no less likely now that jobs can wait.
+  const busy = [...jobs.running, ...jobs.queued].find(
+    (j) => j.sourceKey === mountPoint || (j.destKeys || []).includes(mountPoint),
+  );
+  if (busy) {
+    const verbing = busy.status === "queued" ? "is queued to copy" : "is still copying";
+    return {
+      ok: false,
+      error: `A copy is in progress: "${busy.label}" ${verbing} to or from this volume — cancel it before ejecting.`,
+    };
   }
 
   // The type is re-derived from the real volume list rather than taken from
@@ -324,18 +413,40 @@ function freeframeSource(projectId, folderId) {
 // also can't be a cascade parent -- reading files back down from FreeFrame
 // is explicitly out of scope for this pass, so nothing can copy *from* a
 // project.
-ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, projectId, folderId } = {}) => {
-  if (activeJob) throw new Error("A copy is already running");
+ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, projectId, folderId, concurrencyMode } = {}) => {
   const pickedFiles = Array.isArray(sourceFiles) ? sourceFiles.filter((p) => typeof p === "string" && p) : [];
   if ((typeof sourcePath !== "string" && !pickedFiles.length) || !projectId) {
     throw new Error("Source and project are required");
   }
 
-  const webContents = event.sender;
-  const send = (p) => { if (!webContents.isDestroyed()) webContents.send("copy:progress", p); };
+  // Uploads share the queue with local copies (§18c: "one unified list"
+  // covering every job type), so a card offloading to a RAID and one
+  // uploading to a project are scheduled against each other by the same
+  // rule rather than each pretending it's the only thing happening.
+  const volumes = await volumesForKeys();
+  const { settled } = jobs.add({
+    id: crypto.randomUUID(),
+    kind: "upload",
+    mode: concurrencyMode,
+    label: path.basename(sourcePath || pickedFiles[0] || "Upload") || "Upload",
+    sourceLabel: sourcePath || `${pickedFiles.length} files`,
+    destLabels: [`FreeFrame project`],
+    sourceKey: volumeKeyOf(sourcePath || pickedFiles[0], volumes),
+    destKeys: [`freeframe://${projectId}`],
+    payload: { run: (self) => runUpload(self) },
+  });
 
+  const result = await settled;
+  if (result && result.failed) throw new Error(result.error);
+  return result;
+
+  async function runUpload(self) {
   let cancelled = false;
-  activeJob = { cancel: () => { cancelled = true; } };
+  self._cancel = () => { cancelled = true; };
+  const send = (p) => {
+    jobs.updateProgress(self.id, p);
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("copy:progress", p);
+  };
   const startedAt = Date.now();
 
   try {
@@ -421,7 +532,8 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
     send({ phase: "done", summary });
     return summary;
   } finally {
-    activeJob = null;
+    self._cancel = null;
+  }
   }
 });
 
@@ -432,9 +544,6 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
 // returned by this handler, because `invoke` can only resolve once — the
 // caller awaits the final summary while the UI updates from the stream.
 ipcMain.handle("copy:start", async (event, payload) => {
-  if (activeJob) {
-    throw new Error("A copy is already running");
-  }
 
   const sourcePath = typeof payload?.sourcePath === "string" ? payload.sourcePath : null;
   // Item 5 — a source can be individually-chosen files rather than a
@@ -524,39 +633,112 @@ ipcMain.handle("copy:start", async (event, payload) => {
     presets.recordValues(values).catch(() => {});
   }
 
-  const webContents = event.sender;
-  let cancelled = false;
-  activeJob = { cancel: () => { cancelled = true; } };
+  // ── Queue it (§18c) ──
+  //
+  // Still resolves with the final summary, exactly as before queueing
+  // existed: a caller awaits its own job and never has to know there is
+  // a scheduler underneath. That contract is load-bearing -- the whole
+  // existing e2e suite awaits startCopy().
+  const volumes = await volumesForKeys();
+  const destPathsForKeys = nodes.map((n) => n.path);
 
-  try {
-    const summary = await runCopyJob({
-      sourcePath,
-      sourceFiles,
-      source: projectSource,
-      nodes,
-      algorithm,
-      mapRel,
-      isCancelled: () => cancelled,
-      onProgress: (p) => {
-        // The window can be closed mid-copy; sending to a destroyed
-        // webContents throws and would abort an otherwise fine job.
-        if (!webContents.isDestroyed()) webContents.send("copy:progress", p);
-      },
-    });
-    // Assets deliberately left out of the job travel with the summary, so
-    // "everything verified" can never be read as "everything came down".
-    if (projectSource && projectSource.skipped.length) {
-      summary.skippedAssets = projectSource.skipped;
-    }
-    return summary;
-  } finally {
-    activeJob = null;
-  }
+  const { job, settled } = jobs.add({
+    id: crypto.randomUUID(),
+    kind: projectSource ? "download" : "copy",
+    mode: payload?.concurrencyMode,
+    label: path.basename(sourcePath || (sourceFiles && sourceFiles[0]) || "Copy") || "Copy",
+    sourceLabel: sourcePath || (sourceFiles ? `${sourceFiles.length} files` : ""),
+    destLabels: destPathsForKeys.map((p) => path.basename(p) || p),
+    sourceKey: volumeKeyOf(sourcePath || (sourceFiles && sourceFiles[0]), volumes),
+    destKeys: Array.from(new Set(destPathsForKeys.map((p) => volumeKeyOf(p, volumes)).filter(Boolean))),
+    payload: { run: async (self) => {
+      let cancelled = false;
+      self._cancel = () => { cancelled = true; };
+      const summary = await runCopyJob({
+        sourcePath,
+        sourceFiles,
+        source: projectSource,
+        nodes,
+        algorithm,
+        mapRel,
+        isCancelled: () => cancelled,
+        onProgress: (p) => {
+          jobs.updateProgress(self.id, p);
+          // The legacy single-job channel stays for now: the footer and
+          // several existing tests still listen on it. The panel uses
+          // jobs:changed instead.
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("copy:progress", p);
+          }
+        },
+      });
+      if (projectSource && projectSource.skipped.length) {
+        summary.skippedAssets = projectSource.skipped;
+      }
+      return summary;
+    } },
+  });
+
+  const result = await settled;
+  // A queued-then-cancelled job never ran; a failed one carries its
+  // error. Both need to reach the awaiting caller as they did before.
+  if (result && result.failed) throw new Error(result.error);
+  return result;
 });
 
-ipcMain.handle("copy:cancel", async () => {
-  if (activeJob) activeJob.cancel();
-  return { cancelling: Boolean(activeJob) };
+ipcMain.handle("copy:cancel", async (_e, { id } = {}) => {
+  // No id cancels everything, preserving what the old single-job Cancel
+  // button meant when there was only ever one job to cancel.
+  if (id) return { cancelling: jobs.cancel(id) };
+  const n = jobs.running.length + jobs.queued.length;
+  jobs.cancelAll();
+  return { cancelling: n > 0 };
+});
+
+ipcMain.handle("jobs:list", async () => jobs.snapshot());
+
+// ── Detachable panel (§18c) ──
+// The panel is a tab in the main window by default. Detaching moves it to
+// its own BrowserWindow; both render from the same `jobs:changed`
+// broadcast, so nothing has to be handed over or kept in sync.
+function notifyDock() {
+  const detached = Boolean(panelWindow && !panelWindow.isDestroyed());
+  for (const w of [mainWindow, panelWindow]) {
+    if (w && !w.isDestroyed()) w.webContents.send("panel:docked-changed", detached);
+  }
+}
+
+ipcMain.handle("panel:detach", async () => {
+  if (panelWindow && !panelWindow.isDestroyed()) {
+    panelWindow.focus();
+    return { detached: true };
+  }
+  panelWindow = new BrowserWindow({
+    width: 720, height: 420, title: "Transfers",
+    parent: mainWindow || undefined,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true, nodeIntegration: false, sandbox: true,
+    },
+  });
+  panelWindow.loadFile(path.join(__dirname, "..", "renderer", "panel.html"));
+  // Closing the detached window re-docks rather than losing the panel --
+  // the spec's requirement, and the state was never in the window anyway.
+  panelWindow.on("closed", () => {
+    panelWindow = null;
+    notifyDock();
+  });
+  panelWindow.webContents.on("did-finish-load", () => {
+    broadcastJobs();
+    notifyDock();
+  });
+  notifyDock();
+  return { detached: true };
+});
+
+ipcMain.handle("panel:dock", async () => {
+  if (panelWindow && !panelWindow.isDestroyed()) panelWindow.close();
+  return { detached: false };
 });
 
 // Lets a user pick any folder as a source or destination, not just a

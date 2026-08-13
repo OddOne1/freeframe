@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Transfers</title>
+  <link rel="stylesheet" href="tokens.css" />
+  <link rel="stylesheet" href="panel.css" />
+  <style>
+    :root { --border: var(--border-primary); }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; height: 100vh; display: flex; flex-direction: column;
+      background: var(--bg-primary); color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 12px; border-bottom: 1px solid var(--border);
+      background: var(--bg-secondary); flex-shrink: 0;
+    }
+    h1 { margin: 0; font-size: 12px; font-weight: 600; }
+    .spacer { flex: 1; }
+    button {
+      border: 1px solid var(--border); background: var(--bg-tertiary);
+      color: var(--text-primary); font-family: inherit; font-size: 11px;
+      height: 24px; padding: 0 10px; border-radius: 6px;
+    }
+    button:hover { background: var(--bg-hover); }
+    #jobs { flex: 1; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Transfers</h1>
+    <span id="count" style="font-size:10px;color:var(--text-tertiary)"></span>
+    <span class="spacer"></span>
+    <button id="dock">Dock to main window</button>
+  </header>
+  <div id="jobs"></div>
+
+  <script src="panel.js"></script>
+  <script>
+    // Renders from the same broadcast the docked panel uses — this window
+    // holds no job state of its own, so closing it can't lose anything.
+    const host = document.getElementById("jobs");
+    const expanded = new Set();
+    let snapshot = [];
+
+    function draw() {
+      window.JobPanel.renderJobs(host, snapshot, {
+        expanded,
+        onCancel: (id) => window.freeframe.cancelCopy(id),
+        onToggle: (id) => { expanded.has(id) ? expanded.delete(id) : expanded.add(id); draw(); },
+      });
+      const running = snapshot.filter((j) => j.status === "running").length;
+      const queued = snapshot.filter((j) => j.status === "queued").length;
+      document.getElementById("count").textContent =
+        running || queued ? `${running} running · ${queued} queued` : "";
+    }
+
+    window.freeframe.onJobsChanged((s) => { snapshot = s; draw(); });
+    window.freeframe.listJobs().then((s) => { snapshot = s; draw(); });
+    document.getElementById("dock").addEventListener("click", () => window.freeframe.dockPanel());
+  </script>
+</body>
+</html>

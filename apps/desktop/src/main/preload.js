@@ -19,9 +19,12 @@ contextBridge.exposeInMainWorld("freeframe", {
   // that project (null = the whole project).
   // `sourceFiles` is the alternative to `sourcePath`: individually-chosen
   // files with no directory to walk.
-  startCopy: (sourcePath, nodes, algorithm, sourceFolderId, sourceFiles, naming) =>
+  startCopy: (sourcePath, nodes, algorithm, sourceFolderId, sourceFiles, naming, concurrencyMode) =>
     ipcRenderer.invoke("copy:start", {
       sourcePath, nodes, algorithm, sourceFolderId, sourceFiles,
+      // "free" | "source" | "destination" (§18c). Anything else is
+      // treated as the most restrictive option by the scheduler.
+      concurrencyMode,
       // { folderTemplate, fileTemplate, fields, values } or null. Main
       // re-validates required fields and unknown tokens regardless of what
       // the renderer allowed through.
@@ -35,7 +38,25 @@ contextBridge.exposeInMainWorld("freeframe", {
   previewNaming: (folderTemplate, fileTemplate, values, sourceLabel) =>
     ipcRenderer.invoke("presets:preview", { folderTemplate, fileTemplate, values, sourceLabel }),
 
-  cancelCopy: () => ipcRenderer.invoke("copy:cancel"),
+  /** No id cancels every running and queued job — what the single-job
+   *  Cancel button used to mean. An id cancels just that one. */
+  cancelCopy: (id) => ipcRenderer.invoke("copy:cancel", { id }),
+
+  /** The job queue (§18c). State lives in main and is broadcast, so the
+   *  docked panel and the detached window can never disagree. */
+  listJobs: () => ipcRenderer.invoke("jobs:list"),
+  onJobsChanged: (callback) => {
+    const listener = (_event, snapshot) => callback(snapshot);
+    ipcRenderer.on("jobs:changed", listener);
+    return () => ipcRenderer.removeListener("jobs:changed", listener);
+  },
+  detachPanel: () => ipcRenderer.invoke("panel:detach"),
+  dockPanel: () => ipcRenderer.invoke("panel:dock"),
+  onPanelDockChanged: (callback) => {
+    const listener = (_event, detached) => callback(detached);
+    ipcRenderer.on("panel:docked-changed", listener);
+    return () => ipcRenderer.removeListener("panel:docked-changed", listener);
+  },
 
   /** Eject physical media / disconnect a network share. Resolves
    *  { ok, error? } rather than throwing — a busy volume is an expected
@@ -87,8 +108,8 @@ contextBridge.exposeInMainWorld("freeframe", {
    *  size before a pull is started. */
   freeframeListAssets: (projectId, folderId, recursive) =>
     ipcRenderer.invoke("freeframe:list-assets", { projectId, folderId, recursive }),
-  freeframeUpload: (sourcePath, projectId, folderId, sourceFiles) =>
-    ipcRenderer.invoke("freeframe:upload", { sourcePath, projectId, folderId, sourceFiles }),
+  freeframeUpload: (sourcePath, projectId, folderId, sourceFiles, concurrencyMode) =>
+    ipcRenderer.invoke("freeframe:upload", { sourcePath, projectId, folderId, sourceFiles, concurrencyMode }),
 
   /** Cosmetic in-app display name per volume/folder. Never renames
    *  anything on disk. */

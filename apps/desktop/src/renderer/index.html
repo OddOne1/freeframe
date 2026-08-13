@@ -8,7 +8,9 @@
        edit the package, not this copy. Same for icons.js (lucide@0.511.0,
        the exact release apps/web pins via lucide-react). -->
   <link rel="stylesheet" href="tokens.css" />
+  <link rel="stylesheet" href="panel.css" />
   <script src="icons.js"></script>
+  <script src="panel.js" defer></script>
   <style>
     /* Colors come from tokens.css (linked above). Only the aliases this
        renderer needs on top of the shared set live here — the shared file
@@ -687,6 +689,33 @@
       background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary); width: 100%; box-sizing: border-box; }
     .values-grid .missing { border-color: var(--status-error); }
 
+    /* ── Docked job panel (§18c) ── */
+    #jobs-tab {
+      display: flex; align-items: center; gap: 8px;
+      padding: 5px 12px; border-top: 1px solid var(--border);
+      background: var(--bg-secondary); flex-shrink: 0; font-size: 11px;
+    }
+    #jobs-tab .spacer { flex: 1; }
+    #jobs-tab button {
+      border: none; background: transparent; color: var(--text-tertiary);
+      font-family: inherit; font-size: 11px; padding: 2px 6px; border-radius: 4px;
+    }
+    #jobs-tab button:hover { background: var(--bg-hover); color: var(--text-primary); }
+    #jobs-toggle { color: var(--text-primary); font-weight: 500; display: flex; align-items: center; gap: 5px; }
+    #jobs-panel {
+      display: none; flex-shrink: 0;
+      border-top: 1px solid var(--border); background: var(--bg-secondary);
+      overflow-y: auto; max-height: 180px;
+    }
+    #jobs-panel.open { display: block; }
+    /* The "expanded" state the spec asks for: same panel, more of it. */
+    #jobs-panel.tall { max-height: 420px; }
+    #jobs-detached-note {
+      display: none; padding: 10px 12px; font-size: 11px; color: var(--text-tertiary);
+    }
+    #jobs-panel.detached #jobs-list { display: none; }
+    #jobs-panel.detached #jobs-detached-note { display: block; }
+
     #modal-backdrop {
       position: fixed; inset: 0; z-index: 1100; display: none;
       background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
@@ -785,6 +814,13 @@
     </button>
     <!-- Naming preset (§10 / §18b). Sits beside the checksum pill because
          both are "how this job runs" settings chosen before starting. -->
+    <!-- §18c: which other jobs this one will run alongside. Deliberately
+         next to the checksum and naming pills — all three are "how this
+         job runs" choices made before starting. -->
+    <button class="mode" id="conc-btn" title="Which jobs this one may run alongside">
+      <span id="conc-label">Runs alone</span>
+      <span class="icon caret" data-icon="chevronDown"></span>
+    </button>
     <button class="mode" id="preset-btn" title="Folder and file naming">
       <span id="preset-label">No naming preset</span>
       <span class="icon caret" data-icon="chevronDown"></span>
@@ -828,6 +864,25 @@
       </div>
       <div class="col-body"><div class="zone" id="zone-dest" data-zone="dest"></div></div>
     </div>
+  </div>
+
+  <!-- Job panel (§18c): a docked tab, not a modal. Rows come from main's
+       queue snapshot, so this and the detached window always agree. -->
+  <div id="jobs-panel">
+    <div id="jobs-list"></div>
+    <div id="jobs-detached-note">
+      Transfers are showing in their own window.
+      <button id="jobs-redock" style="text-decoration:underline">Bring them back here</button>
+    </div>
+  </div>
+  <div id="jobs-tab">
+    <button id="jobs-toggle">
+      <span class="icon" data-icon="chevronDown"></span>
+      <span id="jobs-tab-label">Transfers</span>
+    </button>
+    <span class="spacer"></span>
+    <button id="jobs-taller" title="Show more rows">Expand</button>
+    <button id="jobs-detach" title="Open in a separate window">Detach</button>
   </div>
 
   <footer>
@@ -2540,7 +2595,8 @@
             algorithm,
             isProject(sourcePath) ? uploadFolderIdFor(projectIdOf(sourcePath)) : null,
             sourceFiles,
-            namingPayload()
+            namingPayload(),
+            concurrencyMode
           );
           renderSummary(summary);
         }
@@ -2556,7 +2612,8 @@
             isFileSet(sourcePath) ? null : sourcePath,
             projectId,
             uploadFolderIdFor(projectId),
-            sourceFiles
+            sourceFiles,
+            concurrencyMode
           );
           renderSummary(up);
         }
@@ -2913,6 +2970,63 @@
         .map((f) => f.label || f.key);
     }
 
+    // ── Job panel + concurrency mode (§18c) ──────────────────────────────
+    //
+    // Job state lives in the MAIN process and arrives as a whole snapshot
+    // on every change. The renderer keeps none of its own — that is what
+    // stops the docked panel and the detached window disagreeing about
+    // what is running.
+
+    let jobSnapshot = [];
+    const jobExpanded = new Set();
+    let panelDetached = false;
+
+    // Which other jobs this one tolerates. Default "source": a second
+    // offload of the SAME card can run alongside, anything else waits.
+    // The conservative default of the three, since it's the one where
+    // concurrent access is provably the same device already being read.
+    let concurrencyMode = "source";
+    const CONC_LABELS = {
+      free: "Runs with anything",
+      source: "Runs alone",
+      destination: "Shares destination",
+    };
+    const CONC_OPTIONS = [
+      ["source", "Only alongside jobs from the same source",
+        "Another offload of this same card can run at the same time. Anything else waits."],
+      ["destination", "Only alongside jobs to the same destination",
+        "Another job writing to this same drive can run at the same time. Anything else waits."],
+      ["free", "Alongside anything",
+        "No restriction. Two jobs may end up contending for one disk — that is allowed on purpose."],
+    ];
+
+    function updateConcLabel() {
+      const l = $("conc-label");
+      if (l) l.textContent = CONC_LABELS[concurrencyMode] || concurrencyMode;
+    }
+
+    function drawJobs() {
+      const host = $("jobs-list");
+      if (!host || !window.JobPanel) return;
+      window.JobPanel.renderJobs(host, jobSnapshot, {
+        expanded: jobExpanded,
+        onCancel: (id) => window.freeframe.cancelCopy(id),
+        onToggle: (id) => {
+          jobExpanded.has(id) ? jobExpanded.delete(id) : jobExpanded.add(id);
+          drawJobs();
+        },
+      });
+
+      const running = jobSnapshot.filter((j) => j.status === "running").length;
+      const queued = jobSnapshot.filter((j) => j.status === "queued").length;
+      const label = $("jobs-tab-label");
+      if (label) {
+        label.textContent = running || queued
+          ? `Transfers — ${running} running${queued ? `, ${queued} queued` : ""}`
+          : "Transfers";
+      }
+    }
+
     // ── Item 6: native OS drag-and-drop from Finder ──
     //
     // Entirely separate from the in-app pointer drag (beginDrag/mousemove/
@@ -3181,6 +3295,60 @@
         render();
       });
       on("ffdir-backdrop", "keydown", (e) => { if (e.key === "Escape") closeFolderPicker(); });
+    });
+
+    initStep("job panel", () => {
+      on("jobs-toggle", "click", () => $("jobs-panel").classList.toggle("open"));
+      on("jobs-taller", "click", () => {
+        const panel = $("jobs-panel");
+        panel.classList.add("open");
+        panel.classList.toggle("tall");
+        $("jobs-taller").textContent = panel.classList.contains("tall") ? "Shrink" : "Expand";
+      });
+      on("jobs-detach", "click", () => window.freeframe.detachPanel());
+      on("jobs-redock", "click", () => window.freeframe.dockPanel());
+
+      window.freeframe.onJobsChanged((snapshot) => {
+        jobSnapshot = snapshot;
+        drawJobs();
+        // Open the panel the first time something is actually running, so
+        // a job never runs with no visible sign of it.
+        if (snapshot.some((j) => j.status === "running" || j.status === "queued")) {
+          $("jobs-panel").classList.add("open");
+        }
+      });
+      window.freeframe.onPanelDockChanged((detached) => {
+        panelDetached = detached;
+        $("jobs-panel").classList.toggle("detached", detached);
+        $("jobs-detach").textContent = detached ? "Detached" : "Detach";
+        $("jobs-detach").disabled = detached;
+        if (detached) $("jobs-panel").classList.add("open");
+      });
+      window.freeframe.listJobs().then((s) => { jobSnapshot = s; drawJobs(); }).catch(() => {});
+    });
+
+    initStep("concurrency mode", () => {
+      updateConcLabel();
+      on("conc-btn", "click", (e) => {
+        e.stopPropagation();
+        menu.replaceChildren();
+        menu.appendChild(el("div", { class: "label", text: "Run this job…" }));
+        for (const [value, title, desc] of CONC_OPTIONS) {
+          const b = el("button", {
+            onClick: () => { concurrencyMode = value; updateConcLabel(); closeMenu(); },
+          });
+          b.appendChild(el("div", { text: (value === concurrencyMode ? "✓ " : "") + title }));
+          b.appendChild(el("div", {
+            style: "font-size:10px;color:var(--text-tertiary);white-space:normal;max-width:260px;line-height:1.4",
+            text: desc,
+          }));
+          menu.appendChild(b);
+        }
+        const r = e.currentTarget.getBoundingClientRect();
+        menu.style.display = "block";
+        menu.style.left = `${Math.min(r.left, window.innerWidth - 300)}px`;
+        menu.style.top = `${r.bottom + 4}px`;
+      });
     });
 
     initStep("naming presets", () => {

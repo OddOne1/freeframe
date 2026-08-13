@@ -471,11 +471,16 @@ async function main() {
     // millisecond, so the first attempt at this test ejected successfully
     // and proved nothing. 80 files gives it enough per-file overhead to
     // still be running when the eject lands.
+    //
+    // The guard became volume-specific with the job queue (§18c). It used
+    // to refuse any eject while any copy ran anywhere, which with several
+    // concurrent jobs would have made eject permanently unavailable. So
+    // both halves are asserted now: the volume actually in use is
+    // protected, and an unrelated one is not.
     {
       const busySrc = path.join(tmp, "BUSY_SRC");
-      const busyDst = path.join(tmp, "BUSY_DST");
+      const busyDst = "/Volumes/FFTESTVOL/BUSY_DST";
       await fs.mkdir(busySrc, { recursive: true });
-      await fs.mkdir(busyDst, { recursive: true });
       for (let i = 0; i < 80; i++) {
         await fs.writeFile(path.join(busySrc, `f${i}.bin`), Buffer.alloc(64 * 1024, i));
       }
@@ -492,7 +497,48 @@ async function main() {
         return { ok: false, error: "job never observed as active" };
       })()`);
       check(duringJob && duringJob.ok === false && /copy is in progress/i.test(duringJob.error || ""),
-        "main process refuses to eject while a copy job is active", JSON.stringify(duringJob));
+        "main refuses to eject a volume a live job is writing to", JSON.stringify(duringJob));
+
+      // The other half: a job on unrelated paths must NOT hold this volume
+      // hostage. Under the old blanket guard this returned a refusal.
+      const unrelatedDst = path.join(tmp, "BUSY_DST2");
+      await fs.mkdir(unrelatedDst, { recursive: true });
+      const duringUnrelated = await cdp.eval(`(async () => {
+        const p = window.freeframe.startCopy(${JSON.stringify(busySrc)}, [{ id: 'y', path: ${JSON.stringify(unrelatedDst)}, parentId: null }]);
+        let sawRunning = false, refusal = null;
+        for (let i = 0; i < 200; i++) {
+          const jobs = await window.freeframe.listJobs();
+          const live = jobs.find(j => j.status === "running" || j.status === "queued");
+          if (live) {
+            sawRunning = true;
+            const r = await window.freeframe.ejectVolume("/Volumes/FFTESTVOL");
+            // Not ok is fine for other reasons (busy fs); only a guard
+            // refusal is the failure being checked for here.
+            if (r && r.ok === false && /copy is in progress/i.test(r.error || "")) refusal = r.error;
+            break;
+          }
+          await new Promise(res => setTimeout(res, 5));
+        }
+        try { await p; } catch {}
+        return { sawRunning, refusal };
+      })()`);
+      check(duringUnrelated.sawRunning && duringUnrelated.refusal === null,
+        "a job on unrelated paths does not block ejecting this volume",
+        JSON.stringify(duringUnrelated));
+
+      // The eject above may well have succeeded — that was the point. Ask
+      // the filesystem rather than the renderer, whose list only updates
+      // when the debounced watcher fires and is briefly stale right here.
+      let stillThere = true;
+      try { await fs.access("/Volumes/FFTESTVOL"); } catch { stillThere = false; }
+      if (!stillThere) {
+        await execFileAsync("hdiutil", ["attach", dmg]);
+        attached = true;
+        for (let i = 0; i < 40; i++) {
+          if ((await cdp.eval("volumes.map(v => v.name)")).includes("FFTESTVOL")) break;
+          await sleep(250);
+        }
+      }
     }
 
     // Now actually eject it through the app and confirm the watcher notices.
