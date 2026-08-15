@@ -1,4 +1,5 @@
-"""Separately-uploaded sidecar files (ASC CDL, ALE, camera XML).
+"""Separately-uploaded sidecar files (ASC CDL, ALE, camera XML, DJI telemetry,
+and camera-native clip metadata).
 
 Kept in its own table with its own `parsed_metadata` rather than merged into
 `MediaFile.technical_metadata` on purpose: this data is user-supplied and
@@ -30,6 +31,18 @@ class SidecarType(str, PyEnum):
     cdl = "cdl"
     ale = "ale"
     camera_xml = "camera_xml"
+    # Added 2026-08-15 (§23b/§23c). DJI's .SRT reuses SubRip syntax to carry
+    # per-frame flight telemetry — it is not a caption track, which is why the
+    # original "no subtitle-style sidecars" exclusion no longer applies to it.
+    dji_srt = "dji_srt"
+    # Camera-native clip metadata. Only panasonic_clipinfo has a structure that
+    # could be grounded in a real implementation (libbluray's CLPI parser);
+    # the rest are parsed best-effort and say so in their parsed_metadata.
+    panasonic_clipinfo = "panasonic_clipinfo"
+    nikon_nksc = "nikon_nksc"
+    red_rmd = "red_rmd"
+    sony_bim = "sony_bim"
+    canon_cif = "canon_cif"
 
 
 class SidecarFile(Base):

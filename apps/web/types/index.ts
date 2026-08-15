@@ -782,7 +782,26 @@ export interface TestEmailResponse {
 
 // ─── Sidecar files ────────────────────────────────────────────────────────────
 
-export type SidecarType = 'cdl' | 'ale' | 'camera_xml'
+export type SidecarType =
+  | 'cdl'
+  | 'ale'
+  | 'camera_xml'
+  | 'dji_srt'
+  | 'panasonic_clipinfo'
+  | 'nikon_nksc'
+  | 'red_rmd'
+  | 'sony_bim'
+  | 'canon_cif'
+
+/** Parser provenance, written into `parsed_metadata._meta` by every parser
+ *  added in §23c. `best_effort` means the format is proprietary and only what
+ *  could be verified from the bytes is shown — the UI must say so rather than
+ *  presenting it as fact. */
+export interface SidecarParserMeta {
+  confidence: 'specified' | 'best_effort'
+  note: string
+  format?: string
+}
 
 /** Mirrors SidecarResponse in apps/api/schemas/sidecar.py. `parsed_metadata`
  *  shape varies by type: CDL gives { color_corrections: [...] }, ALE gives

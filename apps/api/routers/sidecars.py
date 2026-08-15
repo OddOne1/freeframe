@@ -32,6 +32,7 @@ from ..services import s3_service
 from ..services.permissions import require_project_role, require_asset_access
 from ..services.storage_prefix import prefix_for_project
 from ..services.sidecar_parsers import (
+    BINARY_SIDECAR_TYPES,
     SIDECAR_EXTENSIONS,
     SidecarParseError,
     detect_sidecar_type,
@@ -44,6 +45,11 @@ router = APIRouter(tags=["sidecars"])
 
 # Sidecars are small text files; anything larger is a mistaken upload.
 MAX_SIDECAR_BYTES = 5 * 1024 * 1024
+# Except DJI telemetry, which is one SubRip block per frame — a half-hour
+# flight legitimately runs past 5MB. Safe to allow, because parse_dji_srt
+# downsamples to a fixed number of stored samples, so what lands in JSONB is
+# bounded no matter how long the flight was.
+MAX_SIDECAR_BYTES_BY_TYPE = {"dji_srt": 25 * 1024 * 1024}
 
 
 def _basename_no_ext(filename: str) -> str:
@@ -99,8 +105,6 @@ async def _store_sidecar(
     current_user: User,
 ) -> SidecarFile:
     body = await file.read()
-    if len(body) > MAX_SIDECAR_BYTES:
-        raise HTTPException(status_code=400, detail="Sidecar file too large (max 5MB)")
 
     filename = file.filename or "sidecar"
     sidecar_type = detect_sidecar_type(filename)
@@ -110,13 +114,18 @@ async def _store_sidecar(
             detail=f"Unsupported sidecar type — expected one of {', '.join(sorted(SIDECAR_EXTENSIONS))}",
         )
 
-    try:
-        text = body.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="Sidecar file must be UTF-8 text")
+    max_bytes = MAX_SIDECAR_BYTES_BY_TYPE.get(sidecar_type, MAX_SIDECAR_BYTES)
+    if len(body) > max_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Sidecar file too large (max {max_bytes // (1024 * 1024)}MB)",
+        )
 
     try:
-        parsed = parse_sidecar(sidecar_type, text, clip_name=filename)
+        # Raw bytes, not decoded text: .CPI/.BIM/.CIF/.NKSC are binary, and a
+        # UTF-8 decode here would reject them before their parser ever ran.
+        # The text formats decode inside their own parser instead.
+        parsed = parse_sidecar(sidecar_type, body, clip_name=filename)
     except SidecarParseError as exc:
         # Surfaced, not swallowed: storing an unparsed sidecar would look
         # like success and then display nothing.
@@ -127,7 +136,10 @@ async def _store_sidecar(
     # first upload has already locked this (§14).
     project = db.query(Project).filter(Project.id == asset.project_id).first()
     key = f"sidecars/{prefix_for_project(project)}/{asset.id}/{uuid.uuid4()}_{os.path.basename(filename)}"
-    s3_service.put_object(key, body, content_type="text/plain", cache_control="max-age=86400")
+    content_type = (
+        "application/octet-stream" if sidecar_type in BINARY_SIDECAR_TYPES else "text/plain"
+    )
+    s3_service.put_object(key, body, content_type=content_type, cache_control="max-age=86400")
 
     row = SidecarFile(
         asset_id=asset.id,

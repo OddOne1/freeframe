@@ -70,7 +70,11 @@ export function UploadZone({ onFilesSelected, className }: UploadZoneProps) {
         ref={inputRef}
         type="file"
         multiple
-        accept="video/*,audio/*,image/*,application/mxf,.mxf,.mov,.mts,.m2ts,.braw,.r3d,.ari,.arri,.dng,.cine,.dpx,.exr"
+        /* Sidecar extensions are listed too: the picker greys out anything not
+           named here, so without them a CDL or DJI telemetry file could only be
+           added by dragging it in. Kept in sync with SIDECAR_EXTENSION_RE in
+           stores/upload-store.ts. */
+        accept="video/*,audio/*,image/*,application/mxf,.mxf,.mov,.mts,.m2ts,.braw,.r3d,.ari,.arri,.dng,.cine,.dpx,.exr,.cdl,.cc,.ccc,.ale,.xml,.srt,.cpi,.nksc,.rmd,.bim,.cif"
         className="hidden"
         onChange={(e) => handleFiles(e.target.files)}
       />

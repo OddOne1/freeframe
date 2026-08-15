@@ -42,7 +42,12 @@ import { Avatar } from "@/components/shared/avatar";
 import { AssetGrid } from "@/components/projects/asset-grid";
 import { CommentPanel } from "@/components/review/comment-panel";
 import { UploadZone } from "@/components/upload/upload-zone";
-import { useUploadStore, isSidecarFile, uploadSidecars } from "@/stores/upload-store";
+import {
+  useUploadStore,
+  isCameraJunkFile,
+  isSidecarFile,
+  uploadSidecars,
+} from "@/stores/upload-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useViewStore } from "@/stores/view-store";
 import { useBreadcrumbStore } from "@/stores/breadcrumb-store";
@@ -490,9 +495,16 @@ export default function ProjectDetailPage() {
     Array<{ file: string; ok: boolean; detail: string }> | null
   >(null);
 
+  const [skippedJunkCount, setSkippedJunkCount] = React.useState(0);
+
   const handleFilesSelected = (files: File[]) => {
-    setPendingFiles(files);
-    if (files.length > 0) setAssetName(files[0].name.replace(/\.[^/.]+$/, ""));
+    // Camera housekeeping files are dropped here rather than at upload time,
+    // so they never appear in the selected-files list either -- a dropped card
+    // folder should read as "12 clips", not "12 clips and 40 index files".
+    const usable = files.filter((f) => !isCameraJunkFile(f));
+    setSkippedJunkCount(files.length - usable.length);
+    setPendingFiles(usable);
+    if (usable.length > 0) setAssetName(usable[0].name.replace(/\.[^/.]+$/, ""));
   };
 
   const handleStartUpload = () => {
@@ -523,6 +535,7 @@ export default function ProjectDetailPage() {
     }
 
     setPendingFiles([]);
+    setSkippedJunkCount(0);
     setAssetName("");
     setUploadOpen(false);
   };
@@ -1203,7 +1216,20 @@ export default function ProjectDetailPage() {
                 </Dialog.Description>
                 <div className="mt-4 space-y-4">
                   {pendingFiles.length === 0 ? (
-                    <UploadZone onFilesSelected={handleFilesSelected} />
+                    <>
+                      <UploadZone onFilesSelected={handleFilesSelected} />
+                      {/* Only shown when the skip left nothing to upload.
+                          Otherwise a dropped CLIPINF folder would silently do
+                          nothing at all, which reads as the app ignoring the
+                          drag rather than as it working correctly. */}
+                      {skippedJunkCount > 0 && (
+                        <p className="text-xs text-text-tertiary">
+                          Skipped {skippedJunkCount} camera housekeeping file
+                          {skippedJunkCount !== 1 ? "s" : ""} (thumbnails and card
+                          indexes). Nothing left to upload from that selection.
+                        </p>
+                      )}
+                    </>
                   ) : (
                     <>
                       <div className="rounded-lg border border-border bg-bg-tertiary">
@@ -1236,7 +1262,10 @@ export default function ProjectDetailPage() {
                           type="button"
                           variant="secondary"
                           size="sm"
-                          onClick={() => setPendingFiles([])}
+                          onClick={() => {
+                            setPendingFiles([]);
+                            setSkippedJunkCount(0);
+                          }}
                         >
                           Change files
                         </Button>

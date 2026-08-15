@@ -242,11 +242,52 @@ function startSpeedSampler(
 
 /** Extensions that identify a sidecar rather than a new asset.
  *  Kept in sync with SIDECAR_EXTENSIONS in
- *  apps/api/services/sidecar_parsers.py. */
-const SIDECAR_EXTENSION_RE = /\.(cdl|cc|ccc|ale|xml)$/i
+ *  apps/api/services/sidecar_parsers.py.
+ *
+ *  `.srt` is here because DJI writes per-frame flight telemetry into a file
+ *  that merely borrows SubRip syntax — it is not a caption track (§23b). A
+ *  genuine subtitle file dropped here is rejected by the parser with an
+ *  explanation rather than stored as an empty one. */
+const SIDECAR_EXTENSION_RE = /\.(cdl|cc|ccc|ale|xml|srt|cpi|nksc|rmd|bim|cif)$/i
 
 export function isSidecarFile(file: File): boolean {
   return SIDECAR_EXTENSION_RE.test(file.name)
+}
+
+/**
+ * Camera-card housekeeping files: regenerable indexes and thumbnails that
+ * carry nothing a post workflow can use (§23a).
+ *
+ * Dragging a card folder in bypasses the file picker's `accept=` filter
+ * entirely, so before this every one of these reached /upload/initiate and
+ * came back as its own 400. They are dropped from the batch instead — not
+ * uploaded, not reported per-file.
+ *
+ * Two things deliberately absent:
+ *  - **GoPro `.LRV`** is a ready-made offline-edit proxy, not junk, even
+ *    though it sits beside the real junk on a GoPro card.
+ *  - AVCHD's empty bundle folders can't appear here at all — a browser hands
+ *    over files, never directory entries.
+ *
+ * `.bmp` is treated as junk (Panasonic writes thumbnails as BMP) even though
+ * a BMP could in principle be a real asset: `image/bmp` is not in the API's
+ * ALLOWED_MIME_TYPES, so uploading one is a guaranteed 400 today either way.
+ * Skipping it loses nothing that currently works.
+ */
+const JUNK_EXTENSION_RE = /\.(ppn|smi|thm|rtn|bmp)$/i
+const JUNK_FILENAMES = new Set([
+  'index.mif',      // Canon card index
+  'lastclip.txt',   // Panasonic card index
+  '.ds_store',      // macOS, not a camera format but identical in effect
+  'thumbs.db',      // Windows, same
+])
+
+export function isCameraJunkFile(file: File): boolean {
+  const name = (file.name.split('/').pop() ?? file.name).toLowerCase()
+  if (JUNK_FILENAMES.has(name)) return true
+  // AppleDouble resource forks, written whenever a card is touched on a Mac.
+  if (name.startsWith('._')) return true
+  return JUNK_EXTENSION_RE.test(name)
 }
 
 /**

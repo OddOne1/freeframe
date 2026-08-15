@@ -2,10 +2,10 @@
 
 import * as React from 'react'
 import useSWR from 'swr'
-import { Upload, FileText, Loader2 } from 'lucide-react'
+import { Upload, FileText, Loader2, AlertTriangle } from 'lucide-react'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import type { SidecarFile } from '@/types'
+import type { SidecarFile, SidecarParserMeta } from '@/types'
 
 /**
  * Sidecar-derived metadata, rendered separately from the ffprobe/exiftool
@@ -20,7 +20,9 @@ import type { SidecarFile } from '@/types'
 const HIDDEN_KEY_RE = /(software|firmware|generator|tool_?version|app_?version|writer)/i
 
 function isHidden(key: string): boolean {
-  return HIDDEN_KEY_RE.test(key)
+  // `_`-prefixed keys are parser bookkeeping (currently just `_meta`), not
+  // metadata the shoot produced. Reserved on the backend for the same reason.
+  return key.startsWith('_') || HIDDEN_KEY_RE.test(key)
 }
 
 /** Same rule as everywhere else: never render a row with no value. */
@@ -124,8 +126,102 @@ function GenericRows({ data, prefix = '' }: { data: Record<string, unknown>; pre
   return <>{rows}</>
 }
 
+function formatClock(seconds: number): string {
+  const whole = Math.floor(seconds)
+  const mm = String(Math.floor(whole / 60)).padStart(2, '0')
+  const ss = String(whole % 60).padStart(2, '0')
+  return `${mm}:${ss}`
+}
+
+/** DJI flight telemetry: hundreds of per-frame samples, so the ranges and the
+ *  field list lead, and the track itself stays collapsed. Rendering every
+ *  sample as its own key/value row would bury everything else in the panel. */
+function TelemetryBlock({ meta }: { meta: Record<string, unknown> }) {
+  const samples = (meta.samples as Array<Record<string, unknown>>) ?? []
+  const ranges = (meta.ranges as Record<string, { min: number; max: number }>) ?? {}
+  const fields = (meta.fields as string[]) ?? []
+
+  return (
+    <div className="space-y-2">
+      {hasValue(meta.sample_count) && (
+        <Row label="Samples" value={String(meta.sample_count)} />
+      )}
+      {hasValue(meta.duration_seconds) && (
+        <Row label="Duration" value={formatClock(Number(meta.duration_seconds))} />
+      )}
+      {hasValue(meta.first_timestamp) && (
+        <Row label="Recorded" value={String(meta.first_timestamp)} />
+      )}
+
+      {Object.entries(ranges).map(([key, range]) => (
+        <Row
+          key={key}
+          label={humanize(key)}
+          value={
+            <span className="font-mono tabular-nums">
+              {range.min} → {range.max}
+            </span>
+          }
+        />
+      ))}
+
+      {samples.length > 0 && (
+        <details>
+          <summary className="cursor-pointer text-2xs uppercase tracking-wide text-text-tertiary">
+            Telemetry track
+            {typeof meta.samples_downsampled === 'string'
+              ? ` (${meta.samples_downsampled})`
+              : ` (${samples.length})`}
+          </summary>
+          <div className="mt-1 max-h-56 overflow-y-auto space-y-1">
+            {samples.map((sample, i) => {
+              const pairs = Object.entries(sample).filter(
+                ([k, v]) => k !== 't' && k !== 't_end' && hasValue(v),
+              )
+              return (
+                <div key={i} className="flex items-start gap-2 text-2xs">
+                  <span className="shrink-0 font-mono tabular-nums text-text-tertiary">
+                    {formatClock(Number(sample.t))}
+                  </span>
+                  <span className="min-w-0 break-words text-text-secondary">
+                    {pairs
+                      .map(([k, v]) => `${k} ${Array.isArray(v) ? v.join(', ') : String(v)}`)
+                      .join(' · ')}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </details>
+      )}
+
+      {fields.length > 0 && <Row label="Fields" value={fields.join(', ')} />}
+    </div>
+  )
+}
+
+/** Says plainly when a parser was working without a spec. The alternative —
+ *  rendering a best-effort read identically to a grounded one — is how a
+ *  guessed value ends up being trusted downstream. */
+function ConfidenceNote({ meta }: { meta: SidecarParserMeta }) {
+  if (meta.confidence !== 'best_effort') return null
+  return (
+    <div className="flex items-start gap-1.5 rounded-md border border-status-warning/30 bg-status-warning/5 px-2 py-1.5">
+      <AlertTriangle className="mt-px h-3 w-3 shrink-0 text-status-warning" />
+      <p className="text-2xs text-text-tertiary">
+        <span className="text-text-secondary">Unverified format. </span>
+        {meta.note}
+      </p>
+    </div>
+  )
+}
+
 function SidecarBody({ sidecar }: { sidecar: SidecarFile }) {
   const meta = sidecar.parsed_metadata ?? {}
+
+  if (sidecar.sidecar_type === 'dji_srt') {
+    return <TelemetryBlock meta={meta} />
+  }
 
   if (sidecar.sidecar_type === 'cdl') {
     const corrections = (meta.color_corrections as Array<Record<string, unknown>>) ?? []
@@ -170,6 +266,12 @@ const TYPE_LABEL: Record<string, string> = {
   cdl: 'ASC CDL',
   ale: 'ALE',
   camera_xml: 'Camera XML',
+  dji_srt: 'DJI telemetry',
+  panasonic_clipinfo: 'Clip info (AVCHD)',
+  nikon_nksc: 'Nikon sidecar',
+  red_rmd: 'RED metadata',
+  sony_bim: 'Sony clip metadata',
+  canon_cif: 'Canon clip info',
 }
 
 export function SidecarMetadata({
@@ -222,7 +324,7 @@ export function SidecarMetadata({
             <input
               ref={fileRef}
               type="file"
-              accept=".cdl,.cc,.ccc,.ale,.xml"
+              accept=".cdl,.cc,.ccc,.ale,.xml,.srt,.cpi,.nksc,.rmd,.bim,.cif"
               onChange={handleFile}
               className="hidden"
             />
@@ -248,21 +350,26 @@ export function SidecarMetadata({
         <div className="h-8 rounded bg-bg-tertiary animate-pulse" />
       ) : sidecars.length === 0 ? (
         <p className="text-2xs text-text-tertiary py-1">
-          No sidecar attached. CDL, ALE and camera XML files are matched by filename on upload.
+          No sidecar attached. CDL, ALE, camera XML, DJI telemetry and
+          camera-native clip metadata are matched by filename on upload.
         </p>
       ) : (
         <div className="space-y-3">
-          {sidecars.map((s) => (
-            <div key={s.id} className="space-y-1.5">
-              <div className="flex items-center gap-1.5">
-                <FileText className="h-3 w-3 text-text-tertiary shrink-0" />
-                <span className="text-2xs text-text-tertiary truncate">
-                  {TYPE_LABEL[s.sidecar_type] ?? s.sidecar_type} · {s.original_filename}
-                </span>
+          {sidecars.map((s) => {
+            const parserMeta = (s.parsed_metadata?._meta ?? null) as SidecarParserMeta | null
+            return (
+              <div key={s.id} className="space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <FileText className="h-3 w-3 text-text-tertiary shrink-0" />
+                  <span className="text-2xs text-text-tertiary truncate">
+                    {TYPE_LABEL[s.sidecar_type] ?? s.sidecar_type} · {s.original_filename}
+                  </span>
+                </div>
+                {parserMeta && <ConfidenceNote meta={parserMeta} />}
+                <SidecarBody sidecar={s} />
               </div>
-              <SidecarBody sidecar={s} />
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>
