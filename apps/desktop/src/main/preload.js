@@ -39,8 +39,10 @@ contextBridge.exposeInMainWorld("freeframe", {
   listPresets: () => ipcRenderer.invoke("presets:list"),
   savePreset: (preset) => ipcRenderer.invoke("presets:save", { preset }),
   deletePreset: (id) => ipcRenderer.invoke("presets:delete", { id }),
-  previewNaming: (folderTemplate, fileTemplate, values, sourceLabel) =>
-    ipcRenderer.invoke("presets:preview", { folderTemplate, fileTemplate, values, sourceLabel }),
+  /** `disabled` (§22g) is the list of field keys switched off for this
+   *  transfer, so the preview shows the name the job will actually make. */
+  previewNaming: (folderTemplate, fileTemplate, values, sourceLabel, disabled) =>
+    ipcRenderer.invoke("presets:preview", { folderTemplate, fileTemplate, values, sourceLabel, disabled }),
 
   /** §22h — {sourcecounter}. bump() claims the current number and advances
    *  the stored one; set() is the editable field in the presets window. */

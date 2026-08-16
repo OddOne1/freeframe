@@ -143,6 +143,50 @@
        fix — without it the flex children re-introduce the same floor. */
     /* Volumes (middle) takes 60% — it's where all real browsing happens,
        while Sources/Destinations are short lists of assigned items. */
+    /* §22g — .columns keeps exactly three tracks; the fields panel is a
+       sibling in this row, not a fourth grid column. Adding a track would
+       have changed what §18a's ratio assertions measure. */
+    .workspace { flex: 1; display: flex; min-height: 0; min-width: 0; }
+    .workspace > .columns { flex: 1; }
+    #fields-panel {
+      width: 250px; flex-shrink: 0; display: flex; flex-direction: column;
+      min-height: 0; background: var(--bg-primary);
+      border-left: 1px solid var(--border);
+    }
+    #fields-panel.hidden { display: none; }
+    #fields-body { padding: 10px 12px; }
+    .fv-empty { font-size: 11px; color: var(--text-tertiary); line-height: 1.6; }
+    .fv-source {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+      color: var(--text-tertiary); margin-bottom: 8px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .fv-field { margin-bottom: 10px; }
+    .fv-label { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+    .fv-label span { font-size: 11px; color: var(--text-secondary); min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fv-label .req { color: var(--status-warning); flex-shrink: 0; }
+    .fv-toggle { margin-left: auto; flex-shrink: 0; }
+    .fv-field input[type="text"] {
+      width: 100%; box-sizing: border-box; height: 28px; border-radius: 6px;
+      padding: 0 8px; font-size: 12px; font-family: inherit;
+      background: var(--bg-secondary); border: 1px solid var(--border);
+      color: var(--text-primary);
+    }
+    .fv-field.off input[type="text"] { opacity: .4; }
+    .fv-field input.missing { border-color: var(--status-error); }
+    .fv-note { font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
+    .fv-preview {
+      margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
+      font-family: ui-monospace, monospace; font-size: 10px;
+      color: var(--text-tertiary); word-break: break-all; line-height: 1.5;
+    }
+    .fv-preview.bad { color: var(--status-error); }
+    /* Restores the panel once hidden — lives in the header so it is
+       reachable when the panel itself is not. */
+    #fields-show { display: none; }
+    #fields-show.on { display: inline-flex; }
+
     .columns { flex: 1; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,3fr) minmax(0,1fr); gap: 1px; background: var(--border); min-height: 0; }
     .col { background: var(--bg-primary); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
     .col-head {
@@ -913,10 +957,12 @@
     <span class="spacer"></span>
     <button id="account">Sign in to FreeFrame</button>
     <button id="refresh"><span class="icon" data-icon="refresh"></span> Refresh</button>
+    <button id="fields-show">Fields</button>
     <button id="clear">Clear</button>
     <button id="start" class="primary" disabled>Copy &amp; Verify</button>
   </header>
 
+  <div class="workspace">
   <div class="columns">
     <div class="col">
       <div class="col-head">
@@ -943,6 +989,20 @@
       </div>
       <div class="col-body"><div class="zone" id="zone-dest" data-zone="dest"></div></div>
     </div>
+  </div>
+
+  <!-- §22g — per-transfer values for the active preset's custom fields.
+       A persistent region rather than a modal: these describe the card in
+       front of you, and they are edited while looking at it. Separate from
+       the job panel below, which is about work already submitted. -->
+  <aside id="fields-panel">
+    <div class="col-head">
+      <h2>Fields</h2>
+      <span class="spacer"></span>
+      <button id="fields-collapse" title="Hide the fields panel">Hide</button>
+    </div>
+    <div class="col-body"><div id="fields-body"></div></div>
+  </aside>
   </div>
 
   <!-- Job panel (§18c): a docked tab, not a modal. Rows come from main's
@@ -2477,6 +2537,10 @@
     }
 
     function render() {
+      // §22g — whichever source is assigned owns the values now, so rebind
+      // before anything reads them.
+      syncPresetValues();
+
       // Sources column
       zoneSource.replaceChildren();
       if (sourcePath) {
@@ -2556,7 +2620,11 @@
       // §22b — a job running no longer disables Start. Only submitting
       // the SAME source/destination set twice is refused, which is the
       // thing that was actually worth preventing.
-      const ready = Boolean(sourcePath) && destNodes.length > 0 && !currentJobPending();
+      // §22g — required fields are visible in the panel now, so an
+      // unfilled one disables Start there rather than ambushing the user
+      // with a modal after they press it.
+      const ready = Boolean(sourcePath) && destNodes.length > 0
+        && !currentJobPending() && missingRequired().length === 0;
       $("start").disabled = !ready;
       const cascades = destNodes.filter((n) => n.parentId !== null).length;
       $("start").textContent = cascades
@@ -2568,6 +2636,10 @@
       // Refresh only re-lists volumes; it never touches a job, so there is
       // no reason for a running copy to disable it.
       $("refresh").disabled = false;
+
+      // §22g. Rebuilt from state each time so it cannot show one card's
+      // values above another card's name.
+      renderFieldsPanel();
     }
 
     async function refresh() {
@@ -2849,6 +2921,8 @@
     paintStaticIcons();
 
     window.freeframe.onCopyProgress(onProgress);
+    on("fields-collapse", "click", () => setFieldsPanel(true));
+    on("fields-show", "click", () => setFieldsPanel(false));
     on("refresh", "click", refresh);
     on("clear", "click", clearAll);
     // Wrapped, not passed directly: a click handler receives the MouseEvent
@@ -2890,7 +2964,52 @@
      *  source exists. */
     let nextSourceCounter = 1;
     let activePresetId = null;
-    let presetValues = {};      // { fieldKey: value } for the current job
+
+    /**
+     * §22g — per-transfer field values, kept PER SOURCE.
+     *
+     * Previously one global object, filled by a modal that only appeared
+     * when a required field was blank at Start time. Keyed by source path
+     * now so swapping cards back and forth restores what was typed for
+     * each, the same way {sourcecounter} remembers its number per card.
+     *
+     * `disabled` is deliberately transient and never written back into the
+     * saved preset: it answers "this transfer doesn't use that field",
+     * which is a property of tonight's card, not of the preset.
+     */
+    const valuesBySource = new Map();   // path -> { values: {}, disabled: Set }
+
+    function valuesEntry(path = sourcePath) {
+      const key = path || "__none__";
+      if (!valuesBySource.has(key)) valuesBySource.set(key, { values: {}, disabled: new Set() });
+      return valuesBySource.get(key);
+    }
+
+    // Points at the current source's values object — the same reference the
+    // map holds, so a write through either is seen by both. Re-pointed by
+    // syncPresetValues() at the top of every render, which is the one place
+    // every state change already funnels through.
+    //
+    // A Proxy over the map was the first attempt and was a mistake: it has
+    // to be `const`, and an existing harness assigns `presetValues = {...}`
+    // directly. Clever, and it broke a test that had every right to keep
+    // working.
+    let presetValues = {};
+
+    function syncPresetValues() {
+      // Deliberately a plain re-point, with no attempt to adopt whatever
+      // presetValues happened to be pointing at. The first version did
+      // adopt, to keep a harness that assigns `presetValues = {...}`
+      // working — and that quietly copied one card's values onto the next
+      // card, which is the exact isolation this feature exists to provide.
+      // A wholesale assignment still works for a caller that uses it and
+      // then reads namingPayload() without an intervening render, which is
+      // what that harness does.
+      presetValues = valuesEntry().values;
+    }
+
+    /** Field keys switched off for the current source. */
+    const disabledFields = () => [...valuesEntry().disabled];
     let editingPreset = null;   // the preset open in the editor
 
     const activePreset = () => presetStore.presets.find((p) => p.id === activePresetId) || null;
@@ -2900,6 +3019,12 @@
       if (!label) return;
       const p = activePreset();
       label.textContent = p ? p.name : "No naming preset";
+      // §22g — the panel lists the ACTIVE preset's fields, so it has to
+      // follow every path that changes which preset that is: picking one,
+      // saving an edit, and deleting the active one.
+      renderFieldsPanel();
+      $("start").disabled = !(Boolean(sourcePath) && destNodes.length > 0
+        && !currentJobPending() && missingRequired().length === 0);
     }
 
     async function reloadPresets() {
@@ -3416,16 +3541,146 @@
         // §22h. The number claimed when this source was assigned; main
         // clamps it before it reaches a folder name.
         sourceCounter,
+        // §22g. Fields switched off for THIS transfer. Main strips their
+        // tokens from the templates rather than substituting empty
+        // strings, which would leave the separator behind.
+        disabledFields: disabledFields(),
       };
     }
 
-    /** Names of required fields with nothing in them. */
+    /** Names of required fields with nothing in them.
+     *
+     *  A field switched off for this transfer is exempt: the toggle means
+     *  "this card doesn't use that field", and a required field that can
+     *  never be skipped would make the toggle useless precisely where it
+     *  earns its place (a preset whose Talent field is required, applied to
+     *  a card of B-roll). */
     function missingRequired() {
       const preset = activePreset();
       if (!preset) return [];
+      const off = valuesEntry().disabled;
       return preset.fields
-        .filter((f) => f.required && !String(presetValues[f.key] ?? "").trim())
+        .filter((f) => f.required && !off.has(f.key) && !String(presetValues[f.key] ?? "").trim())
         .map((f) => f.label || f.key);
+    }
+
+    // ── §22g — per-transfer field values panel ───────────────────────────
+
+    let fieldsPanelHidden = false;
+
+    function setFieldsPanel(hidden) {
+      fieldsPanelHidden = hidden;
+      $("fields-panel").classList.toggle("hidden", hidden);
+      $("fields-show").classList.toggle("on", hidden);
+    }
+
+    /**
+     * One input per field the active preset defines, for the source
+     * currently assigned.
+     *
+     * Rebuilt from state on every render rather than patched, so it cannot
+     * drift from the source it claims to describe — the failure this is
+     * most likely to have is showing card A's values above card B's name.
+     */
+    function renderFieldsPanel() {
+      const host = $("fields-body");
+      if (!host) return;
+      host.replaceChildren();
+
+      const preset = activePreset();
+      if (!preset) {
+        host.appendChild(el("div", { class: "fv-empty",
+          text: "No naming preset selected. Choose one from the preset button in the header to name folders and files by hand-entered values." }));
+        return;
+      }
+      if (!sourcePath) {
+        host.appendChild(el("div", { class: "fv-empty",
+          text: `“${preset.name}” is active. Assign a source to fill in its fields — values are kept per card, so swapping back restores what you typed.` }));
+        return;
+      }
+      if (!preset.fields.length) {
+        host.appendChild(el("div", { class: "fv-empty",
+          text: `“${preset.name}” defines no custom fields. Add some in the preset editor if you want to type values per card.` }));
+        return;
+      }
+
+      const entry = valuesEntry();
+      host.appendChild(el("div", { class: "fv-source", text: entryFor(sourcePath).name, title: sourcePath }));
+
+      for (const f of preset.fields) {
+        const off = entry.disabled.has(f.key);
+        const wrap = el("div", { class: `fv-field${off ? " off" : ""}` });
+
+        const labelRow = el("div", { class: "fv-label" }, [
+          el("span", { text: f.label || f.key, title: `{${f.key}}` }),
+          f.required && !off ? el("span", { class: "req", text: "*" }) : null,
+        ]);
+        const toggle = el("input", { class: "fv-toggle" });
+        toggle.type = "checkbox";
+        toggle.checked = !off;
+        toggle.title = "Use this field for this transfer";
+        toggle.addEventListener("change", () => {
+          if (toggle.checked) entry.disabled.delete(f.key);
+          else entry.disabled.add(f.key);
+          renderFieldsPanel();
+          updateFieldsPreview();
+        });
+        labelRow.appendChild(toggle);
+        wrap.appendChild(labelRow);
+
+        const input = el("input", { dataset: { fvKey: f.key } });
+        input.type = "text";
+        input.value = entry.values[f.key] ?? "";
+        input.disabled = off;
+        input.placeholder = off ? "not used for this transfer" : `{${f.key}}`;
+        // A "suggesting" field offers what has been typed into it before,
+        // the same datalist the values modal already builds.
+        if (f.type === "select") {
+          const listId = `fv-sugg-${f.key}`;
+          const dl = el("datalist");
+          dl.id = listId;
+          for (const v of (presetStore.history || {})[f.key] || []) {
+            const o = el("option");
+            o.value = v;
+            dl.appendChild(o);
+          }
+          wrap.appendChild(dl);
+          input.setAttribute("list", listId);
+        }
+        input.addEventListener("input", () => {
+          entry.values[f.key] = input.value;
+          input.classList.remove("missing");
+          updateFieldsPreview();
+          // Start may become available the moment a required field is filled.
+          $("start").disabled = !(Boolean(sourcePath) && destNodes.length > 0
+            && !currentJobPending() && missingRequired().length === 0);
+        });
+        wrap.appendChild(input);
+
+        if (off) {
+          wrap.appendChild(el("div", { class: "fv-note",
+            text: `{${f.key}} is removed from the names for this transfer.` }));
+        }
+        host.appendChild(wrap);
+      }
+
+      host.appendChild(el("div", { id: "fields-preview", class: "fv-preview" }));
+      updateFieldsPreview();
+    }
+
+    async function updateFieldsPreview() {
+      const preset = activePreset();
+      const out = $("fields-preview");
+      if (!preset || !out) return;
+      const off = disabledFields();
+      const res = await window.freeframe.previewNaming(
+        preset.folderTemplate, preset.fileTemplate, valuesEntry().values,
+        sourcePath && !isProject(sourcePath) ? sourcePath : "",
+        off,
+      );
+      if (!$("fields-preview")) return;   // re-rendered while awaiting
+      $("fields-preview").classList.toggle("bad", !res.ok);
+      $("fields-preview").textContent = res.ok ? `→ ${res.result}` : res.error;
     }
 
     // ── Job panel + concurrency mode (§18c) ──────────────────────────────

@@ -155,6 +155,33 @@ function fragileRenameExtensions(relFiles) {
     .map(([ext, count]) => ({ ext, count, reason: RENAME_FRAGILE_EXTENSIONS.get(ext) }));
 }
 
+/**
+ * Remove specific tokens from a template, along with one adjacent
+ * separator (§22g).
+ *
+ * This is what the field panel's per-transfer disable toggle does. The
+ * obvious alternative — substituting an empty string — leaves the
+ * separator behind, so disabling `operator` in `{date}_{operator}` yields a
+ * folder called `20260816_`. Nobody wants that name, and nobody would
+ * notice it until the card was already back in the camera.
+ *
+ * `/` is deliberately NOT treated as a strippable separator: it nests
+ * folders, and renderTemplate already drops segments that end up empty.
+ */
+function omitTokens(template, keys) {
+  let out = String(template ?? "");
+  for (const key of keys || []) {
+    const safe = String(key).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const token = `\\{${safe}\\}`;
+    // Trailing separator first, so `{a}_{b}` with `a` disabled leaves `{b}`
+    // rather than `_{b}`; then a leading one, for a token at the end.
+    out = out.replace(new RegExp(`${token}[_\\-. ]`, "g"), "");
+    out = out.replace(new RegExp(`[_\\-. ]${token}`, "g"), "");
+    out = out.replace(new RegExp(token, "g"), "");
+  }
+  return out;
+}
+
 /** Every token a template references, in order of first appearance. */
 function tokensIn(template) {
   const found = [];
@@ -373,6 +400,7 @@ module.exports = {
   unknownTokens,
   builtinValues,
   fragileRenameExtensions,
+  omitTokens,
   SIDECAR_PAIR_EXTENSIONS,
   RENAME_FRAGILE_EXTENSIONS,
 };

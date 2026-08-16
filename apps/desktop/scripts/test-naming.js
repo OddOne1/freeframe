@@ -11,7 +11,7 @@
 const assert = require("node:assert");
 const path = require("node:path");
 const {
-  buildRelMapper, renderTemplate, sanitizeSegment, tokensIn, unknownTokens, builtinValues,
+  buildRelMapper, renderTemplate, sanitizeSegment, tokensIn, unknownTokens, builtinValues, omitTokens,
 } = require(path.join(__dirname, "..", "src", "main", "naming.js"));
 
 let fail = 0;
@@ -143,6 +143,31 @@ console.log("\n9. Builtins exist without a preset");
   eq(v.counter, "0007", "counter zero-padded");
   eq(v.ext, "MOV", "ext without the dot");
   eq(v.name, "y", "name without the extension");
+}
+
+console.log("\n10. Disabling a field removes its token AND a separator (§22g)");
+{
+  // The whole point: substituting an empty string instead would leave the
+  // separator, so disabling `operator` in `{date}_{operator}` would produce
+  // a folder literally called "20260816_".
+  eq(omitTokens("{date}_{operator}", ["operator"]), "{date}", "token plus its trailing separator");
+  eq(omitTokens("{operator}_{date}", ["operator"]), "{date}", "…or its leading one, at the start");
+  eq(omitTokens("{date}-{operator}", ["operator"]), "{date}", "hyphen counts as a separator too");
+  eq(omitTokens("{date}_{operator}_{camera}", ["operator"]), "{date}_{camera}",
+    "a token in the middle leaves one separator, not two");
+  eq(omitTokens("{operator}", ["operator"]), "", "a template that was only that field empties out");
+  eq(omitTokens("{date}_{operator}", []), "{date}_{operator}", "nothing disabled changes nothing");
+  eq(omitTokens("{date}_{op}", ["operator"]), "{date}_{op}", "a prefix of another key is not touched");
+  eq(omitTokens("{a}_{b}", ["a", "b"]), "", "several at once");
+  // `/` nests folders and must survive; renderTemplate drops the empty
+  // segment that is left behind.
+  eq(omitTokens("{date}/{operator}", ["operator"]), "{date}/", "slash is NOT eaten as a separator");
+  eq(renderTemplate(omitTokens("{date}/{operator}", ["operator"]), {}, { now: NOW }),
+    "20260813", "…and the empty segment collapses at render time");
+  // A disabled field renders nothing even if a value was typed before the
+  // toggle was flipped — the value is kept, the token is gone.
+  eq(renderTemplate(omitTokens("{date}_{operator}", ["operator"]), { operator: "Mathias" }, { now: NOW }),
+    "20260813", "a retained value cannot leak back in through the template");
 }
 
 console.log(`\n${fail === 0 ? "ALL PASS" : fail + " FAILED"}`);

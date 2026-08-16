@@ -8,7 +8,7 @@ const crypto = require("node:crypto");
 const { listVolumes } = require("./volumes");
 const { runCopyJob } = require("./copy-engine");
 const presets = require("./presets");
-const { buildRelMapper, unknownTokens } = require("./naming");
+const { buildRelMapper, unknownTokens, omitTokens } = require("./naming");
 const { normalizeFilters, wantsFlatten } = require("./filters");
 const { JobQueue } = require("./job-queue");
 const { listAlgorithms, isSupported, DEFAULT_ALGORITHM } = require("./hashers");
@@ -315,10 +315,14 @@ ipcMain.handle("presets:set-source-counter", async (_e, { value } = {}) => prese
  * lookalike — a preview that agrees with a separate implementation is
  * worse than no preview, because it builds confidence in the wrong thing.
  */
-ipcMain.handle("presets:preview", async (_e, { folderTemplate, fileTemplate, values, sourceLabel } = {}) => {
+ipcMain.handle("presets:preview", async (_e, { folderTemplate, fileTemplate, values, sourceLabel, disabled } = {}) => {
   try {
+    // §22g — the preview has to show what a disabled field actually does
+    // to the name, or the panel would promise something the job won't do.
+    const off = Array.isArray(disabled) ? disabled : [];
     const mapper = buildRelMapper({
-      folderTemplate, fileTemplate,
+      folderTemplate: omitTokens(folderTemplate, off),
+      fileTemplate: omitTokens(fileTemplate, off),
       values: values || {},
       sourceLabel: sourceLabel || "/Volumes/A001",
     });
@@ -689,8 +693,21 @@ ipcMain.handle("copy:start", async (event, payload) => {
     const values = naming.values && typeof naming.values === "object" ? naming.values : {};
     const fields = Array.isArray(naming.fields) ? naming.fields : [];
 
+    // §22g — fields switched off for THIS transfer. Their tokens are
+    // stripped from the templates rather than substituted with empty
+    // strings, which would leave the separator behind and produce a folder
+    // called "20260816_". Re-derived here rather than trusted as a
+    // pre-stripped template, so the renderer cannot smuggle in a pattern
+    // the validation below never saw.
+    const disabled = Array.isArray(naming.disabledFields)
+      ? naming.disabledFields.filter((k) => typeof k === "string" && k)
+      : [];
+    const folderTemplate = omitTokens(naming.folderTemplate, disabled);
+    const fileTemplate = omitTokens(naming.fileTemplate, disabled);
+
+    const off = new Set(disabled);
     const missing = fields
-      .filter((f) => f && f.required && !String(values[f.key] ?? "").trim())
+      .filter((f) => f && f.required && !off.has(f.key) && !String(values[f.key] ?? "").trim())
       .map((f) => f.label || f.key);
     if (missing.length) {
       throw new Error(
@@ -699,7 +716,7 @@ ipcMain.handle("copy:start", async (event, payload) => {
     }
 
     // A token nothing can fill would otherwise render literally.
-    for (const [label, tpl] of [["Folder name", naming.folderTemplate], ["File name", naming.fileTemplate]]) {
+    for (const [label, tpl] of [["Folder name", folderTemplate], ["File name", fileTemplate]]) {
       const unknown = unknownTokens(tpl || "", Object.keys(values));
       if (unknown.length) {
         throw new Error(
@@ -711,11 +728,14 @@ ipcMain.handle("copy:start", async (event, payload) => {
     // Re-normalized here rather than trusted: the renderer is the untrusted
     // side of this boundary, and these decide which files get copied.
     filters = normalizeFilters(naming.filters);
-    renamesFiles = Boolean(String(naming.fileTemplate || "").trim());
+    // Read from the stripped template: disabling every field a file
+    // pattern used leaves nothing to rename by, and that must not trip the
+    // §23d rename guard for a job that no longer renames anything.
+    renamesFiles = Boolean(String(fileTemplate || "").trim());
 
     mapRel = buildRelMapper({
-      folderTemplate: naming.folderTemplate,
-      fileTemplate: naming.fileTemplate,
+      folderTemplate,
+      fileTemplate,
       values,
       sourceLabel: sourcePath || (sourceFiles && sourceFiles[0]) || "",
       flatten: wantsFlatten(filters),
