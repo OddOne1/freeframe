@@ -318,6 +318,78 @@ const check = (ok, label, detail = "") => {
     check(perSource.back === 1,
       "re-selecting the first card reuses its number rather than burning a new one", `${perSource.back}`);
 
+    // ── §24a/§24b — project folder roles, and dragging after picking one ──
+    console.log("\n8. (24a/24b) A project's two folder roles are independent")
+    const proj = await ev(`(() => {
+      clearAll();
+      ffProjects = [{ id: "p-24", name: "Roles Project", asset_count: 2,
+        poster_url: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" }];
+      render();
+      const pick = (role, id, name) => {
+        showFolderPicker("p-24", [{ id, name, children: [] }], role);
+        [...document.querySelectorAll("#ffdir-tree .ffdir-row")]
+          .find(r => r.dataset.folderId === id).click();
+        document.getElementById("ffdir-save").click();
+      };
+      pick("source", "f-src", "Dailies");
+      pick("destination", "f-dst", "Deliverables");
+      return {
+        source: projectFolderFor("p-24", "source"),
+        destination: projectFolderFor("p-24", "destination"),
+        sourceId: uploadFolderIdFor("p-24", "source"),
+        destId: uploadFolderIdFor("p-24", "destination"),
+        labels: entryFor("freeframe://p-24").folderLabels,
+      };
+    })()`)
+    check(proj.source && proj.source.id === "f-src", "the source role holds its own folder",
+      JSON.stringify(proj.source))
+    check(proj.destination && proj.destination.id === "f-dst",
+      "and the destination role holds a different one", JSON.stringify(proj.destination))
+    check(proj.sourceId === "f-src" && proj.destId === "f-dst",
+      "each role threads its own id to the API", `${proj.sourceId} / ${proj.destId}`)
+    check((proj.labels || []).length === 2, "the tile names both", JSON.stringify(proj.labels))
+
+    const cleared = await ev(`(() => {
+      setProjectFolder("p-24", "source", null); render();
+      return { source: projectFolderFor("p-24", "source"),
+               destination: projectFolderFor("p-24", "destination") };
+    })()`)
+    check(cleared.source === null, "clearing one role empties it")
+    check(cleared.destination && cleared.destination.id === "f-dst",
+      "and leaves the other alone — the whole point of §24a", JSON.stringify(cleared.destination))
+
+    // §24b hardening. This asserts the PROPERTY, not the interaction:
+    // synthetic mouse events cannot trigger a native image drag, so no
+    // harness can exercise the failure itself. What it can pin is that the
+    // poster never becomes natively draggable again.
+    const posterDrag = await ev(`(() => {
+      const img = document.querySelector('#zone-volumes .tile[data-path="freeframe://p-24"] img.tile-poster');
+      if (!img) return null;
+      return { draggable: img.draggable, userDrag: getComputedStyle(img).webkitUserDrag };
+    })()`)
+    check(posterDrag && posterDrag.draggable === false,
+      "a project poster is not natively draggable (§24b)", JSON.stringify(posterDrag))
+    check(posterDrag && posterDrag.userDrag === "none", "…and CSS agrees")
+
+    // The exact sequence from the report: pick a folder, then drag.
+    const dragAfterPick = await ev(`(() => {
+      clearAll(); render();
+      showFolderPicker("p-24", [{ id: "f-src", name: "Dailies", children: [] }], "source");
+      [...document.querySelectorAll("#ffdir-tree .ffdir-row")]
+        .find(r => r.dataset.folderId === "f-src").click();
+      document.getElementById("ffdir-save").click();
+      const tile = document.querySelector('#zone-volumes .tile[data-path="freeframe://p-24"]');
+      return {
+        tileExists: !!tile,
+        pickerClosed: !document.getElementById("ffdir-backdrop").classList.contains("open"),
+        notBusy: !isBusy("freeframe://p-24"),
+      };
+    })()`)
+    check(dragAfterPick.tileExists, "the tile survives a folder selection")
+    check(dragAfterPick.pickerClosed, "the picker closes, leaving no overlay over it")
+    check(dragAfterPick.notBusy, "and nothing marks it busy, so beginDrag's only gate is open")
+    await ev(`ffProjects = []; clearAll(); render(); true`)
+
     check(pageErrors.length === 0, "no uncaught exception across the whole run", pageErrors.join(" | "));
   } finally {
     ws.close();

@@ -154,12 +154,28 @@ const check = (ok, label, detail = "") => {
 
   // The reported bug itself: typeIcon had no freeframe key, so a project
   // fell through the || and rendered as the internal-drive glyph.
-  const listGlyph = await ev(`
-    volumesView='line'; render();
-    const c=document.querySelector('#zone-volumes .tile[data-path="${gradSel.split('"')[1]}"]');
-    c ? (c.querySelector('.tile-icon svg')||{}).outerHTML||"" : "NO CARD"`);
-  check(!listGlyph.includes("NO CARD"), "project also renders in list view");
-  check(listGlyph.length > 0, "list-view project has a type glyph");
+  //
+  // §22f removed the list view, so the check is no longer "does the list
+  // renderer give it a glyph" — there is one renderer, and a project is
+  // deliberately the one entry that gets artwork INSTEAD of an icon box.
+  // What still has to hold is that it never renders as a drive.
+  // Wrapped in an IIFE: this harness's ev() evaluates an expression, so a
+  // bare `return` at the top level is a syntax error.
+  const projectTreatment = await ev(`(() => {
+    render();
+    const c = document.querySelector('#zone-volumes .tile[data-path="${gradSel.split('"')[1]}"]');
+    if (!c) return "NO CARD";
+    return JSON.stringify({
+      driveIconBox: !!c.querySelector('.tile-icon'),
+      artwork: !!c.querySelector('.tile-poster') ||
+        !!(c.querySelector('.tile-media') && c.querySelector('.tile-media').style.backgroundImage),
+    });
+  })()`);
+  check(projectTreatment !== "NO CARD", "the project renders");
+  const treatment = projectTreatment === "NO CARD" ? {} : JSON.parse(projectTreatment);
+  check(treatment.driveIconBox === false,
+    "and NOT as a drive icon box — the original bug", projectTreatment);
+  check(treatment.artwork === true, "it gets its poster or gradient instead", projectTreatment);
   check(await ev(`typeIcon('freeframe')`) === "freeframe", "typeIcon resolves 'freeframe' instead of falling back");
   check(await ev(`typeIcon('freeframe')`) !== await ev(`typeIcon('internal')`), "…and no longer collides with the internal-drive icon");
 
@@ -234,8 +250,8 @@ const check = (ok, label, detail = "") => {
   // exactly this reason — no test-only branch inside the production path.
   const opened = await ev(`(async () => {
     ${tree
-      ? `showFolderPicker(${JSON.stringify(projId)}, ${tree});`
-      : `await openProjectFolders(${JSON.stringify(projId)});`}
+      ? `showFolderPicker(${JSON.stringify(projId)}, ${tree}, "destination");`
+      : `await openProjectFolders(${JSON.stringify(projId)}, "destination");`}
     return $("ffdir-backdrop").classList.contains("open");
   })()`);
   check(opened, "picker opens for a project");
@@ -260,17 +276,18 @@ const check = (ok, label, detail = "") => {
     // proves nothing about the thing being tested.
     await shot("/tmp/ff-folders.png");
     await ev(`$("ffdir-save").click(); true`);
-    const stored = await ev(`JSON.stringify(projectFolder[${JSON.stringify(projId)}]||null)`);
-    check(stored.includes(picked.id), "chosen folder id recorded against the project", stored);
+    // §24a — recorded per ROLE now, not once per project.
+    const stored = await ev(`JSON.stringify(projectFolderFor(${JSON.stringify(projId)}, "destination")||null)`);
+    check(stored.includes(picked.id), "chosen folder id recorded against the project's destination role", stored);
     check(
       await ev(`$("ffdir-backdrop").classList.contains("open")`) === false,
       "picker closes on save"
     );
     // The actual point of item 2: this id is what reaches freeframeUpload.
-    const threaded = await ev(`uploadFolderIdFor(${JSON.stringify(projId)})`);
+    const threaded = await ev(`uploadFolderIdFor(${JSON.stringify(projId)}, "destination")`);
     check(threaded === picked.id, "uploadFolderIdFor() returns it — this is what goes to freeframeUpload's 3rd arg", String(threaded));
     check(
-      (await ev(`entryFor("freeframe://" + ${JSON.stringify(projId)}).folderLabel || ""`)).length > 0,
+      (await ev(`(entryFor("freeframe://" + ${JSON.stringify(projId)}).folderLabels || []).length`)) > 0,
       "the tile says which folder it will upload into"
     );
   } else {
@@ -281,7 +298,7 @@ const check = (ok, label, detail = "") => {
   // Root is still reachable, and is still what an untouched project means.
   await ev(`delete projectFolder[${JSON.stringify(projId)}]; render(); true`);
   check(
-    (await ev(`uploadFolderIdFor(${JSON.stringify(projId)})`)) === null,
+    (await ev(`uploadFolderIdFor(${JSON.stringify(projId)}, "destination")`)) === null,
     "an untouched project still uploads to the root (null), as before"
   );
 

@@ -919,6 +919,25 @@ const RECENTS_PER_ROLE = 5;
  * convenience, in exchange for never showing a folder under a role it was
  * never used for.
  */
+/**
+ * A recent entry is either a filesystem path (a drive) or a FreeFrame
+ * folder selection (§24a).
+ *
+ * The project case cannot be a bare string: what has to be remembered is
+ * `{id, name, path}`, and the id is the only part the API accepts. Storing
+ * just the path would mean re-resolving it against a folder tree that may
+ * have been renamed since.
+ */
+function isRecentEntry(v) {
+  if (typeof v === "string") return Boolean(v);
+  return Boolean(v && typeof v === "object" && typeof v.id === "string" && v.id);
+}
+
+/** Identity for de-duplication: a path, or a folder id. */
+function recentKey(v) {
+  return typeof v === "string" ? v : v.id;
+}
+
 function normalizeRecents(raw) {
   const out = {};
   for (const [device, value] of Object.entries(raw || {})) {
@@ -929,7 +948,7 @@ function normalizeRecents(raw) {
       // A single string is the intermediate two-slot shape; both it and a
       // list normalize to a list.
       const list = typeof v === "string" ? [v] : Array.isArray(v) ? v : [];
-      const clean = list.filter((f) => typeof f === "string" && f).slice(0, RECENTS_PER_ROLE);
+      const clean = list.filter(isRecentEntry).slice(0, RECENTS_PER_ROLE);
       if (clean.length) entry[role] = clean;
     }
     if (entry.source || entry.destination) out[device] = entry;
@@ -963,11 +982,15 @@ ipcMain.handle("recent-folders:remember", async (_event, { device, role, folder 
   // The role is required. Guessing one would put a folder under a heading
   // it was never used for, which is the bug being fixed.
   if (!RECENT_ROLES.includes(role)) return recents;
-  if (typeof device !== "string" || typeof folder !== "string" || !device || !folder) return recents;
+  if (typeof device !== "string" || !device || !isRecentEntry(folder)) return recents;
 
   const entry = recents[device] || (recents[device] = {});
-  // Re-picking a folder promotes it rather than duplicating it.
-  entry[role] = [folder, ...(entry[role] || []).filter((f) => f !== folder)].slice(0, RECENTS_PER_ROLE);
+  // Re-picking a folder promotes it rather than duplicating it. Compared by
+  // id for a project selection, since its display name can change without
+  // it being a different folder.
+  const key = recentKey(folder);
+  entry[role] = [folder, ...(entry[role] || []).filter((f) => recentKey(f) !== key)]
+    .slice(0, RECENTS_PER_ROLE);
   return writeRecents(recents);
 });
 

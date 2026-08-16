@@ -421,7 +421,11 @@
     /* Project artwork fills the media box the way apps/web's project card
        does — object-cover, not contain: a letterboxed poster with bars
        either side reads as a broken image, not as artwork. */
-    .tile-poster { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .tile-poster {
+      width: 100%; height: 100%; object-fit: cover; display: block;
+      /* §24b — belt and braces alongside img.draggable = false. */
+      -webkit-user-drag: none; user-select: none;
+    }
     /* Same bottom scrim project-card.tsx layers under its title. Here it
        keeps the type badge readable over an arbitrary poster rather than
        carrying text itself. */
@@ -1517,10 +1521,15 @@
           posterUrl: p.poster_url || null,
           // Item 2 — which folder inside the project this job uses. Null
           // means the root, which is what every project meant before.
-          folderLabel: (() => {
-            const sel = projectFolder[p.id];
-            if (!sel || sel.id === "root") return null;
-            return sel.path || sel.name;
+          // Both roles' folders, so the tile can say which is which (§24a).
+          // One label was ambiguous the moment the two became independent.
+          folderLabels: (() => {
+            const out = [];
+            for (const [role, short] of [["source", "from"], ["destination", "to"]]) {
+              const sel = projectFolderFor(p.id, role);
+              if (sel && sel.id !== "root") out.push(`${short} ${sel.path || sel.name}`);
+            }
+            return out;
           })(),
         })),
         ...extraFolders.map((p) => ({
@@ -1839,9 +1848,17 @@
       return (entry && entry[role]) || [];
     }
 
+    /** Identity of a recent entry: a path for a drive, a folder id for a
+     *  project selection (§24a). A project folder's display name can change
+     *  without it being a different folder. */
+    function recentKey(f) {
+      return typeof f === "string" ? f : (f && f.id);
+    }
+
     function rememberRecent(device, role, folder) {
       const entry = recentFolders[device] || (recentFolders[device] = {});
-      entry[role] = [folder, ...(entry[role] || []).filter((f) => f !== folder)].slice(0, 5);
+      const key = recentKey(folder);
+      entry[role] = [folder, ...(entry[role] || []).filter((f) => recentKey(f) !== key)].slice(0, 5);
       window.freeframe.rememberFolder(device, role, folder);
     }
 
@@ -1863,41 +1880,65 @@
 
     /** projectId → { id, name, path } for the folder that project reads
      *  from / writes into. Absent means the project root. */
+    /**
+     * Which folder inside a project each ROLE uses (§24a).
+     *
+     * `{ [projectId]: { source, destination } }` — the same device→role
+     * shape `recentFolders` already uses for drives, rather than a second
+     * keying convention. Previously one selection per project served both
+     * roles, which meant choosing a pull folder silently moved where an
+     * upload would land.
+     */
     let projectFolder = {};
     let folderPickerState = null;
 
-    /** The value that actually reaches freeframeUpload's third argument.
-     *  "root" and "no selection" both mean null on the wire — the API's
-     *  folder_id is nullable, and sending the string "root" would 422. */
-    function uploadFolderIdFor(projectId) {
-      const sel = projectFolder[projectId];
+    function projectFolderFor(projectId, role) {
+      const entry = projectFolder[projectId];
+      return (entry && entry[role]) || null;
+    }
+
+    function setProjectFolder(projectId, role, selection) {
+      const entry = projectFolder[projectId] || (projectFolder[projectId] = {});
+      if (selection) entry[role] = selection;
+      else delete entry[role];
+      if (!entry.source && !entry.destination) delete projectFolder[projectId];
+    }
+
+    /** The value that actually reaches the API's nullable folder_id.
+     *  "root" and "no selection" both mean null on the wire — sending the
+     *  string "root" would 422. */
+    function uploadFolderIdFor(projectId, role) {
+      const sel = projectFolderFor(projectId, role);
       if (!sel || !sel.id || sel.id === "root") return null;
       return sel.id;
     }
 
-    async function openProjectFolders(projectId) {
+    async function openProjectFolders(projectId, role) {
       // Changing where a project's files land while that project is an
       // active destination would move the target mid-upload.
       if (isBusy(`freeframe://${projectId}`)) return;
       const res = await window.freeframe.freeframeFolderTree(projectId);
       if (!res || !res.ok) {
-        showFolderPicker(projectId, [], (res && res.error) || "Couldn't load folders.");
+        showFolderPicker(projectId, [], role, (res && res.error) || "Couldn't load folders.");
         return;
       }
-      showFolderPicker(projectId, res.tree || []);
+      showFolderPicker(projectId, res.tree || [], role);
     }
 
     /** Split from the fetch above so the tree rendering can be exercised
      *  without a live server. */
-    function showFolderPicker(projectId, tree, error = null) {
+    function showFolderPicker(projectId, tree, role = "destination", error = null) {
       const project = ffProjects.find((p) => p.id === projectId);
-      const current = projectFolder[projectId];
+      const current = projectFolderFor(projectId, role);
       folderPickerState = {
         projectId,
+        role,
         selected: current ? { ...current } : { id: "root", name: "Project root", path: "" },
       };
 
-      $("ffdir-title").textContent = project ? project.name : "Choose a folder";
+      // Which role is being chosen for, since the two are independent now.
+      $("ffdir-title").textContent =
+        `${project ? project.name : "Choose a folder"} — ${role === "source" ? "Source" : "Destination"} folder`;
       const host = $("ffdir-tree");
       host.replaceChildren();
 
@@ -2183,20 +2224,69 @@
       if (!heldDest) add("Set as Source", () => setSource(path), heldSource);
       if (!heldSource) add("Set as Destination", () => addDest(path, null), heldDest);
 
+      /**
+       * "Source Folder ▸" / "Destination Folder ▸" — one submenu per role,
+       * each holding Browse…, that role's own recents, and Clear Recents.
+       *
+       * Shared by drives and FreeFrame projects (§24a). Only `browse` and
+       * how a recent entry is labelled differ between them; the structure
+       * is the same, and keeping it the same is the point — a project used
+       * to get one generic action that served both roles, so choosing a
+       * pull folder silently moved where an upload would land.
+       */
+      const roleSubmenu = (roleKey, label, apply, opts = {}) => {
+        const panel = addSubmenu(label);
+        addTo(panel, "Browse…", opts.browse);
+
+        const recents = recentsFor(opts.device || path, roleKey);
+        if (recents.length) {
+          panel.appendChild(el("div", { class: "sep" }));
+          panel.appendChild(el("div", { class: "label", text: "Recent Folders:" }));
+          for (const r of recents) {
+            addTo(panel, opts.labelOf ? opts.labelOf(r) : r, () => apply(r));
+          }
+          panel.appendChild(el("div", { class: "sep" }));
+          addTo(panel, "Clear Recents", () => clearRecents(opts.device || path, roleKey));
+        }
+      };
+
       // Item 2 — the project counterpart of the per-device folder pickers
       // below. Offered for a project whichever role it holds: the same
       // selection scopes an upload's target folder and a pull's source
       // folder.
       if (isProject(path)) {
+        const projectId = projectIdOf(path);
         menu.appendChild(el("div", { class: "sep" }));
-        const sel = projectFolder[projectIdOf(path)];
-        add(
-          sel ? `Change folder (${sel.id === "root" ? "Project root" : sel.name})…` : "Choose folder in project…",
-          () => openProjectFolders(projectIdOf(path))
-        );
-        if (sel && sel.id !== "root") {
-          add("Use the project root", () => {
-            delete projectFolder[projectIdOf(path)];
+
+        const projectRole = (roleKey, label) => {
+          const chosen = projectFolderFor(projectId, roleKey);
+          roleSubmenu(
+            roleKey,
+            // The current selection is named on the trigger, so both roles
+            // are readable without opening either submenu.
+            chosen ? `${label} (${chosen.name})` : label,
+            (folder) => { setProjectFolder(projectId, roleKey, folder); render(); },
+            {
+              device: path,
+              browse: () => openProjectFolders(projectId, roleKey),
+              // Recents here are folder selections, not paths.
+              labelOf: (f) => (typeof f === "string" ? f : (f.path || f.name)),
+            },
+          );
+        };
+
+        // Both offered regardless of which role the project currently
+        // holds: the two selections are independent, and one is usually
+        // chosen before the project is assigned at all.
+        projectRole("source", "Source Folder");
+        projectRole("destination", "Destination Folder");
+
+        // Clearing one role must not touch the other (§24a).
+        for (const roleKey of ["source", "destination"]) {
+          const chosen = projectFolderFor(projectId, roleKey);
+          if (!chosen) continue;
+          add(`Use the project root for ${roleKey === "source" ? "Source" : "Destination"}`, () => {
+            setProjectFolder(projectId, roleKey, null);
             render();
           });
         }
@@ -2213,9 +2303,9 @@
         // replaces both the flat "Choose folder here as…" pair and the
         // separate shared "Recent on this device" section: a recent
         // belongs to a role, so it belongs in that role's submenu.
-        const roleSubmenu = (roleKey, label, apply) => {
-          const panel = addSubmenu(label);
-          addTo(panel, "Browse…", async () => {
+        menu.appendChild(el("div", { class: "sep" }));
+        const driveOpts = (roleKey, apply) => ({
+          browse: async () => {
             // The source panel also accepts individual files; a
             // destination must stay a directory to write into.
             if (roleKey === "source") {
@@ -2231,26 +2321,13 @@
               role: roleKey,
             });
             if (f) apply(f);
-          });
-
-          const recents = recentsFor(path, roleKey);
-          if (recents.length) {
-            panel.appendChild(el("div", { class: "sep" }));
-            panel.appendChild(el("div", { class: "label", text: "Recent Folders:" }));
-            for (const r of recents) {
-              // Shown relative to the drive, since the mount point is
-              // already the thing you right-clicked.
-              const short = r.replace(path, "").replace(/^\//, "") || r;
-              addTo(panel, short, () => apply(r));
-            }
-            panel.appendChild(el("div", { class: "sep" }));
-            addTo(panel, "Clear Recents", () => clearRecents(path, roleKey));
-          }
-        };
-
-        menu.appendChild(el("div", { class: "sep" }));
-        if (!heldDest) roleSubmenu("source", "Source Folder", (f) => setSource(f));
-        if (!heldSource) roleSubmenu("destination", "Destination Folder", (f) => addDest(f, null));
+          },
+          // Shown relative to the drive, since the mount point is already
+          // the thing you right-clicked.
+          labelOf: (r) => r.replace(path, "").replace(/^\//, "") || r,
+        });
+        if (!heldDest) roleSubmenu("source", "Source Folder", (f) => setSource(f), driveOpts("source", (f) => setSource(f)));
+        if (!heldSource) roleSubmenu("destination", "Destination Folder", (f) => addDest(f, null), driveOpts("destination", (f) => addDest(f, null)));
 
         // Item 1's judgement call: one explicit, distinctly-worded entry
         // for the same-volume-both-roles case, rather than relying on drag
@@ -2425,6 +2502,21 @@
         if (poster) {
           const img = el("img", { class: "tile-poster" });
           img.alt = "";
+          // §24b — an <img> is natively draggable with NO attribute set,
+          // which is why grepping this file for `draggable` found nothing.
+          // Pressing on the poster can therefore start the browser's own
+          // image drag and swallow the pointer events this app's custom
+          // drag system needs. Only project tiles have a poster, which
+          // matches the report that dragging a PROJECT misbehaves while
+          // drives are fine.
+          //
+          // Not proven to be the user's bug: synthetic mouse events cannot
+          // trigger native drag (the same reason this app uses pointer
+          // events at all), so no harness can demonstrate it either way.
+          // Turned off regardless — nothing here ever wants a native image
+          // drag, so this costs nothing and removes a real interception
+          // path.
+          img.draggable = false;
           // A dead/expired proxy token would otherwise leave a broken-image
           // glyph; fall back to the gradient the project would have had.
           img.addEventListener("error", () => {
@@ -2473,8 +2565,8 @@
           // A FreeFrame project has no free-space figure, so the generic
           // branch rendered a bare "— free".
           text: entry.kind === "freeframe"
-            ? (entry.folderLabel
-                ? `→ ${entry.folderLabel}`
+            ? ((entry.folderLabels && entry.folderLabels.length)
+                ? entry.folderLabels.join(" · ")
                 : `${entry.assetCount} asset${entry.assetCount === 1 ? "" : "s"}`)
             : entry.fileList
               ? entry.fileList
@@ -2862,7 +2954,8 @@
             isFileSet(sourcePath) ? null : sourcePath,
             localNodes.map((n) => ({ id: n.id, path: n.path, parentId: n.parentId })),
             algorithm,
-            isProject(sourcePath) ? uploadFolderIdFor(projectIdOf(sourcePath)) : null,
+            // Reading as a SOURCE, so the source-role folder (§24a).
+            isProject(sourcePath) ? uploadFolderIdFor(projectIdOf(sourcePath), "source") : null,
             sourceFiles,
             namingPayload(),
             concurrencyMode,
@@ -2890,7 +2983,8 @@
           const up = await window.freeframe.freeframeUpload(
             isFileSet(sourcePath) ? null : sourcePath,
             projectId,
-            uploadFolderIdFor(projectId),
+            // Uploading INTO the project, so the destination-role folder.
+            uploadFolderIdFor(projectId, "destination"),
             sourceFiles,
             concurrencyMode
           );
@@ -4025,9 +4119,16 @@
       on("ffdir-cancel", "click", closeFolderPicker);
       on("ffdir-save", "click", () => {
         if (!folderPickerState) return;
-        const { projectId, selected } = folderPickerState;
-        if (selected.id === "root") delete projectFolder[projectId];
-        else projectFolder[projectId] = selected;
+        const { projectId, role, selected } = folderPickerState;
+        // Root means "no selection" for this role only — the other role
+        // keeps whatever it had (§24a).
+        setProjectFolder(projectId, role, selected.id === "root" ? null : selected);
+        if (selected.id !== "root") {
+          // Remembered per project AND per role, keyed by the same
+          // `freeframe://<id>` string every other path-keyed structure in
+          // this file uses for a project.
+          rememberRecent(`freeframe://${projectId}`, role, selected);
+        }
         closeFolderPicker();
         render();
       });
