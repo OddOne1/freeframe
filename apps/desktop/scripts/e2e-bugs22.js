@@ -325,14 +325,13 @@ const check = (ok, label, detail = "") => {
       ffProjects = [{ id: "p-24", name: "Roles Project", asset_count: 2,
         poster_url: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" }];
       render();
-      const pick = (role, id, name) => {
-        showFolderPicker("p-24", [{ id, name, children: [] }], role);
-        [...document.querySelectorAll("#ffdir-tree .ffdir-row")]
-          .find(r => r.dataset.folderId === id).click();
-        document.getElementById("ffdir-save").click();
-      };
-      pick("source", "f-src", "Dailies");
-      pick("destination", "f-dst", "Deliverables");
+      // Configured WITHOUT going through the picker, so no role is taken —
+      // the picker now assigns as well as remembers (§24c), which is
+      // exactly what the next block checks. This block is about the two
+      // slots being independent, and about an unheld role staying silent.
+      setProjectFolder("p-24", "source", { id: "f-src", name: "Dailies", path: "/Dailies" });
+      setProjectFolder("p-24", "destination", { id: "f-dst", name: "Deliverables", path: "/Deliverables" });
+      render();
       return {
         source: projectFolderFor("p-24", "source"),
         destination: projectFolderFor("p-24", "destination"),
@@ -347,9 +346,58 @@ const check = (ok, label, detail = "") => {
       "and the destination role holds a different one", JSON.stringify(proj.destination))
     check(proj.sourceId === "f-src" && proj.destId === "f-dst",
       "each role threads its own id to the API", `${proj.sourceId} / ${proj.destId}`)
-    check((proj.labels || []).length === 2, "the tile names both", JSON.stringify(proj.labels))
+    // §24c — configuring a folder is no longer enough to caption the
+    // tile with it; the project has to actually hold that role.
+    check((proj.labels || []).length === 0,
+      "a configured-but-unassigned folder does NOT caption the tile", JSON.stringify(proj.labels))
+
+    // §24c — picking a folder from the role submenu must also take the role.
+    const assigned = await ev(`(() => {
+      clearAll(); render();
+      showFolderPicker("p-24", [{ id: "f-src", name: "Dailies", children: [] }], "source");
+      [...document.querySelectorAll("#ffdir-tree .ffdir-row")]
+        .find(r => r.dataset.folderId === "f-src").click();
+      document.getElementById("ffdir-save").click();
+      return { source: sourcePath, labels: entryFor("freeframe://p-24").folderLabels };
+    })()`)
+    check(assigned.source === "freeframe://p-24",
+      "picking a Source folder puts the project in Sources — no extra drag", String(assigned.source))
+    check((assigned.labels || []).join("|") === "from /Dailies",
+      "and NOW the tile captions it, because the role is held", JSON.stringify(assigned.labels))
+
+    const asDest = await ev(`(() => {
+      clearAll(); render();
+      showFolderPicker("p-24", [{ id: "f-dst", name: "Deliverables", children: [] }], "destination");
+      [...document.querySelectorAll("#ffdir-tree .ffdir-row")]
+        .find(r => r.dataset.folderId === "f-dst").click();
+      document.getElementById("ffdir-save").click();
+      return { dests: destNodes.map(n => n.path), labels: entryFor("freeframe://p-24").folderLabels };
+    })()`)
+    check(asDest.dests.includes("freeframe://p-24"),
+      "picking a Destination folder puts it in Destinations", JSON.stringify(asDest.dests))
+    check((asDest.labels || []).join("|") === "to /Deliverables",
+      "captioned for the destination role only", JSON.stringify(asDest.labels))
+
+    // The same-project-both-sides guard has to still fire through this
+    // path, not just through a drag.
+    const conflict = await ev(`(() => {
+      clearAll(); render();
+      setSource("freeframe://p-24");
+      showFolderPicker("p-24", [{ id: "f-dst", name: "Deliverables", children: [] }], "destination");
+      [...document.querySelectorAll("#ffdir-tree .ffdir-row")]
+        .find(r => r.dataset.folderId === "f-dst").click();
+      document.getElementById("ffdir-save").click();
+      return { dests: destNodes.map(n => n.path),
+               warned: document.getElementById("summary").textContent.includes("Same project on both sides") };
+    })()`)
+    check(conflict.dests.length === 0,
+      "the same project is refused as a destination while it is the source", JSON.stringify(conflict.dests))
+    check(conflict.warned, "and the conflict is explained, via the menu path too")
 
     const cleared = await ev(`(() => {
+      clearAll(); render();
+      setProjectFolder("p-24", "source", { id: "f-src", name: "Dailies", path: "/Dailies" });
+      setProjectFolder("p-24", "destination", { id: "f-dst", name: "Deliverables", path: "/Deliverables" });
       setProjectFolder("p-24", "source", null); render();
       return { source: projectFolderFor("p-24", "source"),
                destination: projectFolderFor("p-24", "destination") };
@@ -389,6 +437,85 @@ const check = (ok, label, detail = "") => {
     check(dragAfterPick.pickerClosed, "the picker closes, leaving no overlay over it")
     check(dragAfterPick.notBusy, "and nothing marks it busy, so beginDrag's only gate is open")
     await ev(`ffProjects = []; clearAll(); render(); true`)
+
+    console.log("\n9. (25a/25b/25c) Window floor, wrapping, and the Naming Fields panel")
+    const chrome = await ev(`(() => {
+      const head = getComputedStyle(document.querySelector("header"));
+      const col = getComputedStyle(document.querySelector(".col-head"));
+      return {
+        headerWrap: head.flexWrap, headerRowGap: head.rowGap,
+        colWrap: col.flexWrap,
+        colTitleEllipsis: getComputedStyle(document.querySelector(".col-head h2")).textOverflow,
+        colButtonShrink: getComputedStyle(document.querySelector(".col-head button")).flexShrink,
+        showLabel: document.getElementById("fields-show").textContent.trim(),
+        panelHeading: document.querySelector("#fields-panel h2").textContent.trim(),
+      };
+    })()`)
+    check(chrome.headerWrap === "wrap", "the header wraps instead of clipping (§25b)", chrome.headerWrap)
+    check(chrome.headerRowGap !== "0px" && chrome.headerRowGap !== "normal",
+      "…with a row gap so a wrapped line isn't flush", chrome.headerRowGap)
+    // Deliberately NOT wrap — see the comment on .col-head. A wrapped
+    // column header breaks the three-header alignment, so the title
+    // ellipsizes and the button holds its width instead.
+    check(chrome.colWrap === "nowrap", "column headers do NOT wrap (alignment wins)", chrome.colWrap)
+    check(chrome.colTitleEllipsis === "ellipsis",
+      "…their titles ellipsize instead, so controls never clip", chrome.colTitleEllipsis)
+    check(chrome.colButtonShrink === "0",
+      "…and the button is never squeezed", chrome.colButtonShrink)
+    check(chrome.showLabel === "Naming Fields", "the reopen button is renamed (§25c)", chrome.showLabel)
+    check(chrome.panelHeading === "Naming Fields", "and so is the panel heading", chrome.panelHeading)
+
+    // §25a. A SOURCE-LEVEL pin, and deliberately labelled as one: Electron
+    // does not expose CDP's Browser domain, so getWindowBounds/
+    // setWindowBounds are unavailable, and a renderer cannot resize its own
+    // BrowserWindow. This cannot prove the OS clamps the drag — it only
+    // catches the values being lowered again, which is the regression worth
+    // catching.
+    const mainSrc = require("node:fs").readFileSync(
+      require("node:path").join(APP, "src", "main", "main.js"), "utf8");
+    const minW = (mainSrc.match(/minWidth:\s*(\d+)/) || [])[1];
+    const minH = (mainSrc.match(/minHeight:\s*(\d+)/) || [])[1];
+    const launchW = (mainSrc.match(/width:\s*(\d+)/) || [])[1];
+    const launchH = (mainSrc.match(/height:\s*(\d+)/) || [])[1];
+    check(minW === launchW && minH === launchH,
+      "the window floor equals its launch size — not smaller (§25a, source-level)",
+      `min ${minW}x${minH} vs launch ${launchW}x${launchH}`);
+
+    const panelVis = await ev(`(async () => {
+      const store = await window.freeframe.savePreset({
+        name: "Vis Test", folderTemplate: "{date}", fileTemplate: "", fields: [] });
+      presetStore = store;
+      const p = store.presets.find(x => x.name === "Vis Test");
+
+      activePresetId = null; updatePresetLabel();
+      const none = {
+        panelHidden: document.getElementById("fields-panel").classList.contains("hidden"),
+        buttonShown: document.getElementById("fields-show").classList.contains("on"),
+      };
+
+      activePresetId = p.id; updatePresetLabel();
+      const withPreset = {
+        panelHidden: document.getElementById("fields-panel").classList.contains("hidden"),
+      };
+
+      // A manual Hide must still work, and must survive under the gate.
+      setFieldsPanel(true);
+      const hiddenManually = {
+        panelHidden: document.getElementById("fields-panel").classList.contains("hidden"),
+        buttonShown: document.getElementById("fields-show").classList.contains("on"),
+      };
+      setFieldsPanel(false);
+
+      activePresetId = null; updatePresetLabel();
+      await window.freeframe.deletePreset(p.id);
+      return { none, withPreset, hiddenManually };
+    })()`)
+    check(panelVis.none.panelHidden === true,
+      "with no preset the panel is hidden outright, not showing an empty state")
+    check(panelVis.none.buttonShown === false, "and its reopen button is gone too")
+    check(panelVis.withPreset.panelHidden === false, "selecting a preset brings it back")
+    check(panelVis.hiddenManually.panelHidden === true, "Hide still hides it")
+    check(panelVis.hiddenManually.buttonShown === true, "…and then the reopen button is offered")
 
     check(pageErrors.length === 0, "no uncaught exception across the whole run", pageErrors.join(" | "));
   } finally {

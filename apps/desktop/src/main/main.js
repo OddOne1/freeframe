@@ -201,8 +201,11 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 960,
     height: 640,
-    minWidth: 720,
-    minHeight: 480,
+    // §25a — the floor matches the launch size. Below this the header
+    // pills and column-head buttons had nowhere to go, so the window could
+    // be dragged into a state nothing was laid out for.
+    minWidth: 960,
+    minHeight: 640,
     title: "FreeFrame Desktop (name TBD)",
     webPreferences: {
       // Security baseline for a notarized, non-sandboxed distribution:

@@ -38,6 +38,12 @@
 
     header {
       display: flex; align-items: center; gap: 8px;
+      /* §25b — wrap instead of clipping. There are no media queries in
+         this file; these two rows are the only ones dense enough to
+         overflow, and they did so by overlapping rather than reflowing.
+         Matters even after §25a raises the window floor, because the
+         fields and job panels can still squeeze them. */
+      flex-wrap: wrap; row-gap: 6px;
       padding: 10px 14px;
       border-bottom: 1px solid var(--border);
       -webkit-app-region: drag;
@@ -191,11 +197,27 @@
     .col { background: var(--bg-primary); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
     .col-head {
       display: flex; align-items: center; gap: 6px;
+      /* §25b, deviating from the brief on this one row, deliberately.
+         Adding flex-wrap here was tried and reverted: flex breaks lines
+         using items' CONTENT-based sizes before any shrink applies, so the
+         title's ellipsis cannot prevent a wrap — the Destinations button
+         dropped to a second line, that header became 56.5px against its
+         neighbours' 41px, and the three border-bottoms stopped lining up.
+         That alignment has its own test and its own history (§22f).
+
+         The reported symptom was controls clipping and overlapping, and
+         that is fixed instead by letting the TITLE ellipsize (below) while
+         the button keeps its full width. The top header still wraps — it
+         has no such alignment constraint. */
       padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0;
     }
     .col-head h2 {
       margin: 0; font-size: 10px; font-weight: 600;
       text-transform: uppercase; letter-spacing: .07em; color: var(--text-secondary);
+      /* Gives way before the controls do, so a narrow column ellipsizes its
+         title rather than pushing "Choose folder…" onto a second line and
+         knocking its header out of line with the other two. */
+      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .col-head .spacer { flex: 1; }
     /* Item 2 — both header controls pinned to one explicit height.
@@ -209,8 +231,11 @@
        the border come to 41, and after §22f the Volumes header has no
        control of its own to match them. Pinning to the taller of the two
        keeps the three border-bottoms on one line. */
+    /* min-height, not height: a wrapped second row has to be able to
+       grow past the pinned floor rather than be cut off. */
     .col-head { min-height: 41px; }
-    .col-head button { padding: 0 7px; font-size: 11px; height: 24px; }
+    /* Never squeezed or clipped: the title gives way instead. */
+    .col-head button { padding: 0 7px; font-size: 11px; height: 24px; flex-shrink: 0; }
     .col-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px; min-width: 0; }
 
     /* Item 4 — overlay scrollbars.
@@ -961,7 +986,7 @@
     <span class="spacer"></span>
     <button id="account">Sign in to FreeFrame</button>
     <button id="refresh"><span class="icon" data-icon="refresh"></span> Refresh</button>
-    <button id="fields-show">Fields</button>
+    <button id="fields-show">Naming Fields</button>
     <button id="clear">Clear</button>
     <button id="start" class="primary" disabled>Copy &amp; Verify</button>
   </header>
@@ -1001,9 +1026,9 @@
        the job panel below, which is about work already submitted. -->
   <aside id="fields-panel">
     <div class="col-head">
-      <h2>Fields</h2>
+      <h2>Naming Fields</h2>
       <span class="spacer"></span>
-      <button id="fields-collapse" title="Hide the fields panel">Hide</button>
+      <button id="fields-collapse" title="Hide the naming fields panel">Hide</button>
     </div>
     <div class="col-body"><div id="fields-body"></div></div>
   </aside>
@@ -1521,11 +1546,20 @@
           posterUrl: p.poster_url || null,
           // Item 2 — which folder inside the project this job uses. Null
           // means the root, which is what every project meant before.
-          // Both roles' folders, so the tile can say which is which (§24a).
-          // One label was ambiguous the moment the two became independent.
+          // The folder for each role the project is CURRENTLY holding
+          // (§24a for the two labels, §24c for the "currently" part).
+          // Showing a configured-but-unused selection read as though it
+          // were in effect — which is what made a source-only pick look
+          // like it was also being used as an upload target.
           folderLabels: (() => {
+            const mountPoint = `freeframe://${p.id}`;
+            const held = {
+              source: sourcePath === mountPoint,
+              destination: destNodes.some((n) => n.path === mountPoint),
+            };
             const out = [];
             for (const [role, short] of [["source", "from"], ["destination", "to"]]) {
+              if (!held[role]) continue;
               const sel = projectFolderFor(p.id, role);
               if (sel && sel.id !== "root") out.push(`${short} ${sel.path || sel.name}`);
             }
@@ -1897,6 +1931,24 @@
       return (entry && entry[role]) || null;
     }
 
+    /**
+     * Put a project INTO the role its folder was just chosen for (§24c).
+     *
+     * A drive's role submenu assigns the drive the moment a folder is
+     * picked; a project's only remembered the folder, so picking one
+     * changed the tile's caption and nothing else. Both of the project's
+     * paths need this — the recents list (which goes through `apply`) and
+     * the folder picker's Save button (which does not).
+     *
+     * setSource/addDest carry the same-project-both-sides guard already,
+     * so routing through them composes rather than duplicating it.
+     */
+    function assignProjectRole(projectId, role) {
+      const mountPoint = `freeframe://${projectId}`;
+      if (role === "source") setSource(mountPoint);
+      else addDest(mountPoint, null);
+    }
+
     function setProjectFolder(projectId, role, selection) {
       const entry = projectFolder[projectId] || (projectFolder[projectId] = {});
       if (selection) entry[role] = selection;
@@ -2265,7 +2317,13 @@
             // The current selection is named on the trigger, so both roles
             // are readable without opening either submenu.
             chosen ? `${label} (${chosen.name})` : label,
-            (folder) => { setProjectFolder(projectId, roleKey, folder); render(); },
+            (folder) => {
+              setProjectFolder(projectId, roleKey, folder);
+              // §24c — and actually take the role, matching the drive
+              // submenus rather than leaving projects a two-step.
+              assignProjectRole(projectId, roleKey);
+              render();
+            },
             {
               device: path,
               browse: () => openProjectFolders(projectId, roleKey),
@@ -3662,10 +3720,27 @@
 
     let fieldsPanelHidden = false;
 
+    /**
+     * Show/hide state, and the rule that outranks it (§25c).
+     *
+     * With no preset active the panel has nothing to show but its own
+     * explanation of why it is empty, and the reopen button offers to
+     * bring that back. Both are removed entirely instead — an empty region
+     * explaining its own emptiness is worse than no region.
+     *
+     * `activePreset()` is the same check missingRequired() uses; the
+     * manual Hide state is kept underneath, so a preset chosen later
+     * restores whatever the user had.
+     */
+    function applyFieldsPanelVisibility() {
+      const hasPreset = Boolean(activePreset());
+      $("fields-panel").classList.toggle("hidden", !hasPreset || fieldsPanelHidden);
+      $("fields-show").classList.toggle("on", hasPreset && fieldsPanelHidden);
+    }
+
     function setFieldsPanel(hidden) {
       fieldsPanelHidden = hidden;
-      $("fields-panel").classList.toggle("hidden", hidden);
-      $("fields-show").classList.toggle("on", hidden);
+      applyFieldsPanelVisibility();
     }
 
     /**
@@ -3679,14 +3754,13 @@
     function renderFieldsPanel() {
       const host = $("fields-body");
       if (!host) return;
+      applyFieldsPanelVisibility();
       host.replaceChildren();
 
+      // §25c — the panel is hidden outright without a preset, so this
+      // branch only guards against rendering into a hidden host.
       const preset = activePreset();
-      if (!preset) {
-        host.appendChild(el("div", { class: "fv-empty",
-          text: "No naming preset selected. Choose one from the preset button in the header to name folders and files by hand-entered values." }));
-        return;
-      }
+      if (!preset) return;
       if (!sourcePath) {
         host.appendChild(el("div", { class: "fv-empty",
           text: `“${preset.name}” is active. Assign a source to fill in its fields — values are kept per card, so swapping back restores what you typed.` }));
@@ -4130,6 +4204,10 @@
           rememberRecent(`freeframe://${projectId}`, role, selected);
         }
         closeFolderPicker();
+        // §24c — choosing the root still means "use this project for this
+        // role", it just means at the top level. Assigning only for a
+        // non-root pick would make the root option silently do nothing.
+        assignProjectRole(projectId, role);
         render();
       });
       on("ffdir-backdrop", "keydown", (e) => { if (e.key === "Escape") closeFolderPicker(); });

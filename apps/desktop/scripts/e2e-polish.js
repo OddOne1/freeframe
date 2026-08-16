@@ -345,7 +345,11 @@ async function main() {
     // ── 8. Header alignment (all three col-heads must line up) ───────────
     console.log("\n8. Header row alignment across the three columns");
     const heads = await cdp.eval(`
-      [...document.querySelectorAll('.col-head')].map(h => {
+      // Scoped to .columns: the Naming Fields panel (§22g/§25c) has its own
+      // .col-head outside the three-column grid, and it is hidden entirely
+      // when no preset is active. This check is about the three columns
+      // lining up with each other.
+      [...document.querySelectorAll('.columns .col-head')].map(h => {
         const r = h.getBoundingClientRect();
         return { bottom: Math.round(r.bottom * 100) / 100, height: Math.round(r.height * 100) / 100 };
       })`);
