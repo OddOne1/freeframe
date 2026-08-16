@@ -302,6 +302,12 @@ ipcMain.handle("presets:list", async () => presets.list());
 ipcMain.handle("presets:save", async (_e, { preset } = {}) => presets.save(preset || {}));
 ipcMain.handle("presets:delete", async (_e, { id } = {}) => presets.remove(id));
 
+// §22h — the source counter. Claimed when a source is assigned, so the
+// number identifies the card rather than the job: cancelling or re-running
+// must not advance it, and adding a second card must.
+ipcMain.handle("presets:bump-source-counter", async () => presets.bumpSourceCounter());
+ipcMain.handle("presets:set-source-counter", async (_e, { value } = {}) => presets.setSourceCounter(value));
+
 /**
  * Preview what a template will produce, for the editor's live example.
  *
@@ -713,6 +719,9 @@ ipcMain.handle("copy:start", async (event, payload) => {
       values,
       sourceLabel: sourcePath || (sourceFiles && sourceFiles[0]) || "",
       flatten: wantsFlatten(filters),
+      // Clamped rather than trusted: the renderer holds the number claimed
+      // when this source was assigned, and it ends up in a folder name.
+      sourceCounter: presets.normalizeCounter(naming.sourceCounter),
     });
 
     // Only remembered once a job actually starts, so half-typed names
@@ -735,6 +744,7 @@ ipcMain.handle("copy:start", async (event, payload) => {
     mode: payload?.concurrencyMode,
     label: path.basename(sourcePath || (sourceFiles && sourceFiles[0]) || "Copy") || "Copy",
     sourceLabel: sourcePath || (sourceFiles ? `${sourceFiles.length} files` : ""),
+    sourcePath: sourcePath || null,
     destLabels: destPathsForKeys.map((p) => path.basename(p) || p),
     destPaths: destPathsForKeys,
     sourceKey: volumeKeyOf(sourcePath || (sourceFiles && sourceFiles[0]), volumes),

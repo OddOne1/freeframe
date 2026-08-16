@@ -127,6 +127,8 @@ class JobQueue {
       // display) and destKeys (volume keys, for scheduling). The log
       // writer needs actual paths to drop a copy beside the footage.
       destPaths: spec.destPaths || [],
+      // The source's own path, distinct from sourceLabel's display duty.
+      sourcePath: spec.sourcePath || null,
       payload: spec.payload,
       progress: null,
       summary: null,
@@ -286,6 +288,11 @@ class JobQueue {
       label: j.label,
       sourceLabel: j.sourceLabel,
       destLabels: j.destLabels,
+      // Real paths, not just display labels (§22b). The renderer needs to
+      // know which specific cards a running job is holding, so it can keep
+      // every OTHER card editable instead of freezing the whole UI.
+      sourcePath: j.sourcePath || null,
+      destPaths: j.destPaths || [],
       progress: j.progress,
       summary: j.summary,
       error: j.error,

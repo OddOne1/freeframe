@@ -42,6 +42,11 @@ contextBridge.exposeInMainWorld("freeframe", {
   previewNaming: (folderTemplate, fileTemplate, values, sourceLabel) =>
     ipcRenderer.invoke("presets:preview", { folderTemplate, fileTemplate, values, sourceLabel }),
 
+  /** §22h — {sourcecounter}. bump() claims the current number and advances
+   *  the stored one; set() is the editable field in the presets window. */
+  bumpSourceCounter: () => ipcRenderer.invoke("presets:bump-source-counter"),
+  setSourceCounter: (value) => ipcRenderer.invoke("presets:set-source-counter", { value }),
+
   /** No id cancels every running and queued job — what the single-job
    *  Cancel button used to mean. An id cancels just that one. */
   cancelCopy: (id) => ipcRenderer.invoke("copy:cancel", { id }),

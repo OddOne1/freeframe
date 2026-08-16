@@ -161,7 +161,11 @@
        padding). Same row, different tallest child, so the border-bottom
        under Volumes sat ~3px lower than under the other two columns.
        Pinning beats keeping two padding sums coincidentally equal. */
-    .col-head { min-height: 40px; }
+    /* 41px, not 40: the other two columns' 24px buttons plus padding and
+       the border come to 41, and after §22f the Volumes header has no
+       control of its own to match them. Pinning to the taller of the two
+       keeps the three border-bottoms on one line. */
+    .col-head { min-height: 41px; }
     .col-head button { padding: 0 7px; font-size: 11px; height: 24px; }
     .col-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px; min-width: 0; }
 
@@ -345,6 +349,12 @@
     .tile-media {
       position: relative; width: 100%;
       aspect-ratio: 16 / 10;
+      /* Capped because the Sources and Destinations columns are narrow but
+         not 118px narrow (§22f): one tile spanning a ~200px column would
+         otherwise get a ~125px-tall poster and push its own name out of
+         sight. The cap is above what a Volumes-column tile ever reaches, so
+         the grid is unaffected. */
+      max-height: 96px;
       background: var(--bg-tertiary);
       display: flex; align-items: center; justify-content: center;
       overflow: hidden;
@@ -410,6 +420,19 @@
       overflow: hidden;
     }
     .tile-meta { font-size: 10px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* §22e — the name is a control now, so it has to look like one on
+       hover. Without this it reads as plain text and nobody clicks it. */
+    .tile-name.renamable { cursor: text; border-radius: 3px; }
+    .tile-name.renamable:hover { background: var(--bg-hover); box-shadow: 0 0 0 3px var(--bg-hover); }
+    /* §22f — a destination tile carries what only the list view used to:
+       its status, and the progress bar underneath. */
+    .tile-status { display: flex; align-items: center; gap: 5px; }
+    /* Section headings in the Volumes column (§22a). */
+    .zone-group {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+      color: var(--text-tertiary); padding: 2px 2px 4px;
+    }
+    .zone-group:not(:first-child) { margin-top: 12px; }
 
     /* View toggle in the Volumes column header. */
     .view-toggle { display: flex; align-items: center; gap: 2px; background: var(--bg-tertiary); border-radius: 6px; padding: 2px; height: 24px; }
@@ -659,12 +682,28 @@
     .preset-list button:hover { background: var(--bg-hover); }
     .preset-list button.active { background: var(--accent-muted); }
     .preset-pane { min-width: 0; }
-    .field-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+    /* §22d — the row's fixed controls (token, type, Required, ↑ ↓ ✕) come to
+       ~300px, which is most of the ~400px pane. The name input then collapsed
+       to nothing and the row still spilled past the modal edge, because
+       `.tok` and `.req` are nowrap and the select has an intrinsic minimum.
+       Wrapping the control cluster as a unit is what fixes it: the row grows
+       to two lines when it must, instead of overflowing. */
+    .field-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
     .field-row input[type="text"] {
       height: 28px; border-radius: 6px; padding: 0 8px; font-size: 12px; font-family: inherit;
       background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);
-      min-width: 0;
+      flex: 1 1 150px; min-width: 110px;
     }
+    /* Wraps internally as well as travelling as a unit: at a narrow window
+       the modal's max-width collapses this pane to ~190px, and a rigid
+       248px control group simply hangs off the edge — which is the overflow
+       that was actually reported. */
+    .field-row-controls {
+      display: flex; align-items: center; gap: 6px;
+      margin-left: auto; flex-wrap: wrap; justify-content: flex-end;
+      min-width: 0; max-width: 100%;
+    }
+    .field-row-controls select { max-width: 100%; }
     .field-row select {
       height: 28px; border-radius: 6px; font-size: 12px; font-family: inherit;
       background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);
@@ -892,12 +931,6 @@
       <div class="col-head">
         <h2>Volumes</h2>
         <span class="spacer"></span>
-        <!-- Toggle applies to this column only — Sources and Destinations
-             keep their list layout regardless. -->
-        <div class="view-toggle" id="view-toggle">
-          <button data-view="line" title="List view" aria-label="List view"><span data-icon="viewList"></span></button>
-          <button data-view="square" title="Grid view" aria-label="Grid view"><span data-icon="viewGrid"></span></button>
-        </div>
       </div>
       <div class="col-body"><div class="zone" id="zone-volumes" data-zone="volumes"></div></div>
     </div>
@@ -1168,7 +1201,56 @@
      *  a parentId = cascades from that node. Same shape the engine takes,
      *  so nothing has to be translated at the IPC boundary. */
     let destNodes = [];          // [{ id, path, parentId, status, copiedBytes }]
+    /** Latest job-queue snapshot from main. Declared here rather than with
+     *  the panel code because busyPaths() below reads it, and that governs
+     *  the whole three-column UI, not just the panel. */
+    let jobSnapshot = [];
+
+    // True while THIS window is awaiting a job it started, purely so the
+    // legacy single-job progress footer knows to show itself. It is
+    // deliberately NOT a UI lock any more (§22b) — see busyPaths below.
     let copying = false;
+
+    /**
+     * Which specific paths a running or queued job is holding (§22b).
+     *
+     * `copying` used to gate almost every mutation in this file, so any job
+     * anywhere froze the entire UI — including the context menu, the only
+     * route to Rename. That contradicted the queue built in §18c, which
+     * exists precisely so unrelated jobs can run at once.
+     *
+     * The queue's own snapshot is the source of truth. Deriving from it
+     * rather than tracking a second, parallel "busy" set is what stops the
+     * two disagreeing about what is in use.
+     *
+     * Queued jobs count, not just running ones: a queued job has already
+     * been told which paths it will read and write, and pulling one out
+     * from under it means it starts later against something that moved.
+     */
+    function busyPaths() {
+      const set = new Set();
+      for (const j of jobSnapshot) {
+        if (j.status !== "running" && j.status !== "queued") continue;
+        if (j.sourcePath) set.add(j.sourcePath);
+        for (const p of j.destPaths || []) set.add(p);
+      }
+      return set;
+    }
+
+    function isBusy(p) {
+      return Boolean(p) && busyPaths().has(p);
+    }
+
+    /** Is the exact job now configured already running or queued? Used
+     *  instead of a global flag so Start blocks a duplicate submission
+     *  without blocking a different one. */
+    function currentJobPending() {
+      const dests = destNodes.map((n) => n.path).sort().join("|");
+      return jobSnapshot.some((j) =>
+        (j.status === "running" || j.status === "queued") &&
+        j.sourcePath === sourcePath &&
+        [...(j.destPaths || [])].sort().join("|") === dests);
+    }
     let nodeStatus = new Map();  // id -> { status, copiedBytes, filesVerified }
     let sourceReleased = false;
 
@@ -1189,9 +1271,6 @@
      *  nothing changes for anyone who never opens the picker. */
     let algorithms = [];
     let algorithm = "xxhash64";
-
-    /** "line" | "square" — Volumes column only. */
-    let volumesView = "line";
 
     /** Item 6 — recent folder per device, mirrored from the main process so
      *  it survives a restart. Keyed by mountPoint. */
@@ -1239,7 +1318,8 @@
     }
 
     function openAlgoMenu() {
-      if (copying) return;
+      // No longer gated: the algorithm is captured when a job starts, so
+      // changing it mid-copy affects only the next one.
       renderAlgoMenu();
       const menuEl = $("algo-menu");
       const r = $("algo-btn").getBoundingClientRect();
@@ -1488,14 +1568,44 @@
      * there is no single path that means "these three".
      */
     function setSourceFiles(files) {
-      if (copying || !files || !files.length) return;
+      if (!files || !files.length) return;
+      // Only the source being REPLACED needs protecting (§22b).
+      if (isBusy(sourcePath)) return;
       if (files.length === 1) { sourceFiles = null; setSource(files[0]); return; }
       sourceFiles = [...files];
       setSource(FILESET);
     }
 
+    /**
+     * §22h — the number this source will render as `{sourcecounter}`.
+     *
+     * Kept per path, not as a single "current" value: swapping back to a
+     * card assigned earlier in the session should show the number it was
+     * given then, not a fresh one. Claiming is async, so a job started in
+     * the same tick falls back to 1 rather than blocking the UI on a disk
+     * write — the value is only ever used at job-start, long after.
+     */
+    const sourceCounters = new Map();
+    let sourceCounter = 1;
+
+    async function claimSourceCounter(p) {
+      if (sourceCounters.has(p)) {
+        sourceCounter = sourceCounters.get(p);
+        return;
+      }
+      const claimed = await window.freeframe.bumpSourceCounter();
+      sourceCounters.set(p, claimed);
+      // Keeps the editable field honest without re-reading the store.
+      nextSourceCounter = claimed + 1;
+      // Guard against a second source having been assigned while this was
+      // in flight: the last assignment wins, not the last write to finish.
+      if (sourcePath === p) sourceCounter = claimed;
+    }
+
     function setSource(p) {
-      if (copying) return;
+      // Replacing a source a job is reading would pull the card out from
+      // under it; replacing any other source is fine while it runs.
+      if (isBusy(sourcePath)) return;
       // A project CAN now be a source (item 3) — copy-engine has a
       // FreeFrame source provider. What it still can't be is both sides of
       // the same job: the dual-role modal resolves that by picking two
@@ -1510,6 +1620,11 @@
       if (p !== FILESET) sourceFiles = null;
       const previous = sourcePath;
       sourcePath = p;
+      // §22h — claim the next source number, but only for a genuinely new
+      // card. Re-assigning the same path (a drag that lands back where it
+      // started, the dual-role modal reverting) must not burn a number, or
+      // the folders skip.
+      if (p && p !== previous) claimSourceCounter(p);
       // Item 5: holding both roles is legitimate — copying between two
       // folders on one big RAID is a real workflow. What's *not* legitimate
       // is the bare volume root on both sides, which would copy a folder
@@ -1521,7 +1636,8 @@
       render();
     }
     function addDest(p, parentId = null) {
-      if (copying) return;
+      // Adding a destination disturbs nothing already running, so this is
+      // deliberately ungated.
       if (destNodes.some((n) => n.path === p)) return;
       // Same refusal as setSource, from the other side.
       if (isProject(p) && p === sourcePath) { showProjectConflict(p); return; }
@@ -1578,7 +1694,9 @@
       if (!silent) render();
     }
     function cascadeFrom(childPath, parentId) {
-      if (copying) return;
+      // Restructuring a chain mid-flight would change where a running leg
+      // reads from, so both ends have to be idle.
+      if (isBusy(childPath)) return;
       const child = destNodes.find((n) => n.path === childPath);
       if (!child) { addDest(childPath, parentId); return; }
       if (child.id === parentId) return;
@@ -1591,8 +1709,17 @@
       render();
     }
     function clearAll() {
-      if (copying) return;
-      sourcePath = null; sourceFiles = null; destNodes = []; nodeStatus = new Map(); sourceReleased = false;
+      // Clears everything idle and keeps whatever a job is still holding,
+      // rather than refusing outright because something somewhere is busy.
+      const busy = busyPaths();
+      if (sourcePath && !busy.has(sourcePath)) { sourcePath = null; sourceFiles = null; }
+      for (const n of [...destNodes]) if (!busy.has(n.path)) removeDest(n.path, true);
+      // Per-node progress and the eject hint describe assignments that are
+      // gone, so they only survive if something was actually kept back.
+      if (!sourcePath && !destNodes.length) {
+        nodeStatus = new Map();
+        sourceReleased = false;
+      }
       $("summary").style.display = "none";
       render();
     }
@@ -1689,7 +1816,9 @@
     }
 
     async function openProjectFolders(projectId) {
-      if (copying) return;
+      // Changing where a project's files land while that project is an
+      // active destination would move the target mid-upload.
+      if (isBusy(`freeframe://${projectId}`)) return;
       const res = await window.freeframe.freeframeFolderTree(projectId);
       if (!res || !res.ok) {
         showFolderPicker(projectId, [], (res && res.error) || "Couldn't load folders.");
@@ -1829,7 +1958,8 @@
     let drag = null; // { path, fromRole }
 
     function beginDrag(e, path, fromRole) {
-      if (copying) return;
+      // Only the cards a job is actually using are pinned (§22b).
+      if (isBusy(path)) return;
       drag = { path, fromRole, moved: false };
       ghost.textContent = entryFor(path).name;
       ghost.style.display = "block";
@@ -1922,7 +2052,10 @@
     // ── Context menu (non-drag fallback) ──
     function openMenu(e, path, role) {
       e.preventDefault();
-      if (copying) return;
+      // Never gated as a whole: this is the only route to Rename, and
+      // freezing it during any job was what made a safe, cosmetic action
+      // unreachable for the length of an offload (§22b). Individual
+      // entries below disable themselves when their own path is busy.
       menu.replaceChildren();
 
       const addTo = (host, label, fn, disabled = false) =>
@@ -2110,14 +2243,14 @@
       if (vol && vol.type !== "internal") {
         menu.appendChild(el("div", { class: "sep" }));
         const isNetwork = vol.type === "network";
-        const inUseBySource = copying && sourcePath === path;
+        const inUseBySource = isBusy(path);
         add(
           isNetwork ? "Disconnect" : "Eject",
           () => ejectVolume(vol),
           // Disabled during any copy; the source of an in-flight copy is
           // called out separately because that's the one people will
           // actually try to do.
-          copying || inUseBySource
+          inUseBySource
         );
       }
 
@@ -2196,101 +2329,29 @@
       return { pending: "Waiting", copying: "Copying", verifying: "Verifying", verified: "Verified", failed: "Failed", skipped: "Skipped" }[s] || "Ready";
     }
 
-    function makeCard(entry, { role, node } = {}) {
+    /** Square tile — now the only card renderer (§22f). Structure mirrors
+     *  apps/web's asset-card.tsx: media area with a centered icon tile,
+     *  then a compact info block.
+     *
+     *  `role`/`node` are set when the tile sits in Sources or Destinations,
+     *  which is what the list view used to be needed for: a destination has
+     *  a status and a progress bar, a plain volume has neither. */
+    function makeTile(entry, { role, node } = {}) {
       const st = node ? (nodeStatus.get(node.id) || {}) : {};
       const status = st.status || (node ? "pending" : null);
 
-      const left = el("div", { style: "min-width:0;flex:1" }, [
-        el("div", { class: "name", text: entry.name }),
-        el("div", {
-          class: "meta",
-          text: entry.kind === "freeframe"
-            // Says where in the project the files land, not just that it's
-            // a project — the whole point of the folder picker is that a
-            // project no longer implicitly means its root.
-            ? `${entry.assetCount} asset${entry.assetCount === 1 ? "" : "s"} · ` +
-              (entry.folderLabel ? `→ ${entry.folderLabel}` : "project root")
-            // Naming the picked files beats showing a synthetic key.
-            : entry.fileList
-              ? entry.fileList
-            : entry.totalBytes == null
-              ? entry.mountPoint
-              : `${formatBytes(entry.freeBytes)} free of ${formatBytes(entry.totalBytes)}`,
-          title: entry.mountPoint,
-        }),
-      ]);
-
-      // Type glyph sits beside the name/meta stack, not inside it — `left`
-      // is a vertical block, so the icon needs its own row wrapper or the
-      // two lines end up side by side.
-      const typeGlyph = icon(typeIcon(entry.type));
-      typeGlyph.classList.add("card-grip");
-      const leftWithIcon = el("div", { class: "row", style: "min-width:0;flex:1;gap:8px" }, [typeGlyph, left]);
-
-      const right = el("div", { class: "row", style: "flex-shrink:0;gap:6px" });
-      if (role === "source") right.appendChild(el("span", { class: "badge src", text: "Source" }));
-      if (role === "dest") right.appendChild(el("span", { class: "badge dst", text: "Dest" }));
-      if (!role) right.appendChild(el("span", { class: "badge", text: typeLabel(entry) }));
-      if (status) {
-        right.appendChild(el("span", { class: `status-text ${status}`, text: statusLabel(status) }));
-        right.appendChild(el("span", { class: `dot ${status}` }));
-      }
-
-      const card = el("div", {
-        // Role colouring applies only to the middle column (`!role`) —
-        // cards already inside Sources/Destinations carry their own badge
-        // and don't need a second signal for the role they literally are.
-        class: `card${!role ? roleClass(entry.mountPoint) : ""}` +
-          `${!role && isAssigned(entry.mountPoint) ? " self-assigned" : ""}`,
-        dataset: node
-          ? { destId: node.id, path: entry.mountPoint, role: role || "" }
-          : { path: entry.mountPoint, role: role || "" },
-        title: entry.mountPoint,
-      }, [el("div", { class: "row" }, [leftWithIcon, right])]);
-
-      if (node) {
-        const pct = st.percent != null ? st.percent : 0;
-        const bar = el("div", { class: "node-bar" }, [
-          el("div", { class: status === "verified" ? "verified" : status === "failed" ? "failed" : "", style: `width:${pct}%` }),
-        ]);
-        card.appendChild(bar);
-      }
-
-      // Item 3 — visible menu trigger. Additive: right-click below still
-      // works, this just stops the per-device folder pickers and rename
-      // being things you have to already know about to find.
-      const kebab = el("button", {
-        class: "card-menu",
-        title: "More…",
-        onClick: (e) => {
-          e.stopPropagation();
-          const r = e.currentTarget.getBoundingClientRect();
-          openMenu({ preventDefault() {}, clientX: r.right - 4, clientY: r.bottom + 2 }, entry.mountPoint, role);
-        },
-      });
-      kebab.appendChild(icon("kebab"));
-      // mousedown must not start a drag from the trigger itself, or the
-      // menu never opens because the click turns into a drag.
-      kebab.addEventListener("mousedown", (e) => e.stopPropagation());
-      right.appendChild(kebab);
-
-      card.addEventListener("mousedown", (e) => {
-        if (e.button !== 0) return;
-        beginDrag(e, entry.mountPoint, role);
-      });
-      card.addEventListener("contextmenu", (e) => openMenu(e, entry.mountPoint, role));
-      return card;
-    }
-
-    /** Square tile for the Volumes grid. Structure mirrors
-     *  apps/web's asset-card.tsx: media area with a centered icon tile,
-     *  then a compact info block. */
-    function makeTile(entry) {
       // Roles are resolved through deviceFor, so a drive shows as source
       // and/or destination when a folder INSIDE it holds that role — the
       // whole point of this view: the highlight belongs on the drive you
       // have to keep plugged in, not on a subfolder of it.
-      const { isSource, isDest, selfAssigned } = roleFor(entry.mountPoint);
+      //
+      // A tile that IS the assignment (role set) shows its own role
+      // directly instead: it already sits in that column, and deriving it
+      // would make a source folder's tile also claim its drive's roles.
+      const derived = roleFor(entry.mountPoint);
+      const isSource = role ? role === "source" : derived.isSource;
+      const isDest = role ? role === "dest" : derived.isDest;
+      const selfAssigned = role ? false : derived.selfAssigned;
 
       // A project gets apps/web's own card treatment — poster, or the
       // project's deterministic gradient — rather than the icon-in-a-box
@@ -2331,17 +2392,32 @@
       if (isSource || isDest) media.appendChild(badges);
       media.appendChild(el("span", { class: "tile-badge", text: typeLabel(entry) }));
 
+      // Clicking the name renames the LABEL, in this app only — the volume
+      // keeps its real name on disk, which openRename's own subtitle says.
+      // Previously reachable only by right-click, which meant discovering a
+      // safe, cosmetic action required already knowing it existed (§22e).
+      const nameEl = el("div", { class: "tile-name", text: entry.name, title: "Click to rename (label only)" });
+      nameEl.classList.add("renamable");
+      nameEl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openRename(entry.mountPoint);
+      });
+      // Without this the pointer-drag system claims the press and the click
+      // never arrives — the same reason the kebab stops mousedown.
+      nameEl.addEventListener("mousedown", (e) => e.stopPropagation());
+
       const info = el("div", { class: "tile-info" }, [
-        el("div", { class: "tile-name", text: entry.name }),
+        nameEl,
         el("div", {
           class: "tile-meta",
           // A FreeFrame project has no free-space figure, so the generic
-          // branch rendered a bare "— free". Mirrors makeCard, which
-          // already had this branch.
+          // branch rendered a bare "— free".
           text: entry.kind === "freeframe"
             ? (entry.folderLabel
                 ? `→ ${entry.folderLabel}`
                 : `${entry.assetCount} asset${entry.assetCount === 1 ? "" : "s"}`)
+            : entry.fileList
+              ? entry.fileList
             : entry.freeBytes == null
               ? entry.mountPoint
               : `${formatBytes(entry.freeBytes)} free`,
@@ -2349,21 +2425,43 @@
         }),
       ]);
 
+      // Status and progress belong to an assigned destination only. This is
+      // the part the list view carried and the grid did not, and the reason
+      // both renderers existed at all.
+      if (status) {
+        info.appendChild(el("div", { class: "tile-status" }, [
+          el("span", { class: `dot ${status}` }),
+          el("span", { class: `status-text ${status}`, text: statusLabel(status) }),
+        ]));
+      }
+
       const tile = el("div", {
-        class: `tile${roleClass(entry.mountPoint)}${selfAssigned ? " self-assigned" : ""}`,
-        dataset: { path: entry.mountPoint, role: "" },
+        // Role colouring applies only to the middle column: a tile already
+        // sitting in Sources/Destinations carries its own badge and doesn't
+        // need a second signal for the role it literally is.
+        class: `tile${!role ? roleClass(entry.mountPoint) : ""}${selfAssigned ? " self-assigned" : ""}`,
+        dataset: node
+          ? { destId: node.id, path: entry.mountPoint, role: role || "" }
+          : { path: entry.mountPoint, role: role || "" },
         title: entry.mountPoint,
       }, [media, info]);
 
-      // Item 3 — same trigger in grid view, over the media area where the
-      // reference layout puts it.
+      if (node) {
+        const pct = st.percent != null ? st.percent : 0;
+        tile.appendChild(el("div", { class: "node-bar" }, [
+          el("div", { class: status === "verified" ? "verified" : status === "failed" ? "failed" : "", style: `width:${pct}%` }),
+        ]));
+      }
+
+      // Visible menu trigger, over the media area where the reference
+      // layout puts it. Additive: right-click still works.
       const tileKebab = el("button", {
         class: "tile-menu",
         title: "More…",
         onClick: (e) => {
           e.stopPropagation();
           const r = e.currentTarget.getBoundingClientRect();
-          openMenu({ preventDefault() {}, clientX: r.right - 4, clientY: r.bottom + 2 }, entry.mountPoint, undefined);
+          openMenu({ preventDefault() {}, clientX: r.right - 4, clientY: r.bottom + 2 }, entry.mountPoint, role);
         },
       });
       tileKebab.appendChild(icon("kebab"));
@@ -2372,9 +2470,9 @@
 
       tile.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
-        beginDrag(e, entry.mountPoint, undefined);
+        beginDrag(e, entry.mountPoint, role);
       });
-      tile.addEventListener("contextmenu", (e) => openMenu(e, entry.mountPoint, undefined));
+      tile.addEventListener("contextmenu", (e) => openMenu(e, entry.mountPoint, role));
       return tile;
     }
 
@@ -2382,7 +2480,7 @@
       // Sources column
       zoneSource.replaceChildren();
       if (sourcePath) {
-        zoneSource.appendChild(makeCard(entryFor(sourcePath), { role: "source" }));
+        zoneSource.appendChild(makeTile(entryFor(sourcePath), { role: "source" }));
         if (sourceReleased) {
           zoneSource.appendChild(el("div", {
             class: "hint",
@@ -2394,26 +2492,31 @@
         zoneSource.appendChild(el("div", { class: "hint", text: "Drag a volume here, or right-click one → Set as Source." }));
       }
 
-      // Center column — the only one with a view toggle.
+      // Center column — split into Drives and FreeFrame Projects (§22a).
+      // Merged into one flat list, a cloud project and a physical disk were
+      // separated only by a poster and a type word, which is not enough to
+      // tell them apart at a glance when both are drop targets.
       zoneVolumes.replaceChildren();
-      zoneVolumes.className = `zone${volumesView === "square" ? " grid-view" : ""}`;
       const entries = volumesColumnEntries();
       if (!entries.length) {
         zoneVolumes.appendChild(el("div", {
           class: "hint",
           text: "No volumes mounted. Use “Choose folder…” to pick one.",
-          // The hint must not become a grid cell, or it renders as a narrow
-          // column instead of centered text.
-          style: volumesView === "square" ? "grid-column:1/-1" : "",
         }));
-      } else if (volumesView === "square") {
-        for (const e of entries) zoneVolumes.appendChild(makeTile(withDisplayName(e)));
       } else {
-        for (const e of entries) zoneVolumes.appendChild(makeCard(withDisplayName(e), {}));
-      }
-
-      for (const b of document.querySelectorAll("#view-toggle button")) {
-        b.classList.toggle("active", b.dataset.view === volumesView);
+        const projects = entries.filter((e) => e.kind === "freeframe");
+        const drives = entries.filter((e) => e.kind !== "freeframe");
+        // Only labelled once there is something to tell apart: a machine
+        // with no projects signed in should not grow a "Drives" heading
+        // over the only list on screen.
+        const labelled = projects.length > 0 && drives.length > 0;
+        for (const [label, group] of [["Drives", drives], ["FreeFrame Projects", projects]]) {
+          if (!group.length) continue;
+          if (labelled) zoneVolumes.appendChild(el("div", { class: "zone-group", text: label }));
+          const grid = el("div", { class: "grid-view" });
+          for (const e of group) grid.appendChild(makeTile(withDisplayName(e)));
+          zoneVolumes.appendChild(grid);
+        }
       }
 
       // Destinations column, grouped into chains.
@@ -2433,7 +2536,7 @@
             el("span", { class: "arrow", text: "→" }),
             el("span", { text: entryFor(root.path).name }),
           ]));
-          chain.appendChild(makeCard(entryFor(root.path), { role: "dest", node: root }));
+          chain.appendChild(makeTile(entryFor(root.path), { role: "dest", node: root }));
 
           const kids = destNodes.filter((n) => n.parentId === root.id);
           for (const kid of kids) {
@@ -2443,14 +2546,17 @@
               el("span", { class: "arrow", text: "→" }),
               el("span", { text: entryFor(kid.path).name }),
             ]));
-            wrap.appendChild(makeCard(entryFor(kid.path), { role: "dest", node: kid }));
+            wrap.appendChild(makeTile(entryFor(kid.path), { role: "dest", node: kid }));
             chain.appendChild(wrap);
           }
           zoneDest.appendChild(chain);
         }
       }
 
-      const ready = Boolean(sourcePath) && destNodes.length > 0 && !copying;
+      // §22b — a job running no longer disables Start. Only submitting
+      // the SAME source/destination set twice is refused, which is the
+      // thing that was actually worth preventing.
+      const ready = Boolean(sourcePath) && destNodes.length > 0 && !currentJobPending();
       $("start").disabled = !ready;
       const cascades = destNodes.filter((n) => n.parentId !== null).length;
       $("start").textContent = cascades
@@ -2458,8 +2564,10 @@
         : destNodes.length > 1
           ? `Copy & Verify → ${destNodes.length}`
           : "Copy & Verify";
-      $("clear").disabled = copying || (!sourcePath && !destNodes.length);
-      $("refresh").disabled = copying;
+      $("clear").disabled = !sourcePath && !destNodes.length;
+      // Refresh only re-lists volumes; it never touches a job, so there is
+      // no reason for a running copy to disable it.
+      $("refresh").disabled = false;
     }
 
     async function refresh() {
@@ -2639,7 +2747,7 @@
     }
 
     async function startCopy(allowFragileRename = false) {
-      if (copying || !sourcePath || !destNodes.length) return;
+      if (!sourcePath || !destNodes.length || currentJobPending()) return;
 
       // A required field left blank would otherwise render as a literal
       // {token} in a folder name on someone's drive — visible only hours
@@ -2739,9 +2847,6 @@
 
     // ── Wiring ──
     paintStaticIcons();
-    for (const b of document.querySelectorAll("#view-toggle button")) {
-      b.addEventListener("click", () => { volumesView = b.dataset.view; render(); });
-    }
 
     window.freeframe.onCopyProgress(onProgress);
     on("refresh", "click", refresh);
@@ -2779,7 +2884,11 @@
     // and nothing else — deliberately NOT written into FreeFrame's asset
     // metadata, which §10 scopes as a separate future addition.
 
-    let presetStore = { presets: [], history: {} };
+    let presetStore = { presets: [], history: {}, sourceCounter: 1 };
+    /** §22h — what the NEXT source assigned will be numbered. Mirrored from
+     *  the store so the editable field has something to show before any
+     *  source exists. */
+    let nextSourceCounter = 1;
     let activePresetId = null;
     let presetValues = {};      // { fieldKey: value } for the current job
     let editingPreset = null;   // the preset open in the editor
@@ -2794,16 +2903,54 @@
     }
 
     async function reloadPresets() {
-      presetStore = (await window.freeframe.listPresets()) || { presets: [], history: {} };
+      presetStore = (await window.freeframe.listPresets()) || { presets: [], history: {}, sourceCounter: 1 };
+      nextSourceCounter = presetStore.sourceCounter || 1;
       if (activePresetId && !activePreset()) activePresetId = null;
       updatePresetLabel();
       renderPresetList();
     }
 
-    const BUILTIN_TOKENS = [
-      "date", "yyyy", "yy", "mm", "dd", "time", "datetime",
-      "cardname", "counter", "name", "ext",
+    /**
+     * Which built-in tokens each template may use (§22c/§22h).
+     *
+     * Split because the two answer different questions. `{counter}` numbers
+     * files WITHIN one source, so putting it in a folder pattern creates a
+     * separate folder per file — the exact bug this fixes, previously
+     * unavoidable because every chip wrote into the folder field regardless
+     * of where the cursor was. `{sourcecounter}` numbers the sources
+     * themselves, which is only meaningful for a folder.
+     *
+     * Typing a token by hand is still allowed either way; naming.js resolves
+     * whatever it is given. This governs which one-click chips are offered,
+     * so the footgun isn't handed over by default.
+     */
+    const TOKENS_ANYWHERE = [
+      "date", "yyyy", "yy", "mm", "dd", "time", "datetime", "cardname",
     ];
+    const TOKENS_FOLDER_ONLY = ["sourcecounter"];
+    const TOKENS_FILE_ONLY = ["counter", "name", "ext"];
+
+    function tokensFor(key) {
+      return key === "fileTemplate"
+        ? [...TOKENS_ANYWHERE, ...TOKENS_FILE_ONLY]
+        : [...TOKENS_ANYWHERE, ...TOKENS_FOLDER_ONLY];
+    }
+
+    /**
+     * Insert text at the caret of an input, leaving the caret after it.
+     *
+     * Appending to the end (what this used to do) loses the user's place in
+     * a pattern they are part-way through typing, and the full re-render
+     * that followed threw away focus as well.
+     */
+    function insertAtCaret(input, text) {
+      const start = input.selectionStart ?? input.value.length;
+      const end = input.selectionEnd ?? start;
+      input.value = input.value.slice(0, start) + text + input.value.slice(end);
+      const caret = start + text.length;
+      input.focus();
+      input.setSelectionRange(caret, caret);
+    }
 
     function renderPresetList() {
       const host = $("preset-list");
@@ -2877,7 +3024,9 @@
       editingPreset.fields.forEach((f, i) => {
         const row = el("div", { class: "field-row" });
 
-        const label = el("input", { style: "flex:1" });
+        // Sizing lives in .field-row's CSS now, so the row can wrap rather
+        // than the input collapsing to nothing (§22d).
+        const label = el("input");
         label.type = "text";
         label.placeholder = "Field name (e.g. Operator)";
         label.value = f.label;
@@ -2893,6 +3042,10 @@
         const tok = el("span", { class: "tok", text: f.key ? `{${f.key}}` : "" });
         row.appendChild(tok);
 
+        // Everything after the name travels together, so it wraps to a
+        // second line as a block rather than one control at a time.
+        const controls = el("div", { class: "field-row-controls" });
+
         const type = el("select");
         for (const [v, t] of [["text", "Text"], ["select", "Suggesting"]]) {
           const o = el("option", { text: t });
@@ -2902,7 +3055,7 @@
         }
         type.title = "Suggesting fields offer what you've typed before";
         type.addEventListener("change", () => { f.type = type.value; });
-        row.appendChild(type);
+        controls.appendChild(type);
 
         const reqWrap = el("label", { class: "req" });
         const req = el("input");
@@ -2911,7 +3064,7 @@
         req.addEventListener("change", () => { f.required = req.checked; });
         reqWrap.appendChild(req);
         reqWrap.appendChild(el("span", { text: "Required" }));
-        row.appendChild(reqWrap);
+        controls.appendChild(reqWrap);
 
         const up = el("button", { class: "icon-btn", title: "Move up", disabled: i === 0,
           onClick: () => {
@@ -2920,7 +3073,7 @@
             renderPresetPane();
           } });
         up.textContent = "↑";
-        row.appendChild(up);
+        controls.appendChild(up);
 
         const down = el("button", { class: "icon-btn", title: "Move down", disabled: i === editingPreset.fields.length - 1,
           onClick: () => {
@@ -2929,13 +3082,14 @@
             renderPresetPane();
           } });
         down.textContent = "↓";
-        row.appendChild(down);
+        controls.appendChild(down);
 
         const del = el("button", { class: "icon-btn", title: "Remove field",
           onClick: () => { editingPreset.fields.splice(i, 1); renderPresetPane(); refreshPresetPreview(); } });
         del.appendChild(icon("close"));
-        row.appendChild(del);
+        controls.appendChild(del);
 
+        row.appendChild(controls);
         host.appendChild(row);
       });
 
@@ -2957,31 +3111,64 @@
           style: "display:block;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-tertiary);margin:12px 0 4px",
           text: title,
         }));
-        const input = el("input", { class: "tpl-input" });
+        const input = el("input", { class: "tpl-input", dataset: { tpl: key } });
         input.type = "text";
         input.placeholder = placeholder;
         input.value = editingPreset[key] || "";
         input.addEventListener("input", () => { editingPreset[key] = input.value; refreshPresetPreview(); });
         host.appendChild(input);
         host.appendChild(el("div", { class: "token-help", text: hint }));
-      }
 
-      const help = el("div", { class: "token-help" });
-      help.appendChild(document.createTextNode("Click to insert: "));
-      const fieldTokens = editingPreset.fields.map((f) => f.key).filter(Boolean);
-      for (const t of [...fieldTokens, ...BUILTIN_TOKENS]) {
-        const code = el("code", { text: `{${t}}` });
-        code.addEventListener("click", () => {
-          editingPreset.folderTemplate = `${editingPreset.folderTemplate || ""}{${t}}`;
-          renderPresetPane();
-          refreshPresetPreview();
-        });
-        help.appendChild(code);
-        help.appendChild(document.createTextNode(" "));
+        // One chip row per field, holding only the tokens valid there.
+        // Previously a single shared row wrote every token into
+        // folderTemplate no matter which input had focus — so clicking
+        // {counter} while editing the file name silently created a
+        // uniquely-numbered FOLDER for every file (§22c).
+        const chips = el("div", { class: "token-help" });
+        chips.appendChild(document.createTextNode("Click to insert: "));
+        const fieldTokens = editingPreset.fields.map((f) => f.key).filter(Boolean);
+        for (const t of [...fieldTokens, ...tokensFor(key)]) {
+          const code = el("code", { text: `{${t}}` });
+          // mousedown, not click: the default mousedown would blur the
+          // input first and take the caret position with it.
+          code.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            insertAtCaret(input, `{${t}}`);
+            editingPreset[key] = input.value;
+            refreshPresetPreview();
+          });
+          chips.appendChild(code);
+          chips.appendChild(document.createTextNode(" "));
+        }
+        host.appendChild(chips);
       }
-      host.appendChild(help);
 
       host.appendChild(el("div", { id: "tpl-preview", class: "tpl-preview" }));
+
+      // §22h — the source counter is shared across presets, not part of the
+      // one being edited, so it sits apart from the pattern fields. Shown
+      // here anyway because this is the only window where {sourcecounter}
+      // is visible at all, and a number that advances by itself needs to be
+      // correctable when a shoot restarts.
+      const counterRow = el("div", { class: "filter-row", style: "margin-top:14px" });
+      counterRow.appendChild(el("label", { text: "Next card #" }));
+      const counterInput = el("input", { id: "source-counter" });
+      counterInput.type = "number";
+      counterInput.min = "1";
+      counterInput.value = String(nextSourceCounter);
+      counterInput.addEventListener("change", async () => {
+        nextSourceCounter = await window.freeframe.setSourceCounter(counterInput.value);
+        counterInput.value = String(nextSourceCounter);
+        // Numbers already handed to assigned sources stay as they were —
+        // this sets what the NEXT card gets, not a retroactive renumber.
+      });
+      counterRow.appendChild(counterInput);
+      host.appendChild(counterRow);
+      host.appendChild(el("div", {
+        class: "token-help",
+        text: "What {sourcecounter} renders as for the next source you add. Advances on its own each time a card is assigned.",
+      }));
+
       host.appendChild(renderFilterBlock());
 
       if (editingPreset.id) {
@@ -3226,6 +3413,9 @@
         // §23c. Null for every preset that hasn't opened the filtering
         // section, which main treats as "no filtering at all".
         filters: preset.filters || null,
+        // §22h. The number claimed when this source was assigned; main
+        // clamps it before it reaches a folder name.
+        sourceCounter,
       };
     }
 
@@ -3245,7 +3435,6 @@
     // stops the docked panel and the detached window disagreeing about
     // what is running.
 
-    let jobSnapshot = [];
     let panelDetached = false;
 
     // Panel height is a real drag-resized dimension now, not a two-state
@@ -3336,7 +3525,7 @@
         if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes("Files")) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";
-        if (!copying) zone.classList.add("os-drop");
+        zone.classList.add("os-drop");
       };
       zone.addEventListener("dragover", over);
       zone.addEventListener("dragenter", over);
@@ -3350,7 +3539,9 @@
         if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
         e.preventDefault();
         zone.classList.remove("os-drop");
-        if (copying) return;
+        // Dropping onto a zone whose current occupant is mid-job would
+        // replace it underneath the job; any other drop is fine.
+        if (zone.dataset.zone === "source" && isBusy(sourcePath)) return;
 
         const paths = [];
         for (const f of e.dataTransfer.files) {
@@ -3496,7 +3687,9 @@
     };
 
     on("account", "click", async () => {
-      if (copying) return;
+      // Signing out mid-upload would invalidate the token an in-flight
+      // FreeFrame job is using, so only a job touching a project blocks it.
+      if ([...busyPaths()].some((p) => p.startsWith("freeframe://"))) return;
       if (ffStatus.loggedIn) {
         ffStatus = await window.freeframe.freeframeLogout();
         ffProjects = [];

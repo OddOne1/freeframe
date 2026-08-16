@@ -152,7 +152,7 @@ async function main() {
 
     const bridge = await cdp.eval("Object.keys(window.freeframe).sort().join(',')");
     check(
-      bridge === "cancelCopy,chooseFolder,chooseSource,classifyPaths,clearRecentFolders,deletePreset,detachPanel,dockPanel,ejectVolume,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,listJobs,listPresets,listVolumes,onCopyProgress,onJobsChanged,onPanelDockChanged,onVolumesChanged,openJobLog,pathForFile,previewNaming,rememberFolder,savePreset,setDisplayName,startCopy",
+      bridge === "bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearRecentFolders,deletePreset,detachPanel,dockPanel,ejectVolume,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,listJobs,listPresets,listVolumes,onCopyProgress,onJobsChanged,onPanelDockChanged,onVolumesChanged,openJobLog,pathForFile,previewNaming,rememberFolder,savePreset,setDisplayName,setSourceCounter,startCopy",
       "contextBridge exposes exactly the intended API", bridge);
     check(await cdp.eval("typeof window.require") === "undefined", "no window.require");
     check(await cdp.eval("typeof window.process") === "undefined", "no window.process");
@@ -166,27 +166,27 @@ async function main() {
     // Inject the temp dirs the way "Choose folder…" would, so there are
     // known cards to drag.
     await cdp.eval(`extraFolders = ${JSON.stringify([source, destA, destB])}; render(); true`);
-    const cards = await cdp.eval("document.querySelectorAll('#zone-volumes .card').length");
+    const cards = await cdp.eval("document.querySelectorAll('#zone-volumes .tile').length");
     check(cards >= 3, "all three folders listed in the center column", `${cards} cards`);
 
-    const sel = (p) => `#zone-volumes .card[data-path="${p}"]`;
+    const sel = (p) => `#zone-volumes .tile[data-path="${p}"]`;
 
     console.log("\n3. Drag a volume into Sources");
     await cdp.drag(sel(source), "#zone-source");
     check(await cdp.eval("sourcePath") === source, "source assigned by dragging");
-    check(await cdp.eval("!!document.querySelector('#zone-source .badge.src')"), "SOURCE badge rendered in the Sources zone");
+    check(await cdp.eval("!!document.querySelector('#zone-source .tile-role.src')"), "SOURCE badge rendered in the Sources zone");
 
     console.log("\n4. Drag two volumes into Destinations");
     await cdp.drag(sel(destA), "#zone-dest");
     await cdp.drag(sel(destB), "#zone-dest");
     check(await cdp.eval("destNodes.length") === 2, "two destinations assigned by dragging");
     check(await cdp.eval("destNodes.every(n => n.parentId === null)"), "both are parallel (no parent) at this point");
-    check(await cdp.eval("document.querySelectorAll('#zone-dest .badge.dst').length") === 2, "both cards badged DEST");
+    check(await cdp.eval("document.querySelectorAll('#zone-dest .tile-role.dst').length") === 2, "both cards badged DEST");
 
     console.log("\n5. Drop one destination ONTO the other → cascade");
     const destSel = async (p) => {
       const id = await cdp.eval(`(destNodes.find(n => n.path === ${JSON.stringify(p)}) || {}).id`);
-      return `#zone-dest .card[data-dest-id="${id}"]`;
+      return `#zone-dest .tile[data-dest-id="${id}"]`;
     };
     const aSel = await destSel(destA);
     const bSel = await destSel(destB);

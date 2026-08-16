@@ -44,8 +44,8 @@ let fail=0; const check=(ok,l,d="")=>{ if(!ok)fail++; console.log(`  ${ok?"PASS"
   check(await ev(`document.querySelectorAll('#zone-volumes .tile[data-path="${PROG}"]').length`)===0, "PROG has no Volumes tile");
   check(await ev(`document.querySelectorAll('#zone-volumes .tile[data-path="${PRINTS}"]').length`)===0, "Prints has no Volumes tile");
   check(await ev(`document.querySelectorAll('#zone-volumes .tile[data-path="${drive}"]').length`)===1, "the parent drive still has exactly one tile");
-  check(await ev(`document.querySelectorAll('#zone-source .card[data-path="${PROG}"]').length`)===1, "PROG still visible in Sources");
-  check(await ev(`document.querySelectorAll('#zone-dest .card[data-path="${PRINTS}"]').length`)===1, "Prints still visible in Destinations");
+  check(await ev(`document.querySelectorAll('#zone-source .tile[data-path="${PROG}"]').length`)===1, "PROG still visible in Sources");
+  check(await ev(`document.querySelectorAll('#zone-dest .tile[data-path="${PRINTS}"]').length`)===1, "Prints still visible in Destinations");
 
   console.log("\n2. The drive carries the split highlight");
   const cls = await ev(`document.querySelector('#zone-volumes .tile[data-path="${drive}"]').className`);
@@ -77,13 +77,13 @@ let fail=0; const check=(ok,l,d="")=>{ if(!ok)fail++; console.log(`  ${ok?"PASS"
   await ev(`sourcePath=null; destNodes=[{id:'d1',path:${JSON.stringify(drive)},parentId:null}]; render(); true`);
   check((await ev(`document.querySelector('#zone-volumes .tile[data-path="${drive}"]').className`)).includes("role-dst"), "whole drive as dest → turquoise");
 
-  console.log("\n5. List view has the same three states");
+  console.log("\n5. The same three states survive a re-render (one renderer now, §22f)");
   await ev(`volumesView='line'; sourcePath=${JSON.stringify(PROG)};
     destNodes=[{id:'d1',path:${JSON.stringify(PRINTS)},parentId:null}];
     extraFolders=[${JSON.stringify(PROG)},${JSON.stringify(PRINTS)}]; render(); true`);
-  const lc = await ev(`document.querySelector('#zone-volumes .card[data-path="${drive}"]').className`);
-  check(lc.includes("role-both"), "list card also role-both", lc);
-  check(await ev(`document.querySelectorAll('#zone-volumes .card[data-path="${PROG}"]').length`)===0, "and no subfolder rows in list view either");
+  const lc = await ev(`document.querySelector('#zone-volumes .tile[data-path="${drive}"]').className`);
+  check(lc.includes("role-both"), "re-rendered tile still role-both", lc);
+  check(await ev(`document.querySelectorAll('#zone-volumes .tile[data-path="${PROG}"]').length`)===0, "and still no subfolder rows");
   await shot("/tmp/sf-list.png");
 
   console.log("\n6. A folder with no parent volume still gets a tile");

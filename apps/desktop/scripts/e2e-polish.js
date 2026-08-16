@@ -187,11 +187,11 @@ async function main() {
     check(await cdp.eval(`document.getElementById('zone-volumes').dataset.zone`) === "volumes",
       "#zone-volumes carries data-zone (dropTargetAt can match it)");
 
-    const volSel = (p) => `#zone-volumes .card[data-path="${p}"]`;
+    const volSel = (p) => `#zone-volumes .tile[data-path="${p}"]`;
     await cdp.drag(volSel(pickedA), "#zone-source");
     check(await cdp.eval("sourcePath") === pickedA, "assigned as source by drag");
 
-    const readyDuringDrag = await cdp.drag("#zone-source .card", "#zone-volumes", {
+    const readyDuringDrag = await cdp.drag("#zone-source .tile", "#zone-volumes", {
       probeAtTarget: `JSON.stringify({
         ready: document.getElementById('zone-volumes').classList.contains('drop-ready'),
         active: document.getElementById('zone-volumes').classList.contains('drop-active') })`,
@@ -202,7 +202,7 @@ async function main() {
 
     await cdp.eval(`extraFolders = ${JSON.stringify([pickedA, pickedB])}; addDest(${JSON.stringify(pickedB)}, null); render(); true`);
     check(await cdp.eval("destNodes.length") === 1, "destination assigned");
-    await cdp.drag(`#zone-dest .card[data-path="${pickedB}"]`, "#zone-volumes");
+    await cdp.drag(`#zone-dest .tile[data-path="${pickedB}"]`, "#zone-volumes");
     check(await cdp.eval("destNodes.length") === 0, "dropping a destination on Volumes removed it");
 
     // ── 6. extraFolders pruning + recents ────────────────────────────────
@@ -353,14 +353,18 @@ async function main() {
     check(new Set(bottoms).size === 1, "all three header bottoms are identical", bottoms.join(" / "));
     check(new Set(heads.map((h) => h.height)).size === 1, "all three header heights are identical",
       heads.map((h) => h.height).join(" / "));
+    // §22f removed the view toggle, so there is no second control to match
+    // heights with any more. What replaced it as the root cause is
+    // .col-head's pinned min-height: the Volumes header now has no control
+    // of its own, and only the pin keeps it level with the other two.
     const ctrlHeights = await cdp.eval(`
       JSON.stringify({
         button: Math.round(document.querySelector('.col-head button').getBoundingClientRect().height * 100) / 100,
-        toggle: Math.round(document.querySelector('.view-toggle').getBoundingClientRect().height * 100) / 100,
+        minHeight: parseFloat(getComputedStyle(document.querySelector('.col-head')).minHeight),
       })`).then(JSON.parse);
-    check(ctrlHeights.button === ctrlHeights.toggle,
-      "the two tallest-child controls are the same height (the actual root cause)",
-      `button=${ctrlHeights.button} toggle=${ctrlHeights.toggle}`);
+    check(ctrlHeights.minHeight >= ctrlHeights.button,
+      "the header pin is at least as tall as its tallest control (the actual root cause)",
+      `button=${ctrlHeights.button} pin=${ctrlHeights.minHeight}`);
 
     // ── 9. Checksum picker ───────────────────────────────────────────────
     console.log("\n9. Checksum algorithm picker");
@@ -437,23 +441,49 @@ async function main() {
     // Menu entry wording + disabled-during-copy.
     await cdp.eval(`clearAll(); render(); true`);
     {
-      const box = await cdp.centerOf(`#zone-volumes .card[data-path="/Volumes/FFTESTVOL"]`);
+      const box = await cdp.centerOf(`#zone-volumes .tile[data-path="/Volumes/FFTESTVOL"]`);
       await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "right", buttons: 2, clickCount: 1 });
       await sleep(80);
       const items = await cdp.eval(`[...document.querySelectorAll('#menu button')].map(b => b.textContent.trim())`);
       check(items.includes("Eject"), "removable volume offers Eject", items.join(" | "));
-      // The whole context menu is suppressed during a copy, which is a
-      // stronger guarantee than a disabled entry — assert that, and assert
-      // the main process refuses independently of any UI state.
+      // §22b INVERTED THIS DELIBERATELY. Suppressing the whole menu during
+      // any job was the bug: it also removed the only route to Rename, for
+      // the length of an offload, on cards the job wasn't touching. The menu
+      // now opens regardless; Eject alone disables itself, and only when
+      // THIS volume is the one in use. The main process refuses
+      // independently either way, which is the guarantee that matters.
       const menuDuringCopy = await cdp.eval(`(() => {
-        closeMenu(); copying = true;
+        closeMenu();
+        jobSnapshot = [{ status: "running", sourcePath: "/Volumes/FFTESTVOL", destPaths: [] }];
         openMenu({ preventDefault(){}, clientX: 100, clientY: 100 }, "/Volumes/FFTESTVOL", undefined);
-        const count = document.querySelectorAll('#menu button').length;
-        const shown = document.getElementById('menu').style.display;
-        copying = false; closeMenu(); return { count, shown };
+        const buttons = [...document.querySelectorAll('#menu button')];
+        const eject = buttons.find(b => /Eject|Disconnect/.test(b.textContent));
+        const rename = buttons.find(b => /Rename/.test(b.textContent));
+        const out = {
+          shown: document.getElementById('menu').style.display,
+          ejectDisabled: eject ? eject.disabled : null,
+          renameReachable: Boolean(rename && !rename.disabled),
+        };
+        closeMenu();
+        // An idle volume's Eject must stay enabled while that job runs.
+        const other = volumes.find(v => v.mountPoint !== "/Volumes/FFTESTVOL" && v.type !== "internal");
+        if (other) {
+          openMenu({ preventDefault(){}, clientX: 100, clientY: 100 }, other.mountPoint, undefined);
+          const b = [...document.querySelectorAll('#menu button')].find(b => /Eject|Disconnect/.test(b.textContent));
+          out.otherEjectDisabled = b ? b.disabled : null;
+          closeMenu();
+        }
+        jobSnapshot = [];
+        return out;
       })()`);
-      check(menuDuringCopy.count === 0 || menuDuringCopy.shown !== "block",
-        "context menu (and so Eject) unreachable while a copy is running", JSON.stringify(menuDuringCopy));
+      check(menuDuringCopy.shown === "block" && menuDuringCopy.renameReachable,
+        "the menu stays reachable during a job — Rename included (§22b)", JSON.stringify(menuDuringCopy));
+      check(menuDuringCopy.ejectDisabled === true,
+        "but Eject is disabled for the volume the job is actually using");
+      if (menuDuringCopy.otherEjectDisabled !== undefined && menuDuringCopy.otherEjectDisabled !== null) {
+        check(menuDuringCopy.otherEjectDisabled === false,
+          "and stays enabled for a volume the job is not touching");
+      }
     }
     const netVol = (await cdp.eval("JSON.stringify(volumes)").then(JSON.parse)).find((v) => v.type === "network");
     if (netVol) {

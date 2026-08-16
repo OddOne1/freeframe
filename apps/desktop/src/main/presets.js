@@ -77,9 +77,21 @@ function normalizePreset(p) {
   };
 }
 
+/** The source counter (§22h) — a whole number, at least 1. */
+function normalizeCounter(value) {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) && n >= 1 ? n : 1;
+}
+
 function normalizeStore(raw) {
   return {
     presets: Array.isArray(raw?.presets) ? raw.presets.map(normalizePreset) : [],
+    // Deliberately NOT per preset: it counts the cards offloaded, and
+    // switching preset mid-shoot shouldn't restart the numbering. Lives here
+    // rather than in its own file for the same reason recent-folders and
+    // display-names each have one — this is preset-adjacent state, and a
+    // fourth JSON file to hold a single integer is not worth the read.
+    sourceCounter: normalizeCounter(raw?.sourceCounter),
     // { [fieldKey]: string[] } — most recent first. Shared across presets
     // on purpose: an "operator" field means the same thing whichever
     // preset declares it, so the names you've typed should follow.
@@ -91,7 +103,7 @@ async function read() {
   try {
     return normalizeStore(JSON.parse(await fsp.readFile(presetsFile(), "utf8")));
   } catch {
-    return { presets: [], history: {} };
+    return { presets: [], history: {}, sourceCounter: 1 };
   }
 }
 
@@ -146,8 +158,34 @@ async function recordValues(values) {
   return write(store);
 }
 
+/**
+ * The next source number, and the act of claiming it (§22h).
+ *
+ * Bumped when a source is ASSIGNED, not when a job runs: the number
+ * identifies the card, so re-running or cancelling a job must not advance
+ * it, and adding a second card must — even if the first was never copied.
+ */
+async function bumpSourceCounter() {
+  const store = await read();
+  const claimed = normalizeCounter(store.sourceCounter);
+  store.sourceCounter = claimed + 1;
+  await write(store);
+  return claimed;
+}
+
+/** Set the counter directly, from the editable field in the presets window. */
+async function setSourceCounter(value) {
+  const store = await read();
+  store.sourceCounter = normalizeCounter(value);
+  await write(store);
+  return store.sourceCounter;
+}
+
 module.exports = {
   list,
+  bumpSourceCounter,
+  setSourceCounter,
+  normalizeCounter,
   save,
   remove,
   recordValues,

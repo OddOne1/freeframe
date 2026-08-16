@@ -160,9 +160,15 @@ async function main() {
 
     // ── 3. Per-card menu trigger ─────────────────────────────────────────
     console.log("\n3. Visible per-card menu trigger");
-    const kebabs = await ev(`document.querySelectorAll("#zone-volumes .card-menu").length`);
-    check(kebabs === volCount, "every card has a kebab trigger", `${kebabs} for ${volCount} cards`);
-    await ev(`document.querySelector("#zone-volumes .card-menu").click(); true`);
+    // Compared against the tiles actually rendered, not volumes.length:
+    // the Volumes column also lists hand-picked folders and FreeFrame
+    // projects, so this check was permanently red for a reason that had
+    // nothing to do with the trigger it was testing.
+    const tileCount = await ev(`document.querySelectorAll("#zone-volumes .tile").length`);
+    const kebabs = await ev(`document.querySelectorAll("#zone-volumes .tile-menu").length`);
+    check(kebabs === tileCount && tileCount > 0, "every tile has a kebab trigger",
+      `${kebabs} for ${tileCount} tiles`);
+    await ev(`document.querySelector("#zone-volumes .tile-menu").click(); true`);
     await sleep(150);
     const opened = await ev(`document.getElementById("menu").style.display`);
     check(opened === "block", "left-clicking it opens the menu", opened);
@@ -174,12 +180,10 @@ async function main() {
     check(items.includes("Source Folder") && items.includes("Destination Folder"),
       "the per-device folder pickers are now reachable without right-click", items.join(" | "));
     await ev(`closeMenu(); true`);
-    // Grid view too.
-    await ev(`volumesView = "square"; render(); true`);
-    await sleep(120);
-    check(await ev(`document.querySelectorAll("#zone-volumes .tile-menu").length`) === volCount,
-      "grid tiles have the trigger too");
-    await ev(`volumesView = "line"; render(); true`);
+    // §22f — there is one renderer now, so the old "grid view too" pass is
+    // instead a check that the tiles really are laid out as a grid.
+    const grids = await ev(`document.querySelectorAll("#zone-volumes .grid-view").length`);
+    check(grids >= 1, "tiles sit in a grid container", `${grids} grid(s)`);
 
     // ── 4. Cascade must not appear on the source ─────────────────────────
     console.log("\n4. Cascade from… never offered on the Source card");
@@ -207,7 +211,7 @@ async function main() {
     // ── 5. Picked folder pruning ─────────────────────────────────────────
     console.log("\n5. Manually-chosen folder in the Volumes column");
     await ev(`extraFolders = ${JSON.stringify([picked])}; addDest(${JSON.stringify(picked)}, null); render(); true`);
-    const whileAssigned = await ev(`document.querySelectorAll('#zone-volumes .card[data-path="${picked}"]').length`);
+    const whileAssigned = await ev(`document.querySelectorAll('#zone-volumes .tile[data-path="${picked}"]').length`);
     // Real volumes stay visible (dimmed) while assigned; a picked folder
     // behaves the same, which is the intended design.
     check(whileAssigned === 1, "picked folder is still LISTED while assigned (dimmed, like a real volume)",
@@ -216,14 +220,14 @@ async function main() {
     // landed: "this exact path is placed" and "this drive merely contains
     // something placed" now need to look different, because only the
     // former means the card itself is spent.
-    const assignedCls = await ev(`document.querySelector('#zone-volumes .card[data-path="${picked}"]').className`);
+    const assignedCls = await ev(`document.querySelector('#zone-volumes .tile[data-path="${picked}"]').className`);
     check(assignedCls.includes("self-assigned"), "and is dimmed to show it holds a role", assignedCls);
     check(assignedCls.includes("role-dst"), "and carries the destination colour, not a generic one", assignedCls);
     await ev(`removeDest(${JSON.stringify(picked)}); true`);
     await sleep(100);
     check(await ev(`extraFolders.includes(${JSON.stringify(picked)})`) === false,
       "pruned from extraFolders once unassigned");
-    check(await ev(`document.querySelectorAll('#zone-volumes .card[data-path="${picked}"]').length`) === 0,
+    check(await ev(`document.querySelectorAll('#zone-volumes .tile[data-path="${picked}"]').length`) === 0,
       "and gone from the Volumes column");
     // Path normalization: a trailing slash must not create a second entry.
     await ev(`extraFolders = []; addDest(${JSON.stringify(picked + "/")}, null); render(); true`);
@@ -273,7 +277,7 @@ async function main() {
       document.getElementById("rename-save").click(); true`);
     await sleep(250);
     check(await ev(`volumes[0].name`) === realName, "the REAL volume name is untouched", await ev("volumes[0].name"));
-    const shown = await ev(`document.querySelector('#zone-volumes .card[data-path=${JSON.stringify(target)}] .name').textContent`);
+    const shown = await ev(`document.querySelector('#zone-volumes .tile[data-path=${JSON.stringify(target)}] .tile-name').textContent`);
     check(shown === "CARD A — DAY 1", "the card shows the override", shown);
     const persisted = await ev(`window.freeframe.getDisplayNames()`);
     check(persisted[target] === "CARD A — DAY 1", "override persisted to userData");
@@ -284,7 +288,7 @@ async function main() {
     check(hasReset, "Reset to real name offered once an override exists");
     await ev(`[...document.querySelectorAll("#menu button")].find(b => b.textContent.trim() === "Reset to real name").click(); true`);
     await sleep(250);
-    check(await ev(`document.querySelector('#zone-volumes .card[data-path=${JSON.stringify(target)}] .name').textContent`) === realName,
+    check(await ev(`document.querySelector('#zone-volumes .tile[data-path=${JSON.stringify(target)}] .tile-name').textContent`) === realName,
       "reset restores the real name", realName);
 
     // Console errors are a signal, not noise, now that `on` logs them.

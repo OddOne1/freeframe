@@ -127,9 +127,9 @@ async function main() {
       ];
       ffStatus = { loggedIn: true, user: { name: "Test" }, baseUrl: "${BASE}" };
       render(); true`);
-    const cards = await ev(`document.querySelectorAll('#zone-volumes .card[data-path^="freeframe://"]').length`);
+    const cards = await ev(`document.querySelectorAll('#zone-volumes .tile[data-path^="freeframe://"]').length`);
     check(cards === 2, "projects appear in the centre column alongside drives", `${cards} cards`);
-    const meta = await ev(`document.querySelector('#zone-volumes .card[data-path^="freeframe://"] .meta').textContent`);
+    const meta = await ev(`document.querySelector('#zone-volumes .tile[data-path^="freeframe://"] .tile-meta').textContent`);
     check(meta.includes("42 assets") && meta.includes("upload destination"),
       "project card shows asset count and its destination-only role", meta);
 

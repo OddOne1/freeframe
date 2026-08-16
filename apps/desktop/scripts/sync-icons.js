@@ -31,8 +31,6 @@ const ICONS = {
   warning: "AlertTriangle",
   check: "Check",
   // View toggle — same pair apps/web's appearance-popover.tsx already uses.
-  viewList: "List",
-  viewGrid: "LayoutGrid",
   // Volume types. Distinct enough to read at a glance at 28px:
   //   removable → a card/stick you physically pull out
   //   internal  → this machine itself, not a generic disk. Two near-identical

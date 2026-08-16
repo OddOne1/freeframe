@@ -103,13 +103,16 @@ const check = (ok, label, detail = "") => {
   check(Math.abs(cols.w[0] - cols.w[2]) < 2, "Sources and Destinations stay equal",
     `${cols.w[0].toFixed(0)} vs ${cols.w[2].toFixed(0)}`);
 
+  // §22f — there is no list/grid toggle any more, and the grid is an inner
+  // .grid-view per section rather than the zone itself, so the Volumes
+  // column is measured where the tracks actually live now.
   const tiles = await ev(`(() => {
-    volumesView = "square"; render();
-    const g = document.getElementById("zone-volumes");
+    render();
+    const g = document.querySelector("#zone-volumes .grid-view");
+    if (!g) return 0;
     return getComputedStyle(g).gridTemplateColumns.split(" ").length;
   })()`);
-  check(tiles >= 3, "grid view fits more tiles per row at the new width", `${tiles} columns`);
-  await ev(`volumesView = "line"; render(); true`);
+  check(tiles >= 3, "the Volumes grid fits several tiles per row at the new width", `${tiles} columns`);
 
   // ── 2. Create a preset with both field types ──
   console.log("\n2. Preset with a text field and a suggesting field");

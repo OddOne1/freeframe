@@ -155,8 +155,8 @@ const check = (ok, label, detail = "") => {
   // fell through the || and rendered as the internal-drive glyph.
   const listGlyph = await ev(`
     volumesView='line'; render();
-    const c=document.querySelector('#zone-volumes .card[data-path="${gradSel.split('"')[1]}"]');
-    c ? (c.querySelector('.card-grip svg')||{}).outerHTML||"" : "NO CARD"`);
+    const c=document.querySelector('#zone-volumes .tile[data-path="${gradSel.split('"')[1]}"]');
+    c ? (c.querySelector('.tile-icon svg')||{}).outerHTML||"" : "NO CARD"`);
   check(!listGlyph.includes("NO CARD"), "project also renders in list view");
   check(listGlyph.length > 0, "list-view project has a type glyph");
   check(await ev(`typeIcon('freeframe')`) === "freeframe", "typeIcon resolves 'freeframe' instead of falling back");
@@ -290,7 +290,7 @@ const check = (ok, label, detail = "") => {
   await ev(`clearAll(); setSource(${JSON.stringify(srcPath)}); render(); true`);
   check(await ev(`sourcePath === ${JSON.stringify(srcPath)}`), "a project can now be set as the source");
   check(
-    await ev(`document.querySelectorAll('#zone-source .card[data-path="${srcPath}"]').length`) === 1,
+    await ev(`document.querySelectorAll('#zone-source .tile[data-path="${srcPath}"]').length`) === 1,
     "…and appears in the Sources zone"
   );
 

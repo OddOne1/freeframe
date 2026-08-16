@@ -59,7 +59,7 @@ function pad(n, width) {
  * folders dated today in their own timezone, and a UTC rollover mid-shoot
  * would split one night's work across two dated folders.
  */
-function builtinValues({ now = new Date(), sourceLabel = "", rel = "", index = 1 } = {}) {
+function builtinValues({ now = new Date(), sourceLabel = "", rel = "", index = 1, sourceCounter = 1 } = {}) {
   const two = (n) => pad(n, 2);
   const base = path.basename(rel);
   const ext = path.extname(base);
@@ -76,7 +76,15 @@ function builtinValues({ now = new Date(), sourceLabel = "", rel = "", index = 1
     cardname: sanitizeSegment(path.basename(sourceLabel || "")),
     name: base.slice(0, base.length - ext.length),
     ext: ext.replace(/^\./, ""),
+    // Numbers files WITHIN one source. Putting it in a folder pattern is
+    // what creates a folder per file, which is why the editor only offers
+    // it as a chip on the file-name field (§22c).
     counter: pad(index, 4),
+    // Numbers the SOURCES themselves (§22h): card 1 → 001, card 2 → 002.
+    // A separate token rather than reusing {counter}, so no existing preset
+    // silently changes meaning. Its value is supplied by the caller and
+    // persisted in userData — it is the one built-in that outlives a job.
+    sourcecounter: pad(sourceCounter, 3),
   };
 }
 
@@ -215,7 +223,7 @@ function renderTemplate(template, values, ctx = {}) {
  * template. Flattening a card's DCIM tree into one directory would be a
  * different feature, and a lossy one.
  */
-function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, sourceLabel = "", now = new Date(), flatten = false } = {}) {
+function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, sourceLabel = "", now = new Date(), flatten = false, sourceCounter = 1 } = {}) {
   const folder = String(folderTemplate || "").trim();
   const file = String(fileTemplate || "").trim();
   // `flatten` alone is reason enough to build a mapper: it changes where
@@ -291,7 +299,7 @@ function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, s
   function renderBaseFor(rel) {
     if (renderedBase.has(rel)) return renderedBase.get(rel);
     index += 1;
-    const ctx = { now, sourceLabel, rel, index: indexFor.get(rel) ?? index };
+    const ctx = { now, sourceLabel, rel, index: indexFor.get(rel) ?? index, sourceCounter };
     const out = renderTemplate(file, values, ctx);
     renderedBase.set(rel, out);
     return out;
@@ -304,7 +312,7 @@ function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, s
     // filing `C0001.XML` into a different folder than `C0001.MP4` and
     // breaking the very pairing this is meant to preserve.
     const nameSource = followsMedia.get(rel) ?? rel;
-    const ctx = { now, sourceLabel, rel: nameSource, index: indexFor.get(nameSource) ?? index + 1 };
+    const ctx = { now, sourceLabel, rel: nameSource, index: indexFor.get(nameSource) ?? index + 1, sourceCounter };
 
     const prefix = folder ? renderTemplate(folder, values, ctx) : "";
     const dir = path.dirname(rel);
