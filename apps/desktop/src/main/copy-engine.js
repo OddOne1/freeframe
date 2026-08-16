@@ -28,6 +28,8 @@ const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
 const { getHasherFactory, DEFAULT_ALGORITHM, ALGORITHMS } = require("./hashers");
+const { applyFilters } = require("./filters");
+const { fragileRenameExtensions } = require("./naming");
 
 // 4 MiB. Large enough that per-chunk overhead is irrelevant on big media
 // files, small enough that N destinations * this stays modest in memory.
@@ -406,6 +408,14 @@ async function runCopyJob({
   // behaviour of mirroring the source tree exactly, so every existing
   // caller and test is untouched.
   mapRel = null,
+  // Opt-in copy filtering (§23c). Null — the default, and what every
+  // preset predating this produces — means no filtering whatsoever.
+  filters = null,
+  // Rename-fragility guard (§23d). `renamesFiles` says the job's naming
+  // preset actually renames files (a folder-only template does not), and
+  // `allowFragileRename` is the user's explicit per-job acknowledgement.
+  renamesFiles = false,
+  allowFragileRename = false,
 }) {
   const startedAt = Date.now();
 
@@ -502,11 +512,52 @@ async function runCopyJob({
   // single `GET /projects/{id}/assets?folder_id=…&recursive=…` that already
   // returns each asset's filename and byte size — no per-file round trip
   // just to build the manifest.
-  const listing = await src.list();
+  const rawListing = await src.list();
+
+  // ── Opt-in filtering (§23c) ──
+  //
+  // One choke point for every source kind, rather than inside
+  // listFilesRecursive: that would cover a local directory and miss both a
+  // hand-picked file set and a FreeFrame project. `filters` is null unless
+  // a preset actually configured something, and applyFilters then returns
+  // the listing untouched — the default is, and has to stay, copy
+  // everything.
+  const { kept: listing, skipped: filteredOut } = applyFilters(rawListing, filters);
+
+  // ── Rename-fragility guard (§23d) ──
+  //
+  // Checked after listing and before any byte moves. These formats keep the
+  // clip name inside the file or in a card-level index, so renaming them
+  // breaks metadata linking in the manufacturer's own tools — Silverstack
+  // refuses the same class of file for the same reason. Thrown rather than
+  // silently skipping just those files: the user needs to know and decide,
+  // and quietly copying some files renamed and others not would be worse
+  // than either outcome they might have chosen.
+  if (renamesFiles && !allowFragileRename) {
+    const fragile = fragileRenameExtensions(listing.map((f) => f.rel));
+    if (fragile.length) {
+      const err = new Error(
+        `This source contains ${fragile.map((f) => `${f.count} ${f.ext} file${f.count === 1 ? "" : "s"}`).join(" and ")}, ` +
+        `whose clip names are referenced inside the files themselves or by a card-level index ` +
+        `(${fragile.map((f) => f.reason).join("; ")}). Renaming them may break metadata linking in the camera ` +
+        `manufacturer's own tools. Card-level index files such as MEDIAPRO.XML, INDEX.MIF and LASTCLIP.TXT ` +
+        `describe several clips at once and cannot be kept in sync by renaming at all.`,
+      );
+      err.code = "RENAME_FRAGILE";
+      err.fragile = fragile;
+      throw err;
+    }
+  }
+
   const relFiles = listing.map((f) => f.rel);
   const sizes = new Map(listing.map((f) => [f.rel, f.size]));
   let totalBytes = 0;
   for (const f of listing) totalBytes += f.size;
+
+  // Sidecar pairing and counter assignment need the whole list up front
+  // (§23d). Optional on the mapper, so a caller that builds one without
+  // this ever running keeps the original per-file behaviour.
+  if (mapRel && typeof mapRel.prepare === "function") mapRel.prepare(relFiles);
 
   // Every leg moves the same payload, so total work scales with the number
   // of legs, not with destination count within a leg (a fan-out leg reads
@@ -688,6 +739,10 @@ async function runCopyJob({
       allMismatches.length === 0 &&
       allErrors.length === 0,
     durationMs: Date.now() - startedAt,
+    // What the filter chose not to take, and why (§23c). Reported rather
+    // than omitted: a tool that silently drops files is indistinguishable
+    // from one that loses them, and this is the record that says otherwise.
+    filteredOut,
     // Flattened per-file view across every node, for callers that want it.
     files: nodesOut.flatMap((n) => (n.files || []).map((f) => ({ ...f, nodeId: n.id, destRoot: n.path }))),
   };

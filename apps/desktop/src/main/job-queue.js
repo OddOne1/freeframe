@@ -131,6 +131,13 @@ class JobQueue {
       progress: null,
       summary: null,
       error: null,
+      // A failure's machine-readable identity, kept alongside its message.
+      // `error` is stringified for display, which loses everything a caller
+      // needs to react differently to one failure than another — the
+      // rename-fragility refusal (§23d) is answerable by the user, unlike a
+      // disk error, and the renderer can only tell them apart by this.
+      errorCode: null,
+      errorDetail: null,
       createdAt: Date.now(),
       startedAt: null,
       finishedAt: null,
@@ -228,10 +235,17 @@ class JobQueue {
     if (error) {
       job.status = "failed";
       job.error = String(error?.message || error);
+      job.errorCode = error?.code || null;
+      job.errorDetail = error?.fragile || null;
       // Rejecting would make an unhandled rejection out of every job
       // nobody explicitly awaited. The caller that cares sees the error
       // on the job; the panel shows the row in its failed state.
-      job._resolve({ error: job.error, failed: true });
+      job._resolve({
+        error: job.error,
+        errorCode: job.errorCode,
+        errorDetail: job.errorDetail,
+        failed: true,
+      });
     } else if (summary && summary.cancelled) {
       job.status = "cancelled";
       job._resolve(summary);

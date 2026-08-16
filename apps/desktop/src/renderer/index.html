@@ -639,6 +639,15 @@
       align-items: center; justify-content: center;
     }
     #values-backdrop.open { display: flex; }
+    /* §23d. Same shape as the values backdrop above; styled by id and
+       toggled with .open, matching every other modal in this file. Without
+       its own rule it would inherit nothing and sit permanently on screen. */
+    #fragile-backdrop {
+      position: fixed; inset: 0; z-index: 1200; display: none;
+      background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
+      align-items: center; justify-content: center;
+    }
+    #fragile-backdrop.open { display: flex; }
     .preset-modal { width: 620px; max-width: calc(100vw - 40px); margin: auto; }
     .preset-cols { display: grid; grid-template-columns: 180px minmax(0,1fr); gap: 12px; }
     .preset-list { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-secondary); padding: 4px; max-height: 320px; overflow-y: auto; }
@@ -688,6 +697,27 @@
     .values-grid input { height: 28px; border-radius: 6px; padding: 0 8px; font-size: 12px; font-family: inherit;
       background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary); width: 100%; box-sizing: border-box; }
     .values-grid .missing { border-color: var(--status-error); }
+
+    /* §23d acknowledgement, and §23c's opt-in filtering block. */
+    .ack { display: flex; gap: 8px; align-items: flex-start; font-size: 11px;
+      color: var(--text-secondary); margin: 4px 0 12px; line-height: 1.5; cursor: pointer; }
+    .ack input { margin: 1px 0 0; flex-shrink: 0; }
+    .filter-block { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+    .filter-block > summary {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+      color: var(--text-tertiary); cursor: pointer; list-style: none;
+    }
+    .filter-block > summary::-webkit-details-marker { display: none; }
+    .filter-block > summary::before { content: "▸ "; }
+    .filter-block[open] > summary::before { content: "▾ "; }
+    .filter-block .warn { color: var(--status-warning); }
+    .filter-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+    .filter-row label { font-size: 11px; color: var(--text-secondary); width: 92px; flex-shrink: 0; }
+    .filter-row select, .filter-row input {
+      height: 26px; border-radius: 6px; padding: 0 8px; font-size: 11px; font-family: inherit;
+      background: var(--bg-secondary); border: 1px solid var(--border);
+      color: var(--text-primary); flex: 1; min-width: 0; box-sizing: border-box;
+    }
 
     /* ── Docked job panel (§18c) ── */
     #jobs-tab {
@@ -1018,6 +1048,28 @@
       <div class="modal-actions"><div class="row2">
         <button id="values-cancel">Cancel</button>
         <button id="values-save" class="primary">Use these values</button>
+      </div></div>
+    </div>
+  </div>
+
+  <!-- §23d. Shown when a rename job's source holds formats whose clip name
+       is referenced from inside the file or a card-level index. Not a
+       silent skip and not a silent proceed: the user is told what would
+       break and decides, per job. -->
+  <div id="fragile-backdrop" class="ff-backdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="fragile-title">
+      <div class="modal-head">
+        <span class="icon" data-icon="warning"></span>
+        <h3 id="fragile-title">Renaming may break camera metadata</h3>
+      </div>
+      <p id="fragile-body"></p>
+      <label class="ack">
+        <input id="fragile-ack" type="checkbox" />
+        <span>I understand this may break camera-native metadata linking</span>
+      </label>
+      <div class="modal-actions"><div class="row2">
+        <button id="fragile-cancel">Cancel</button>
+        <button id="fragile-go" class="primary" disabled>Rename anyway</button>
       </div></div>
     </div>
   </div>
@@ -2534,6 +2586,26 @@
         box.appendChild(sl);
       }
 
+      // §23c. Files the preset's filter chose not to take. Neutral, not a
+      // failure — but stated, because the difference between a tool that
+      // skips files and one that loses them is whether it tells you.
+      if (s.filteredOut && s.filteredOut.length) {
+        box.appendChild(el("div", {
+          class: "verdict warn",
+          style: "margin-top:8px",
+          text: `${s.filteredOut.length} file${s.filteredOut.length === 1 ? " was" : "s were"} skipped by this preset's ` +
+            `filter and are NOT in the destination.`,
+        }));
+        const fl = el("ul");
+        for (const f of s.filteredOut.slice(0, 8)) {
+          fl.appendChild(el("li", { text: `${f.rel} — ${f.reason}` }));
+        }
+        if (s.filteredOut.length > 8) {
+          fl.appendChild(el("li", { text: `…and ${s.filteredOut.length - 8} more` }));
+        }
+        box.appendChild(fl);
+      }
+
       const problems = [...s.mismatches, ...s.errors];
       if (problems.length) {
         const ul = el("ul");
@@ -2566,7 +2638,7 @@
       }));
     }
 
-    async function startCopy() {
+    async function startCopy(allowFragileRename = false) {
       if (copying || !sourcePath || !destNodes.length) return;
 
       // A required field left blank would otherwise render as a literal
@@ -2589,6 +2661,7 @@
       copying = true;
       sourceReleased = false;
       nodeStatus = new Map();
+      let blockedByFragileRename = null;
       $("summary").style.display = "none";
       $("p-released").style.display = "none";
       $("p-bar").style.width = "0%";
@@ -2612,8 +2685,18 @@
             isProject(sourcePath) ? uploadFolderIdFor(projectIdOf(sourcePath)) : null,
             sourceFiles,
             namingPayload(),
-            concurrencyMode
+            concurrencyMode,
+            allowFragileRename
           );
+          // §23d. Returned rather than thrown, because unlike a disk error
+          // this is a question with an answer: nothing has been copied, and
+          // the same job re-runs unchanged if the user accepts the risk.
+          // Handled after the finally below, so the retry starts from a
+          // fully reset state rather than nested inside this attempt.
+          if (summary && summary.blocked === "RENAME_FRAGILE") {
+            blockedByFragileRename = summary.message;
+            return;
+          }
           renderSummary(summary);
         }
         // Uploads run after the local legs, and one project at a time —
@@ -2645,6 +2728,13 @@
         $("progress").style.display = "none";
         render();
       }
+
+      // Outside the try/finally on purpose: the retry is a fresh attempt
+      // from a fully reset state, not a continuation nested inside the one
+      // that was refused.
+      if (blockedByFragileRename) {
+        if (await openFragileDialog(blockedByFragileRename)) await startCopy(true);
+      }
     }
 
     // ── Wiring ──
@@ -2656,7 +2746,10 @@
     window.freeframe.onCopyProgress(onProgress);
     on("refresh", "click", refresh);
     on("clear", "click", clearAll);
-    on("start", "click", startCopy);
+    // Wrapped, not passed directly: a click handler receives the MouseEvent
+    // as its first argument, which would land in startCopy's
+    // allowFragileRename parameter and quietly waive the §23d guard.
+    on("start", "click", () => startCopy());
     for (const btn of document.querySelectorAll("[data-choose]")) {
       btn.addEventListener("click", async () => {
         const which = btn.dataset.choose;
@@ -2889,6 +2982,7 @@
       host.appendChild(help);
 
       host.appendChild(el("div", { id: "tpl-preview", class: "tpl-preview" }));
+      host.appendChild(renderFilterBlock());
 
       if (editingPreset.id) {
         const del = el("button", {
@@ -2906,6 +3000,161 @@
       }
 
       refreshPresetPreview();
+    }
+
+    /**
+     * Opt-in copy filtering (§23c).
+     *
+     * Collapsed by default and empty by default, and that is the feature:
+     * a preset that never opens this section copies everything, which is
+     * the guarantee this app is built on. Main re-normalizes whatever is
+     * entered here, so a half-filled form can't become an active filter.
+     */
+    function renderFilterBlock() {
+      const f = editingPreset.filters || {};
+      const active =
+        (f.doNotCopyExtensions || []).length ||
+        (f.doNotCopyNames || []).length ||
+        (f.ignoreBundles?.extensions || []).length ||
+        (f.ignoreFolders?.mode && f.ignoreFolders.mode !== "off");
+
+      const block = el("details", { class: "filter-block" });
+      if (active) block.open = true;
+      block.appendChild(el("summary", {
+        text: active ? "File filtering — ON" : "File filtering (optional)",
+        class: active ? "warn" : "",
+      }));
+      block.appendChild(el("div", {
+        class: "token-help",
+        text: "Off by default: everything on the card is copied. Anything you skip here is "
+            + "listed in the job's summary and log, never dropped silently.",
+      }));
+
+      // Writes into the draft and re-renders the summary line only — a full
+      // re-render would collapse the section the user is typing in.
+      function set(mutate) {
+        editingPreset.filters = editingPreset.filters || {};
+        mutate(editingPreset.filters);
+      }
+
+      function textRow(label, placeholder, get, put) {
+        const row = el("div", { class: "filter-row" });
+        row.appendChild(el("label", { text: label }));
+        const input = el("input");
+        input.type = "text";
+        input.placeholder = placeholder;
+        input.value = (get() || []).join(", ");
+        input.addEventListener("input", () => {
+          const parts = input.value.split(",").map((s) => s.trim()).filter(Boolean);
+          set((x) => put(x, parts));
+        });
+        row.appendChild(input);
+        return row;
+      }
+
+      block.appendChild(textRow(
+        "Skip types", ".thm, .ppn, .bmp",
+        () => f.doNotCopyExtensions,
+        (x, v) => { x.doNotCopyExtensions = v; },
+      ));
+      block.appendChild(textRow(
+        "Skip names", "index.mif, lastclip.txt",
+        () => f.doNotCopyNames,
+        (x, v) => { x.doNotCopyNames = v; },
+      ));
+      block.appendChild(textRow(
+        "Ignore bundles", ".rdc, .avchd",
+        () => f.ignoreBundles?.extensions,
+        (x, v) => {
+          x.ignoreBundles = { ...(x.ignoreBundles || {}), extensions: v };
+        },
+      ));
+
+      const sizeRow = el("div", { class: "filter-row" });
+      sizeRow.appendChild(el("label", { text: "…under (MB)" }));
+      const sizeInput = el("input");
+      sizeInput.type = "number";
+      sizeInput.min = "0";
+      sizeInput.placeholder = "blank = any size";
+      sizeInput.value = Number.isFinite(f.ignoreBundles?.maxBytes)
+        ? String(Math.round(f.ignoreBundles.maxBytes / (1024 * 1024)))
+        : "";
+      sizeInput.addEventListener("input", () => {
+        const mb = Number(sizeInput.value);
+        set((x) => {
+          x.ignoreBundles = {
+            ...(x.ignoreBundles || {}),
+            maxBytes: sizeInput.value.trim() && Number.isFinite(mb) ? mb * 1024 * 1024 : null,
+          };
+        });
+      });
+      sizeRow.appendChild(sizeInput);
+      block.appendChild(sizeRow);
+      block.appendChild(el("div", {
+        class: "token-help",
+        text: "A size limit is what makes ignoring bundles safe — it targets the empty shells, "
+            + "and a bundle holding real footage is over any sane limit. Leave it blank and every "
+            + "matching bundle is dropped regardless of what's inside.",
+      }));
+
+      const folderRow = el("div", { class: "filter-row" });
+      folderRow.appendChild(el("label", { text: "Folders" }));
+      const select = el("select");
+      for (const [value, label] of [
+        ["off", "Keep the source's folder structure"],
+        ["whenEmpty", "Skip folders left empty by filtering"],
+        ["flatten", "Flatten — copy every file into one folder"],
+      ]) {
+        const opt = el("option", { text: label });
+        opt.value = value;
+        if ((f.ignoreFolders?.mode || "off") === value) opt.selected = true;
+        select.appendChild(opt);
+      }
+      select.addEventListener("change", () => set((x) => { x.ignoreFolders = { mode: select.value }; }));
+      folderRow.appendChild(select);
+      block.appendChild(folderRow);
+      block.appendChild(el("div", {
+        class: "token-help",
+        text: "Flattening discards the card's own DCIM/CLIP folders. Two files with the same name "
+            + "in different folders would collide, and the job is refused rather than one of them "
+            + "being overwritten.",
+      }));
+
+      return block;
+    }
+
+    /**
+     * §23d — a rename job whose source holds RAW/professional formats.
+     *
+     * Resolves true only after an explicit tick plus an explicit click. The
+     * choice is per job and is never stored: a decision made for one card
+     * shouldn't quietly apply to the next one.
+     */
+    function openFragileDialog(message) {
+      return new Promise((resolve) => {
+        const backdrop = $("fragile-backdrop");
+        const ack = $("fragile-ack");
+        const go = $("fragile-go");
+        $("fragile-body").textContent = message;
+        ack.checked = false;
+        go.disabled = true;
+        backdrop.classList.add("open");
+
+        const onAck = () => { go.disabled = !ack.checked; };
+        function close(result) {
+          backdrop.classList.remove("open");
+          ack.removeEventListener("change", onAck);
+          go.removeEventListener("click", onGo);
+          $("fragile-cancel").removeEventListener("click", onCancel);
+          resolve(result);
+        }
+        const onGo = () => close(true);
+        const onCancel = () => close(false);
+
+        ack.addEventListener("change", onAck);
+        go.addEventListener("click", onGo);
+        $("fragile-cancel").addEventListener("click", onCancel);
+      });
     }
 
     /** Per-job field values, asked for before the copy starts. */
@@ -2974,6 +3223,9 @@
         fileTemplate: preset.fileTemplate,
         fields: preset.fields,
         values: presetValues,
+        // §23c. Null for every preset that hasn't opened the filtering
+        // section, which main treats as "no filtering at all".
+        filters: preset.filters || null,
       };
     }
 

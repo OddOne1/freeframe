@@ -9,6 +9,7 @@ const { listVolumes } = require("./volumes");
 const { runCopyJob } = require("./copy-engine");
 const presets = require("./presets");
 const { buildRelMapper, unknownTokens } = require("./naming");
+const { normalizeFilters, wantsFlatten } = require("./filters");
 const { JobQueue } = require("./job-queue");
 const { listAlgorithms, isSupported, DEFAULT_ALGORITHM } = require("./hashers");
 const freeframe = require("./freeframe");
@@ -672,6 +673,12 @@ ipcMain.handle("copy:start", async (event, payload) => {
   // the card may already be back in the camera.
   const naming = payload?.naming && typeof payload.naming === "object" ? payload.naming : null;
   let mapRel = null;
+  let filters = null;
+  let renamesFiles = false;
+  // An explicit, per-job acknowledgement (§23d) — never persisted, so the
+  // next job asks again rather than a one-off decision quietly becoming a
+  // permanent setting.
+  const allowFragileRename = payload?.allowFragileRename === true;
   if (naming) {
     const values = naming.values && typeof naming.values === "object" ? naming.values : {};
     const fields = Array.isArray(naming.fields) ? naming.fields : [];
@@ -695,11 +702,17 @@ ipcMain.handle("copy:start", async (event, payload) => {
       }
     }
 
+    // Re-normalized here rather than trusted: the renderer is the untrusted
+    // side of this boundary, and these decide which files get copied.
+    filters = normalizeFilters(naming.filters);
+    renamesFiles = Boolean(String(naming.fileTemplate || "").trim());
+
     mapRel = buildRelMapper({
       folderTemplate: naming.folderTemplate,
       fileTemplate: naming.fileTemplate,
       values,
       sourceLabel: sourcePath || (sourceFiles && sourceFiles[0]) || "",
+      flatten: wantsFlatten(filters),
     });
 
     // Only remembered once a job actually starts, so half-typed names
@@ -736,6 +749,9 @@ ipcMain.handle("copy:start", async (event, payload) => {
         nodes,
         algorithm,
         mapRel,
+        filters,
+        renamesFiles,
+        allowFragileRename,
         isCancelled: () => cancelled,
         onProgress: (p) => {
           jobs.updateProgress(self.id, p);
@@ -755,6 +771,16 @@ ipcMain.handle("copy:start", async (event, payload) => {
   });
 
   const result = await settled;
+
+  // The rename-fragility refusal (§23d) is RETURNED, not thrown. A thrown
+  // Error crosses the IPC boundary as a message string with its `code`
+  // stripped, and the renderer has to tell this apart from a disk failure:
+  // this one is a question the user can answer ("proceed anyway?"), and
+  // every other failure is not.
+  if (result && result.failed && result.errorCode === "RENAME_FRAGILE") {
+    return { blocked: "RENAME_FRAGILE", message: result.error, fragile: result.errorDetail || [] };
+  }
+
   // A queued-then-cancelled job never ran; a failed one carries its
   // error. Both need to reach the awaiting caller as they did before.
   if (result && result.failed) throw new Error(result.error);

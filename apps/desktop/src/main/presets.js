@@ -18,6 +18,7 @@ const fsp = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { app } = require("electron");
+const { normalizeFilters } = require("./filters");
 
 const MAX_SUGGESTIONS = 20;
 
@@ -65,6 +66,13 @@ function normalizePreset(p) {
     folderTemplate: String(p?.folderTemplate ?? ""),
     fileTemplate: String(p?.fileTemplate ?? ""),
     fields,
+    // Opt-in copy filtering (§23c). `null` — the value for every preset
+    // that existed before this shipped, and for every new one until someone
+    // configures it — means no filtering at all, which is the required
+    // default: everything gets copied. normalizeFilters returns null for a
+    // spec that asks for nothing, so a half-filled form can't quietly
+    // become an active filter either.
+    filters: normalizeFilters(p?.filters),
     updatedAt: p?.updatedAt || new Date().toISOString(),
   };
 }

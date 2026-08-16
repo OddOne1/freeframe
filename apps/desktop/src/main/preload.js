@@ -19,16 +19,20 @@ contextBridge.exposeInMainWorld("freeframe", {
   // that project (null = the whole project).
   // `sourceFiles` is the alternative to `sourcePath`: individually-chosen
   // files with no directory to walk.
-  startCopy: (sourcePath, nodes, algorithm, sourceFolderId, sourceFiles, naming, concurrencyMode) =>
+  startCopy: (sourcePath, nodes, algorithm, sourceFolderId, sourceFiles, naming, concurrencyMode, allowFragileRename) =>
     ipcRenderer.invoke("copy:start", {
       sourcePath, nodes, algorithm, sourceFolderId, sourceFiles,
       // "free" | "source" | "destination" (§18c). Anything else is
       // treated as the most restrictive option by the scheduler.
       concurrencyMode,
-      // { folderTemplate, fileTemplate, fields, values } or null. Main
-      // re-validates required fields and unknown tokens regardless of what
-      // the renderer allowed through.
+      // { folderTemplate, fileTemplate, fields, values, filters } or null.
+      // Main re-validates required fields, unknown tokens and the filter
+      // spec regardless of what the renderer allowed through.
       naming,
+      // §23d. One job's explicit acknowledgement that renaming RAW /
+      // professional formats may break camera-native metadata linking.
+      // Never persisted — the next job asks again.
+      allowFragileRename: allowFragileRename === true,
     }),
 
   /** Naming presets (§10 / §18b) — local JSON in userData, no login. */
