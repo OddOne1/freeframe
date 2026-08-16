@@ -21,12 +21,14 @@ import {
   Key,
   Clock,
   Droplets,
+  Layers,
   LayoutGrid,
 } from 'lucide-react'
 import * as Switch from '@radix-ui/react-switch'
 import { cn, endOfDayISO, resolveApiMediaUrl } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
+import { DEFAULT_SHARE_APPEARANCE } from '@/components/projects/share-link-detail'
 import type { AssetResponse, Folder, ShareLink, ShareLinkAppearance } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -578,7 +580,15 @@ function LinkCreatedPhase({ result, allResults, onSelectResult, onDone, onAdvanc
     setEditingTitle(false)
     setShowSettings(false)
   }, [result.token, result.title])
-  const [layout, setLayout] = React.useState<'grid' | 'list'>('grid')
+  // §21c — the whole appearance object, not just `layout`. The Layout
+  // buttons PATCH the entire blob, so anything not held here is what gets
+  // silently reset: previously they sent a hardcoded five-field object and
+  // wiped card_size, aspect_ratio, thumbnail_scale, show_card_info, and set
+  // open_in_viewer/sort_by to values nobody chose.
+  const [appearance, setAppearance] = React.useState<ShareLinkAppearance>(DEFAULT_SHARE_APPEARANCE)
+  // §21b — already a real field on ShareLink and already editable in the
+  // settings panel; it was simply missing from this dialog.
+  const [showVersions, setShowVersions] = React.useState(false)
   const titleInputRef = React.useRef<HTMLInputElement>(null)
   const debounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -590,7 +600,8 @@ function LinkCreatedPhase({ result, allResults, onSelectResult, onDone, onAdvanc
       setPassphrase(data.has_password ?? false)
       setWatermark(data.show_watermark)
       setExpiresAt(data.expires_at ? new Date(data.expires_at).toISOString().split('T')[0] : '')
-      setLayout((data.appearance as ShareLinkAppearance | null)?.layout || 'grid')
+      setAppearance((data.appearance as ShareLinkAppearance | null) ?? DEFAULT_SHARE_APPEARANCE)
+      setShowVersions(data.show_versions ?? false)
       setVisibility(data.visibility === 'secure' ? 'secure' : 'public')
     }).catch(() => {})
   }, [result.token])
@@ -795,8 +806,14 @@ function LinkCreatedPhase({ result, allResults, onSelectResult, onDone, onAdvanc
                   {(['grid', 'list'] as const).map((l) => (
                     <button
                       key={l}
-                      onClick={() => { setLayout(l); patchLink({ appearance: { layout: l, theme: 'dark', accent_color: null, open_in_viewer: true, sort_by: 'created_at' } }) }}
-                      className={cn('rounded-md px-3 py-1 text-2xs font-medium capitalize', layout === l ? 'bg-accent text-white' : 'text-text-tertiary hover:text-text-primary')}
+                      onClick={() => {
+                        // Merge, don't replace — the same thing
+                        // updateAppearance does in share-link-detail.tsx.
+                        const next = { ...appearance, layout: l }
+                        setAppearance(next)
+                        patchLink({ appearance: next })
+                      }}
+                      className={cn('rounded-md px-3 py-1 text-2xs font-medium capitalize', appearance.layout === l ? 'bg-accent text-white' : 'text-text-tertiary hover:text-text-primary')}
                     >{l}</button>
                   ))}
                 </div>
@@ -890,6 +907,21 @@ function LinkCreatedPhase({ result, allResults, onSelectResult, onDone, onAdvanc
                     </button>
                   )}
                 </div>
+              </div>
+
+              {/* Show all versions (§21b) */}
+              <div className="flex items-center justify-between py-2.5">
+                <div className="flex items-center gap-2.5">
+                  <Layers className="h-4 w-4 text-text-tertiary" />
+                  <span className="text-sm text-text-primary">Show all versions</span>
+                </div>
+                <Switch.Root
+                  checked={showVersions}
+                  onCheckedChange={(v) => { setShowVersions(v); patchLink({ show_versions: v }) }}
+                  className="w-9 h-5 rounded-full relative bg-bg-tertiary border border-border data-[state=checked]:bg-accent transition-colors"
+                >
+                  <Switch.Thumb className="block w-4 h-4 rounded-full bg-white shadow transition-transform translate-x-0.5 data-[state=checked]:translate-x-[18px]" />
+                </Switch.Root>
               </div>
 
               {/* Watermark */}
@@ -1045,6 +1077,9 @@ export function ShareCreateDialog({
       let shareLink: ShareLink
       let itemType: 'asset' | 'folder' = 'folder'
       let thumbUrl: string | null = null
+      // Which item the created link points at, for the result card.
+      let resultAssetId: string | null = null
+      let resultFolderId: string | null = null
 
       // Check if a specific item is selected (single asset or single folder)
       const items = Array.from(selectedItems.values())
@@ -1063,6 +1098,10 @@ export function ShareCreateDialog({
         if (config.passphrase) body.password = config.passphrase
         if (config.expiresAt) body.expires_at = endOfDayISO(config.expiresAt)
 
+        // One link holding many items — verified against the endpoint,
+        // which returns a single ShareLinkResponse and writes a
+        // ShareLinkItem row per selection. So one result card covers it,
+        // and it is folder-shaped because what opens is a collection view.
         const link = await api.post<ShareLink>(`/projects/${projectId}/share/multi`, body)
         shareLink = link
       } else {
@@ -1074,14 +1113,17 @@ export function ShareCreateDialog({
           })
           itemType = 'asset'
           thumbUrl = singleItem.thumbnailUrl
+          resultAssetId = singleItem.id
         } else if (singleItem?.type === 'folder') {
           shareLink = await api.post<ShareLink>(`/folders/${singleItem.id}/share`, {
             title: config.title,
           })
+          resultFolderId = singleItem.id
         } else if (currentFolderId) {
           shareLink = await api.post<ShareLink>(`/folders/${currentFolderId}/share`, {
             title: config.title,
           })
+          resultFolderId = currentFolderId
         } else {
           shareLink = await api.post<ShareLink>(`/projects/${projectId}/share`, {
             title: config.title,
@@ -1100,8 +1142,26 @@ export function ShareCreateDialog({
         await api.patch(`/share/${shareLink.token}`, patches)
       }
 
+      // §21a — the whole point of this dialog was closing itself the moment
+      // it succeeded, so the copyable-URL popup below (LinkCreatedPhase,
+      // fully built) was only ever reachable by passing a pre-made
+      // `initialResult` in. Nothing about creating a link ever reached it.
+      const created: CreatedShareResult = {
+        token: shareLink.token,
+        title: shareLink.title || config.title || 'Share link',
+        itemType,
+        thumbnailUrl: thumbUrl,
+        assetId: resultAssetId,
+        folderId: resultFolderId,
+        projectId,
+      }
+      setCreatedResult(created)
+      setAllCreatedResults([created])
+      setPhase('result')
+
+      // Still fires: the sidebar's link list has to pick the new one up.
+      // What no longer happens is closing the dialog on top of it.
       onShareCreated()
-      onOpenChange(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create share link')
     } finally {

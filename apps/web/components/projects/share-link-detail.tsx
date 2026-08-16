@@ -31,6 +31,27 @@ import type { ShareLink, ShareLinkAppearance } from "@/types";
 
 // ─── Shared hook for share link data + mutations ────────────────────────────
 
+/**
+ * The appearance a share link has when the server has stored none.
+ *
+ * Exported because share-create-dialog.tsx needs the identical object: it
+ * PATCHes the whole `appearance` blob, and a second, slightly-different
+ * copy of these defaults there silently reset `open_in_viewer`, `sort_by`
+ * and four other fields every time someone touched the Layout toggle
+ * (§21c). One definition is the fix; two was the bug.
+ */
+export const DEFAULT_SHARE_APPEARANCE: ShareLinkAppearance = {
+  layout: "grid",
+  theme: "dark",
+  accent_color: null,
+  open_in_viewer: false,
+  sort_by: "name",
+  card_size: "m",
+  aspect_ratio: "landscape",
+  thumbnail_scale: "fit",
+  show_card_info: true,
+};
+
 function useShareLinkData(token: string) {
   const { data: shareLink, mutate } = useSWR<ShareLink>(
     `/share/${token}/details`,
@@ -68,17 +89,7 @@ function useShareLinkData(token: string) {
     [token, mutate],
   );
 
-  const appearance: ShareLinkAppearance = shareLink?.appearance || {
-    layout: "grid",
-    theme: "dark",
-    accent_color: null,
-    open_in_viewer: false,
-    sort_by: "name",
-    card_size: "m",
-    aspect_ratio: "landscape",
-    thumbnail_scale: "fit",
-    show_card_info: true,
-  };
+  const appearance: ShareLinkAppearance = shareLink?.appearance || DEFAULT_SHARE_APPEARANCE;
 
   const updateAppearance = React.useCallback(
     (patch: Partial<ShareLinkAppearance>) => {

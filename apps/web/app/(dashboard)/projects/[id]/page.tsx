@@ -677,7 +677,13 @@ export default function ProjectDetailPage() {
                 <div
                   key={link.token}
                   className={cn(
-                    "group w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm transition-colors cursor-pointer",
+                    // pl-6 = 24px, which is exactly what folder-tree.tsx's
+                    // own `8 + depth * 16` gives a depth-1 row (§21d). The
+                    // "All Share Links" button above sits at px-2 = 8px,
+                    // i.e. depth 0 — so these read as its children rather
+                    // than its siblings, using the indent convention this
+                    // sidebar already has instead of a new one.
+                    "group w-full flex items-center gap-2 pl-6 pr-2 py-1.5 rounded text-sm transition-colors cursor-pointer",
                     selectedShareLink === link.token
                       ? "bg-bg-hover text-text-primary"
                       : "text-text-secondary hover:bg-bg-hover hover:text-text-primary",
