@@ -20,6 +20,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
+const { spawnElectron } = require("./lib/electron-harness");
 
 const PORT = 9223;
 const ELECTRON = path.join(__dirname, "..", "node_modules", ".bin", "electron");
@@ -136,7 +137,7 @@ async function main() {
   console.log(`Source: ${source} (${Object.keys(sizes).length} files, ${(totalBytes / 1024 / 1024).toFixed(1)} MB)`);
   console.log(`Destinations: ${destA}, ${destB}\n`);
 
-  const child = spawn(ELECTRON, [APP_DIR, `--remote-debugging-port=${PORT}`], { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawnElectron(ELECTRON, [APP_DIR, `--remote-debugging-port=${PORT}`], { stdio: ["ignore", "pipe", "pipe"] });
   const logs = [];
   child.stdout.on("data", (d) => logs.push(String(d)));
   child.stderr.on("data", (d) => logs.push(String(d)));

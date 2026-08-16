@@ -20,6 +20,7 @@ const fsp = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
+const { spawnElectron } = require("./lib/electron-harness");
 
 const APP = path.join(__dirname, "..");
 const PORT = 9319;
@@ -113,7 +114,7 @@ const check = (ok, label, detail = "") => {
   const shared = path.join(tmp, "SHARED");
   for (const d of [raid1, raid2, shared]) await fsp.mkdir(d, { recursive: true });
 
-  const child = spawn(
+  const child = spawnElectron(
     path.join(APP, "node_modules", ".bin", "electron"),
     [APP, `--remote-debugging-port=${PORT}`],
     { stdio: "ignore" },

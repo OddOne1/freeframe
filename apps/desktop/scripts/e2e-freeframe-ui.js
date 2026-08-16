@@ -19,6 +19,7 @@
 const { spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { spawnElectron } = require("./lib/electron-harness");
 const APP = path.join(__dirname, "..");
 const PORT = 9312;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -35,7 +36,7 @@ const check = (ok, label, detail = "") => {
   try { require("child_process").execSync(`pkill -f 'remote-debugging-port=${PORT}' || true`); } catch {}
   await sleep(1200);
 
-  const child = spawn(
+  const child = spawnElectron(
     path.join(APP, "node_modules", ".bin", "electron"),
     [APP, `--remote-debugging-port=${PORT}`],
     { stdio: "ignore" }

@@ -17,6 +17,7 @@ const fsp = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
+const { spawnElectron } = require("./lib/electron-harness");
 
 const APP = path.join(__dirname, "..");
 const PORT = 9313;
@@ -40,7 +41,7 @@ const fmt = (b) => {
   const dest = await fsp.mkdtemp(path.join(os.tmpdir(), "ff-pull-"));
   console.log(`Destination: ${dest}\n`);
 
-  const child = spawn(
+  const child = spawnElectron(
     path.join(APP, "node_modules", ".bin", "electron"),
     [APP, `--remote-debugging-port=${PORT}`],
     { stdio: "ignore" }

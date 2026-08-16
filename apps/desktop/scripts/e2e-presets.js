@@ -15,6 +15,7 @@ const fsp = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
+const { spawnElectron } = require("./lib/electron-harness");
 
 const APP = path.join(__dirname, "..");
 const PORT = 9318;
@@ -41,7 +42,7 @@ const check = (ok, label, detail = "") => {
   }
   await fsp.writeFile(path.join(source, "notes.txt"), "shot list\n");
 
-  const child = spawn(
+  const child = spawnElectron(
     path.join(APP, "node_modules", ".bin", "electron"),
     [APP, `--remote-debugging-port=${PORT}`],
     { stdio: "ignore" },

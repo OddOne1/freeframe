@@ -21,6 +21,7 @@ const fs = require("node:fs/promises");
 const fssync = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
+const { spawnElectron } = require("./lib/electron-harness");
 
 const PACKAGED = process.argv.includes("--packaged");
 const PORT = PACKAGED ? 9282 : 9281;
@@ -42,9 +43,11 @@ async function main() {
     process.exit(1);
   }
 
+  // Both branches go through spawnElectron: the packaged build is the one
+  // most likely to be left running unnoticed, since it has its own Dock icon.
   const child = PACKAGED
-    ? spawn(PACKAGED_APP, [`--remote-debugging-port=${PORT}`], { stdio: ["ignore", "pipe", "pipe"] })
-    : spawn(path.join(APP_DIR, "node_modules", ".bin", "electron"),
+    ? spawnElectron(PACKAGED_APP, [`--remote-debugging-port=${PORT}`], { stdio: ["ignore", "pipe", "pipe"] })
+    : spawnElectron(path.join(APP_DIR, "node_modules", ".bin", "electron"),
         [APP_DIR, `--remote-debugging-port=${PORT}`], { stdio: ["ignore", "pipe", "pipe"] });
 
   const logs = [];

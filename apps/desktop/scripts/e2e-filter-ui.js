@@ -16,6 +16,7 @@
 // Run: node scripts/e2e-filter-ui.js
 const { spawn, execSync } = require("node:child_process");
 const path = require("node:path");
+const { spawnElectron } = require("./lib/electron-harness");
 
 const APP = path.join(__dirname, "..");
 const PORT = 9331;
@@ -31,7 +32,7 @@ const check = (ok, label, detail = "") => {
   try { execSync(`pkill -f 'remote-debugging-port=${PORT}' || true`); } catch {}
   await sleep(1000);
 
-  const child = spawn(
+  const child = spawnElectron(
     path.join(APP, "node_modules", ".bin", "electron"),
     [APP, `--remote-debugging-port=${PORT}`],
     { stdio: "ignore" },

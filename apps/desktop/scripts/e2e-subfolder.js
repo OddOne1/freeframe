@@ -8,6 +8,7 @@
 //
 // Run: node scripts/e2e-subfolder.js
 const { spawn } = require("node:child_process");
+const { spawnElectron } = require("./lib/electron-harness");
 const fs=require("node:fs/promises"); const path=require("node:path"), os=require("node:os");
 const APP=require("node:path").join(__dirname, "..");
 const PORT=9301; const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -17,7 +18,7 @@ let fail=0; const check=(ok,l,d="")=>{ if(!ok)fail++; console.log(`  ${ok?"PASS"
   // twice made a real fix look like it didn't apply.
   try { require("child_process").execSync("pkill -f 'remote-debugging-port=" + PORT + "' || true"); } catch {}
   await sleep(1200);
-  const child=spawn(path.join(APP,"node_modules",".bin","electron"),[APP,`--remote-debugging-port=${PORT}`],{stdio:"ignore"});
+  const child=spawnElectron(path.join(APP,"node_modules",".bin","electron"),[APP,`--remote-debugging-port=${PORT}`],{stdio:"ignore"});
   let page;for(let i=0;i<80;i++){try{const t=await(await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
     page=t.find(x=>x.type==="page"&&x.url.includes("index.html"));if(page?.webSocketDebuggerUrl)break;}catch{}await sleep(250);}
   const ws=new WebSocket(page.webSocketDebuggerUrl);await new Promise(r=>ws.addEventListener("open",r));

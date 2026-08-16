@@ -22,6 +22,7 @@ const { promisify } = require("node:util");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
+const { spawnElectron } = require("./lib/electron-harness");
 
 const execFileAsync = promisify(execFile);
 const PORT = 9251;
@@ -112,7 +113,7 @@ async function main() {
   let recentsPath = null;
   let recentsBackup = null;
 
-  const child = spawn(ELECTRON, [APP_DIR, `--remote-debugging-port=${PORT}`], { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawnElectron(ELECTRON, [APP_DIR, `--remote-debugging-port=${PORT}`], { stdio: ["ignore", "pipe", "pipe"] });
   const logs = [];
   child.stdout.on("data", (d) => logs.push(String(d)));
   child.stderr.on("data", (d) => logs.push(String(d)));
