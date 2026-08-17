@@ -569,14 +569,16 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
       controller,
       updateFile,
       initiate: () =>
-        api.post<InitiateResponse>('/upload/initiate', {
-          project_id: projectId,
-          asset_name: assetName,
-          original_filename: file.name,
-          file_size_bytes: file.size,
-          mime_type: file.type,
-          folder_id: folderId ?? null,
-        }),
+        withInitiateSlot(projectId, () =>
+          api.post<InitiateResponse>('/upload/initiate', {
+            project_id: projectId,
+            asset_name: assetName,
+            original_filename: file.name,
+            file_size_bytes: file.size,
+            mime_type: file.type,
+            folder_id: folderId ?? null,
+          }),
+        ),
     })
 
     return id
@@ -780,6 +782,61 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
     }
   },
 })
+
+/**
+ * Bounded, project-aware gate around POST /upload/initiate (§27).
+ *
+ * Dropping a batch previously fired one initiate per file in the same
+ * synchronous loop — N unbounded requests at four Gunicorn workers. On a
+ * project whose storage prefix was not yet locked, they also contended on
+ * one project row and most of them came back 500 (a Postgres deadlock; see
+ * routers/upload.py for the mechanism and the server-side fix).
+ *
+ * Two rules, in order:
+ *
+ * 1. The FIRST initiate for a project runs alone. Once it returns, that
+ *    project's prefix is committed, so every later initiate in the batch
+ *    just reads it. This is the rule that protects a fresh project, and it
+ *    holds even if the server-side ordering fix were ever reverted.
+ * 2. After that, at most INITIATE_CONCURRENCY at a time — same reasoning as
+ *    CONCURRENT_PARTS above: enough to keep the pipe busy, not enough to
+ *    make a 60-file drop a load test.
+ *
+ * Deliberately wraps only the initiate call. Part uploads stay as parallel
+ * as they ever were; serialising those would make a batch far slower for no
+ * reason.
+ */
+const INITIATE_CONCURRENCY = 3
+let initiateActive = 0
+const initiateWaiting: Array<() => void> = []
+/** projectId -> the in-flight first initiate for that project. */
+const firstInitiate = new Map<string, Promise<unknown>>()
+
+async function withInitiateSlot<T>(projectId: string, run: () => Promise<T>): Promise<T> {
+  const leader = !firstInitiate.has(projectId)
+  if (!leader) {
+    // Whether it succeeded or failed, the prefix question is settled by the
+    // time it resolves — a rejection must not strand the rest of the batch.
+    await firstInitiate.get(projectId)!.catch(() => {})
+  }
+
+  while (initiateActive >= INITIATE_CONCURRENCY) {
+    await new Promise<void>((resolve) => initiateWaiting.push(resolve))
+  }
+  initiateActive += 1
+
+  const call = (async () => {
+    try {
+      return await run()
+    } finally {
+      initiateActive -= 1
+      initiateWaiting.shift()?.()
+    }
+  })()
+
+  if (leader) firstInitiate.set(projectId, call)
+  return call
+}
 
 export const useUploadStore = create<UploadStore>()(
   persist(storeCreator, {

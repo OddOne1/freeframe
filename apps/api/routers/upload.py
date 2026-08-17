@@ -69,6 +69,31 @@ def initiate_upload(
         if platform_storage + body.file_size_bytes > site_settings.total_storage_limit_bytes:
             raise HTTPException(status_code=400, detail="Platform storage limit exceeded")
 
+    # ── Freeze the project's storage prefix (§14), in its OWN transaction ──
+    #
+    # Placement is the whole fix for §27, and both halves of it matter.
+    #
+    # BEFORE the asset insert: an `INSERT INTO assets` takes a KEY SHARE
+    # lock on the referenced projects row for its foreign key. A later
+    # `SELECT ... FOR UPDATE` on that same row then conflicts with every
+    # OTHER concurrent initiate's KEY SHARE — so two of them deadlock, each
+    # holding KEY SHARE and waiting for FOR UPDATE. Reproduced against real
+    # Postgres: 12 concurrent initiates to a fresh project gave 2 successes
+    # and 10 `DeadlockDetected`, which is the 500 the live batch upload hit.
+    #
+    # COMMITTED immediately: the previous code held that row lock until the
+    # end of the request, which is *after* the S3 CreateMultipartUpload
+    # below. Holding a row lock across a network round-trip serialises the
+    # entire batch behind one S3 latency each. Committing here drops the
+    # lock in microseconds — measured 0.9s vs 5.0s for 12 files.
+    #
+    # Committing early is safe: nothing else is pending in this transaction
+    # yet (the checks above are all reads), and a prefix locked for an
+    # upload that later fails costs nothing — it is a naming decision, and
+    # `lock_storage_prefix` is idempotent.
+    lock_storage_prefix(db, project.id)
+    db.commit()
+
     # Get or create asset
     if body.asset_id:
         asset = db.query(Asset).filter(Asset.id == body.asset_id, Asset.deleted_at.is_(None)).first()
@@ -107,13 +132,9 @@ def initiate_upload(
     db.add(version)
     db.flush()
 
-    # Freeze the project's storage prefix now, at multipart CREATE rather
-    # than at completion (§14). If the slug could still change while this
-    # upload were in flight, the key below would reference a prefix that
-    # stopped matching the project, orphaning the object. Row-locked
-    # inside, so two simultaneous first uploads can't mint two prefixes.
-    project = lock_storage_prefix(db, project.id)
-
+    # Locked and committed above; this just reads the frozen values. The
+    # commit expired the instance, so touching it refreshes from the row
+    # whichever request won the race.
     ext = os.path.splitext(body.original_filename)[1].lower()
     s3_key = f"raw/{prefix_for_project(project)}/{asset.id}/{version.id}/original{ext}"
 
