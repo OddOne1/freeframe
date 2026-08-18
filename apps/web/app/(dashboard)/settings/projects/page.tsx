@@ -29,6 +29,7 @@ import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/shared/avatar";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/shared/empty-state";
+import { CollapsibleSection } from "@/components/shared/collapsible-section";
 import { useAuthStore } from "@/stores/auth-store";
 import { useHasProjectPrivilege } from "@/hooks/use-project-privilege";
 import { ProjectSettingsDialog } from "@/components/projects/project-settings-dialog";
@@ -1077,13 +1078,12 @@ export default function SettingsProjectsPage() {
               fetched: `current_user_role` was on every row already, and
               `hasAccess` already split them per-row. No new API call, no
               change to AdminProject. */}
-          <div>
-            <h2 className="mb-2 text-sm font-medium text-text-primary">
-              Joined Projects
-              <span className="ml-2 text-xs font-normal text-text-tertiary">
-                {joinedProjects.length}
-              </span>
-            </h2>
+          <CollapsibleSection
+            title="Joined Projects"
+            count={joinedProjects.length}
+            storageKey="projects-joined"
+            className="space-y-2"
+          >
             {joinedProjects.length === 0 ? (
               // Shown, not hidden: an empty section states "you've joined
               // nothing", which an absent section cannot.
@@ -1094,15 +1094,14 @@ export default function SettingsProjectsPage() {
             ) : (
               <ProjectsTable rows={joinedProjects} />
             )}
-          </div>
+          </CollapsibleSection>
 
-          <div>
-            <h2 className="mb-2 text-sm font-medium text-text-primary">
-              General Projects
-              <span className="ml-2 text-xs font-normal text-text-tertiary">
-                {generalProjects.length}
-              </span>
-            </h2>
+          <CollapsibleSection
+            title="General Projects"
+            count={generalProjects.length}
+            storageKey="projects-general"
+            className="space-y-2"
+          >
             {generalProjects.length === 0 ? (
               <div className="rounded-lg border border-border bg-bg-secondary px-4 py-6 text-center text-sm text-text-tertiary">
                 You&apos;ve joined every project on the platform.
@@ -1110,7 +1109,7 @@ export default function SettingsProjectsPage() {
             ) : (
               <ProjectsTable rows={generalProjects} />
             )}
-          </div>
+          </CollapsibleSection>
         </div>
       )}
 

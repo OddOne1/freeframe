@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/shared/empty-state'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { CollapsibleSection } from '@/components/shared/collapsible-section'
 import { LutThumbnail } from '@/components/shared/lut-thumbnail'
 import { LutPreviewDialog } from '@/components/shared/lut-preview-dialog'
 import { useAuthStore } from '@/stores/auth-store'
@@ -281,14 +282,22 @@ export default function LutsSettingsPage() {
         onDropLut={(lutId) => void promoteLutToPlatform(lutId)}
         className="space-y-3"
       >
-        <div className="flex items-center gap-2">
-          <Globe className="h-4 w-4 text-text-tertiary" />
-          <h2 className="text-sm font-semibold text-text-primary">{PLATFORM_SECTION_LABEL}</h2>
-          <span className="text-xs text-text-tertiary">
-            Available in every project, to everyone
-          </span>
-        </div>
-
+        <CollapsibleSection
+          storageKey="luts-platform"
+          className="space-y-3"
+          title={
+            <span className="flex items-center gap-2">
+              <Globe className="h-4 w-4 text-text-tertiary" />
+              {PLATFORM_SECTION_LABEL}
+            </span>
+          }
+          count={platform.length}
+          actions={
+            <span className="text-xs text-text-tertiary">
+              Available in every project, to everyone
+            </span>
+          }
+        >
         {platform.length === 0 ? (
           <p className="text-xs text-text-tertiary border border-border border-dashed rounded-lg px-3 py-4">
             {isSuperAdmin
@@ -322,6 +331,7 @@ export default function LutsSettingsPage() {
             ))}
           </div>
         )}
+        </CollapsibleSection>
       </LutDropZone>
 
       {/* ── The viewer's own library ── */}
@@ -338,6 +348,12 @@ export default function LutsSettingsPage() {
           description="Upload a .cube file to preview it on any video or image, and share it into a project when you want the team to see it too."
         />
       ) : (
+        <CollapsibleSection
+          storageKey="luts-personal"
+          title="Your LUTs"
+          count={ownNotPlatform.length}
+          className="space-y-3"
+        >
         <div className="space-y-6">
           {groupList.map((group) => {
             const members = ownNotPlatform.filter((l) => l.group_id === group.id)
@@ -348,12 +364,12 @@ export default function LutsSettingsPage() {
                 onDropLut={(lutId) => void moveLutToGroup(lutId, group.id)}
                 className="space-y-3"
               >
-                <GroupHeader
+                <GroupSection
                   group={group}
                   count={members.length}
                   onChanged={refreshAll}
                   onDelete={() => setDeletingGroup(group)}
-                />
+                >
                 {members.length === 0 ? (
                   <p className="text-xs text-text-tertiary">
                     Empty — drag a LUT here, or move it from its ⋯ menu.
@@ -377,6 +393,7 @@ export default function LutsSettingsPage() {
                     ))}
                   </div>
                 )}
+                </GroupSection>
               </LutDropZone>
             )
           })}
@@ -389,9 +406,12 @@ export default function LutsSettingsPage() {
               onDropLut={(lutId) => void moveLutToGroup(lutId, null)}
               className="space-y-3"
             >
-              {groupList.length > 0 && (
-                <h2 className="text-sm font-semibold text-text-primary">Ungrouped</h2>
-              )}
+              <CollapsibleSection
+                storageKey="luts-ungrouped"
+                title="Ungrouped"
+                count={ungrouped.length}
+                className="space-y-3"
+              >
               {ungrouped.length === 0 ? (
                 <p className="text-xs text-text-tertiary">
                   Empty — drag a LUT here, or move it from its ⋯ menu.
@@ -415,9 +435,11 @@ export default function LutsSettingsPage() {
                   ))}
                 </div>
               )}
+              </CollapsibleSection>
             </LutDropZone>
           )}
         </div>
+        </CollapsibleSection>
       )}
 
       {/* New group */}
@@ -707,27 +729,33 @@ function LutRow({
   )
 }
 
-// ─── Group header ────────────────────────────────────────────────────────────
+// ─── Group section ───────────────────────────────────────────────────────────
 
 /**
- * A group's name, count and its two actions.
+ * One personal LUT group: a collapsible section whose header carries the
+ * group's name, count and its two actions.
  *
  * Rename is inline rather than a dialog, matching folder-tree.tsx's own
  * pattern — and PATCH /me/lut-groups/{id} already existed for it, so this was
  * only ever a missing affordance. Groups come from /me/lut-groups, which
  * returns the caller's own only, so there is no owner gate to apply here that
  * the query hasn't already applied.
+ *
+ * While the name is being edited it moves out of the collapse toggle and into
+ * `titleOverride` — an `<input>` cannot live inside a `<button>`.
  */
-function GroupHeader({
+function GroupSection({
   group,
   count,
   onChanged,
   onDelete,
+  children,
 }: {
   group: LutGroup
   count: number
   onChanged: () => void | Promise<void>
   onDelete: () => void
+  children: React.ReactNode
 }) {
   const [renaming, setRenaming] = React.useState(false)
   const [draftName, setDraftName] = React.useState(group.name)
@@ -741,46 +769,53 @@ function GroupHeader({
   }
 
   return (
-    <div className="flex items-center gap-2">
-      {renaming ? (
-        <input
-          className="min-w-0 flex-1 border-b border-accent bg-transparent px-0.5 text-sm font-semibold text-text-primary outline-none"
-          value={draftName}
-          onChange={(e) => setDraftName(e.target.value)}
-          onBlur={() => void commitRename()}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') void commitRename()
-            if (e.key === 'Escape') {
-              setDraftName(group.name)
-              setRenaming(false)
-            }
-          }}
-          aria-label={`Rename ${group.name}`}
-          autoFocus
-        />
-      ) : (
+    <CollapsibleSection
+      storageKey={`luts-group-${group.id}`}
+      className="space-y-3"
+      title={group.name}
+      count={count}
+      titleOverride={
+        renaming ? (
+          <input
+            className="min-w-0 flex-1 border-b border-accent bg-transparent px-0.5 text-sm font-semibold text-text-primary outline-none"
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
+            onBlur={() => void commitRename()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void commitRename()
+              if (e.key === 'Escape') {
+                setDraftName(group.name)
+                setRenaming(false)
+              }
+            }}
+            aria-label={`Rename ${group.name}`}
+            autoFocus
+          />
+        ) : undefined
+      }
+      actions={
         <>
-          <h2 className="text-sm font-semibold text-text-primary">{group.name}</h2>
-          <span className="text-xs text-text-tertiary">{count}</span>
+          <button
+            onClick={() => {
+              setDraftName(group.name)
+              setRenaming(true)
+            }}
+            aria-label={`Rename group ${group.name}`}
+            className="text-xs text-text-tertiary hover:text-text-primary transition-colors"
+          >
+            Rename
+          </button>
+          <button
+            onClick={onDelete}
+            className="text-xs text-text-tertiary hover:text-status-error transition-colors"
+          >
+            Delete group
+          </button>
         </>
-      )}
-      <button
-        onClick={() => {
-          setDraftName(group.name)
-          setRenaming(true)
-        }}
-        aria-label={`Rename group ${group.name}`}
-        className="ml-auto text-xs text-text-tertiary hover:text-text-primary transition-colors"
-      >
-        Rename
-      </button>
-      <button
-        onClick={onDelete}
-        className="text-xs text-text-tertiary hover:text-status-error transition-colors"
-      >
-        Delete group
-      </button>
-    </div>
+      }
+    >
+      {children}
+    </CollapsibleSection>
   )
 }
 

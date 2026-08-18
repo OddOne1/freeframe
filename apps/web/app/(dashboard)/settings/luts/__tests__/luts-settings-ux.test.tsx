@@ -84,8 +84,13 @@ async function rowFor(name: string): Promise<HTMLElement> {
   return heading.closest('div[draggable]') as HTMLElement
 }
 
+/** Section headings carry their count inside the accessible name now that
+ *  they are collapse toggles ("Ungrouped(3)"), so this matches on the prefix. */
 async function sectionFor(heading: string): Promise<HTMLElement> {
-  const el = await screen.findByRole('heading', { name: heading, level: 2 })
+  const el = await screen.findByRole('heading', {
+    name: new RegExp(`^${heading}`),
+    level: 2,
+  })
   return el.closest('section') as HTMLElement
 }
 
