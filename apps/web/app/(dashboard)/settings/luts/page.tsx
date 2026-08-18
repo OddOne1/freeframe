@@ -22,6 +22,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/shared/empty-state'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { LutThumbnail } from '@/components/shared/lut-thumbnail'
 import { useAuthStore } from '@/stores/auth-store'
 import type { Lut, LutGroup, Project } from '@/types'
 
@@ -358,6 +359,8 @@ function LutRow({
 
   return (
     <div className="flex items-center gap-3 p-4 rounded-lg border border-border bg-bg-secondary">
+      <LutThumbnail lut={lut} className="h-8 w-12" />
+
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-medium text-text-primary truncate">{lut.name}</h3>

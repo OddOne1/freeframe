@@ -5,6 +5,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { Check, ChevronDown, Loader2, Palette, Upload } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
+import { LutThumbnail } from '@/components/shared/lut-thumbnail'
 import type { Lut } from '@/types'
 
 interface LutPickerProps {
@@ -70,7 +71,10 @@ export function LutPicker({
         onSelect={() => onSelect(lut.id)}
         className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
       >
-        <span className="truncate">{lut.name}</span>
+        <span className="flex min-w-0 items-center gap-2">
+          <LutThumbnail lut={lut} className="h-4 w-6" />
+          <span className="truncate">{lut.name}</span>
+        </span>
         <span className="flex items-center gap-1.5 shrink-0">
           {lut.lut_size && (
             <span className="text-2xs text-text-tertiary tabular-nums">{lut.lut_size}³</span>
@@ -124,7 +128,12 @@ export function LutPicker({
               onSelect={() => onSelect(null)}
               className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-xs text-text-secondary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
             >
-              None
+              {/* The reference frame ungraded — the before, against which
+                  every swatch below it is the after. */}
+              <span className="flex min-w-0 items-center gap-2">
+                <LutThumbnail lut={null} className="h-4 w-6" />
+                None
+              </span>
               {selectedId === null && <Check className="h-3.5 w-3.5 text-accent" />}
             </DropdownMenu.Item>
 

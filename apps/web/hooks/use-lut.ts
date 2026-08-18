@@ -3,15 +3,10 @@
 import * as React from 'react'
 import useSWR from 'swr'
 import { api } from '@/lib/api'
-import { resolveApiMediaUrl } from '@/lib/utils'
-import { parseCube, type ParsedCube } from '@/lib/lut/cube-parser'
+import type { ParsedCube } from '@/lib/lut/cube-parser'
+import { getCachedCube, loadCube } from '@/lib/lut/cube-cache'
 import { isWebGL2Available } from '@/lib/lut/webgl-lut'
 import type { Lut } from '@/types'
-
-/** Parsed .cube files, keyed by LUT id. Module-level rather than per-hook:
- *  a 33³ LUT is ~140k floats to parse, and the same LUT is routinely picked
- *  again across assets within one session. */
-const cubeCache = new Map<string, ParsedCube>()
 
 export interface UseLutResult {
   /** Everything the picker should list for this project. */
@@ -63,7 +58,7 @@ export function useLut(projectId: string | null | undefined, initialLutId?: stri
       return
     }
 
-    const cached = cubeCache.get(selectedId)
+    const cached = getCachedCube(selectedId)
     if (cached) {
       setCube(cached)
       setError(null)
@@ -73,19 +68,12 @@ export function useLut(projectId: string | null | undefined, initialLutId?: stri
     const lut = luts?.find((l) => l.id === selectedId)
     if (!lut?.file_url) return // list hasn't arrived yet; re-runs when it does
 
-    const url = resolveApiMediaUrl(lut.file_url)
-    if (!url) return
-
     setIsLoadingCube(true)
     setError(null)
-    fetch(url)
-      .then((res) => {
-        if (!res.ok) throw new Error(`Could not load LUT (${res.status})`)
-        return res.text()
-      })
-      .then((text) => {
-        const parsed = parseCube(text)
-        cubeCache.set(selectedId, parsed)
+    // Shared with the LUT-browser thumbnails, so a LUT already drawn as a
+    // swatch is applied here with no second fetch or parse.
+    loadCube(selectedId, lut.file_url)
+      .then((parsed) => {
         if (!cancelled) {
           setCube(parsed)
           setIsLoadingCube(false)
