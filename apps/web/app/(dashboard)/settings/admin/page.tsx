@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/shared/avatar";
 import { EmptyState } from "@/components/shared/empty-state";
 import { CollapsibleSection } from "@/components/shared/collapsible-section";
+import { PlainTh, SortableTh, useSort } from "@/components/shared/sortable";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSiteSettings } from "@/hooks/use-site-settings";
 import { useEmailSettings } from "@/hooks/use-email-settings";
@@ -938,15 +939,20 @@ function UserProjects({ projects }: { projects: AdminUserProjectSummary[] }) {
 
 // ─── User group block: independent bordered table per group, collapsible ──
 
-const USER_TABLE_COLUMNS = [
-  { key: "user", label: "User", align: "left" as const },
-  { key: "projects", label: "Projects", align: "left" as const },
-  { key: "role", label: "Role", align: "left" as const },
-  { key: "status", label: "Status", align: "left" as const },
-  { key: "joined", label: "Joined", align: "left" as const },
-  { key: "storage", label: "Storage", align: "left" as const },
-  { key: "actions", label: "Actions", align: "right" as const },
-];
+/** Accessors, one per sortable column. Deliberately absent: **Projects**,
+ *  which is a list of badges per row with no single value to order by
+ *  (count would be a different column than the one shown), and **Actions**,
+ *  which is controls. Both stay plain headers rather than being given a sort
+ *  that would not mean what the column shows. */
+const USER_SORT = {
+  user: (u: AdminUser) => u.name,
+  role: (u: AdminUser) => u.role ?? null,
+  status: (u: AdminUser) => u.status ?? null,
+  joined: (u: AdminUser) => u.created_at,
+  // Unlimited is the absent value, and sorts last either way rather than
+  // pretending to be zero -- which would file it below a 1GB cap.
+  storage: (u: AdminUser) => u.storage_limit_bytes ?? null,
+};
 
 function UserGroupBlock({
   title,
@@ -963,6 +969,9 @@ function UserGroupBlock({
   defaultCollapsed?: boolean;
   renderRow: (u: AdminUser) => React.ReactNode;
 }) {
+  // One sort per block, so sorting Admins leaves Members alone.
+  const { sorted, sort } = useSort(users, USER_SORT, { key: "user" });
+
   if (users.length === 0) return null;
 
   return (
@@ -976,20 +985,16 @@ function UserGroupBlock({
       <table className="w-full text-sm min-w-[760px]">
         <thead>
           <tr className="border-b border-t border-border bg-bg-tertiary">
-            {USER_TABLE_COLUMNS.map((col) => (
-              <th
-                key={col.key}
-                className={cn(
-                  "px-4 py-2.5 text-xs font-medium text-text-tertiary",
-                  col.align === "right" ? "text-right" : "text-left",
-                )}
-              >
-                {col.label}
-              </th>
-            ))}
+            <SortableTh label="User" sortKey="user" sort={sort} />
+            <PlainTh label="Projects" />
+            <SortableTh label="Role" sortKey="role" sort={sort} />
+            <SortableTh label="Status" sortKey="status" sort={sort} />
+            <SortableTh label="Joined" sortKey="joined" sort={sort} />
+            <SortableTh label="Storage" sortKey="storage" sort={sort} />
+            <PlainTh label="Actions" align="right" />
           </tr>
         </thead>
-        <tbody>{users.map(renderRow)}</tbody>
+        <tbody>{sorted.map(renderRow)}</tbody>
       </table>
     </CollapsibleSection>
   );
@@ -1065,9 +1070,6 @@ export default function AdminPage() {
   };
 
   const [search, setSearch] = React.useState("");
-  const [sortBy, setSortBy] = React.useState<"name" | "email" | "status">(
-    "name",
-  );
 
   const filteredUsers = React.useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1078,47 +1080,30 @@ export default function AdminPage() {
     );
   }, [usersResp, search]);
 
-  const compareUsers = React.useCallback(
-    (a: AdminUser, b: AdminUser) => {
-      switch (sortBy) {
-        case "email":
-          return a.email.localeCompare(b.email);
-        case "status": {
-          // Active first, everything else (deactivated/pending/unverified)
-          // after -- ties broken by name so the order stays stable.
-          const rank = (u: AdminUser) => (u.status === "active" ? 0 : 1);
-          const diff = rank(a) - rank(b);
-          return diff !== 0 ? diff : a.name.localeCompare(b.name);
-        }
-        case "name":
-        default:
-          return a.name.localeCompare(b.name);
-      }
-    },
-    [sortBy],
-  );
-
-  // Grouping (task 2) stays intact -- search/sort (task 3) filter and order
-  // within each group, they don't collapse the admin/member split.
-  // Deactivated users (any role) get pulled out into their own group
-  // entirely rather than just sorted to the bottom within Admins/Members.
+  // Grouping (task 2) stays intact -- search filters within each group, it
+  // doesn't collapse the admin/member split. Deactivated users (any role) get
+  // pulled out into their own group entirely rather than just sorted to the
+  // bottom within Admins/Members.
+  //
+  // Ordering is no longer done here: each block sorts itself from its column
+  // headers (§40), which is also why the old "Sort: Name/Email/Status"
+  // dropdown is gone -- it was being overridden by the table and had become a
+  // control that did nothing.
   const admins = React.useMemo(
     () =>
       filteredUsers
-        .filter((u) => u.role === "superadmin" && u.status !== "deactivated")
-        .sort(compareUsers),
-    [filteredUsers, compareUsers],
+        .filter((u) => u.role === "superadmin" && u.status !== "deactivated"),
+    [filteredUsers],
   );
   const members = React.useMemo(
     () =>
       filteredUsers
-        .filter((u) => u.role !== "superadmin" && u.status !== "deactivated")
-        .sort(compareUsers),
-    [filteredUsers, compareUsers],
+        .filter((u) => u.role !== "superadmin" && u.status !== "deactivated"),
+    [filteredUsers],
   );
   const deactivated = React.useMemo(
-    () => filteredUsers.filter((u) => u.status === "deactivated").sort(compareUsers),
-    [filteredUsers, compareUsers],
+    () => filteredUsers.filter((u) => u.status === "deactivated"),
+    [filteredUsers],
   );
 
   if (!isSuperAdmin) {
@@ -1262,18 +1247,6 @@ export default function AdminPage() {
               onChange={(e) => setSearch(e.target.value)}
               className="h-8 w-56 text-xs"
             />
-            <select
-              value={sortBy}
-              onChange={(e) =>
-                setSortBy(e.target.value as "name" | "email" | "status")
-              }
-              className="h-8 rounded-md border border-border bg-bg-secondary px-2 text-xs text-text-primary focus:outline-none focus:border-border-focus"
-              aria-label="Sort users by"
-            >
-              <option value="name">Sort: Name</option>
-              <option value="email">Sort: Email</option>
-              <option value="status">Sort: Status</option>
-            </select>
             <BulkInviteDialog />
           </div>
         </div>

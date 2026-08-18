@@ -30,6 +30,7 @@ import { Avatar } from "@/components/shared/avatar";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/shared/empty-state";
 import { CollapsibleSection } from "@/components/shared/collapsible-section";
+import { PlainTh, SortableTh, useSort } from "@/components/shared/sortable";
 import { useAuthStore } from "@/stores/auth-store";
 import { useHasProjectPrivilege } from "@/hooks/use-project-privilege";
 import { ProjectSettingsDialog } from "@/components/projects/project-settings-dialog";
@@ -501,6 +502,18 @@ function OwnedProjectsView() {
     [managedProjects],
   ));
 
+  // Own state, so sorting this table leaves the superadmin tables below
+  // alone. Owner sorts by the resolved name the cell actually shows, not by
+  // the id — sorting by something invisible is worse than not sorting.
+  const { sorted: sortedManaged, sort } = useSort(managedProjects, {
+    name: (p: Project) => p.name,
+    owner: (p: Project) => owners[p.id]?.name ?? null,
+    role: (p: Project) => p.role ?? null,
+    members: (p: Project) => p.member_count ?? null,
+    used: (p: Project) => p.storage_bytes ?? null,
+    limit: (p: Project) => p.storage_limit_bytes ?? null,
+  }, { key: 'name' });
+
   // NULL (unlimited) sibling projects contribute 0 to this sum rather than
   // being unbounded -- same simplification as the backend's SQL SUM, kept
   // consistent on purpose so the client-side check below never disagrees
@@ -592,17 +605,18 @@ function OwnedProjectsView() {
           <table className="w-full text-sm min-w-[860px]">
             <thead>
               <tr className="border-b border-border bg-bg-tertiary">
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Project</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Owner</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Your Role</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Members</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Used</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Storage Limit</th>
-                <th className="px-4 py-2.5 text-right text-xs font-medium text-text-tertiary">Actions</th>
+                <SortableTh label="Project" sortKey="name" sort={sort} />
+                <SortableTh label="Owner" sortKey="owner" sort={sort} />
+                <SortableTh label="Your Role" sortKey="role" sort={sort} />
+                <SortableTh label="Members" sortKey="members" sort={sort} />
+                <SortableTh label="Used" sortKey="used" sort={sort} />
+                <SortableTh label="Storage Limit" sortKey="limit" sort={sort} />
+                {/* Actions has no value to order by. */}
+                <PlainTh label="Actions" align="right" />
               </tr>
             </thead>
             <tbody>
-              {managedProjects.map((p) => (
+              {sortedManaged.map((p) => (
                 <tr
                   key={p.id}
                   className="border-b border-border last:border-0 hover:bg-bg-tertiary transition-colors"
@@ -1026,25 +1040,40 @@ export default function SettingsProjectsPage() {
     );
   };
 
-  const ProjectsTable = ({ rows }: { rows: AdminProject[] }) => (
-    <div className="rounded-lg border border-border bg-bg-secondary overflow-x-auto">
-      <table className="w-full text-sm min-w-[760px]">
-        <thead>
-          <tr className="border-b border-border bg-bg-tertiary">
-            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Project</th>
-            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Owner</th>
-            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Members</th>
-            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Assets</th>
-            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Storage</th>
-            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Status</th>
-            <th className="px-4 py-2.5 text-left text-xs font-medium text-text-tertiary">Created</th>
-            <th className="px-4 py-2.5 text-right text-xs font-medium text-text-tertiary">Actions</th>
-          </tr>
-        </thead>
-        <tbody>{rows.map(renderRow)}</tbody>
-      </table>
-    </div>
-  );
+  // Rendered twice (Joined and General), and each instance keeps its own
+  // sort -- sorting one must not resort the other.
+  const ProjectsTable = ({ rows }: { rows: AdminProject[] }) => {
+    const { sorted, sort } = useSort(rows, {
+      name: (p: AdminProject) => p.name,
+      owner: (p: AdminProject) => p.owner_name,
+      members: (p: AdminProject) => p.member_count ?? null,
+      assets: (p: AdminProject) => p.asset_count ?? null,
+      storage: (p: AdminProject) => p.storage_bytes ?? null,
+      // Matches what the Status cell actually shows.
+      status: (p: AdminProject) => (p.archived_at ? 'archived' : 'active'),
+      created: (p: AdminProject) => p.created_at,
+    }, { key: 'name' });
+
+    return (
+      <div className="rounded-lg border border-border bg-bg-secondary overflow-x-auto">
+        <table className="w-full text-sm min-w-[760px]">
+          <thead>
+            <tr className="border-b border-border bg-bg-tertiary">
+              <SortableTh label="Project" sortKey="name" sort={sort} />
+              <SortableTh label="Owner" sortKey="owner" sort={sort} />
+              <SortableTh label="Members" sortKey="members" sort={sort} />
+              <SortableTh label="Assets" sortKey="assets" sort={sort} />
+              <SortableTh label="Storage" sortKey="storage" sort={sort} />
+              <SortableTh label="Status" sortKey="status" sort={sort} />
+              <SortableTh label="Created" sortKey="created" sort={sort} />
+              <PlainTh label="Actions" align="right" />
+            </tr>
+          </thead>
+          <tbody>{sorted.map(renderRow)}</tbody>
+        </table>
+      </div>
+    );
+  };
 
   return (
     <div className="p-6 space-y-6">

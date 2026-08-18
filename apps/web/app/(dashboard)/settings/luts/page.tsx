@@ -24,6 +24,7 @@ import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/shared/empty-state'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CollapsibleSection } from '@/components/shared/collapsible-section'
+import { SortControl, sortRows, useSort, useSortState } from '@/components/shared/sortable'
 import { LutThumbnail } from '@/components/shared/lut-thumbnail'
 import { LutPreviewDialog } from '@/components/shared/lut-preview-dialog'
 import { useAuthStore } from '@/stores/auth-store'
@@ -277,10 +278,54 @@ export default function LutsSettingsPage() {
   const platformIds = new Set(platform.map((l) => l.id))
   const ownNotPlatform = ownLuts.filter((l) => !platformIds.has(l.id))
 
-  const groupList = groups ?? []
-  const platformGroupList = platformGroups ?? []
-  const ungrouped = ownNotPlatform.filter((l) => !l.group_id)
-  const platformUngrouped = platform.filter((l) => !l.group_id)
+  const allGroups = React.useMemo(
+    () => [...(groups ?? []), ...(platformGroups ?? [])],
+    [groups, platformGroups],
+  )
+  const memberCount = React.useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const lut of [...(luts ?? []), ...(platformLuts ?? [])]) {
+      if (lut.group_id) counts.set(lut.group_id, (counts.get(lut.group_id) ?? 0) + 1)
+    }
+    return counts
+  }, [luts, platformLuts])
+
+  // Two independent sorts, as asked: one orders the groups, the other orders
+  // the LUTs inside every group and section. They share no state, so changing
+  // one never reorders the other.
+  const { sorted: sortedGroups, sort: groupSort } = useSort(
+    allGroups,
+    {
+      name: (g: LutGroup) => g.name,
+      size: (g: LutGroup) => memberCount.get(g.id) ?? 0,
+    },
+    { key: 'name' },
+  )
+  const lutSortAccessors = React.useMemo(
+    () => ({
+      name: (l: Lut) => l.name,
+      size: (l: Lut) => l.lut_size ?? null,
+      added: (l: Lut) => l.created_at,
+    }),
+    [],
+  )
+  // One sort applied to every list of LUTs on the page. Per-group sort state
+  // was considered and rejected: eight groups in eight different orders is
+  // harder to read than one, and the ask was "sort inside LUT groups", not
+  // "sort each group differently".
+  const lutSort = useSortState<'name' | 'size' | 'added'>('name')
+  const sortLuts = React.useCallback(
+    (rows: Lut[]) => sortRows(rows, lutSortAccessors, lutSort),
+    [lutSortAccessors, lutSort],
+  )
+
+  const orderedGroups = (platformSide: boolean) =>
+    sortedGroups.filter((g) => Boolean(g.is_platform) === platformSide)
+
+  const groupList = orderedGroups(false)
+  const platformGroupList = orderedGroups(true)
+  const ungrouped = sortLuts(ownNotPlatform.filter((l) => !l.group_id))
+  const platformUngrouped = sortLuts(platform.filter((l) => !l.group_id))
 
   /** One row in the Platform section. Read-only for non-superadmins even when
    *  they happen to own it: managing a published platform LUT is a superadmin
@@ -356,6 +401,32 @@ export default function LutsSettingsPage() {
         </div>
       )}
 
+      {/* Two independent controls, as asked: one orders the groups, the other
+          orders the LUTs inside every group and section. */}
+      {(groupList.length > 0 || platformGroupList.length > 0 || ownNotPlatform.length > 0 || platform.length > 0) && (
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+          {(groupList.length > 0 || platformGroupList.length > 0) && (
+            <SortControl
+              label="Groups"
+              sort={groupSort}
+              options={[
+                { key: 'name', label: 'Name' },
+                { key: 'size', label: 'LUTs' },
+              ]}
+            />
+          )}
+          <SortControl
+            label="LUTs"
+            sort={lutSort}
+            options={[
+              { key: 'name', label: 'Name' },
+              { key: 'size', label: 'Size' },
+              { key: 'added', label: 'Added' },
+            ]}
+          />
+        </div>
+      )}
+
       {/* ── Pinned Platform LUTs ──
           Always at the very top, always expanded, shown to every user.
           Superadmins get the full controls; everyone else sees it read-only,
@@ -390,7 +461,7 @@ export default function LutsSettingsPage() {
         ) : (
           <div className="space-y-6">
             {platformGroupList.map((group) => {
-              const members = platform.filter((l) => l.group_id === group.id)
+              const members = sortLuts(platform.filter((l) => l.group_id === group.id))
               return (
                 <LutDropZone
                   key={group.id}
@@ -493,7 +564,7 @@ export default function LutsSettingsPage() {
         >
         <div className="space-y-6">
           {groupList.map((group) => {
-            const members = ownNotPlatform.filter((l) => l.group_id === group.id)
+            const members = sortLuts(ownNotPlatform.filter((l) => l.group_id === group.id))
             return (
               <LutDropZone
                 key={group.id}
