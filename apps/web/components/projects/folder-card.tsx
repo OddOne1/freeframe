@@ -162,6 +162,10 @@ export function FolderCard({
           className,
         )}
         draggable
+        // §28 — marks this as "not empty canvas", so the grid's
+        // right-click handler doesn't treat a folder tile as blank space.
+        // Folder tiles keep their own kebab menu; nothing else changes.
+        data-folder-card={folder.id}
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
         onDragLeave={() => setIsDragOver(false)}

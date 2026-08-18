@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
+import { AssetMenuItems } from './asset-menu-items'
 import { Film, Music, Image as ImageIcon, Images, MessageSquare, MoreHorizontal, Check, Share2, Download, Link as LinkIcon, Pencil, Trash2, Folder as FolderIcon } from 'lucide-react'
 import { cn, formatRelativeTime, formatBytes } from '@/lib/utils'
 import { StarRating } from '@/components/shared/star-rating'
@@ -37,6 +38,9 @@ interface AssetCardProps {
   onDownload?: () => void
   onRename?: () => void
   onDelete?: () => void
+  /** Right-click anywhere on the card (§28). The grid owns the menu, since
+   *  it is the only thing that knows the current multi-selection. */
+  onContextMenu?: (e: React.MouseEvent) => void
   fileSize?: number | null
   canVote?: boolean
   onVote?: (stars: number) => void
@@ -79,6 +83,7 @@ export function AssetCard({
   onDownload,
   onRename,
   onDelete,
+  onContextMenu,
   fileSize,
   canVote = false,
   onVote,
@@ -94,11 +99,17 @@ export function AssetCard({
   const TypeIcon = assetTypeIcons[asset.asset_type]
   const lineClamp = titleLines === '1' ? 'line-clamp-1' : titleLines === '2' ? 'line-clamp-2' : 'line-clamp-3'
   const [imgError, setImgError] = React.useState(false)
+  const assetUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}/projects/${asset.project_id}/assets/${asset.id}`
+      : null
 
   return (
     <div
       draggable
       onDragStart={onDragStart}
+      onContextMenu={onContextMenu}
+      data-asset-card={asset.id}
       className={cn(
         'group flex flex-col rounded-lg overflow-hidden transition-all duration-150 cursor-pointer',
         'border-2',
@@ -135,6 +146,7 @@ export function AssetCard({
         {/* Selection checkbox — top-left */}
         {onSelect && (
           <button
+            aria-label={selected ? `Deselect ${asset.name}` : `Select ${asset.name}`}
             onClick={(e) => { e.stopPropagation(); onSelect(e) }}
             className={cn(
               'absolute top-2 left-2 h-5 w-5 rounded flex items-center justify-center transition-all',
@@ -207,46 +219,15 @@ export function AssetCard({
                   className="z-[100] min-w-[200px] rounded-xl border border-border bg-bg-elevated shadow-2xl py-1.5 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <DropdownMenu.Item
-                    onSelect={onShare}
-                    className="flex items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
-                  >
-                    <Share2 className="h-3.5 w-3.5 text-text-tertiary" />
-                    Create Share Link
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Separator className="my-1 h-px bg-border mx-1" />
-                  <DropdownMenu.Item
-                    onSelect={onDownload}
-                    className="flex items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
-                  >
-                    <Download className="h-3.5 w-3.5 text-text-tertiary" />
-                    Download
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    onSelect={() => {
-                      const url = `${window.location.origin}/projects/${asset.project_id}/assets/${asset.id}`
-                      navigator.clipboard.writeText(url)
-                    }}
-                    className="flex items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
-                  >
-                    <LinkIcon className="h-3.5 w-3.5 text-text-tertiary" />
-                    Copy Asset URL
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Separator className="my-1 h-px bg-border mx-1" />
-                  <DropdownMenu.Item
-                    onSelect={onRename}
-                    className="flex items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
-                  >
-                    <Pencil className="h-3.5 w-3.5 text-text-tertiary" />
-                    Rename
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    onSelect={onDelete}
-                    className="flex items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-status-error hover:bg-status-error/10 cursor-pointer outline-none transition-colors"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    Delete
-                  </DropdownMenu.Item>
+                  {/* Shared with the right-click menu (§28) so the two can
+                      never drift out of step. */}
+                  <AssetMenuItems
+                    onShare={onShare}
+                    onDownload={onDownload}
+                    onRename={onRename}
+                    onDelete={onDelete}
+                    assetUrl={assetUrl}
+                  />
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>

@@ -2,12 +2,14 @@
 
 import * as React from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { X, Download, MoreHorizontal, Layers, Share2, Trash2, FolderInput, FolderIcon, Check, Film, Music, Image as ImageIcon, Images, Link as LinkIcon, Pencil } from 'lucide-react'
+import { X, Download, MoreHorizontal, Layers, Share2, Trash2, FolderInput, FolderIcon, Check, Film, Music, Image as ImageIcon, Images, Link as LinkIcon, Pencil, FolderPlus, Upload } from 'lucide-react'
 import { cn, formatRelativeTime, formatBytes } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/shared/avatar'
 import { EmptyState } from '@/components/shared/empty-state'
 import { AssetCard } from './asset-card'
+import { AssetMenuItems } from './asset-menu-items'
+import { CursorMenu, menuItemClass, menuItemDangerClass, type CursorMenuState } from '@/components/ui/cursor-menu'
 import { FolderCard } from './folder-card'
 import { AppearancePopover } from './appearance-popover'
 import { SortPopover } from './sort-popover'
@@ -61,6 +63,9 @@ interface AssetGridProps {
   onBulkDelete?: (assetIds: string[], folderIds: string[]) => void
   onBulkMove?: (assetIds: string[], folderIds: string[], targetFolderId: string | null) => void
   onBulkDownload?: (assetIds: string[], folderIds: string[]) => void
+  /** Empty-canvas right-click → New Folder (§28). Supplied only when the
+   *  role may create one, mirroring the toolbar's canCreateFolder gate. */
+  onNewFolder?: () => void
   projectName?: string
   folderTree?: FolderTreeNode[]
   onAssetShare?: (asset: Asset) => void
@@ -115,6 +120,7 @@ export function AssetGrid({
   onBulkDelete,
   onBulkMove,
   onBulkDownload,
+  onNewFolder,
   projectName = 'Project',
   folderTree = [],
   onAssetShare,
@@ -128,6 +134,15 @@ export function AssetGrid({
   const [selectedAssetIds, setSelectedAssetIds] = React.useState<Set<string>>(new Set())
   const [selectedFolderIds, setSelectedFolderIds] = React.useState<Set<string>>(new Set())
   const [moveDialogOpen, setMoveDialogOpen] = React.useState(false)
+
+  /**
+   * Right-click menu state (§28). Lives here, not on the card, because the
+   * only thing that knows the current multi-selection is the grid — and
+   * what a right-click should act on depends entirely on that.
+   */
+  const [contextMenu, setContextMenu] = React.useState<
+    (CursorMenuState & { mode: 'asset' | 'bulk' | 'canvas'; asset?: Asset }) | null
+  >(null)
 
   // Legacy alias
   const selectedIds = selectedAssetIds
@@ -177,6 +192,34 @@ export function AssetGrid({
     setSelectedFolderIds(new Set())
   }
 
+  /**
+   * Standard desktop right-click semantics (§28):
+   *
+   *  - on an asset already in the selection  -> act on the whole selection
+   *  - on an asset outside it                -> REPLACE the selection with
+   *                                             just that asset, then act
+   *                                             on it alone
+   *
+   * The second rule is the one that is easy to skip and surprising to
+   * lose: without it, right-clicking a different asset would silently
+   * operate on whatever was selected before.
+   */
+  const handleAssetContextMenu = (asset: Asset, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+
+    const inSelection = selectedAssetIds.has(asset.id)
+    if (inSelection && selectedAssetIds.size + selectedFolderIds.size > 1) {
+      setContextMenu({ x: e.clientX, y: e.clientY, mode: 'bulk' })
+      return
+    }
+    if (!inSelection) {
+      setSelectedAssetIds(new Set([asset.id]))
+      setSelectedFolderIds(new Set())
+    }
+    setContextMenu({ x: e.clientX, y: e.clientY, mode: 'asset', asset })
+  }
+
   const totalSelected = selectedAssetIds.size + selectedFolderIds.size
   const selectedTotalSize = Array.from(selectedAssetIds).reduce((sum, id) => sum + (fileSizes[id] ?? 0), 0)
 
@@ -220,8 +263,25 @@ export function AssetGrid({
     )
   }
 
+  const selectedAssetList = () => Array.from(selectedAssetIds)
+  const selectedFolderList = () => Array.from(selectedFolderIds)
+
   return (
-    <div className="flex flex-col gap-3 relative">
+    <div
+      className="flex flex-col gap-3 relative"
+      onContextMenu={(e) => {
+        // Only genuinely empty space. A right-click on a card is handled by
+        // the card's own handler, which stops propagation — but a click on
+        // a folder tile or the selection bar must not be mistaken for
+        // canvas either, so this checks what was actually hit.
+        const target = e.target as HTMLElement
+        if (target.closest('[data-asset-card],[data-folder-card],[data-no-canvas-menu]')) return
+        // Nothing to offer means no menu at all, rather than an empty box.
+        if (!onNewFolder && !onUpload) return
+        e.preventDefault()
+        setContextMenu({ x: e.clientX, y: e.clientY, mode: 'canvas' })
+      }}
+    >
       {/* ─── Share Selection Mode Bar ──────────────────────────────────── */}
       {shareMode && (
         <div className="flex items-center justify-between rounded-lg border border-accent/30 bg-accent/5 px-4 py-2.5">
@@ -379,6 +439,7 @@ export function AssetGrid({
                 onDownload={onAssetDownload ? () => onAssetDownload(asset) : undefined}
                 onRename={onAssetRename ? () => onAssetRename(asset) : undefined}
                 onDelete={onAssetDelete ? () => onAssetDelete(asset) : undefined}
+                onContextMenu={(e) => handleAssetContextMenu(asset, e)}
                 canVote={canVote}
                 onVote={onAssetVote ? (stars) => onAssetVote(asset, stars) : undefined}
                 folderPath={flattenFolders ? folderPaths[asset.id] : undefined}
@@ -716,6 +777,91 @@ export function AssetGrid({
           )}
         </div>
       )}
+
+      {/* ─── Right-click menu (§28) ───────────────────────────────────
+          One menu, three modes. Every entry is the SAME handler the
+          existing button uses, and is rendered only when that handler was
+          supplied — which is how a role that can't delete via the kebab
+          can't delete via right-click either. */}
+      <CursorMenu state={contextMenu} onClose={() => setContextMenu(null)}>
+        {contextMenu?.mode === 'asset' && contextMenu.asset && (
+          <AssetMenuItems
+            onShare={onAssetShare ? () => onAssetShare(contextMenu.asset as Asset) : undefined}
+            onDownload={onAssetDownload ? () => onAssetDownload(contextMenu.asset as Asset) : undefined}
+            onRename={onAssetRename ? () => onAssetRename(contextMenu.asset as Asset) : undefined}
+            onDelete={onAssetDelete ? () => onAssetDelete(contextMenu.asset as Asset) : undefined}
+            assetUrl={
+              typeof window !== 'undefined' && contextMenu.asset
+                ? `${window.location.origin}/projects/${projectId}/assets/${contextMenu.asset.id}`
+                : null
+            }
+          />
+        )}
+
+        {contextMenu?.mode === 'bulk' && (
+          <>
+            <DropdownMenu.Label className="px-3 py-1.5 text-2xs uppercase tracking-wide text-text-tertiary">
+              {totalSelected} selected
+            </DropdownMenu.Label>
+            {onCreateShareLink && (
+              <DropdownMenu.Item
+                className={menuItemClass}
+                onSelect={() => {
+                  onCreateShareLink(selectedAssetList(), selectedFolderList())
+                  clearSelection()
+                }}
+              >
+                <Share2 className="h-3.5 w-3.5 text-text-tertiary" />
+                Create Share Link
+              </DropdownMenu.Item>
+            )}
+            {onBulkDownload && (
+              <DropdownMenu.Item
+                className={menuItemClass}
+                onSelect={() => onBulkDownload(selectedAssetList(), selectedFolderList())}
+              >
+                <Download className="h-3.5 w-3.5 text-text-tertiary" />
+                Download
+              </DropdownMenu.Item>
+            )}
+            {onBulkMove && (
+              <DropdownMenu.Item className={menuItemClass} onSelect={() => setMoveDialogOpen(true)}>
+                <FolderInput className="h-3.5 w-3.5 text-text-tertiary" />
+                Move to…
+              </DropdownMenu.Item>
+            )}
+            {onBulkDelete && (
+              <>
+                <DropdownMenu.Separator className="my-1 h-px bg-border mx-1" />
+                <DropdownMenu.Item
+                  className={menuItemDangerClass}
+                  onSelect={() => onBulkDelete(selectedAssetList(), selectedFolderList())}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete
+                </DropdownMenu.Item>
+              </>
+            )}
+          </>
+        )}
+
+        {contextMenu?.mode === 'canvas' && (
+          <>
+            {onNewFolder && (
+              <DropdownMenu.Item className={menuItemClass} onSelect={onNewFolder}>
+                <FolderPlus className="h-3.5 w-3.5 text-text-tertiary" />
+                New Folder
+              </DropdownMenu.Item>
+            )}
+            {onUpload && (
+              <DropdownMenu.Item className={menuItemClass} onSelect={onUpload}>
+                <Upload className="h-3.5 w-3.5 text-text-tertiary" />
+                Upload
+              </DropdownMenu.Item>
+            )}
+          </>
+        )}
+      </CursorMenu>
 
       <MoveToDialog
         open={moveDialogOpen}

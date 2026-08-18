@@ -421,6 +421,19 @@ export default function ProjectDetailPage() {
   const canUpload = isProjectManager || currentRole === "editor";
   const canCreateFolder = isProjectManager || currentRole === "editor";
   const canShare = isProjectManager || currentRole === "editor";
+  /**
+   * Mutating an asset — rename, delete, move (§28).
+   *
+   * Matches what the server actually requires: update_asset, delete_asset
+   * and bulk_move all call require_project_role(..., ProjectRole.editor).
+   *
+   * These handlers were previously passed to AssetGrid UNGATED, so the
+   * existing "..." menu already offered Rename and Delete to a viewer, who
+   * then got a 403 on click. Adding a second surface (right-click) that
+   * repeated the same offer would have doubled a real bug rather than
+   * matched a correct precedent, so the gate is applied to both.
+   */
+  const canEditAssets = isProjectManager || currentRole === "editor";
   // Membership changes go through `_require_project_owner`
   // (routers/projects.py:31-39), which admits owner and admin only —
   // deliberately NOT editor. This also gates the in-project Settings and
@@ -982,7 +995,10 @@ export default function ProjectDetailPage() {
               authorNames={authorNames}
               fileSizes={fileSizes}
               selectedAssetId={selectedAsset?.id}
-              onUpload={() => setUploadOpen(true)}
+              // Gated to match the toolbar's own Upload button (§28). Also
+              // fixes the empty-state "Upload" CTA, which a viewer could
+              // previously click through to a dialog they can't submit.
+              onUpload={canUpload ? () => setUploadOpen(true) : undefined}
               onAssetSelect={(asset, e) => {
                 e?.stopPropagation();
                 setSelectedAsset(asset as AssetResponse);
@@ -1044,8 +1060,8 @@ export default function ProjectDetailPage() {
               }}
               shareMode={false}
               onShareModeChange={setShareMode}
-              onCreateShareLink={openShareDialog}
-              onAssetShare={(asset) => {
+              onCreateShareLink={canShare ? openShareDialog : undefined}
+              onAssetShare={!canShare ? undefined : (asset) => {
                 // Open dialog in configure phase — creation happens when user clicks "Create"
                 setShareDialogPreselect({
                   type: "asset",
@@ -1069,17 +1085,28 @@ export default function ProjectDetailPage() {
                   }
                 } catch {}
               }}
-              onAssetRename={(asset) => setAssetToRename(asset as AssetResponse)}
-              onAssetDelete={(asset) => setAssetToDelete(asset as AssetResponse)}
-              onBulkMove={async (assetIds, folderIds, targetFolderId) => {
+              onAssetRename={canEditAssets ? (asset) => setAssetToRename(asset as AssetResponse) : undefined}
+              onAssetDelete={canEditAssets ? (asset) => setAssetToDelete(asset as AssetResponse) : undefined}
+              onBulkMove={!canEditAssets ? undefined : async (assetIds, folderIds, targetFolderId) => {
                 await bulkMove(assetIds, folderIds, targetFolderId);
                 mutateAssets();
                 mutateSubfolders();
                 mutateTree();
               }}
-              onBulkDelete={(assetIds, folderIds) => {
+              onBulkDelete={!canEditAssets ? undefined : (assetIds, folderIds) => {
                 setPendingBulkDelete({ assetIds, folderIds });
               }}
+              onNewFolder={
+                canCreateFolder
+                  ? () => {
+                      // Exactly what the toolbar's New Folder button does,
+                      // including creating in the folder currently being
+                      // viewed (§28).
+                      setFolderDialogParentId(currentFolderId);
+                      setFolderDialogOpen(true);
+                    }
+                  : undefined
+              }
               onBulkDownload={async (assetIds, folderIds) => {
                 function triggerDownload(url: string) {
                   const iframe = document.createElement("iframe");
