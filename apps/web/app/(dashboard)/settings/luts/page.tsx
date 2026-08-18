@@ -23,6 +23,7 @@ import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/shared/empty-state'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { LutThumbnail } from '@/components/shared/lut-thumbnail'
+import { LutPreviewDialog } from '@/components/shared/lut-preview-dialog'
 import { useAuthStore } from '@/stores/auth-store'
 import type { Lut, LutGroup, Project } from '@/types'
 
@@ -56,6 +57,9 @@ export default function LutsSettingsPage() {
   const [uploading, setUploading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [deleting, setDeleting] = React.useState<Lut | null>(null)
+  // Which LUT's frame is open in the zoom dialog. One dialog for the page,
+  // the same way `deleting` is one ConfirmDialog rather than one per row.
+  const [previewing, setPreviewing] = React.useState<Lut | null>(null)
   const [deletingGroup, setDeletingGroup] = React.useState<LutGroup | null>(null)
   const [newGroupOpen, setNewGroupOpen] = React.useState(false)
   const [newGroupName, setNewGroupName] = React.useState('')
@@ -186,6 +190,7 @@ export default function LutsSettingsPage() {
                 showTimestamp={false}
                 onChanged={refreshAll}
                 onDelete={() => setDeleting(lut)}
+                onPreview={() => setPreviewing(lut)}
               />
             ))}
           </div>
@@ -236,6 +241,7 @@ export default function LutsSettingsPage() {
                         showTimestamp
                         onChanged={refreshAll}
                         onDelete={() => setDeleting(lut)}
+                        onPreview={() => setPreviewing(lut)}
                       />
                     ))}
                   </div>
@@ -261,6 +267,7 @@ export default function LutsSettingsPage() {
                     showTimestamp
                     onChanged={refreshAll}
                     onDelete={() => setDeleting(lut)}
+                    onPreview={() => setPreviewing(lut)}
                   />
                 ))}
               </div>
@@ -319,6 +326,11 @@ export default function LutsSettingsPage() {
         variant="danger"
         onConfirm={handleDeleteGroup}
       />
+
+      <LutPreviewDialog
+        lut={previewing}
+        onOpenChange={(open) => !open && setPreviewing(null)}
+      />
     </div>
   )
 }
@@ -334,6 +346,7 @@ function LutRow({
   showTimestamp,
   onChanged,
   onDelete,
+  onPreview,
 }: {
   lut: Lut
   groups: LutGroup[]
@@ -344,6 +357,10 @@ function LutRow({
   showTimestamp: boolean
   onChanged: () => void | Promise<void>
   onDelete: () => void
+  /** Opens the zoom view of this LUT's frame. Not gated on canManage: looking
+   *  at a grade is not managing it, and the read-only Platform rows are
+   *  exactly where a bigger look is most useful. */
+  onPreview: () => void
 }) {
   const [busy, setBusy] = React.useState(false)
 
@@ -359,7 +376,17 @@ function LutRow({
 
   return (
     <div className="flex items-center gap-3 p-4 rounded-lg border border-border bg-bg-secondary">
-      <LutThumbnail lut={lut} className="h-8 w-12" />
+      {/* The swatch is the zoom trigger. Deliberately only here: a
+          LutPicker row already selects the LUT on click, so a second
+          click meaning on the same row would be a genuine ambiguity. */}
+      <button
+        type="button"
+        onClick={onPreview}
+        aria-label={`Preview ${lut.name}`}
+        className="shrink-0 rounded transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        <LutThumbnail lut={lut} className="h-8 w-12" />
+      </button>
 
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">

@@ -7,7 +7,7 @@ const renderLutThumbnail = vi.fn()
 const getCachedLutThumbnail = vi.fn<(id: string) => string | null>()
 
 vi.mock('@/lib/lut/lut-thumbnail', () => ({
-  REFERENCE_IMAGE_SRC: '/lut-reference.png',
+  REFERENCE_IMAGE_SRC: '/lut-reference.jpg',
   renderLutThumbnail: (id: string, url: string | null) => renderLutThumbnail(id, url),
   getCachedLutThumbnail: (id: string) => getCachedLutThumbnail(id),
 }))

@@ -1,50 +1,84 @@
 /**
- * Generates apps/web/public/lut-reference.png — the fixed reference frame the
- * LUT browser renders through each LUT to build its thumbnails.
+ * Generates apps/web/public/lut-reference.jpg — the fixed reference frame the
+ * LUT browser renders through each LUT to build its thumbnails and its
+ * click-to-zoom preview.
  *
- * Run: node scripts/generate-lut-reference.mjs
+ * Run (macOS; needs `sips`, which ships with the OS):
  *
- * Why generated rather than a photograph: the image ships inside this repo, so
- * it has to be something we own outright — no stock/scraped photo. A synthetic
- * tone-and-colour chart is also more diagnostic than a photo at 24-48px wide,
- * where a real image is mush. The bands are chosen to expose the things a
- * .cube actually changes: neutral contrast/lift, saturation, hue rotation, and
- * skin-tone handling.
+ *   node scripts/generate-lut-reference.mjs --photo ~/Downloads/pexels-shvets-production-9775652.jpg
  *
- * Swapping it: replace public/lut-reference.png with anything 3:2. Nothing
- * else in the app depends on this script; it exists so the current asset is
- * reproducible and easy to tweak.
+ * ── What the frame is ───────────────────────────────────────────────────────
  *
- * Hand-rolled PNG writer (zlib is in node stdlib) to avoid adding an image
- * dependency to apps/web for a one-off build asset.
+ * A photograph of two people with strongly contrasting skin tones on a plain
+ * studio backdrop, with a colour-bar strip composited along the bottom. Skin
+ * is the single most grading-sensitive thing in a reference image and a real
+ * photographed face reads far better under a LUT than the four flat shaded
+ * patches this file used to draw; the strip keeps a hard, unambiguous colour
+ * and neutral reference that still reads at 24px wide, where a photograph
+ * alone is mush.
+ *
+ * ── Provenance of the photograph (legal traceability, not a nicety) ─────────
+ *
+ *   Source:       Pexels, photo ID 9775652, by SHVETS production
+ *   Direct URL:   https://images.pexels.com/photos/9775652/pexels-photo-9775652.jpeg?cs=srgb&dl=pexels-shvets-production-9775652.jpg&fm=jpg
+ *   Page:         https://www.pexels.com/photo/9775652/
+ *   Description:  "Close-up portrait of a black man and caucasian man in a
+ *                 studio setting with a neutral background."
+ *   Licence:      Pexels licence (https://www.pexels.com/license/) — free to
+ *                 use, no attribution required, explicitly permitted "on your
+ *                 website, blog or app". Its only relevant restriction is
+ *                 against redistribution on other stock-photo platforms,
+ *                 which bundling it as this app's own static asset is not.
+ *
+ * Swapping it: run this script against a different photo. Everything below
+ * derives from the source's own dimensions, so any reasonably framed portrait
+ * works; only the crop bias may want adjusting. Nothing else in the app reads
+ * this script — it exists so the shipped asset is reproducible and tweakable.
+ *
+ * ── Why this shape of script ───────────────────────────────────────────────
+ *
+ * No image dependency is added to apps/web: a dependency change here is what
+ * left the production image unbuildable for eleven days (CLAUDE.md §13c). So
+ * decoding and JPEG encoding are handed to `sips` (an OS binary, not a
+ * package), BMP is used as the intermediate because it is trivially and
+ * verifiably parseable, and the compositing plus the PNG writer are plain
+ * node + zlib.
+ *
+ * JPEG rather than PNG for the shipped asset because the frame is now
+ * photographic: the same 960x640 image is ~96KB as JPEG and ~800KB as PNG,
+ * and this is fetched by every page that lists a LUT.
  */
 import { deflateSync } from 'node:zlib'
-import { writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { writeFileSync, readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-const W = 192
-const H = 128
+// ─── geometry ────────────────────────────────────────────────────────────────
 
-// ─── image content ───────────────────────────────────────────────────────────
+/** 3:2, unchanged from the generated chart this replaces, so every existing
+ *  call site's h-8 w-12 / h-4 w-6 sizing still frames it correctly. 960x640 is
+ *  2x the largest place it is displayed (the 480x320 zoom preview), so that
+ *  view stays crisp on a retina panel. */
+const W = 960
+const H = 640
 
-const clamp = (v) => (v < 0 ? 0 : v > 255 ? 255 : Math.round(v))
-const lerp = (a, b, t) => a + (b - a) * t
-const mix = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]
+/** The strip is 15% of the frame: enough to read as colour at thumbnail size,
+ *  little enough that the faces still dominate, which is the point of the
+ *  photo. */
+const BARS_H = 56
+const RAMP_H = 40
+const PHOTO_H = H - BARS_H - RAMP_H
 
-// Band boundaries, top to bottom.
-const SKY_END = 44
-const FOLIAGE_END = 58
-const SKIN_END = 90
-const SATURATED_END = 110
+/** Fraction of the discarded height taken off the top when cropping the source
+ *  to PHOTO_H's aspect. Below 0.5 because a portrait's headroom is more
+ *  expendable than its chins. */
+const CROP_TOP_BIAS = 0.4
 
-const SKIN = [
-  [243, 208, 186], // pale
-  [223, 171, 138], // light
-  [176, 120, 86],  // medium
-  [108, 70, 50],   // deep
-]
-
+/** The saturated primaries/secondaries row, carried over unchanged from the
+ *  chart this replaces — the same six values, so a LUT that was being judged
+ *  by them before is still being judged by them now. */
 const SATURATED = [
   [203, 32, 38],   // red
   [235, 192, 42],  // yellow
@@ -54,46 +88,119 @@ const SATURATED = [
   [172, 52, 142],  // magenta
 ]
 
+/** And the neutral ramp, likewise unchanged. The photograph carries highlights
+ *  and mid neutrals (white shirts, grey backdrop) but no true black, so the
+ *  ramp is what still exposes contrast, lift and any colour cast on greys. */
 const GRAY_STEPS = 12
 
+const clamp = (v) => (v < 0 ? 0 : v > 255 ? 255 : Math.round(v))
+const lerp = (a, b, t) => a + (b - a) * t
+
+// ─── source photo, via sips ──────────────────────────────────────────────────
+
+const args = process.argv.slice(2)
+const photoArg = args.indexOf('--photo')
+if (photoArg === -1 || !args[photoArg + 1]) {
+  console.error(
+    'usage: node scripts/generate-lut-reference.mjs --photo <path to source photo>\n' +
+      '\nThe photo this repo ships is documented at the top of this file, with\n' +
+      'its source URL and licence. Download it, then pass its path here.',
+  )
+  process.exit(1)
+}
+const photoPath = args[photoArg + 1]
+
+function sips(...argv) {
+  return execFileSync('sips', argv, { encoding: 'utf8' })
+}
+
+function dimensions(file) {
+  const out = sips('-g', 'pixelWidth', '-g', 'pixelHeight', file)
+  const width = Number(/pixelWidth:\s*(\d+)/.exec(out)?.[1])
+  const height = Number(/pixelHeight:\s*(\d+)/.exec(out)?.[1])
+  if (!width || !height) throw new Error(`Could not read the size of ${file}`)
+  return { width, height }
+}
+
+const tmp = mkdtempSync(path.join(tmpdir(), 'lut-reference-'))
+
+/** Crop the source to PHOTO_H's aspect, resample to W x PHOTO_H, and hand it
+ *  back as raw pixels. BMP is the intermediate purely because it is 54 bytes
+ *  of header and then rows of BGR. */
+function loadPhoto() {
+  const { width, height } = dimensions(photoPath)
+  const targetAspect = W / PHOTO_H
+
+  let cropW = width
+  let cropH = Math.round(width / targetAspect)
+  if (cropH > height) {
+    cropH = height
+    cropW = Math.round(height * targetAspect)
+  }
+  const top = Math.round((height - cropH) * CROP_TOP_BIAS)
+  const left = Math.round((width - cropW) / 2)
+
+  const cropped = path.join(tmp, 'cropped.png')
+  sips('-c', String(cropH), String(cropW), '--cropOffset', String(top), String(left),
+       '-s', 'format', 'png', photoPath, '--out', cropped)
+
+  const bmp = path.join(tmp, 'photo.bmp')
+  sips('-z', String(PHOTO_H), String(W), '-s', 'format', 'bmp', cropped, '--out', bmp)
+
+  return readBmp(bmp)
+}
+
+/** 24-bit uncompressed BMP → { width, height, rgb: Uint8Array }. Only the
+ *  shape sips writes is handled, and anything else is rejected loudly rather
+ *  than silently mis-read. */
+function readBmp(file) {
+  const buf = readFileSync(file)
+  if (buf[0] !== 0x42 || buf[1] !== 0x4d) throw new Error('Not a BMP')
+  const offset = buf.readUInt32LE(10)
+  const width = buf.readInt32LE(18)
+  const signedHeight = buf.readInt32LE(22)
+  const bpp = buf.readUInt16LE(28)
+  const compression = buf.readUInt32LE(30)
+  if (bpp !== 24 || compression !== 0) {
+    throw new Error(`Unsupported BMP: ${bpp}bpp, compression ${compression}`)
+  }
+  // A negative height means the rows are stored top-down, which is what sips
+  // writes; a positive one is the classic bottom-up order.
+  const topDown = signedHeight < 0
+  const height = Math.abs(signedHeight)
+  const stride = (width * 3 + 3) & ~3
+
+  const rgb = new Uint8Array(width * height * 3)
+  for (let y = 0; y < height; y++) {
+    const src = offset + (topDown ? y : height - 1 - y) * stride
+    for (let x = 0; x < width; x++) {
+      const s = src + x * 3
+      const d = (y * width + x) * 3
+      rgb[d] = buf[s + 2] // BMP stores BGR
+      rgb[d + 1] = buf[s + 1]
+      rgb[d + 2] = buf[s]
+    }
+  }
+  return { width, height, rgb }
+}
+
+// ─── composite ───────────────────────────────────────────────────────────────
+
+const photo = loadPhoto()
+if (photo.width !== W || photo.height !== PHOTO_H) {
+  throw new Error(`Expected a ${W}x${PHOTO_H} photo, got ${photo.width}x${photo.height}`)
+}
+
+/** Row of RGB triples for one output scanline. */
 function pixel(x, y) {
-  if (y < SKY_END) {
-    // Vertical sky gradient plus a warm sun glow — gives a smooth ramp
-    // through the blues and a highlight region that clips differently
-    // under different LUTs.
-    const c = mix([26, 64, 132], [188, 214, 232], y / (SKY_END - 1))
-    const d = Math.hypot(x - 148, y - 36)
-    const glow = Math.max(0, 1 - d / 58) ** 2
-    return [c[0] + 70 * glow, c[1] + 50 * glow, c[2] + 15 * glow]
+  if (y < PHOTO_H) {
+    const o = (y * W + x) * 3
+    return [photo.rgb[o], photo.rgb[o + 1], photo.rgb[o + 2]]
   }
-
-  if (y < FOLIAGE_END) {
-    // Deep saturated green, the hue most LUTs move most visibly. Deterministic
-    // two-frequency wobble instead of random noise so the file is stable
-    // across runs.
-    const t = (y - SKY_END) / (FOLIAGE_END - SKY_END - 1)
-    const c = mix([72, 110, 48], [32, 58, 28], t)
-    const n = Math.sin(x * 0.21) * Math.sin(x * 0.047) * 16
-    return [c[0] + n, c[1] + n * 1.2, c[2] + n * 0.6]
-  }
-
-  if (y < SKIN_END) {
-    // Four skin tones, each shaded top-to-bottom so the band carries a
-    // highlight-to-shadow roll-off rather than four flat patches.
-    const block = Math.min(SKIN.length - 1, Math.floor((x / W) * SKIN.length))
-    const t = (y - FOLIAGE_END) / (SKIN_END - FOLIAGE_END - 1)
-    const f = lerp(1.1, 0.78, t)
-    const c = SKIN[block]
-    return [c[0] * f, c[1] * f, c[2] * f]
-  }
-
-  if (y < SATURATED_END) {
+  if (y < PHOTO_H + BARS_H) {
     const i = Math.min(SATURATED.length - 1, Math.floor((x / W) * SATURATED.length))
     return SATURATED[i]
   }
-
-  // Neutral ramp last: the band that shows contrast, lift and any colour
-  // cast a LUT puts on greys.
   const step = Math.min(GRAY_STEPS - 1, Math.floor((x / W) * GRAY_STEPS))
   const v = lerp(6, 250, step / (GRAY_STEPS - 1))
   return [v, v, v]
@@ -126,8 +233,8 @@ function chunk(type, data) {
   return Buffer.concat([len, body, crc])
 }
 
-// Filter type 0 (None) on every scanline — the image is tiny and this keeps
-// the writer trivially verifiable.
+// Filter type 0 (None) on every scanline — the intermediate is thrown away
+// after sips re-encodes it, so this keeps the writer trivially verifiable.
 const raw = Buffer.alloc(H * (1 + W * 3))
 for (let y = 0; y < H; y++) {
   const row = y * (1 + W * 3)
@@ -157,6 +264,14 @@ const png = Buffer.concat([
   chunk('IEND', Buffer.alloc(0)),
 ])
 
-const out = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'lut-reference.png')
-writeFileSync(out, png)
-console.log(`wrote ${out} (${W}x${H}, ${png.length} bytes)`)
+const composite = path.join(tmp, 'composite.png')
+writeFileSync(composite, png)
+
+const out = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'lut-reference.jpg')
+// 88 rather than sips' default: the frame is judged by colour, and the strip's
+// hard edges are exactly where a lower quality shows ringing.
+sips('-s', 'format', 'jpeg', '-s', 'formatOptions', '88', composite, '--out', out)
+rmSync(tmp, { recursive: true, force: true })
+
+const bytes = readFileSync(out).length
+console.log(`wrote ${out} (${W}x${H}, ${bytes} bytes)`)

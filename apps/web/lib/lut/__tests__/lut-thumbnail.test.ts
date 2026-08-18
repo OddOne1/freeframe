@@ -18,7 +18,7 @@ let releaseImage: (() => void) | null = null
 const setLut = vi.fn(() => {
   calls.push('setLut')
 })
-const render = vi.fn(() => {
+const render = vi.fn((_source: unknown, _w: number, _h: number) => {
   calls.push('render')
 })
 
@@ -66,10 +66,10 @@ beforeEach(() => {
   loadCube.mockImplementation((lutId: string) => Promise.resolve({ id: lutId } as never))
 
   let n = 0
-  toDataURL = vi.fn(() => {
+  toDataURL = vi.fn((type?: string) => {
     calls.push('toDataURL')
     n += 1
-    return `data:image/png;base64,thumb-${n}`
+    return `data:${type ?? 'image/png'};base64,thumb-${n}`
   })
   // jsdom has no canvas backend; the read-back is what we assert on anyway.
   HTMLCanvasElement.prototype.toDataURL = toDataURL as unknown as HTMLCanvasElement['toDataURL']
@@ -189,5 +189,80 @@ describe('getCachedLutThumbnail', () => {
     expect(getCachedLutThumbnail('lut-1')).toBeNull()
     await renderLutThumbnail('lut-1', '/luts/one.cube')
     expect(getCachedLutThumbnail('lut-1')).toBe('data:image/png;base64,thumb-1')
+  })
+})
+
+/**
+ * The zoom view (CLAUDE.md §36). It shares every piece of machinery with the
+ * row swatch — one reference image, one GL context, one concurrency cap — and
+ * differs only in the size it draws at and the cache it lands in. What is
+ * asserted is that difference, since the failure this exists to prevent is a
+ * zoom that quietly shows the 192px swatch scaled up.
+ */
+describe('renderLutPreview', () => {
+  it('draws at the zoom size, not the thumbnail size', async () => {
+    const { renderLutPreview } = await freshModule()
+    await renderLutPreview('lut-1', '/luts/one.cube')
+
+    const [, width, height] = render.mock.calls[0]
+    expect([width, height]).toEqual([960, 640])
+    // The reference image is itself 960x640, so nothing is interpolated up.
+    expect(width).toBeGreaterThan(192)
+  })
+
+  it('is cached apart from the thumbnail, so neither stands in for the other', async () => {
+    const { renderLutThumbnail, renderLutPreview, getCachedLutThumbnail, getCachedLutPreview } =
+      await freshModule()
+
+    const small = await renderLutThumbnail('lut-1', '/luts/one.cube')
+    const large = await renderLutPreview('lut-1', '/luts/one.cube')
+
+    expect(large).not.toBe(small)
+    expect(render).toHaveBeenCalledTimes(2)
+    expect(render.mock.calls.map((c) => [c[1], c[2]])).toEqual([[192, 128], [960, 640]])
+    expect(getCachedLutThumbnail('lut-1')).toBe(small)
+    expect(getCachedLutPreview('lut-1')).toBe(large)
+
+    // Re-opening the zoom in the same session re-renders nothing.
+    await renderLutPreview('lut-1', '/luts/one.cube')
+    expect(render).toHaveBeenCalledTimes(2)
+
+    // (Both sizes ask cube-cache for the same .cube; the parse is deduped
+    // there, which cube-cache's own tests cover — loadCube is stubbed here.)
+  })
+
+  it('reads the zoom back as JPEG, the swatch as PNG', async () => {
+    // A lossless read-back of a 960x640 photograph is ~1MB of base64 held in
+    // the cache per LUT; the swatch is small enough that PNG costs nothing.
+    const { renderLutThumbnail, renderLutPreview } = await freshModule()
+    await renderLutThumbnail('lut-1', '/luts/one.cube')
+    await renderLutPreview('lut-1', '/luts/one.cube')
+
+    expect(toDataURL.mock.calls[0][0]).toBe('image/png')
+    expect(toDataURL.mock.calls[1][0]).toBe('image/jpeg')
+  })
+
+  it('keeps the draw and the read-back atomic when both sizes are in flight', async () => {
+    // The context is shared between the two sizes, so an await between
+    // render() and toDataURL() would have a zoom read back a swatch's frame.
+    const { renderLutThumbnail, renderLutPreview } = await freshModule()
+    await Promise.all([
+      renderLutThumbnail('a', '/luts/a.cube'),
+      renderLutPreview('a', '/luts/a.cube'),
+      renderLutThumbnail('b', '/luts/b.cube'),
+      renderLutPreview('b', '/luts/b.cube'),
+    ])
+
+    expect(calls).toHaveLength(12)
+    for (let i = 0; i < calls.length; i += 3) {
+      expect(calls.slice(i, i + 3)).toEqual(['setLut', 'render', 'toDataURL'])
+    }
+  })
+
+  it('rejects without WebGL2 rather than showing an ungraded frame full-size', async () => {
+    const { renderLutPreview } = await freshModule()
+    webgl2Available = false
+    await expect(renderLutPreview('lut-1', '/luts/one.cube')).rejects.toThrow('WebGL2')
+    expect(render).not.toHaveBeenCalled()
   })
 })
