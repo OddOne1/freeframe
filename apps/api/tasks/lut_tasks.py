@@ -23,6 +23,7 @@ from .celery_app import celery_app
 from ..database import SessionLocal
 from ..models.asset import Asset, AssetVersion, MediaFile
 from ..models.lut import Lut
+from ..models.share import VARIANT_QUALITY, VARIANT_USES_LUT, DownloadVariant
 from ..services import s3_service
 from ..services.s3_service import get_s3_client, build_download_filename
 from ..config import settings
@@ -56,16 +57,114 @@ def _presigned_input_url(s3_key: str, expires_in: int = 7200) -> str:
     )
 
 
+
+# The transcode ladder's own rungs, verbatim from
+# packages/transcoder/ffmpeg_transcoder.py's QUALITY_MAP (§30). Copied
+# rather than imported because that module is a separate package built for
+# the HLS pipeline; what matters is that the numbers match, and a drift
+# would mean a file labelled "Proxy 720p" that is not the same 720p the
+# player streams.
+QUALITY_LADDER = {
+    "1080p": ("1920:1080", 20),
+    "720p": ("1280:720", 22),
+}
+
+
+def _build_export_command(variant: DownloadVariant, input_url: str, local_lut, output_path: str) -> list[str]:
+    """ffmpeg argv for one download variant.
+
+    Always a re-encode from the original, never a remux of the HLS
+    renditions (§30): burning a LUT requires decode+encode anyway, and
+    mixing the two would put two files with different quality
+    characteristics under one label.
+    """
+    filters = []
+    if VARIANT_USES_LUT[variant]:
+        if not local_lut:
+            raise ValueError(f"{variant.value} needs a LUT but none was resolved")
+        # ffmpeg filtergraph syntax treats : and \ as special.
+        escaped = local_lut.replace("\\", "\\\\").replace(":", "\\:")
+        filters.append(f"lut3d='{escaped}'")
+
+    quality = VARIANT_QUALITY[variant]
+    if quality:
+        scale, crf = QUALITY_LADDER[quality]
+        preset = "fast"
+        # Same scale/pad expression the ladder uses: fit inside the box
+        # without distorting, then pad to even dimensions because H.264
+        # cannot encode odd ones.
+        filters.append(
+            f"scale={scale}:force_original_aspect_ratio=decrease,"
+            f"pad=ceil(iw/2)*2:ceil(ih/2)*2"
+        )
+    else:
+        # The un-scaled variants keep the settings graded exports have
+        # always used, so this generalisation does not silently change what
+        # an existing "Download with LUT" produces.
+        crf, preset = 18, "medium"
+
+    if not filters:
+        raise ValueError(
+            f"{variant.value} needs no processing — it is the stored file, "
+            "which is served directly rather than exported"
+        )
+
+    return [
+        "ffmpeg", "-y", "-i", input_url,
+        "-vf", ",".join(filters),
+        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        "-pix_fmt", "yuv420p",
+        # The ladder has no -c:a at all and inherits ffmpeg's default for
+        # mpegts. A standalone download must not: pin it.
+        "-c:a", "aac", "-b:a", "192k",
+        # HLS segments do not carry this; a single downloadable file should,
+        # so it starts playing before it has fully downloaded.
+        "-movflags", "+faststart",
+        # Deliberately NO -r: neither ladder rung touches framerate, so
+        # ffmpeg preserves the source's.
+        output_path,
+    ]
+
+
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=60)
-def burn_lut_export(self, asset_id: str, version_id: str, lut_id: str, export_id: str):
-    """Render `version_id` with `lut_id` burned in, upload, schedule deletion."""
+def burn_lut_export(
+    self,
+    asset_id: str,
+    version_id: str,
+    lut_id: str,
+    export_id: str,
+    variant: str = DownloadVariant.raw_lut.value,
+):
+    """Render one download variant of `version_id`, upload, schedule deletion.
+
+    Still named burn_lut_export, and still defaults to raw_lut, so the
+    existing "Download with LUT" caller and any task already sitting on the
+    broker keep working unchanged across a deploy (§30). `variant` widens
+    it to the proxy renderings rather than forking a second task that would
+    duplicate the upload / TTL / SSE plumbing.
+
+    `lut_id` may be empty for a variant that burns no LUT.
+    """
     db = SessionLocal()
     work_dir = None
     try:
+        try:
+            variant_enum = DownloadVariant(variant)
+        except ValueError:
+            logger.error("Unknown download variant %r for asset %s", variant, asset_id)
+            return
+
         asset = db.query(Asset).filter(Asset.id == uuid.UUID(asset_id)).first()
         version = db.query(AssetVersion).filter(AssetVersion.id == uuid.UUID(version_id)).first()
-        lut = db.query(Lut).filter(Lut.id == uuid.UUID(lut_id)).first()
-        if not asset or not version or not lut:
+        needs_lut = VARIANT_USES_LUT[variant_enum]
+        lut = (
+            db.query(Lut).filter(Lut.id == uuid.UUID(lut_id)).first()
+            if lut_id else None
+        )
+        if not asset or not version:
+            return
+        if needs_lut and not lut:
+            logger.error("Variant %s needs a LUT but %r did not resolve", variant, lut_id)
             return
         media_file = db.query(MediaFile).filter(MediaFile.version_id == version.id).first()
         if not media_file:
@@ -79,25 +178,15 @@ def burn_lut_export(self, asset_id: str, version_id: str, lut_id: str, export_id
             # The .cube genuinely has to be local -- ffmpeg's lut3d filter
             # takes a filesystem path, not a URL. The source video does not,
             # and streaming it avoids pulling multi-GB originals to disk.
-            local_lut = os.path.join(work_dir, "grade.cube")
-            get_s3_client().download_file(settings.s3_bucket, lut.s3_key, local_lut)
+            local_lut = None
+            if needs_lut:
+                local_lut = os.path.join(work_dir, "grade.cube")
+                get_s3_client().download_file(settings.s3_bucket, lut.s3_key, local_lut)
 
-            output_path = os.path.join(work_dir, "graded.mp4")
+            output_path = os.path.join(work_dir, "export.mp4")
             input_url = _presigned_input_url(media_file.s3_key_raw)
 
-            # lut3d escaping: ffmpeg filtergraph syntax treats : and \ as
-            # special, and Windows-style paths never occur here, but the temp
-            # dir is generated so escaping the separator is still correct.
-            escaped = local_lut.replace("\\", "\\\\").replace(":", "\\:")
-            cmd = [
-                "ffmpeg", "-y", "-i", input_url,
-                "-vf", f"lut3d='{escaped}'",
-                "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "192k",
-                "-movflags", "+faststart",
-                output_path,
-            ]
+            cmd = _build_export_command(variant_enum, input_url, local_lut, output_path)
             subprocess.run(cmd, capture_output=True, check=True, timeout=14400)
 
             s3_service.get_s3_client().upload_file(
@@ -107,8 +196,16 @@ def burn_lut_export(self, asset_id: str, version_id: str, lut_id: str, export_id
                 ExtraArgs={"ContentType": "video/mp4", "CacheControl": "no-store"},
             )
 
+            # Name it after what it actually is, so two variants of one
+            # asset do not land in the downloads folder as the same file.
+            suffix_parts = []
+            if VARIANT_QUALITY[variant_enum]:
+                suffix_parts.append(VARIANT_QUALITY[variant_enum])
+            if needs_lut and lut:
+                suffix_parts.append(lut.name)
+            suffix = f" ({' - '.join(suffix_parts)})" if suffix_parts else ""
             download_name = build_download_filename(
-                f"{asset.name} ({lut.name})",
+                f"{asset.name}{suffix}",
                 media_file.original_filename or media_file.s3_key_raw,
             )
             # .mp4 regardless of the source container -- that's what was
@@ -124,6 +221,7 @@ def burn_lut_export(self, asset_id: str, version_id: str, lut_id: str, export_id
                 "asset_id": asset_id,
                 "version_id": version_id,
                 "lut_id": lut_id,
+                "variant": variant,
                 "export_id": export_id,
                 "expires_in": EXPORT_TTL_SECONDS,
                 "download_filename": download_name,
@@ -133,6 +231,7 @@ def burn_lut_export(self, asset_id: str, version_id: str, lut_id: str, export_id
             logger.exception("LUT export failed for asset %s (lut %s)", asset_id, lut_id)
             _publish_event(project_id, "lut_export_failed", {
                 "asset_id": asset_id,
+                "variant": variant,
                 "export_id": export_id,
                 "error": str(exc),
             })

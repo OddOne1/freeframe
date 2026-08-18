@@ -22,7 +22,8 @@ import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { GuestCommentInput } from '@/components/review/guest-comment-input'
 import { FolderShareViewer } from '@/components/share/folder-share-viewer'
-import type { Asset, SharePermission, ProjectBranding, ShareLinkAppearance } from '@/types'
+import type { Asset, SharePermission, ProjectBranding, ShareLinkAppearance, DownloadVariant } from '@/types'
+import { DownloadMenu } from '@/components/share/download-menu'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,7 +37,7 @@ interface ShareValidateResponse {
   title?: string
   description?: string | null
   permission?: SharePermission
-  allow_download?: boolean
+  allowed_download_variants?: DownloadVariant[]
   show_versions?: boolean
   show_watermark?: boolean
   appearance?: ShareLinkAppearance | null
@@ -335,7 +336,7 @@ function GuestApprovalActions({ token, asset }: GuestApprovalActionsProps) {
 interface ShareTopBarProps {
   shareName: string
   assetName?: string
-  allowDownload: boolean
+  downloadVariants: DownloadVariant[]
   downloadUrl: string | null
   token: string
   assetId: string
@@ -348,7 +349,7 @@ interface ShareTopBarProps {
 function ShareTopBar({
   shareName,
   assetName,
-  allowDownload,
+  downloadVariants,
   downloadUrl,
   token,
   assetId,
@@ -357,27 +358,6 @@ function ShareTopBar({
   onBack,
   branding,
 }: ShareTopBarProps) {
-  const [downloading, setDownloading] = React.useState(false)
-
-  async function handleDownload() {
-    setDownloading(true)
-    try {
-      const res = await fetch(`${API_URL}/share/${token}/stream/${assetId}?download=true`)
-      if (!res.ok) return
-      const data = await res.json()
-      if (data?.url) {
-        const iframe = document.createElement('iframe')
-        iframe.style.display = 'none'
-        iframe.src = data.url
-        document.body.appendChild(iframe)
-        setTimeout(() => iframe.remove(), 30000)
-      }
-    } catch {
-      // silent
-    } finally {
-      setDownloading(false)
-    }
-  }
   const primaryColor = branding?.primary_color ?? '#7c3aed'
 
   return (
@@ -428,16 +408,13 @@ function ShareTopBar({
 
       {/* Right: download + panel toggle */}
       <div className="flex items-center gap-2 shrink-0">
-        {allowDownload && (
-          <button
-            onClick={handleDownload}
-            disabled={downloading}
-            className="inline-flex items-center gap-1.5 rounded-md bg-purple-600 hover:bg-purple-700 px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-60"
-          >
-            {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-            Download
-          </button>
-        )}
+        <DownloadMenu
+          token={token}
+          assetId={assetId}
+          variants={downloadVariants}
+          iconOnly={false}
+          className="inline-flex items-center gap-1.5 rounded-md bg-purple-600 hover:bg-purple-700 px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-60"
+        />
 
         <button
           onClick={onToggleSidebar}
@@ -686,7 +663,7 @@ interface ShareViewerProps {
   token: string
   asset: Asset & { thumbnail_url?: string; stream_url?: string }
   permission: SharePermission
-  allowDownload: boolean
+  downloadVariants: DownloadVariant[]
   branding: ProjectBranding | null
   shareName?: string
   onBack?: () => void
@@ -696,7 +673,7 @@ function ShareViewer({
   token,
   asset,
   permission,
-  allowDownload,
+  downloadVariants,
   branding,
   shareName,
   onBack,
@@ -732,7 +709,7 @@ function ShareViewer({
       <ShareTopBar
         shareName={displayName}
         assetName={asset.name}
-        allowDownload={allowDownload}
+        downloadVariants={downloadVariants}
         downloadUrl={streamUrl}
         token={token}
         assetId={asset.id}
@@ -780,7 +757,7 @@ interface FolderAssetViewerProps {
   token: string
   assetId: string
   permission: SharePermission
-  allowDownload: boolean
+  downloadVariants: DownloadVariant[]
   branding: any
   folderName: string
   onBack: () => void
@@ -790,7 +767,7 @@ function FolderAssetViewer({
   token,
   assetId,
   permission,
-  allowDownload,
+  downloadVariants,
   branding,
   folderName,
   onBack,
@@ -873,7 +850,7 @@ function FolderAssetViewer({
       token={token}
       asset={pseudoAsset}
       permission={permission}
-      allowDownload={allowDownload}
+      downloadVariants={downloadVariants}
       branding={branding}
       shareName={folderName}
       onBack={onBack}
@@ -900,7 +877,7 @@ export default function SharePage({
         stage: 'ready'
         asset: Asset & { thumbnail_url?: string; stream_url?: string }
         permission: SharePermission
-        allowDownload: boolean
+        downloadVariants: DownloadVariant[]
         showVersions: boolean
         branding: ProjectBranding | null
       }
@@ -912,7 +889,7 @@ export default function SharePage({
         createdByName: string | null
         viewerName: string | null
         permission: SharePermission
-        allowDownload: boolean
+        downloadVariants: DownloadVariant[]
         showVersions: boolean
         appearance: ShareLinkAppearance
         branding: any
@@ -974,7 +951,7 @@ export default function SharePage({
           createdByName: data.created_by_name ?? null,
           viewerName: data.viewer_name ?? null,
           permission: data.permission,
-          allowDownload: data.allow_download ?? false,
+          downloadVariants: data.allowed_download_variants ?? [],
           showVersions: data.show_versions ?? true,
           appearance: { ...defaultAppearance, ...(data.appearance ?? {}) },
           branding: data.branding ?? null,
@@ -991,7 +968,7 @@ export default function SharePage({
         stage: 'ready',
         asset: data.asset,
         permission: data.permission,
-        allowDownload: data.allow_download ?? false,
+        downloadVariants: data.allowed_download_variants ?? [],
         showVersions: data.show_versions ?? true,
         branding: data.branding ?? null,
       })
@@ -1066,7 +1043,7 @@ export default function SharePage({
         createdByName={state.createdByName}
         viewerName={state.viewerName}
         permission={state.permission}
-        allowDownload={state.allowDownload}
+        downloadVariants={state.downloadVariants}
         showVersions={state.showVersions}
         appearance={state.appearance}
         branding={state.branding}
@@ -1079,7 +1056,7 @@ export default function SharePage({
       token={token}
       asset={state.asset}
       permission={state.permission}
-      allowDownload={state.allowDownload}
+      downloadVariants={state.downloadVariants}
       branding={state.branding}
     />
   )

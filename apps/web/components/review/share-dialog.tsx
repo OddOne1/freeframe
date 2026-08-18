@@ -23,7 +23,8 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { useShareLinks } from "@/hooks/use-share-links";
 import { ShareCreateDialog } from "@/components/projects/share-create-dialog";
-import type { ShareLink, AssetShare, SharePermission, Team, ShareLinkListItem, AssetResponse } from "@/types";
+import type { ShareLink, AssetShare, SharePermission, Team, ShareLinkListItem, AssetResponse, DownloadVariant } from "@/types";
+import { DownloadVariantPicker } from "@/components/projects/download-variant-picker";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -138,7 +139,7 @@ function LinkTab({ assetId }: LinkTabProps) {
   const [permission, setPermission] = React.useState<SharePermission>("view");
   const [password, setPassword] = React.useState("");
   const [expiresAt, setExpiresAt] = React.useState("");
-  const [allowDownload, setAllowDownload] = React.useState(false);
+  const [downloadVariants, setDownloadVariants] = React.useState<DownloadVariant[]>([]);
   const [generating, setGenerating] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [generatedUrl, setGeneratedUrl] = React.useState<string | null>(null);
@@ -167,7 +168,7 @@ function LinkTab({ assetId }: LinkTabProps) {
     try {
       const body: Record<string, unknown> = {
         permission,
-        allow_download: allowDownload,
+        allowed_download_variants: downloadVariants,
       };
       if (password.trim()) body.password = password.trim();
       if (expiresAt) body.expires_at = new Date(expiresAt).toISOString();
@@ -237,15 +238,15 @@ function LinkTab({ assetId }: LinkTabProps) {
           />
         </div>
 
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={allowDownload}
-            onChange={(e) => setAllowDownload(e.target.checked)}
-            className="rounded border-border"
+        <div>
+          <span className="mb-2 block text-sm text-text-secondary">
+            Downloads
+          </span>
+          <DownloadVariantPicker
+            value={downloadVariants}
+            onChange={setDownloadVariants}
           />
-          <span className="text-sm text-text-secondary">Allow download</span>
-        </label>
+        </div>
 
         {error && <p className="text-xs text-status-error">{error}</p>}
 
@@ -303,7 +304,7 @@ function LinkTab({ assetId }: LinkTabProps) {
                             {new Date(link.expires_at).toLocaleDateString()}
                           </span>
                         )}
-                        {link.allow_download && (
+                        {(link.allowed_download_variants?.length ?? 0) > 0 && (
                           <span className="text-2xs text-text-tertiary">
                             download
                           </span>

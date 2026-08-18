@@ -401,6 +401,49 @@ export interface ShareLinkAppearance {
   show_card_info: boolean
 }
 
+/**
+ * Which rendering of an asset a download produces (CLAUDE.md §30/§30b).
+ * Mirrors `DownloadVariant` in apps/api/models/share.py — these strings
+ * are the wire format, so the two lists must stay identical.
+ */
+export type DownloadVariant =
+  | "raw"
+  | "raw_lut"
+  | "proxy_720p"
+  | "proxy_720p_lut"
+  | "proxy_1080p"
+  | "proxy_1080p_lut";
+
+/** Canonical order, used for both display and the all-on shorthand. */
+export const ALL_DOWNLOAD_VARIANTS: DownloadVariant[] = [
+  "raw",
+  "raw_lut",
+  "proxy_720p",
+  "proxy_720p_lut",
+  "proxy_1080p",
+  "proxy_1080p_lut",
+];
+
+/** Human labels, in one place so the modal and the settings panels agree. */
+export const DOWNLOAD_VARIANT_LABELS: Record<DownloadVariant, string> = {
+  raw: "Original",
+  raw_lut: "Original + LUT",
+  proxy_720p: "Proxy 720p",
+  proxy_720p_lut: "Proxy 720p + LUT",
+  proxy_1080p: "Proxy 1080p",
+  proxy_1080p_lut: "Proxy 1080p + LUT",
+};
+
+/** True when the variant burns in the asset's LUT. */
+export const VARIANT_USES_LUT: Record<DownloadVariant, boolean> = {
+  raw: false,
+  raw_lut: true,
+  proxy_720p: false,
+  proxy_720p_lut: true,
+  proxy_1080p: false,
+  proxy_1080p_lut: true,
+};
+
 export interface ShareLink {
   id: string;
   asset_id: string | null;
@@ -412,7 +455,7 @@ export interface ShareLink {
   created_by: string;
   expires_at: string | null;
   permission: SharePermission;
-  allow_download: boolean;
+  allowed_download_variants: DownloadVariant[];
   is_enabled: boolean;
   visibility: "public" | "secure";
   show_versions: boolean;
@@ -471,6 +514,8 @@ export interface FolderShareAssetItem {
   comment_count: number
   created_by_name: string | null
   created_at: string
+  /** Which of the link's permitted variants apply to THIS asset (§30). */
+  download_variants?: DownloadVariant[]
 }
 
 export interface FolderShareSubfolder {

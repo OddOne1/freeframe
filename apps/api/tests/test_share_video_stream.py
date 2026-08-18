@@ -38,7 +38,7 @@ def test_validate_share_link_video_returns_master_m3u8(
     link.title = "test"
     link.description = None
     link.permission = "view"
-    link.allow_download = False
+    link.allowed_download_variants = []
     link.show_versions = False
     link.show_watermark = False
     link.appearance = None
@@ -112,7 +112,7 @@ def test_validate_share_link_image_does_not_append_master_m3u8(
     link.title = "test"
     link.description = None
     link.permission = "view"
-    link.allow_download = False
+    link.allowed_download_variants = []
     link.show_versions = False
     link.show_watermark = False
     link.appearance = None
@@ -173,7 +173,7 @@ def test_share_stream_endpoint_video_returns_hls_proxy_url(
     link = MagicMock()
     link.id = uuid.uuid4()
     link.asset_id = asset_id
-    link.allow_download = False
+    link.allowed_download_variants = []
     link.permission = "view"
     mock_validate.return_value = link
     mock_validate_in_share.return_value = None

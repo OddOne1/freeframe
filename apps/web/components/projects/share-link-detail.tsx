@@ -28,6 +28,7 @@ import { cn, resolveApiMediaUrl } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { ShareLinkActivityPanel } from "@/components/projects/share-link-activity";
 import type { ShareLink, ShareLinkAppearance } from "@/types";
+import { DownloadVariantPicker } from "./download-variant-picker";
 
 // ─── Shared hook for share link data + mutations ────────────────────────────
 
@@ -938,14 +939,21 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
                   immediateUpdate({ permission: checked ? "comment" : "view" })
                 }
               />
-              <ToggleRow
-                label="Downloads"
-                description="Allow viewers to download files"
-                checked={shareLink.allow_download}
-                onCheckedChange={(checked) =>
-                  immediateUpdate({ allow_download: checked })
-                }
-              />
+              <div className="py-2">
+                <div className="mb-1 text-xs font-medium text-text-primary">
+                  Downloads
+                </div>
+                <div className="mb-2 text-[11px] text-text-tertiary">
+                  Which versions viewers may save. None selected means
+                  downloads are off.
+                </div>
+                <DownloadVariantPicker
+                  value={shareLink.allowed_download_variants ?? []}
+                  onChange={(next) =>
+                    immediateUpdate({ allowed_download_variants: next })
+                  }
+                />
+              </div>
               <ToggleRow
                 label="Show all versions"
                 description="Display version history"

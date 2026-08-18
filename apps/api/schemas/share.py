@@ -2,7 +2,20 @@ from pydantic import BaseModel, Field
 import uuid
 from datetime import datetime
 from typing import Optional, Literal
-from ..models.share import SharePermission, ShareVisibility
+from ..models.share import SharePermission, ShareVisibility, DownloadVariant
+
+
+def variant_values(variants) -> list[str]:
+    """Plain, de-duplicated, canonically-ordered strings for the JSON column.
+
+    The schemas type this field as ``DownloadVariant`` so an unknown key is
+    rejected at the boundary rather than persisted as free text. What gets
+    STORED, though, must be ordinary strings: the column is JSON, and a list
+    whose order or duplicates vary between two links that permit the same
+    six things would compare unequal for no real reason.
+    """
+    seen = {v.value if isinstance(v, DownloadVariant) else str(v) for v in variants}
+    return [v.value for v in DownloadVariant if v.value in seen]
 
 
 class ShareLinkAppearance(BaseModel):
@@ -22,7 +35,7 @@ class ShareLinkCreate(BaseModel):
     visibility: str = "public"
     expires_at: Optional[datetime] = None
     password: Optional[str] = None
-    allow_download: bool = False
+    allowed_download_variants: list[DownloadVariant] = []
     title: Optional[str] = None
     description: Optional[str] = None
     show_versions: bool = True
@@ -38,7 +51,7 @@ class MultiShareCreate(BaseModel):
     visibility: str = "public"
     expires_at: Optional[datetime] = None
     password: Optional[str] = None
-    allow_download: bool = False
+    allowed_download_variants: list[DownloadVariant] = []
     show_versions: bool = True
     show_watermark: bool = False
     appearance: ShareLinkAppearance = ShareLinkAppearance()
@@ -55,7 +68,7 @@ class ShareLinkResponse(BaseModel):
     is_enabled: bool
     permission: SharePermission
     visibility: str = "public"
-    allow_download: bool
+    allowed_download_variants: list[DownloadVariant] = []
     show_versions: bool
     show_watermark: bool
     appearance: dict
@@ -75,7 +88,7 @@ class ShareLinkValidateResponse(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     permission: SharePermission = SharePermission.view
-    allow_download: bool = False
+    allowed_download_variants: list[DownloadVariant] = []
     show_versions: bool = True
     show_watermark: bool = False
     appearance: Optional[dict] = None
@@ -101,7 +114,7 @@ class ShareLinkUpdate(BaseModel):
     appearance: Optional[ShareLinkAppearance] = None
     password: Optional[str] = None
     expires_at: Optional[datetime] = None
-    allow_download: Optional[bool] = None
+    allowed_download_variants: Optional[list[DownloadVariant]] = None
 
 
 class ShareLinkListItem(BaseModel):
@@ -140,6 +153,8 @@ class FolderShareAssetItem(BaseModel):
     comment_count: int = 0
     created_by_name: Optional[str] = None
     created_at: datetime
+    #: Which of the link's permitted variants apply to THIS asset (§30).
+    download_variants: list[DownloadVariant] = []
 
 
 class FolderShareSubfolder(BaseModel):

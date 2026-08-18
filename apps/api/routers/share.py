@@ -15,7 +15,16 @@ from ..middleware.rate_limit import rate_limit
 from ..models.user import User
 from ..models.asset import Asset
 from ..models.folder import Folder
-from ..models.share import AssetShare, ShareLink, ShareLinkItem, SharePermission, ShareLinkActivity, ShareActivityAction
+from ..models.share import (
+    VARIANT_USES_LUT,
+    AssetShare,
+    DownloadVariant,
+    ShareLink,
+    ShareLinkItem,
+    SharePermission,
+    ShareLinkActivity,
+    ShareActivityAction,
+)
 from ..models.activity import ActivityLog, ActivityAction
 from ..models.branding import ProjectBranding
 from ..models.asset import AssetVersion, AssetType, MediaFile, ProcessingStatus
@@ -33,9 +42,11 @@ from ..schemas.share import (
     ShareLinkResponse,
     ShareLinkUpdate,
     ShareLinkValidateResponse,
+    variant_values,
 )
 from ..services.permissions import require_project_role, validate_share_link, validate_share_link_with_session
 from ..services.redis_service import create_share_session
+from ..services import s3_service
 from ..services.s3_service import build_download_filename
 from ..services.crypto_service import encrypt_password, decrypt_password
 from .hls_proxy import create_hls_token, proxy_url_for
@@ -45,6 +56,42 @@ from ..tasks.celery_app import send_task_safe
 from ..config import settings
 
 router = APIRouter(tags=["sharing"])
+
+
+def _available_variants(link: ShareLink, asset) -> list[str]:
+    """What this link permits FOR THIS ASSET.
+
+    The link's permission set intersected with what the asset can actually
+    produce: a LUT variant is meaningless on an asset with no LUT applied,
+    and offering one would produce an export identical to its plain
+    counterpart under a label promising otherwise.
+
+    Computed here rather than in the browser on purpose. The client would
+    have to re-derive a permission rule to do it, and a second copy of a
+    permission rule is how this codebase has repeatedly ended up with two
+    that disagree.
+    """
+    allowed = link.allowed_download_variants or []
+    has_lut = getattr(asset, "applied_lut_id", None) is not None
+    return [v for v in allowed if has_lut or not VARIANT_USES_LUT[DownloadVariant(v)]]
+
+
+def _require_download_variant(link: ShareLink, variant: DownloadVariant) -> None:
+    """Refuse a variant this link does not permit (§30).
+
+    The single enforcement point for downloads, deliberately: the old
+    boolean was checked in exactly one place, and every new download route
+    must keep going through one so the two cannot drift apart.
+
+    A link with no variants is not downloadable at all — that is what every
+    pre-§30 link with `allow_download: false` migrated to.
+    """
+    allowed = link.allowed_download_variants or []
+    if variant.value not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="This download option is not allowed for this share link",
+        )
 
 
 def _escape_like(s: str) -> str:
@@ -198,7 +245,7 @@ def create_share_link(
         password_hash=password_hash,
         password_encrypted=password_encrypted,
         permission=body.permission,
-        allow_download=body.allow_download,
+        allowed_download_variants=variant_values(body.allowed_download_variants),
         show_versions=body.show_versions,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
@@ -312,6 +359,8 @@ def validate_share_link_endpoint(
             "description": asset.description,
             "thumbnail_url": thumbnail_url,
             "stream_url": stream_url,
+            "applied_lut_id": str(asset.applied_lut_id) if asset.applied_lut_id else None,
+            "download_variants": _available_variants(link, asset),
         }
         # Get project branding
         branding = db.query(ProjectBranding).filter(
@@ -339,7 +388,7 @@ def validate_share_link_endpoint(
         description=link.description,
         permission=link.permission,
         visibility=link.visibility,
-        allow_download=link.allow_download,
+        allowed_download_variants=link.allowed_download_variants or [],
         show_versions=link.show_versions,
         show_watermark=link.show_watermark,
         appearance=link.appearance,
@@ -418,6 +467,13 @@ def update_share_link(
     if "appearance" in updates and updates["appearance"] is not None:
         updates["appearance"] = body.appearance.model_dump()
 
+    # Same reason as appearance above: the setattr loop below would put raw
+    # enum members into a JSON column. Note this deliberately runs for an
+    # EMPTY list too — clearing every variant is how downloads get turned
+    # off, so it must not be mistaken for "unset".
+    if "allowed_download_variants" in updates and updates["allowed_download_variants"] is not None:
+        updates["allowed_download_variants"] = variant_values(updates["allowed_download_variants"])
+
     for key, value in updates.items():
         setattr(link, key, value)
 
@@ -473,7 +529,7 @@ def create_folder_share_link(
         password_hash=password_hash,
         password_encrypted=password_encrypted,
         permission=body.permission,
-        allow_download=body.allow_download,
+        allowed_download_variants=variant_values(body.allowed_download_variants),
         show_versions=body.show_versions,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
@@ -517,7 +573,7 @@ def create_project_share_link(
         password_hash=password_hash,
         password_encrypted=password_encrypted,
         permission=body.permission,
-        allow_download=body.allow_download,
+        allowed_download_variants=variant_values(body.allowed_download_variants),
         show_versions=body.show_versions,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
@@ -1125,7 +1181,7 @@ def create_multi_share_link(
         is_enabled=True,
         permission=body.permission,
         visibility=body.visibility,
-        allow_download=body.allow_download,
+        allowed_download_variants=variant_values(body.allowed_download_variants),
         show_versions=body.show_versions,
         show_watermark=body.show_watermark,
         password_hash=password_hash,
@@ -1219,6 +1275,7 @@ def get_folder_share_assets(
                     id=a.id, name=a.name, asset_type=a.asset_type.value if hasattr(a.asset_type, 'value') else str(a.asset_type),
                     thumbnail_url=thumbnail_url, created_at=a.created_at.isoformat() if a.created_at else "",
                     file_size_bytes=mf.file_size_bytes if mf else 0, comment_count=comment_count,
+                    download_variants=_available_variants(link, a),
                 ))
         else:
             total = 0
@@ -1336,6 +1393,7 @@ def get_folder_share_assets(
             comment_count=comment_count,
             created_by_name=creator.name if creator else None,
             created_at=asset.created_at,
+            download_variants=_available_variants(link, asset),
         ))
 
     return FolderShareAssetsResponse(
@@ -1353,15 +1411,28 @@ def get_share_stream_url(
     asset_id: uuid.UUID,
     share_session: Optional[str] = Query(None, alias="share_session"),
     download: bool = Query(default=False),
+    variant: DownloadVariant = Query(default=DownloadVariant.raw),
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
 ):
     """Public endpoint — optional auth. Returns presigned stream URL for an asset in a share link."""
     link = validate_share_link_with_session(db, token, share_session=share_session, current_user=current_user)
 
-    # Enforce allow_download when explicit download is requested
-    if download and not link.allow_download:
-        raise HTTPException(status_code=403, detail="Downloads are not allowed for this share link")
+    # §30 — gate on the requested variant, not a single boolean. An empty
+    # permission list means nothing is downloadable, exactly as the old
+    # boolean's False did.
+    if download:
+        _require_download_variant(link, variant)
+        if variant is not DownloadVariant.raw:
+            # This endpoint hands back the stored object. Anything else is a
+            # render that has to be produced first — see the export endpoint.
+            # Serving the raw file here would silently deliver a file that is
+            # not what its label says, which is the whole thing §30 exists to
+            # stop.
+            raise HTTPException(
+                status_code=400,
+                detail="This variant must be requested via the export endpoint",
+            )
 
     asset = _get_asset(db, asset_id)
 
@@ -1435,3 +1506,126 @@ def get_share_thumbnail_url(
 
     url = proxy_url_for(media_file.s3_key_thumbnail)
     return {"url": url}
+
+
+# ── Variant exports for share links (§30) ────────────────────────────────────
+
+@router.post("/share/{token}/export/{asset_id}")
+def request_share_export(
+    token: str,
+    asset_id: uuid.UUID,
+    variant: DownloadVariant = Query(...),
+    share_session: Optional[str] = Query(None, alias="share_session"),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    """Kick off a rendered download for a share-link viewer.
+
+    Same one-off lifecycle as the authenticated graded export: the file
+    lands under `lut-exports/` and is deleted an hour later. Only the
+    original is ever kept.
+    """
+    link = validate_share_link_with_session(
+        db, token, share_session=share_session, current_user=current_user
+    )
+    _require_download_variant(link, variant)
+
+    if variant is DownloadVariant.raw:
+        raise HTTPException(
+            status_code=400,
+            detail="The original is served directly, not exported",
+        )
+
+    asset = _get_asset(db, asset_id)
+    _validate_asset_in_share(db, link, asset)
+
+    # The link may permit a LUT variant in general while THIS asset has no
+    # LUT — rendering it would produce a file identical to its plain
+    # counterpart under a label promising otherwise.
+    if variant.value not in _available_variants(link, asset):
+        raise HTTPException(
+            status_code=400,
+            detail="This asset has no LUT applied",
+        )
+
+    if asset.asset_type != AssetType.video:
+        raise HTTPException(
+            status_code=400,
+            detail="Rendered downloads are only available for video",
+        )
+
+    media_file = _get_latest_media_file(db, asset.id)
+    if not media_file or not media_file.s3_key_raw:
+        raise HTTPException(status_code=404, detail="No source file found")
+
+    export_id = uuid.uuid4()
+    from ..tasks.lut_tasks import burn_lut_export
+
+    send_task_safe(
+        burn_lut_export,
+        str(asset.id),
+        str(media_file.version_id),
+        str(asset.applied_lut_id) if asset.applied_lut_id else "",
+        str(export_id),
+        variant.value,
+    )
+
+    _log_share_activity(
+        db, link.id, ShareActivityAction.downloaded,
+        actor_email=current_user.email if current_user else "anonymous",
+        actor_name=current_user.name if current_user else None,
+        asset_id=asset.id,
+        asset_name=asset.name,
+    )
+
+    return {
+        "export_id": str(export_id),
+        "version_id": str(media_file.version_id),
+        "variant": variant.value,
+    }
+
+
+@router.get("/share/{token}/export/{asset_id}/{export_id}")
+def get_share_export_status(
+    token: str,
+    asset_id: uuid.UUID,
+    export_id: uuid.UUID,
+    version_id: uuid.UUID = Query(...),
+    variant: DownloadVariant = Query(...),
+    share_session: Optional[str] = Query(None, alias="share_session"),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    """Poll for a finished export.
+
+    A share viewer is unauthenticated, so it cannot subscribe to the
+    project SSE channel the in-app export flow uses — polling is the honest
+    mechanism here rather than a second event system.
+
+    Re-checks the permission on every poll: a link whose downloads were
+    turned off mid-render must not still hand back the finished file.
+    """
+    link = validate_share_link_with_session(
+        db, token, share_session=share_session, current_user=current_user
+    )
+    _require_download_variant(link, variant)
+
+    asset = _get_asset(db, asset_id)
+    _validate_asset_in_share(db, link, asset)
+
+    export_key = f"lut-exports/{asset.project_id}/{asset_id}/{version_id}/{export_id}.mp4"
+    try:
+        s3_service.get_s3_client().head_object(
+            Bucket=settings.s3_bucket, Key=export_key
+        )
+    except Exception:
+        # Still rendering, or it failed. The client keeps polling until its
+        # own timeout — the object appearing is the only success signal
+        # available without the SSE channel.
+        return {"ready": False}
+
+    filename = build_download_filename(asset.name, export_key)
+    return {
+        "ready": True,
+        "url": proxy_url_for(export_key, expires_hours=1, download_filename=filename),
+    }

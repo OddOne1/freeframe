@@ -29,7 +29,8 @@ import { cn, endOfDayISO, resolveApiMediaUrl } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
 import { DEFAULT_SHARE_APPEARANCE } from '@/components/projects/share-link-detail'
-import type { AssetResponse, Folder, ShareLink, ShareLinkAppearance } from '@/types'
+import type { AssetResponse, Folder, ShareLink, ShareLinkAppearance, DownloadVariant } from '@/types'
+import { DownloadVariantPicker } from './download-variant-picker'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -253,7 +254,7 @@ function ShareInviteInput({ token, shareLink }: { token: string; shareLink: { as
 interface ShareConfig {
   title: string
   allowComments: boolean
-  allowDownloads: boolean
+  downloadVariants: DownloadVariant[]
   passphrase: string | null
   expiresAt: string | null
   watermark: boolean
@@ -272,7 +273,7 @@ interface ConfigurePhaseProps {
 function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigurePhaseProps) {
   const [title, setTitle] = React.useState(defaultTitle)
   const [allowComments, setAllowComments] = React.useState(false)
-  const [allowDownloads, setAllowDownloads] = React.useState(false)
+  const [downloadVariants, setDownloadVariants] = React.useState<DownloadVariant[]>([])
   const [passphrase, setPassphrase] = React.useState(false)
   const [passphraseValue, setPassphraseValue] = React.useState('')
   const [showPassphraseInput, setShowPassphraseInput] = React.useState(false)
@@ -284,7 +285,7 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
     onCreate({
       title: title.trim() || defaultTitle,
       allowComments,
-      allowDownloads,
+      downloadVariants,
       passphrase: passphrase && passphraseValue ? passphraseValue : null,
       expiresAt: expiresAt || null,
       watermark,
@@ -354,19 +355,16 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
             </Switch.Root>
           </div>
 
-          {/* Allow downloads */}
-          <div className="flex items-center justify-between py-2.5">
-            <div className="flex items-center gap-2.5">
+          {/* Downloads — §30: which versions, not just on/off */}
+          <div className="py-2.5">
+            <div className="flex items-center gap-2.5 mb-2">
               <Download className="h-4 w-4 text-text-tertiary" />
-              <span className="text-sm text-text-primary">Allow downloads</span>
+              <span className="text-sm text-text-primary">Downloads</span>
             </div>
-            <Switch.Root
-              checked={allowDownloads}
-              onCheckedChange={setAllowDownloads}
-              className="w-9 h-5 rounded-full relative bg-bg-tertiary border border-border data-[state=checked]:bg-accent transition-colors"
-            >
-              <Switch.Thumb className="block w-4 h-4 rounded-full bg-white shadow transition-transform translate-x-0.5 data-[state=checked]:translate-x-[18px]" />
-            </Switch.Root>
+            <DownloadVariantPicker
+              value={downloadVariants}
+              onChange={setDownloadVariants}
+            />
           </div>
 
           {/* Passphrase */}
@@ -567,7 +565,7 @@ function LinkCreatedPhase({ result, allResults, onSelectResult, onDone, onAdvanc
   const [showSettings, setShowSettings] = React.useState(false)
   const [visibility, setVisibility] = React.useState<'public' | 'secure'>('public')
   const [allowComments, setAllowComments] = React.useState(false)
-  const [allowDownloads, setAllowDownloads] = React.useState(false)
+  const [downloadVariants, setDownloadVariants] = React.useState<DownloadVariant[]>([])
   const [passphrase, setPassphrase] = React.useState(false)
   const [passphraseValue, setPassphraseValue] = React.useState('')
   const [showPassphraseInput, setShowPassphraseInput] = React.useState(false)
@@ -596,7 +594,7 @@ function LinkCreatedPhase({ result, allResults, onSelectResult, onDone, onAdvanc
   React.useEffect(() => {
     api.get<ShareLink>(`/share/${result.token}/details`).then((data) => {
       setAllowComments(data.permission === 'comment' || data.permission === 'approve')
-      setAllowDownloads(data.allow_download)
+      setDownloadVariants(data.allowed_download_variants ?? [])
       setPassphrase(data.has_password ?? false)
       setWatermark(data.show_watermark)
       setExpiresAt(data.expires_at ? new Date(data.expires_at).toISOString().split('T')[0] : '')
@@ -651,7 +649,7 @@ function LinkCreatedPhase({ result, allResults, onSelectResult, onDone, onAdvanc
   // Compute settings summary
   const settingsSummary = [
     'view',
-    allowDownloads ? 'download' : null,
+    downloadVariants.length > 0 ? 'download' : null,
     allowComments ? 'comment' : null,
   ].filter(Boolean)
 
@@ -834,19 +832,19 @@ function LinkCreatedPhase({ result, allResults, onSelectResult, onDone, onAdvanc
                 </Switch.Root>
               </div>
 
-              {/* Allow downloads */}
-              <div className="flex items-center justify-between py-2.5">
-                <div className="flex items-center gap-2.5">
+              {/* Downloads — §30: which versions, not just on/off */}
+              <div className="py-2.5">
+                <div className="flex items-center gap-2.5 mb-2">
                   <Download className="h-4 w-4 text-text-tertiary" />
-                  <span className="text-sm text-text-primary">Allow downloads</span>
+                  <span className="text-sm text-text-primary">Downloads</span>
                 </div>
-                <Switch.Root
-                  checked={allowDownloads}
-                  onCheckedChange={(v) => { setAllowDownloads(v); patchLink({ allow_download: v }) }}
-                  className="w-9 h-5 rounded-full relative bg-bg-tertiary border border-border data-[state=checked]:bg-accent transition-colors"
-                >
-                  <Switch.Thumb className="block w-4 h-4 rounded-full bg-white shadow transition-transform translate-x-0.5 data-[state=checked]:translate-x-[18px]" />
-                </Switch.Root>
+                <DownloadVariantPicker
+                  value={downloadVariants}
+                  onChange={(next) => {
+                    setDownloadVariants(next)
+                    patchLink({ allowed_download_variants: next })
+                  }}
+                />
               </div>
 
               {/* Passphrase */}
@@ -1092,7 +1090,7 @@ export function ShareCreateDialog({
           title: config.title,
           permission: config.allowComments ? 'comment' : 'view',
           visibility: config.visibility,
-          allow_download: config.allowDownloads,
+          allowed_download_variants: config.downloadVariants,
           show_watermark: config.watermark,
         }
         if (config.passphrase) body.password = config.passphrase
@@ -1134,7 +1132,7 @@ export function ShareCreateDialog({
         const patches: Record<string, unknown> = {
           visibility: config.visibility,
           permission: config.allowComments ? 'comment' : 'view',
-          allow_download: config.allowDownloads,
+          allowed_download_variants: config.downloadVariants,
           show_watermark: config.watermark,
         }
         if (config.passphrase) patches.password = config.passphrase

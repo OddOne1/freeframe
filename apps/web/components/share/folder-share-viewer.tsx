@@ -24,7 +24,9 @@ import type {
   FolderShareAssetsResponse,
   FolderShareAssetItem,
   FolderShareSubfolder,
+  DownloadVariant,
 } from '@/types'
+import { DownloadMenu } from './download-menu'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -41,7 +43,7 @@ interface FolderShareViewerProps {
   createdByName?: string | null
   viewerName?: string | null
   permission: SharePermission
-  allowDownload: boolean
+  downloadVariants: DownloadVariant[]
   showVersions: boolean
   appearance: ShareLinkAppearance
   branding: {
@@ -120,18 +122,13 @@ function triggerDownload(url: string) {
 async function fetchDownloadUrl(token: string, assetId: string, shareSession?: string | null): Promise<string | null> {
   const sp = shareSession ? `&share_session=${encodeURIComponent(shareSession)}` : ''
   try {
-    const response = await fetch(`${API_URL}/share/${token}/stream/${assetId}?download=true${sp}`)
+    const response = await fetch(`${API_URL}/share/${token}/stream/${assetId}?download=true&variant=raw${sp}`)
     if (!response.ok) return null
     const data = await response.json()
     return data?.url ?? null
   } catch {
     return null
   }
-}
-
-async function handleDownload(token: string, assetId: string, shareSession?: string | null) {
-  const url = await fetchDownloadUrl(token, assetId, shareSession)
-  if (url) triggerDownload(url)
 }
 
 async function collectAllAssetsRecursive(
@@ -273,7 +270,7 @@ function ListRowThumb({ asset, TypeIcon }: { asset: FolderShareAssetItem; TypeIc
 
 interface AssetGridCardProps {
   asset: FolderShareAssetItem
-  allowDownload: boolean
+  downloadVariants: DownloadVariant[]
   token: string
   shareSession?: string | null
   isSelected: boolean
@@ -284,7 +281,7 @@ interface AssetGridCardProps {
   showCardInfo?: boolean
 }
 
-function AssetGridCard({ asset, allowDownload, token, shareSession, isSelected, onSelect, onOpen, aspectClass = 'aspect-[16/10]', thumbnailScale = 'fill', showCardInfo = true }: AssetGridCardProps) {
+function AssetGridCard({ asset, downloadVariants, token, shareSession, isSelected, onSelect, onOpen, aspectClass = 'aspect-[16/10]', thumbnailScale = 'fill', showCardInfo = true }: AssetGridCardProps) {
   const TypeIcon = getAssetTypeIcon(asset.asset_type)
   const [imgError, setImgError] = React.useState(false)
 
@@ -335,19 +332,17 @@ function AssetGridCard({ asset, allowDownload, token, shareSession, isSelected, 
           </div>
         )}
 
-        {/* Download button overlay */}
-        {allowDownload && (
-          <button
-            className="absolute top-2 right-2 flex items-center justify-center h-6 w-6 rounded-md bg-bg-primary/70 hover:bg-bg-primary/90 text-text-primary backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity"
-            onClick={(e) => {
-              e.stopPropagation()
-              handleDownload(token, asset.id, shareSession)
-            }}
-            title="Download"
-          >
-            <Download className="h-3 w-3" />
-          </button>
-        )}
+        {/* Download — §30: which versions, per asset */}
+        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+             onClick={(e) => e.stopPropagation()}>
+          <DownloadMenu
+            token={token}
+            assetId={asset.id}
+            shareSession={shareSession}
+            variants={asset.download_variants ?? downloadVariants}
+            className="flex items-center justify-center h-6 w-6 rounded-md bg-bg-primary/70 hover:bg-bg-primary/90 text-text-primary backdrop-blur-sm"
+          />
+        </div>
       </div>
 
       {/* Info — name, author, date */}
@@ -397,7 +392,7 @@ interface RightPanelProps {
   selectedAsset: FolderShareAssetItem | null
   token: string
   permission: SharePermission
-  allowDownload: boolean
+  downloadVariants: DownloadVariant[]
   onOpenAsset?: (asset: FolderShareAssetItem) => void
 }
 
@@ -414,7 +409,7 @@ interface GuestComment {
   replies?: GuestComment[]
 }
 
-function RightPanel({ selectedAsset, token, permission, allowDownload, onOpenAsset }: RightPanelProps) {
+function RightPanel({ selectedAsset, token, permission, downloadVariants, onOpenAsset }: RightPanelProps) {
   const [comments, setComments] = React.useState<GuestComment[]>([])
   const [loadingComments, setLoadingComments] = React.useState(false)
   const [commentRefresh, setCommentRefresh] = React.useState(0)
@@ -673,7 +668,7 @@ interface AssetViewerProps {
   shareSession?: string | null
   asset: FolderShareAssetItem
   permission: SharePermission
-  allowDownload: boolean
+  downloadVariants: DownloadVariant[]
   onBack: () => void
 }
 
@@ -707,7 +702,7 @@ function HlsVideo({ src, className }: { src: string; className?: string }) {
   return <video ref={videoRef} controls className={className} />
 }
 
-function AssetViewer({ token, shareSession, asset, permission, allowDownload, onBack }: AssetViewerProps) {
+function AssetViewer({ token, shareSession, asset, permission, downloadVariants, onBack }: AssetViewerProps) {
   // Use the same ReviewProvider as the project review page, but with shareToken
   // This gives us the same video player, image viewer, comment panel, etc.
   return (
@@ -718,7 +713,7 @@ function AssetViewer({ token, shareSession, asset, permission, allowDownload, on
         assetId={asset.id}
         assetName={asset.name}
         permission={permission}
-        allowDownload={allowDownload}
+        downloadVariants={downloadVariants}
         onBack={onBack}
       />
     </div>
@@ -727,9 +722,9 @@ function AssetViewer({ token, shareSession, asset, permission, allowDownload, on
 
 /** Lazy-imported review components to avoid circular deps */
 function ShareReviewScreen({
-  token, shareSession, assetId, assetName, permission, allowDownload, onBack,
+  token, shareSession, assetId, assetName, permission, downloadVariants, onBack,
 }: {
-  token: string; shareSession?: string | null; assetId: string; assetName: string; permission: SharePermission; allowDownload: boolean; onBack: () => void
+  token: string; shareSession?: string | null; assetId: string; assetName: string; permission: SharePermission; downloadVariants: DownloadVariant[]; onBack: () => void
 }) {
   const [ReviewProvider, setProvider] = React.useState<any>(null)
   const [VideoPlayer, setVideoPlayer] = React.useState<any>(null)
@@ -770,7 +765,7 @@ function ShareReviewScreen({
         shareSession={shareSession}
         assetName={assetName}
         permission={permission}
-        allowDownload={allowDownload}
+        downloadVariants={downloadVariants}
         onBack={onBack}
         VideoPlayer={VideoPlayer}
         ImageViewer={ImageViewer}
@@ -783,7 +778,7 @@ function ShareReviewScreen({
 }
 
 function ShareReviewInner({
-  token, shareSession, assetName, permission, allowDownload, onBack,
+  token, shareSession, assetName, permission, downloadVariants, onBack,
   VideoPlayer, ImageViewer, AudioPlayer, CommentPanel, CommentInput,
 }: any) {
   // Import hooks from the review system
@@ -862,11 +857,14 @@ function ShareReviewInner({
           <span className="text-[13px] font-medium text-text-primary truncate">{assetName}</span>
         </div>
         <div className="flex items-center gap-2">
-          {allowDownload && (
-            <button className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium text-accent-foreground bg-accent hover:bg-accent-hover transition-colors" onClick={() => handleDownload(token, asset.id, shareSession)}>
-              <Download className="h-3 w-3" /> Download
-            </button>
-          )}
+          <DownloadMenu
+            token={token}
+            assetId={asset.id}
+            shareSession={shareSession}
+            variants={asset.download_variants ?? downloadVariants}
+            iconOnly={false}
+            className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium text-accent-foreground bg-accent hover:bg-accent-hover transition-colors"
+          />
           <button onClick={() => setSidebarOpen(v => !v)} className="flex items-center justify-center h-8 w-8 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors">
             {sidebarOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
           </button>
@@ -1027,7 +1025,7 @@ export function FolderShareViewer({
   createdByName,
   viewerName,
   permission,
-  allowDownload,
+  downloadVariants,
   showVersions: _showVersions,
   appearance,
   branding,
@@ -1245,7 +1243,7 @@ export function FolderShareViewer({
         shareSession={shareSession}
         asset={viewingAsset}
         permission={permission}
-        allowDownload={allowDownload}
+        downloadVariants={downloadVariants}
         onBack={() => setViewingAsset(null)}
       />
     )
@@ -1320,10 +1318,11 @@ export function FolderShareViewer({
 
         {/* Right: Download All + panel toggle */}
         <div className="flex items-center gap-2 shrink-0">
-          {allowDownload && (
+          {downloadVariants.includes('raw') && (
             <button
               className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium text-white bg-accent hover:bg-accent-hover transition-colors"
               onClick={() => handleDownloadAll(token, currentSubfolderId ?? null, shareSession)}
+              title="Downloads the original of every file here"
             >
               <Download className="h-3 w-3" />
               Download All
@@ -1460,7 +1459,7 @@ export function FolderShareViewer({
                               <AssetGridCard
                                 key={asset.id}
                                 asset={asset}
-                                allowDownload={allowDownload}
+                                downloadVariants={downloadVariants}
                                 token={token}
                                 shareSession={shareSession}
                                 isSelected={selectedAsset?.id === asset.id}
@@ -1480,7 +1479,7 @@ export function FolderShareViewer({
                               <div className="flex-1 min-w-0">Name</div>
                               <div className="hidden sm:block w-24 text-right shrink-0">Size</div>
                               <div className="hidden sm:block w-28 shrink-0">Date</div>
-                              {allowDownload && <div className="w-7 shrink-0" />}
+                              {downloadVariants.length > 0 && <div className="w-7 shrink-0" />}
                             </div>
                             {filteredAssets.map((asset, i) => {
                               const TypeIcon = getAssetTypeIcon(asset.asset_type)
@@ -1514,15 +1513,16 @@ export function FolderShareViewer({
                                     {formatDate(asset.created_at)}
                                   </span>
                                   {/* Download */}
-                                  {allowDownload && (
-                                    <button
-                                      className="w-7 shrink-0 flex items-center justify-center h-7 rounded text-text-tertiary opacity-0 group-hover:opacity-100 hover:text-text-primary transition-all"
-                                      onClick={(e) => { e.stopPropagation(); handleDownload(token, asset.id, shareSession) }}
-                                      title="Download"
-                                    >
-                                      <Download className="h-4 w-4" />
-                                    </button>
-                                  )}
+                                  <div className="w-7 shrink-0 opacity-0 group-hover:opacity-100 transition-all"
+                                       onClick={(e) => e.stopPropagation()}>
+                                    <DownloadMenu
+                                      token={token}
+                                      assetId={asset.id}
+                                      shareSession={shareSession}
+                                      variants={asset.download_variants ?? downloadVariants}
+                                      className="flex items-center justify-center h-7 w-7 rounded text-text-tertiary hover:text-text-primary"
+                                    />
+                                  </div>
                                 </div>
                               )
                             })}
@@ -1574,7 +1574,7 @@ export function FolderShareViewer({
               selectedAsset={selectedAsset}
               token={token}
               permission={permission}
-              allowDownload={allowDownload}
+              downloadVariants={downloadVariants}
               onOpenAsset={setViewingAsset}
             />
           </div>

@@ -48,7 +48,7 @@ function detailsResponse(over: Partial<ShareLink> = {}): ShareLink {
     token: TOKEN,
     title: 'My Share',
     permission: 'view',
-    allow_download: false,
+    allowed_download_variants: [],
     show_watermark: false,
     show_versions: false,
     visibility: 'public',
