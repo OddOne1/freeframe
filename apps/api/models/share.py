@@ -19,6 +19,28 @@ class ShareVisibility(str, PyEnum):
     public = "public"
     secure = "secure"
 
+class FieldsVisibility(str, PyEnum):
+    """How much asset metadata a share link exposes (CLAUDE.md §33).
+
+    Three states rather than a boolean, because "show the fields panel"
+    and "show the technical guts of the file" are different decisions:
+
+    - ``disabled``: no Fields panel at all.
+    - ``basic``: name, type, description, rating, due date, keywords.
+    - ``full``: basic plus the file's own technical metadata (ffprobe /
+      exiftool) and any camera sidecar data.
+
+    Deliberately NOT included at any level: a project's custom metadata
+    fields and the rating voter breakdown. Both describe the team rather
+    than the asset, and "full technical detail" is not consent to publish
+    who rated what to an anonymous link recipient.
+    """
+
+    disabled = "disabled"
+    basic = "basic"
+    full = "full"
+
+
 class DownloadVariant(str, PyEnum):
     """Which rendering of an asset a download produces (CLAUDE.md §30/§30b).
 
@@ -91,6 +113,12 @@ class ShareLink(Base):
     # structured JSON column with a typed model in front of it.
     allowed_download_variants: Mapped[list] = mapped_column(
         JSON, nullable=False, server_default="[]"
+    )
+    # §33 — how much of an asset's metadata this link shows. Independent of
+    # `permission`: a link may show fields without allowing comments, or
+    # the reverse.
+    fields_visibility: Mapped[str] = mapped_column(
+        Enum(FieldsVisibility), nullable=False, server_default="disabled"
     )
     show_versions: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     show_watermark: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")

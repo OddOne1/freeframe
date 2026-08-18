@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from jose import jwt
 
 from apps.api.config import settings
+from apps.api.models.share import FieldsVisibility
 
 
 @patch("apps.api.routers.share.proxy_url_for")
@@ -39,6 +40,7 @@ def test_validate_share_link_video_returns_master_m3u8(
     link.description = None
     link.permission = "view"
     link.allowed_download_variants = []
+    link.fields_visibility = FieldsVisibility.disabled
     link.show_versions = False
     link.show_watermark = False
     link.appearance = None
@@ -113,6 +115,7 @@ def test_validate_share_link_image_does_not_append_master_m3u8(
     link.description = None
     link.permission = "view"
     link.allowed_download_variants = []
+    link.fields_visibility = FieldsVisibility.disabled
     link.show_versions = False
     link.show_watermark = False
     link.appearance = None
@@ -174,6 +177,7 @@ def test_share_stream_endpoint_video_returns_hls_proxy_url(
     link.id = uuid.uuid4()
     link.asset_id = asset_id
     link.allowed_download_variants = []
+    link.fields_visibility = FieldsVisibility.disabled
     link.permission = "view"
     mock_validate.return_value = link
     mock_validate_in_share.return_value = None

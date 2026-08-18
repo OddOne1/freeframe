@@ -414,6 +414,12 @@ export type DownloadVariant =
   | "proxy_1080p"
   | "proxy_1080p_lut";
 
+/**
+ * How much asset metadata a share link exposes (CLAUDE.md §33).
+ * Mirrors `FieldsVisibility` in apps/api/models/share.py.
+ */
+export type FieldsVisibility = "disabled" | "basic" | "full";
+
 /** Canonical order, used for both display and the all-on shorthand. */
 export const ALL_DOWNLOAD_VARIANTS: DownloadVariant[] = [
   "raw",
@@ -456,6 +462,8 @@ export interface ShareLink {
   expires_at: string | null;
   permission: SharePermission;
   allowed_download_variants: DownloadVariant[];
+  /** How much asset metadata this link exposes (§33). */
+  fields_visibility: FieldsVisibility;
   is_enabled: boolean;
   visibility: "public" | "secure";
   show_versions: boolean;

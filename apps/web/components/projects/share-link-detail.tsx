@@ -29,6 +29,7 @@ import { api } from "@/lib/api";
 import { ShareLinkActivityPanel } from "@/components/projects/share-link-activity";
 import type { ShareLink, ShareLinkAppearance } from "@/types";
 import { DownloadVariantPicker } from "./download-variant-picker";
+import { FieldsVisibilityPicker } from "./fields-visibility-picker";
 
 // ─── Shared hook for share link data + mutations ────────────────────────────
 
@@ -939,6 +940,19 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
                   immediateUpdate({ permission: checked ? "comment" : "view" })
                 }
               />
+              <div className="py-2">
+                <div className="mb-1 text-xs font-medium text-text-primary">
+                  Fields
+                </div>
+                <div className="mb-2 text-[11px] text-text-tertiary">
+                  How much asset detail viewers can see.
+                </div>
+                <FieldsVisibilityPicker
+                  value={shareLink.fields_visibility ?? "disabled"}
+                  onChange={(next) => immediateUpdate({ fields_visibility: next })}
+                />
+              </div>
+
               <div className="py-2">
                 <div className="mb-1 text-xs font-medium text-text-primary">
                   Downloads

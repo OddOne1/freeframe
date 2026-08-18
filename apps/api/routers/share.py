@@ -19,6 +19,7 @@ from ..models.share import (
     VARIANT_USES_LUT,
     AssetShare,
     DownloadVariant,
+    FieldsVisibility,
     ShareLink,
     ShareLinkItem,
     SharePermission,
@@ -28,6 +29,7 @@ from ..models.share import (
 from ..models.activity import ActivityLog, ActivityAction
 from ..models.branding import ProjectBranding
 from ..models.asset import AssetVersion, AssetType, MediaFile, ProcessingStatus
+from ..models.sidecar import SidecarFile
 from ..models.comment import Comment
 from ..schemas.share import (
     DirectShareCreate,
@@ -41,6 +43,7 @@ from ..schemas.share import (
     ShareLinkListItem,
     ShareLinkResponse,
     ShareLinkUpdate,
+    ShareFieldsResponse,
     ShareLinkValidateResponse,
     variant_values,
 )
@@ -56,6 +59,25 @@ from ..tasks.celery_app import send_task_safe
 from ..config import settings
 
 router = APIRouter(tags=["sharing"])
+
+
+def _require_fields_visibility(link: ShareLink, minimum: FieldsVisibility) -> None:
+    """Refuse a metadata level this link does not permit (§33).
+
+    One enforcement point, for the same reason `_require_download_variant`
+    is one: the moment two routes each decide independently what a link may
+    expose, they eventually disagree, and the disagreement is a leak rather
+    than a crash.
+    """
+    level = link.fields_visibility
+    if isinstance(level, str):
+        level = FieldsVisibility(level)
+    rank = {FieldsVisibility.disabled: 0, FieldsVisibility.basic: 1, FieldsVisibility.full: 2}
+    if rank[level] < rank[minimum]:
+        raise HTTPException(
+            status_code=403,
+            detail="This share link does not expose asset fields",
+        )
 
 
 def _available_variants(link: ShareLink, asset) -> list[str]:
@@ -246,6 +268,7 @@ def create_share_link(
         password_encrypted=password_encrypted,
         permission=body.permission,
         allowed_download_variants=variant_values(body.allowed_download_variants),
+        fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
@@ -389,6 +412,7 @@ def validate_share_link_endpoint(
         permission=link.permission,
         visibility=link.visibility,
         allowed_download_variants=link.allowed_download_variants or [],
+        fields_visibility=link.fields_visibility,
         show_versions=link.show_versions,
         show_watermark=link.show_watermark,
         appearance=link.appearance,
@@ -530,6 +554,7 @@ def create_folder_share_link(
         password_encrypted=password_encrypted,
         permission=body.permission,
         allowed_download_variants=variant_values(body.allowed_download_variants),
+        fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
@@ -574,6 +599,7 @@ def create_project_share_link(
         password_encrypted=password_encrypted,
         permission=body.permission,
         allowed_download_variants=variant_values(body.allowed_download_variants),
+        fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
@@ -1182,6 +1208,7 @@ def create_multi_share_link(
         permission=body.permission,
         visibility=body.visibility,
         allowed_download_variants=variant_values(body.allowed_download_variants),
+        fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
         show_watermark=body.show_watermark,
         password_hash=password_hash,
@@ -1629,3 +1656,69 @@ def get_share_export_status(
         "ready": True,
         "url": proxy_url_for(export_key, expires_hours=1, download_filename=filename),
     }
+
+
+@router.get("/share/{token}/fields/{asset_id}", response_model=ShareFieldsResponse)
+def get_share_asset_fields(
+    token: str,
+    asset_id: uuid.UUID,
+    share_session: Optional[str] = Query(None, alias="share_session"),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    """Asset metadata for a share-link viewer, at the level the link permits.
+
+    The logged-in app reads this from `/assets/{id}` and
+    `/assets/{id}/sidecars`, both of which require auth. A share viewer is
+    anonymous, so it needs its own route — which is the right place for the
+    gate anyway.
+
+    Deliberately absent at every level: the project's custom metadata field
+    values, and the rating voter breakdown. Both describe the team rather
+    than the asset (§33), and "full technical detail" is not consent to
+    publish who rated what to whoever holds the link.
+    """
+    link = validate_share_link_with_session(
+        db, token, share_session=share_session, current_user=current_user
+    )
+    _require_fields_visibility(link, FieldsVisibility.basic)
+
+    asset = _get_asset(db, asset_id)
+    _validate_asset_in_share(db, link, asset)
+
+    level = link.fields_visibility
+    if isinstance(level, str):
+        level = FieldsVisibility(level)
+
+    technical_metadata = None
+    sidecars = None
+    if level is FieldsVisibility.full:
+        media_file = _get_latest_media_file(db, asset.id)
+        technical_metadata = (media_file.technical_metadata if media_file else None) or {}
+        rows = db.query(SidecarFile).filter(
+            SidecarFile.asset_id == asset.id,
+            SidecarFile.deleted_at.is_(None),
+        ).order_by(SidecarFile.created_at.desc()).all()
+        sidecars = [
+            {
+                "id": str(r.id),
+                "asset_id": str(r.asset_id),
+                "sidecar_type": r.sidecar_type.value if hasattr(r.sidecar_type, "value") else str(r.sidecar_type),
+                "original_filename": r.original_filename,
+                "parsed_metadata": r.parsed_metadata or {},
+                "created_at": r.created_at.isoformat() if r.created_at else "",
+            }
+            for r in rows
+        ]
+
+    return ShareFieldsResponse(
+        level=level,
+        name=asset.name,
+        asset_type=asset.asset_type.value if hasattr(asset.asset_type, "value") else str(asset.asset_type),
+        description=asset.description,
+        rating=asset.rating,
+        due_date=asset.due_date,
+        keywords=asset.keywords or [],
+        technical_metadata=technical_metadata,
+        sidecars=sidecars,
+    )

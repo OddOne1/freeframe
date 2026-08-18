@@ -23,6 +23,8 @@ import { Button } from '@/components/ui/button'
 import { GuestCommentInput } from '@/components/review/guest-comment-input'
 import { FolderShareViewer } from '@/components/share/folder-share-viewer'
 import type { Asset, SharePermission, ProjectBranding, ShareLinkAppearance, DownloadVariant } from '@/types'
+import { ShareFieldsPanel } from '@/components/share/share-fields-panel'
+import { useShareSidebar, type FieldsVisibility, type ShareSidebar } from '@/components/share/use-share-sidebar'
 import { DownloadMenu } from '@/components/share/download-menu'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -38,6 +40,7 @@ interface ShareValidateResponse {
   description?: string | null
   permission?: SharePermission
   allowed_download_variants?: DownloadVariant[]
+  fields_visibility?: FieldsVisibility
   show_versions?: boolean
   show_watermark?: boolean
   appearance?: ShareLinkAppearance | null
@@ -342,6 +345,8 @@ interface ShareTopBarProps {
   assetId: string
   sidebarOpen: boolean
   onToggleSidebar: () => void
+  /** §33 — false when both panels are disabled; the button opens nothing. */
+  showSidebarToggle: boolean
   onBack?: () => void
   branding: ProjectBranding | null
 }
@@ -355,6 +360,7 @@ function ShareTopBar({
   assetId,
   sidebarOpen,
   onToggleSidebar,
+  showSidebarToggle,
   onBack,
   branding,
 }: ShareTopBarProps) {
@@ -416,6 +422,7 @@ function ShareTopBar({
           className="inline-flex items-center gap-1.5 rounded-md bg-purple-600 hover:bg-purple-700 px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-60"
         />
 
+        {showSidebarToggle && (
         <button
           onClick={onToggleSidebar}
           className={cn(
@@ -428,6 +435,7 @@ function ShareTopBar({
         >
           <Columns2 className="h-4 w-4" />
         </button>
+        )}
       </div>
     </div>
   )
@@ -527,6 +535,8 @@ interface ShareRightPanelProps {
   permission: SharePermission
   commentRefreshKey: number
   onCommentPosted: () => void
+  /** The shared visibility decision (§33) — this panel does not re-derive it. */
+  sidebar: ShareSidebar
 }
 
 function ShareRightPanel({
@@ -535,12 +545,16 @@ function ShareRightPanel({
   permission,
   commentRefreshKey,
   onCommentPosted,
+  sidebar,
 }: ShareRightPanelProps) {
-  const [activeTab, setActiveTab] = React.useState<'comments' | 'fields'>('comments')
+  const { showTabSwitcher, showComments, activeTab, setActiveTab } = sidebar
 
   return (
     <div className="w-[360px] flex flex-col border-l border-white/[0.06] bg-[#141416] shrink-0 animate-in slide-in-from-right-2 duration-150">
-      {/* Tabs */}
+      {/* Tabs — §33: only when there is actually something to switch
+          between. A switcher with one live tab and one dead one is worse
+          than no switcher. */}
+      {showTabSwitcher && (
       <div className="px-4 pt-3 pb-2 shrink-0">
         <div className="flex items-center bg-white/5 rounded-lg p-0.5">
           <button
@@ -569,10 +583,11 @@ function ShareRightPanel({
           </button>
         </div>
       </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-        {activeTab === 'comments' ? (
+        {activeTab === 'comments' && showComments ? (
           <>
             {/* Comments header */}
             <div className="px-4 py-2 shrink-0 flex items-center justify-between">
@@ -590,72 +605,26 @@ function ShareRightPanel({
             )}
 
             {/* Comment input */}
-            {(permission === 'comment' || permission === 'approve') ? (
-              <GuestCommentInput
-                token={token}
-                onCommentPosted={onCommentPosted}
-                className="border-t border-white/[0.06] bg-[#141416]"
-              />
-            ) : (
-              <div className="px-4 py-3 border-t border-white/[0.06] shrink-0">
-                <p className="text-xs text-zinc-600 text-center">View-only access. Comments are disabled.</p>
-              </div>
-            )}
+            {/* §33 — no "comments are disabled" placeholder any more: the
+                Comments panel is not rendered at all for a view-only link,
+                so there is nothing left to apologise for. */}
+            <GuestCommentInput
+              token={token}
+              onCommentPosted={onCommentPosted}
+              className="border-t border-white/[0.06] bg-[#141416]"
+            />
           </>
         ) : (
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            <div className="space-y-3">
-              <FieldRow label="Name" value={asset.name} />
-              <FieldRow label="Type" value={asset.asset_type.replace('_', ' ')} capitalize />
-{asset.description && <FieldRow label="Description" value={asset.description} />}
-              {asset.rating != null && <FieldRow label="Rating" value={`${asset.rating}/5`} />}
-              {asset.due_date && (
-                <FieldRow
-                  label="Due date"
-                  value={new Date(asset.due_date).toLocaleDateString()}
-                />
-              )}
-              {asset.keywords && asset.keywords.length > 0 && (
-                <div className="space-y-1">
-                  <span className="text-xs text-zinc-500">Keywords</span>
-                  <div className="flex flex-wrap gap-1">
-                    {asset.keywords.map((kw: string, i: number) => (
-                      <span
-                        key={i}
-                        className="text-2xs bg-white/5 text-zinc-400 rounded px-1.5 py-0.5"
-                      >
-                        {kw}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          // §33 — the same panel the folder viewer uses, fed by the same
+          // share-token route. The level (basic vs full) is decided
+          // server-side, so this cannot show more than the link permits.
+          <ShareFieldsPanel token={token} assetId={asset.id} />
         )}
       </div>
     </div>
   )
 }
 
-function FieldRow({
-  label,
-  value,
-  capitalize: shouldCapitalize,
-}: {
-  label: string
-  value: string
-  capitalize?: boolean
-}) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-xs text-zinc-500">{label}</span>
-      <span className={cn('text-xs text-zinc-200 font-medium truncate ml-4 max-w-[200px]', shouldCapitalize && 'capitalize')}>
-        {value}
-      </span>
-    </div>
-  )
-}
 
 // ─── Share Viewer (single asset — Frame.io layout) ────────────────────────────
 
@@ -664,6 +633,7 @@ interface ShareViewerProps {
   asset: Asset & { thumbnail_url?: string; stream_url?: string }
   permission: SharePermission
   downloadVariants: DownloadVariant[]
+  fieldsVisibility: FieldsVisibility
   branding: ProjectBranding | null
   shareName?: string
   onBack?: () => void
@@ -674,6 +644,7 @@ function ShareViewer({
   asset,
   permission,
   downloadVariants,
+  fieldsVisibility,
   branding,
   shareName,
   onBack,
@@ -682,6 +653,8 @@ function ShareViewer({
   const [streamLoading, setStreamLoading] = React.useState(false)
   const [commentKey, setCommentKey] = React.useState(0)
   const [sidebarOpen, setSidebarOpen] = React.useState(true)
+  // §33 — one decision, shared with the folder viewer.
+  const sidebar = useShareSidebar({ permission, fieldsVisibility })
 
   // For video/audio assets, get a stream URL if not already provided
   React.useEffect(() => {
@@ -715,6 +688,7 @@ function ShareViewer({
         assetId={asset.id}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((p) => !p)}
+        showSidebarToggle={sidebar.showSidebar}
         onBack={onBack}
         branding={branding}
       />
@@ -730,13 +704,14 @@ function ShareViewer({
         />
 
         {/* Right: comments panel */}
-        {sidebarOpen && (
+        {sidebar.showSidebar && sidebarOpen && (
           <ShareRightPanel
             token={token}
             asset={asset}
             permission={permission}
             commentRefreshKey={commentKey}
             onCommentPosted={() => setCommentKey((k) => k + 1)}
+            sidebar={sidebar}
           />
         )}
       </div>
@@ -758,6 +733,7 @@ interface FolderAssetViewerProps {
   assetId: string
   permission: SharePermission
   downloadVariants: DownloadVariant[]
+  fieldsVisibility: FieldsVisibility
   branding: any
   folderName: string
   onBack: () => void
@@ -768,6 +744,7 @@ function FolderAssetViewer({
   assetId,
   permission,
   downloadVariants,
+  fieldsVisibility,
   branding,
   folderName,
   onBack,
@@ -851,6 +828,7 @@ function FolderAssetViewer({
       asset={pseudoAsset}
       permission={permission}
       downloadVariants={downloadVariants}
+      fieldsVisibility={fieldsVisibility}
       branding={branding}
       shareName={folderName}
       onBack={onBack}
@@ -878,6 +856,7 @@ export default function SharePage({
         asset: Asset & { thumbnail_url?: string; stream_url?: string }
         permission: SharePermission
         downloadVariants: DownloadVariant[]
+        fieldsVisibility: FieldsVisibility
         showVersions: boolean
         branding: ProjectBranding | null
       }
@@ -890,6 +869,7 @@ export default function SharePage({
         viewerName: string | null
         permission: SharePermission
         downloadVariants: DownloadVariant[]
+        fieldsVisibility: FieldsVisibility
         showVersions: boolean
         appearance: ShareLinkAppearance
         branding: any
@@ -952,6 +932,7 @@ export default function SharePage({
           viewerName: data.viewer_name ?? null,
           permission: data.permission,
           downloadVariants: data.allowed_download_variants ?? [],
+          fieldsVisibility: data.fields_visibility ?? 'disabled',
           showVersions: data.show_versions ?? true,
           appearance: { ...defaultAppearance, ...(data.appearance ?? {}) },
           branding: data.branding ?? null,
@@ -969,6 +950,7 @@ export default function SharePage({
         asset: data.asset,
         permission: data.permission,
         downloadVariants: data.allowed_download_variants ?? [],
+        fieldsVisibility: data.fields_visibility ?? 'disabled',
         showVersions: data.show_versions ?? true,
         branding: data.branding ?? null,
       })
@@ -1044,6 +1026,7 @@ export default function SharePage({
         viewerName={state.viewerName}
         permission={state.permission}
         downloadVariants={state.downloadVariants}
+        fieldsVisibility={state.fieldsVisibility}
         showVersions={state.showVersions}
         appearance={state.appearance}
         branding={state.branding}
@@ -1057,6 +1040,7 @@ export default function SharePage({
       asset={state.asset}
       permission={state.permission}
       downloadVariants={state.downloadVariants}
+      fieldsVisibility={state.fieldsVisibility}
       branding={state.branding}
     />
   )

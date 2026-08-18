@@ -26,6 +26,8 @@ import type {
   FolderShareSubfolder,
   DownloadVariant,
 } from '@/types'
+import { ShareFieldsPanel } from './share-fields-panel'
+import { useShareSidebar, type FieldsVisibility } from './use-share-sidebar'
 import { DownloadMenu } from './download-menu'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -44,6 +46,7 @@ interface FolderShareViewerProps {
   viewerName?: string | null
   permission: SharePermission
   downloadVariants: DownloadVariant[]
+  fieldsVisibility: FieldsVisibility
   showVersions: boolean
   appearance: ShareLinkAppearance
   branding: {
@@ -669,6 +672,7 @@ interface AssetViewerProps {
   asset: FolderShareAssetItem
   permission: SharePermission
   downloadVariants: DownloadVariant[]
+  fieldsVisibility: FieldsVisibility
   onBack: () => void
 }
 
@@ -702,7 +706,7 @@ function HlsVideo({ src, className }: { src: string; className?: string }) {
   return <video ref={videoRef} controls className={className} />
 }
 
-function AssetViewer({ token, shareSession, asset, permission, downloadVariants, onBack }: AssetViewerProps) {
+function AssetViewer({ token, shareSession, asset, permission, downloadVariants, fieldsVisibility, onBack }: AssetViewerProps) {
   // Use the same ReviewProvider as the project review page, but with shareToken
   // This gives us the same video player, image viewer, comment panel, etc.
   return (
@@ -714,6 +718,7 @@ function AssetViewer({ token, shareSession, asset, permission, downloadVariants,
         assetName={asset.name}
         permission={permission}
         downloadVariants={downloadVariants}
+        fieldsVisibility={fieldsVisibility}
         onBack={onBack}
       />
     </div>
@@ -722,9 +727,9 @@ function AssetViewer({ token, shareSession, asset, permission, downloadVariants,
 
 /** Lazy-imported review components to avoid circular deps */
 function ShareReviewScreen({
-  token, shareSession, assetId, assetName, permission, downloadVariants, onBack,
+  token, shareSession, assetId, assetName, permission, downloadVariants, fieldsVisibility, onBack,
 }: {
-  token: string; shareSession?: string | null; assetId: string; assetName: string; permission: SharePermission; downloadVariants: DownloadVariant[]; onBack: () => void
+  token: string; shareSession?: string | null; assetId: string; assetName: string; permission: SharePermission; downloadVariants: DownloadVariant[]; fieldsVisibility: FieldsVisibility; onBack: () => void
 }) {
   const [ReviewProvider, setProvider] = React.useState<any>(null)
   const [VideoPlayer, setVideoPlayer] = React.useState<any>(null)
@@ -766,6 +771,7 @@ function ShareReviewScreen({
         assetName={assetName}
         permission={permission}
         downloadVariants={downloadVariants}
+        fieldsVisibility={fieldsVisibility}
         onBack={onBack}
         VideoPlayer={VideoPlayer}
         ImageViewer={ImageViewer}
@@ -778,7 +784,7 @@ function ShareReviewScreen({
 }
 
 function ShareReviewInner({
-  token, shareSession, assetName, permission, downloadVariants, onBack,
+  token, shareSession, assetName, permission, downloadVariants, fieldsVisibility, onBack,
   VideoPlayer, ImageViewer, AudioPlayer, CommentPanel, CommentInput,
 }: any) {
   // Import hooks from the review system
@@ -789,7 +795,11 @@ function ShareReviewInner({
   const { asset, versions, isLoading, comments, refetchComments, addComment } = useReview()
   const { currentVersion, isDrawingMode, focusedCommentId } = useReviewStore()
   const [sidebarOpen, setSidebarOpen] = React.useState(true)
-  const [activeTab, setActiveTab] = React.useState<'comments' | 'fields'>('comments')
+  // §33 — the same decision page.tsx's ShareViewer makes, from the same
+  // hook. This file previously showed a Fields tab that rendered nothing
+  // and a Comments tab that ignored the permission entirely.
+  const sidebar = useShareSidebar({ permission, fieldsVisibility })
+  const { activeTab, setActiveTab } = sidebar
   const [AnnotationOverlay, setAnnotationOverlay] = React.useState<any>(null)
   const [AnnotationCanvas, setAnnotationCanvas] = React.useState<any>(null)
 
@@ -865,9 +875,11 @@ function ShareReviewInner({
             iconOnly={false}
             className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium text-accent-foreground bg-accent hover:bg-accent-hover transition-colors"
           />
-          <button onClick={() => setSidebarOpen(v => !v)} className="flex items-center justify-center h-8 w-8 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors">
-            {sidebarOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
-          </button>
+          {sidebar.showSidebar && (
+            <button onClick={() => setSidebarOpen(v => !v)} className="flex items-center justify-center h-8 w-8 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors">
+              {sidebarOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+            </button>
+          )}
         </div>
       </div>
 
@@ -911,8 +923,9 @@ function ShareReviewInner({
         </div>
 
         {/* Right sidebar — reuses project comment panel */}
-        {sidebarOpen && (
+        {sidebar.showSidebar && sidebarOpen && (
           <div className="w-[360px] flex flex-col border-l border-border bg-bg-secondary shrink-0">
+            {sidebar.showTabSwitcher && (
             <div className="px-4 pt-3 pb-2 shrink-0">
               <div className="flex items-center bg-bg-tertiary rounded-lg p-0.5">
                 <button onClick={() => setActiveTab('comments')} className={`flex-1 py-1.5 text-[13px] font-medium rounded-md transition-all ${activeTab === 'comments' ? 'bg-bg-hover text-text-primary shadow-sm' : 'text-text-tertiary'}`}>
@@ -923,8 +936,16 @@ function ShareReviewInner({
                 </button>
               </div>
             </div>
+            )}
 
-            {activeTab === 'comments' && CommentPanel && (
+            {/* §33 — Fields renders for the first time here; this tab was a
+                dead button before, `activeTab === 'fields'` was never
+                handled at all. */}
+            {activeTab === 'fields' && sidebar.showFields && (
+              <ShareFieldsPanel token={token} assetId={asset.id} shareSession={shareSession} />
+            )}
+
+            {activeTab === 'comments' && sidebar.showComments && CommentPanel && (
               <>
                 <CommentPanel
                   comments={comments}
@@ -1026,6 +1047,7 @@ export function FolderShareViewer({
   viewerName,
   permission,
   downloadVariants,
+  fieldsVisibility,
   showVersions: _showVersions,
   appearance,
   branding,
@@ -1244,6 +1266,7 @@ export function FolderShareViewer({
         asset={viewingAsset}
         permission={permission}
         downloadVariants={downloadVariants}
+        fieldsVisibility={fieldsVisibility}
         onBack={() => setViewingAsset(null)}
       />
     )

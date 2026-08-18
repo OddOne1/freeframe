@@ -23,14 +23,16 @@ import {
   Droplets,
   Layers,
   LayoutGrid,
+  FileText,
 } from 'lucide-react'
 import * as Switch from '@radix-ui/react-switch'
 import { cn, endOfDayISO, resolveApiMediaUrl } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
 import { DEFAULT_SHARE_APPEARANCE } from '@/components/projects/share-link-detail'
-import type { AssetResponse, Folder, ShareLink, ShareLinkAppearance, DownloadVariant } from '@/types'
+import type { AssetResponse, Folder, ShareLink, ShareLinkAppearance, DownloadVariant, FieldsVisibility } from '@/types'
 import { DownloadVariantPicker } from './download-variant-picker'
+import { FieldsVisibilityPicker } from './fields-visibility-picker'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -255,6 +257,7 @@ interface ShareConfig {
   title: string
   allowComments: boolean
   downloadVariants: DownloadVariant[]
+  fieldsVisibility: FieldsVisibility
   passphrase: string | null
   expiresAt: string | null
   watermark: boolean
@@ -274,6 +277,7 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
   const [title, setTitle] = React.useState(defaultTitle)
   const [allowComments, setAllowComments] = React.useState(false)
   const [downloadVariants, setDownloadVariants] = React.useState<DownloadVariant[]>([])
+  const [fieldsVisibility, setFieldsVisibility] = React.useState<FieldsVisibility>('disabled')
   const [passphrase, setPassphrase] = React.useState(false)
   const [passphraseValue, setPassphraseValue] = React.useState('')
   const [showPassphraseInput, setShowPassphraseInput] = React.useState(false)
@@ -286,6 +290,7 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
       title: title.trim() || defaultTitle,
       allowComments,
       downloadVariants,
+      fieldsVisibility,
       passphrase: passphrase && passphraseValue ? passphraseValue : null,
       expiresAt: expiresAt || null,
       watermark,
@@ -364,6 +369,18 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
             <DownloadVariantPicker
               value={downloadVariants}
               onChange={setDownloadVariants}
+            />
+          </div>
+
+          {/* Fields — §33: independent of the comments permission */}
+          <div className="py-2.5">
+            <div className="flex items-center gap-2.5 mb-2">
+              <FileText className="h-4 w-4 text-text-tertiary" />
+              <span className="text-sm text-text-primary">Fields</span>
+            </div>
+            <FieldsVisibilityPicker
+              value={fieldsVisibility}
+              onChange={setFieldsVisibility}
             />
           </div>
 
@@ -566,6 +583,7 @@ function LinkCreatedPhase({ result, allResults, onSelectResult, onDone, onAdvanc
   const [visibility, setVisibility] = React.useState<'public' | 'secure'>('public')
   const [allowComments, setAllowComments] = React.useState(false)
   const [downloadVariants, setDownloadVariants] = React.useState<DownloadVariant[]>([])
+  const [fieldsVisibility, setFieldsVisibility] = React.useState<FieldsVisibility>('disabled')
   const [passphrase, setPassphrase] = React.useState(false)
   const [passphraseValue, setPassphraseValue] = React.useState('')
   const [showPassphraseInput, setShowPassphraseInput] = React.useState(false)
@@ -595,6 +613,7 @@ function LinkCreatedPhase({ result, allResults, onSelectResult, onDone, onAdvanc
     api.get<ShareLink>(`/share/${result.token}/details`).then((data) => {
       setAllowComments(data.permission === 'comment' || data.permission === 'approve')
       setDownloadVariants(data.allowed_download_variants ?? [])
+      setFieldsVisibility(data.fields_visibility ?? 'disabled')
       setPassphrase(data.has_password ?? false)
       setWatermark(data.show_watermark)
       setExpiresAt(data.expires_at ? new Date(data.expires_at).toISOString().split('T')[0] : '')
@@ -847,6 +866,21 @@ function LinkCreatedPhase({ result, allResults, onSelectResult, onDone, onAdvanc
                 />
               </div>
 
+              {/* Fields — §33 */}
+              <div className="py-2.5">
+                <div className="flex items-center gap-2.5 mb-2">
+                  <FileText className="h-4 w-4 text-text-tertiary" />
+                  <span className="text-sm text-text-primary">Fields</span>
+                </div>
+                <FieldsVisibilityPicker
+                  value={fieldsVisibility}
+                  onChange={(next) => {
+                    setFieldsVisibility(next)
+                    patchLink({ fields_visibility: next })
+                  }}
+                />
+              </div>
+
               {/* Passphrase */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between py-2.5">
@@ -1091,6 +1125,7 @@ export function ShareCreateDialog({
           permission: config.allowComments ? 'comment' : 'view',
           visibility: config.visibility,
           allowed_download_variants: config.downloadVariants,
+          fields_visibility: config.fieldsVisibility,
           show_watermark: config.watermark,
         }
         if (config.passphrase) body.password = config.passphrase
@@ -1133,6 +1168,7 @@ export function ShareCreateDialog({
           visibility: config.visibility,
           permission: config.allowComments ? 'comment' : 'view',
           allowed_download_variants: config.downloadVariants,
+          fields_visibility: config.fieldsVisibility,
           show_watermark: config.watermark,
         }
         if (config.passphrase) patches.password = config.passphrase

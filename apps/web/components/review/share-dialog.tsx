@@ -23,8 +23,9 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { useShareLinks } from "@/hooks/use-share-links";
 import { ShareCreateDialog } from "@/components/projects/share-create-dialog";
-import type { ShareLink, AssetShare, SharePermission, Team, ShareLinkListItem, AssetResponse, DownloadVariant } from "@/types";
+import type { ShareLink, AssetShare, SharePermission, Team, ShareLinkListItem, AssetResponse, DownloadVariant, FieldsVisibility } from "@/types";
 import { DownloadVariantPicker } from "@/components/projects/download-variant-picker";
+import { FieldsVisibilityPicker } from "@/components/projects/fields-visibility-picker";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -140,6 +141,7 @@ function LinkTab({ assetId }: LinkTabProps) {
   const [password, setPassword] = React.useState("");
   const [expiresAt, setExpiresAt] = React.useState("");
   const [downloadVariants, setDownloadVariants] = React.useState<DownloadVariant[]>([]);
+  const [fieldsVisibility, setFieldsVisibility] = React.useState<FieldsVisibility>('disabled');
   const [generating, setGenerating] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [generatedUrl, setGeneratedUrl] = React.useState<string | null>(null);
@@ -169,6 +171,7 @@ function LinkTab({ assetId }: LinkTabProps) {
       const body: Record<string, unknown> = {
         permission,
         allowed_download_variants: downloadVariants,
+        fields_visibility: fieldsVisibility,
       };
       if (password.trim()) body.password = password.trim();
       if (expiresAt) body.expires_at = new Date(expiresAt).toISOString();
@@ -245,6 +248,16 @@ function LinkTab({ assetId }: LinkTabProps) {
           <DownloadVariantPicker
             value={downloadVariants}
             onChange={setDownloadVariants}
+          />
+        </div>
+
+        <div>
+          <span className="mb-2 block text-sm text-text-secondary">
+            Fields
+          </span>
+          <FieldsVisibilityPicker
+            value={fieldsVisibility}
+            onChange={setFieldsVisibility}
           />
         </div>
 

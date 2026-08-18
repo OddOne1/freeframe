@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 import uuid
 from datetime import datetime
 from typing import Optional, Literal
-from ..models.share import SharePermission, ShareVisibility, DownloadVariant
+from ..models.share import SharePermission, ShareVisibility, DownloadVariant, FieldsVisibility
 
 
 def variant_values(variants) -> list[str]:
@@ -36,6 +36,7 @@ class ShareLinkCreate(BaseModel):
     expires_at: Optional[datetime] = None
     password: Optional[str] = None
     allowed_download_variants: list[DownloadVariant] = []
+    fields_visibility: FieldsVisibility = FieldsVisibility.disabled
     title: Optional[str] = None
     description: Optional[str] = None
     show_versions: bool = True
@@ -52,6 +53,7 @@ class MultiShareCreate(BaseModel):
     expires_at: Optional[datetime] = None
     password: Optional[str] = None
     allowed_download_variants: list[DownloadVariant] = []
+    fields_visibility: FieldsVisibility = FieldsVisibility.disabled
     show_versions: bool = True
     show_watermark: bool = False
     appearance: ShareLinkAppearance = ShareLinkAppearance()
@@ -69,6 +71,7 @@ class ShareLinkResponse(BaseModel):
     permission: SharePermission
     visibility: str = "public"
     allowed_download_variants: list[DownloadVariant] = []
+    fields_visibility: FieldsVisibility = FieldsVisibility.disabled
     show_versions: bool
     show_watermark: bool
     appearance: dict
@@ -89,6 +92,7 @@ class ShareLinkValidateResponse(BaseModel):
     description: Optional[str] = None
     permission: SharePermission = SharePermission.view
     allowed_download_variants: list[DownloadVariant] = []
+    fields_visibility: FieldsVisibility = FieldsVisibility.disabled
     show_versions: bool = True
     show_watermark: bool = False
     appearance: Optional[dict] = None
@@ -115,6 +119,7 @@ class ShareLinkUpdate(BaseModel):
     password: Optional[str] = None
     expires_at: Optional[datetime] = None
     allowed_download_variants: Optional[list[DownloadVariant]] = None
+    fields_visibility: Optional[FieldsVisibility] = None
 
 
 class ShareLinkListItem(BaseModel):
@@ -189,3 +194,25 @@ class DirectShareResponse(BaseModel):
     permission: SharePermission
     created_at: datetime
     model_config = {"from_attributes": True}
+
+
+class ShareFieldsResponse(BaseModel):
+    """Asset metadata for a share-link viewer (§33).
+
+    One route serves both levels: the `basic` keys are always present, and
+    the two `full`-only keys are None unless the link permits them. That
+    keeps "how much is visible" a single server-side decision rather than
+    something each client re-derives.
+    """
+
+    level: FieldsVisibility
+    name: str
+    asset_type: str
+    description: Optional[str] = None
+    rating: Optional[int] = None
+    due_date: Optional[datetime] = None
+    keywords: list[str] = []
+    #: full only — ffprobe/exiftool output for the primary media file.
+    technical_metadata: Optional[dict] = None
+    #: full only — parsed camera sidecar files (§20/§23).
+    sidecars: Optional[list[dict]] = None

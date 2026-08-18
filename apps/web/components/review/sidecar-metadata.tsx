@@ -274,6 +274,36 @@ const TYPE_LABEL: Record<string, string> = {
   canon_cif: 'Canon clip info',
 }
 
+/**
+ * The sidecar rows themselves, with no fetching and no upload control.
+ *
+ * Split out so a share-link viewer at Fields level `full` renders exactly
+ * these rows (CLAUDE.md §33) from data it received over a share-token
+ * route, rather than a second implementation that would drift from the
+ * provenance/confidence treatment this one carefully does.
+ */
+export function SidecarList({ sidecars }: { sidecars: SidecarFile[] }) {
+  return (
+    <div className="space-y-3">
+      {sidecars.map((s) => {
+        const parserMeta = (s.parsed_metadata?._meta ?? null) as SidecarParserMeta | null
+        return (
+          <div key={s.id} className="space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <FileText className="h-3 w-3 text-text-tertiary shrink-0" />
+              <span className="text-2xs text-text-tertiary truncate">
+                {TYPE_LABEL[s.sidecar_type] ?? s.sidecar_type} · {s.original_filename}
+              </span>
+            </div>
+            {parserMeta && <ConfidenceNote meta={parserMeta} />}
+            <SidecarBody sidecar={s} />
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export function SidecarMetadata({
   assetId,
   canEdit,
@@ -354,23 +384,7 @@ export function SidecarMetadata({
           camera-native clip metadata are matched by filename on upload.
         </p>
       ) : (
-        <div className="space-y-3">
-          {sidecars.map((s) => {
-            const parserMeta = (s.parsed_metadata?._meta ?? null) as SidecarParserMeta | null
-            return (
-              <div key={s.id} className="space-y-1.5">
-                <div className="flex items-center gap-1.5">
-                  <FileText className="h-3 w-3 text-text-tertiary shrink-0" />
-                  <span className="text-2xs text-text-tertiary truncate">
-                    {TYPE_LABEL[s.sidecar_type] ?? s.sidecar_type} · {s.original_filename}
-                  </span>
-                </div>
-                {parserMeta && <ConfidenceNote meta={parserMeta} />}
-                <SidecarBody sidecar={s} />
-              </div>
-            )
-          })}
-        </div>
+        <SidecarList sidecars={sidecars} />
       )}
     </div>
   )
