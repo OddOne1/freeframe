@@ -157,6 +157,22 @@ function VideoFrameConstraint({
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 
+/**
+ * Prepend the API origin to a relative stream URL; leave absolute ones alone.
+ *
+ * Exported because this player is the ONE place a stream URL may be
+ * resolved (CLAUDE.md §32) — anything that resolves before handing a URL
+ * here produces `/api/api/stream/...` and a 404. Callers and tests should
+ * reference this rather than reimplementing the rule: it was previously
+ * written out inline twice in the effect below, and a third copy in a test
+ * is what let a mutation of the real logic go unnoticed.
+ */
+export function resolveStreamUrl(url: string): string {
+  return url.startsWith("/")
+    ? `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${url}`
+    : url;
+}
+
 export function VideoPlayer({
   assetId,
   comments = [],
@@ -211,20 +227,13 @@ export function VideoPlayer({
   useEffect(() => {
     setStreamUrl(null);
     if (initialStreamUrl) {
-      const resolved = initialStreamUrl.startsWith("/")
-        ? `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${initialStreamUrl}`
-        : initialStreamUrl;
-      setStreamUrl(resolved);
+      setStreamUrl(resolveStreamUrl(initialStreamUrl));
       return;
     }
     api
       .get<StreamUrlResponse>(`/assets/${assetId}/stream`)
       .then((data) => {
-        // HLS proxy returns relative paths — prepend API URL
-        const url = data.url.startsWith("/")
-          ? `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${data.url}`
-          : data.url;
-        setStreamUrl(url);
+        setStreamUrl(resolveStreamUrl(data.url));
       })
       .catch(() => {
         /* stream URL errors handled by player error state */

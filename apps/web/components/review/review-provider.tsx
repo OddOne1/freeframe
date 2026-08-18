@@ -118,7 +118,14 @@ export function ReviewProvider({
           created_at: "",
           updated_at: "",
           deleted_at: null,
-          stream_url: resolveApiMediaUrl(streamData?.url) ?? undefined,
+          // RAW, not resolved (CLAUDE.md §32). VideoPlayer prepends
+          // NEXT_PUBLIC_API_URL itself to any stream url starting with "/"
+          // (video-player.tsx:213-217), so resolving here as well produced
+          // `/api/api/stream/hls/master.m3u8` and 404'd every video in a
+          // folder share. The authenticated branch below already leaves
+          // stream_url alone — that asymmetry, feeding one shared consumer,
+          // is what made this reachable from share links only.
+          stream_url: streamData?.url ?? undefined,
           thumbnail_url: resolveApiMediaUrl(streamData?.thumbnail_url),
           latest_version: streamData?.version_id
             ? {
