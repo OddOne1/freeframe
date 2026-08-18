@@ -759,6 +759,9 @@ export interface TranscriptResponse {
 export interface LutGroup {
   id: string
   name: string
+  /** Shared/global rather than one user's (§39). Sent on personal groups too,
+   *  so a group never has to be identified by which endpoint it came from. */
+  is_platform: boolean
   created_at: string
 }
 

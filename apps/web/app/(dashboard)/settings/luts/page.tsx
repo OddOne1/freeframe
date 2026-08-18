@@ -33,12 +33,18 @@ import type { Lut, LutGroup, Project } from '@/types'
 // this wording was decided, not a placeholder.
 const PLATFORM_SECTION_LABEL = 'Platform LUTs'
 
-/** A private drag type rather than application/json, so a section only lights
+/** Private drag types rather than application/json, so a section only lights
  *  up for a LUT being dragged -- dragging a file in from the desktop, or an
  *  asset from elsewhere in the app, must not look like a valid drop here.
  *  The id is unreadable during dragover (only the type list is), which is
- *  exactly why the type has to carry the meaning. */
+ *  exactly why the type has to carry the meaning.
+ *
+ *  Two of them, because a personal group must refuse a platform LUT: dragging
+ *  one *out* of Platform is deliberately not a thing (§34 revision), and
+ *  gating on the type means the zone never lights up for it rather than
+ *  accepting a drop the server would reject. */
 const LUT_DRAG_TYPE = 'application/x-freeframe-lut'
+const PLATFORM_LUT_DRAG_TYPE = 'application/x-freeframe-platform-lut'
 
 /**
  * A section that accepts a dragged LUT.
@@ -48,6 +54,7 @@ const LUT_DRAG_TYPE = 'application/x-freeframe-lut'
  */
 function LutDropZone({
   enabled,
+  accept = [LUT_DRAG_TYPE],
   onDropLut,
   className,
   children,
@@ -55,7 +62,10 @@ function LutDropZone({
   /** False renders a plain section with no drop behaviour and no affordance
    *  -- which is how a non-superadmin sees the Platform section. */
   enabled: boolean
-  onDropLut: (lutId: string) => void
+  /** Which kinds of LUT this zone takes. A personal group takes personal
+   *  LUTs only; the platform side takes both, promoting a personal one. */
+  accept?: string[]
+  onDropLut: (lutId: string, fromPlatform: boolean) => void
   className?: string
   children: React.ReactNode
 }) {
@@ -72,7 +82,7 @@ function LutDropZone({
       )}
       data-drop-active={over ? 'true' : undefined}
       onDragOver={(e) => {
-        if (!e.dataTransfer.types.includes(LUT_DRAG_TYPE)) return
+        if (!accept.some((type) => e.dataTransfer.types.includes(type))) return
         e.preventDefault()
         e.dataTransfer.dropEffect = 'move'
         setOver(true)
@@ -84,10 +94,11 @@ function LutDropZone({
         setOver(false)
       }}
       onDrop={(e) => {
-        const lutId = e.dataTransfer.getData(LUT_DRAG_TYPE)
+        const type = accept.find((t) => e.dataTransfer.getData(t))
+        const lutId = type ? e.dataTransfer.getData(type) : ''
         e.preventDefault()
         setOver(false)
-        if (lutId) onDropLut(lutId)
+        if (lutId) onDropLut(lutId, type === PLATFORM_LUT_DRAG_TYPE)
       }}
     >
       {children}
@@ -112,6 +123,13 @@ export default function LutsSettingsPage() {
     '/me/lut-groups',
     (key: string) => api.get<LutGroup[]>(key),
   )
+  // One shared set for everyone, not a per-superadmin view (§39) -- which is
+  // exactly why this is a separate endpoint from /me/lut-groups rather than
+  // a filter on it.
+  const { data: platformGroups, mutate: mutatePlatformGroups } = useSWR<LutGroup[]>(
+    '/luts/platform-groups',
+    (key: string) => api.get<LutGroup[]>(key),
+  )
   const { data: projects } = useSWR<Project[]>(
     '/projects',
     (key: string) => api.get<Project[]>(key),
@@ -130,12 +148,14 @@ export default function LutsSettingsPage() {
   // the same way `deleting` is one ConfirmDialog rather than one per row.
   const [previewing, setPreviewing] = React.useState<Lut | null>(null)
   const [deletingGroup, setDeletingGroup] = React.useState<LutGroup | null>(null)
-  const [newGroupOpen, setNewGroupOpen] = React.useState(false)
+  // Which library the inline "new group" form is creating into, or null when
+  // it is closed. Platform groups are superadmin-only, gated at the button.
+  const [newGroupIn, setNewGroupIn] = React.useState<'personal' | 'platform' | null>(null)
   const [newGroupName, setNewGroupName] = React.useState('')
 
   const refreshAll = React.useCallback(async () => {
-    await Promise.all([mutate(), mutatePlatform(), mutateGroups()])
-  }, [mutate, mutatePlatform, mutateGroups])
+    await Promise.all([mutate(), mutatePlatform(), mutateGroups(), mutatePlatformGroups()])
+  }, [mutate, mutatePlatform, mutateGroups, mutatePlatformGroups])
 
   async function handleFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? [])
@@ -183,7 +203,11 @@ export default function LutsSettingsPage() {
     if (!deletingGroup) return
     const target = deletingGroup
     setDeletingGroup(null)
-    await api.delete(`/me/lut-groups/${target.id}`)
+    await api.delete(
+      target.is_platform
+        ? `/luts/platform-groups/${target.id}`
+        : `/me/lut-groups/${target.id}`,
+    )
     await refreshAll()
   }
 
@@ -200,6 +224,26 @@ export default function LutsSettingsPage() {
     [luts, refreshAll],
   )
 
+  /** Dropping onto a platform group. A LUT dragged up from the personal
+   *  library is promoted and filed in one PATCH — the server checks the pair
+   *  against what the request leaves behind, so both fields together are
+   *  valid where either alone would not be. */
+  const moveLutToPlatformGroup = React.useCallback(
+    async (lutId: string, groupId: string | null) => {
+      const current = (luts ?? []).find((l) => l.id === lutId)
+      if (!current) return
+      const alreadyThere =
+        current.is_platform_wide && (current.group_id ?? null) === groupId
+      if (alreadyThere) return
+      await api.patch(`/me/luts/${lutId}`, {
+        group_id: groupId,
+        ...(current.is_platform_wide ? {} : { is_platform_wide: true }),
+      })
+      await refreshAll()
+    },
+    [luts, refreshAll],
+  )
+
   /** Dropping onto the pinned section promotes, matching the row's own
    *  Platform button. Demoting by dragging back out isn't offered: a promoted
    *  LUT is still someone's own row underneath, so "out" has no one target. */
@@ -207,6 +251,8 @@ export default function LutsSettingsPage() {
     async (lutId: string) => {
       const current = (luts ?? []).find((l) => l.id === lutId)
       if (!current || current.is_platform_wide) return
+      // No group_id sent: the server drops a personal group the LUT no
+      // longer belongs in rather than leaving an invalid pair behind.
       await api.patch(`/me/luts/${lutId}`, { is_platform_wide: true })
       await refreshAll()
     },
@@ -215,11 +261,14 @@ export default function LutsSettingsPage() {
 
   async function handleCreateGroup() {
     const name = newGroupName.trim()
-    if (!name) return
-    await api.post('/me/lut-groups', { name })
+    if (!name || !newGroupIn) return
+    await api.post(
+      newGroupIn === 'platform' ? '/luts/platform-groups' : '/me/lut-groups',
+      { name },
+    )
     setNewGroupName('')
-    setNewGroupOpen(false)
-    await mutateGroups()
+    setNewGroupIn(null)
+    await refreshAll()
   }
 
   const ownLuts = luts ?? []
@@ -229,7 +278,34 @@ export default function LutsSettingsPage() {
   const ownNotPlatform = ownLuts.filter((l) => !platformIds.has(l.id))
 
   const groupList = groups ?? []
+  const platformGroupList = platformGroups ?? []
   const ungrouped = ownNotPlatform.filter((l) => !l.group_id)
+  const platformUngrouped = platform.filter((l) => !l.group_id)
+
+  /** One row in the Platform section. Read-only for non-superadmins even when
+   *  they happen to own it: managing a published platform LUT is a superadmin
+   *  action. A superadmin can only drag their OWN — PATCH /me/luts is
+   *  owner-scoped server-side, so offering the drag on someone else's row
+   *  would offer a 404. */
+  const renderPlatformRow = (lut: Lut) => (
+    <LutRow
+      key={lut.id}
+      lut={lut}
+      groups={platformGroupList}
+      projects={projects ?? []}
+      canManage={isSuperAdmin && lut.is_owner}
+      canTogglePlatform={isSuperAdmin}
+      // Deliberate: no relative-time label on Platform LUT rows. created_at
+      // is still stored and still drives sort order -- this is display-only.
+      showTimestamp={false}
+      onChanged={refreshAll}
+      onDelete={() => setDeleting(lut)}
+      onPreview={() => setPreviewing(lut)}
+      // Draggable between platform groups, not out of Platform: the zones
+      // that accept this drag type are all on the platform side.
+      canDrag={isSuperAdmin && lut.is_owner}
+    />
+  )
 
   return (
     <div className="p-6 max-w-3xl space-y-8">
@@ -251,7 +327,14 @@ export default function LutsSettingsPage() {
           onChange={handleFiles}
           className="hidden"
         />
-        <Button size="sm" variant="secondary" onClick={() => setNewGroupOpen(true)}>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => {
+            setNewGroupName('')
+            setNewGroupIn('personal')
+          }}
+        >
           <FolderPlus className="h-4 w-4" />
           New group
         </Button>
@@ -298,37 +381,91 @@ export default function LutsSettingsPage() {
             </span>
           }
         >
-        {platform.length === 0 ? (
+        {platform.length === 0 && platformGroupList.length === 0 ? (
           <p className="text-xs text-text-tertiary border border-border border-dashed rounded-lg px-3 py-4">
             {isSuperAdmin
               ? 'No platform LUTs yet. Drag one here, or use the Platform button on any of your LUTs.'
               : 'No platform LUTs have been published yet.'}
           </p>
         ) : (
-          <div className="space-y-3">
-            {platform.map((lut) => (
-              <LutRow
-                key={lut.id}
-                lut={lut}
-                groups={groupList}
-                projects={projects ?? []}
-                // Read-only for non-superadmins even when they happen to own
-                // the row: management of a published platform LUT is a
-                // superadmin action.
-                canManage={isSuperAdmin && lut.is_owner}
-                canTogglePlatform={isSuperAdmin}
-                // Deliberate: no relative-time label on Platform LUT rows.
-                // created_at is still stored and still drives sort order --
-                // this is display-only.
-                showTimestamp={false}
-                onChanged={refreshAll}
-                onDelete={() => setDeleting(lut)}
-                onPreview={() => setPreviewing(lut)}
-                // Dragging a promoted LUT back out isn't offered -- see
-                // promoteLutToPlatform.
-                canDrag={false}
-              />
-            ))}
+          <div className="space-y-6">
+            {platformGroupList.map((group) => {
+              const members = platform.filter((l) => l.group_id === group.id)
+              return (
+                <LutDropZone
+                  key={group.id}
+                  enabled={isSuperAdmin}
+                  accept={[LUT_DRAG_TYPE, PLATFORM_LUT_DRAG_TYPE]}
+                  onDropLut={(lutId) => void moveLutToPlatformGroup(lutId, group.id)}
+                  className="space-y-3"
+                >
+                  <GroupSection
+                    group={group}
+                    count={members.length}
+                    canManage={isSuperAdmin}
+                    onChanged={refreshAll}
+                    onDelete={() => setDeletingGroup(group)}
+                  >
+                    {members.length === 0 ? (
+                      <p className="text-xs text-text-tertiary">
+                        {isSuperAdmin ? 'Empty — drag a LUT here.' : 'Empty.'}
+                      </p>
+                    ) : (
+                      <div className="space-y-3">
+                        {members.map((lut) => renderPlatformRow(lut))}
+                      </div>
+                    )}
+                  </GroupSection>
+                </LutDropZone>
+              )
+            })}
+
+            {/* Ungrouped platform LUTs. Rendered whenever a platform group
+                exists, so a LUT can be dragged back out of one. */}
+            {(platformUngrouped.length > 0 || platformGroupList.length > 0) && (
+              <LutDropZone
+                enabled={isSuperAdmin}
+                accept={[LUT_DRAG_TYPE, PLATFORM_LUT_DRAG_TYPE]}
+                onDropLut={(lutId) => void moveLutToPlatformGroup(lutId, null)}
+                className="space-y-3"
+              >
+                {platformGroupList.length > 0 ? (
+                  <CollapsibleSection
+                    storageKey="luts-platform-ungrouped"
+                    title="Ungrouped"
+                    count={platformUngrouped.length}
+                    className="space-y-3"
+                  >
+                    {platformUngrouped.length === 0 ? (
+                      <p className="text-xs text-text-tertiary">
+                        {isSuperAdmin ? 'Empty — drag a LUT here.' : 'Empty.'}
+                      </p>
+                    ) : (
+                      <div className="space-y-3">
+                        {platformUngrouped.map((lut) => renderPlatformRow(lut))}
+                      </div>
+                    )}
+                  </CollapsibleSection>
+                ) : (
+                  <div className="space-y-3">
+                    {platformUngrouped.map((lut) => renderPlatformRow(lut))}
+                  </div>
+                )}
+              </LutDropZone>
+            )}
+
+            {isSuperAdmin && (
+              <button
+                onClick={() => {
+                  setNewGroupName('')
+                  setNewGroupIn('platform')
+                }}
+                className="flex items-center gap-1.5 text-xs text-text-tertiary hover:text-text-primary transition-colors"
+              >
+                <FolderPlus className="h-3.5 w-3.5" />
+                New platform group
+              </button>
+            )}
           </div>
         )}
         </CollapsibleSection>
@@ -442,8 +579,9 @@ export default function LutsSettingsPage() {
         </CollapsibleSection>
       )}
 
-      {/* New group */}
-      {newGroupOpen && (
+      {/* New group — the same form for both libraries; which one it creates
+          into is `newGroupIn`, so there is one create path rather than two. */}
+      {newGroupIn && (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-secondary p-3">
           <Input
             autoFocus
@@ -451,15 +589,20 @@ export default function LutsSettingsPage() {
             onChange={(e) => setNewGroupName(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') void handleCreateGroup()
-              if (e.key === 'Escape') setNewGroupOpen(false)
+              if (e.key === 'Escape') setNewGroupIn(null)
             }}
-            placeholder="Group name"
+            placeholder={
+              newGroupIn === 'platform' ? 'Platform group name' : 'Group name'
+            }
+            aria-label={
+              newGroupIn === 'platform' ? 'New platform group name' : 'New group name'
+            }
             className="h-8 text-xs"
           />
           <Button size="sm" onClick={handleCreateGroup} disabled={!newGroupName.trim()}>
             Create
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => setNewGroupOpen(false)}>
+          <Button size="sm" variant="ghost" onClick={() => setNewGroupIn(null)}>
             Cancel
           </Button>
         </div>
@@ -565,7 +708,13 @@ function LutRow({
       // input, and a row that flies away mid-edit is unusable.
       draggable={canDrag && !renaming}
       onDragStart={(e) => {
-        e.dataTransfer.setData(LUT_DRAG_TYPE, lut.id)
+        // The type says which library the LUT came from, so a personal group
+        // never lights up for a platform LUT (§39). It is the only thing a
+        // drop zone can read during dragover.
+        e.dataTransfer.setData(
+          lut.is_platform_wide ? PLATFORM_LUT_DRAG_TYPE : LUT_DRAG_TYPE,
+          lut.id,
+        )
         e.dataTransfer.effectAllowed = 'move'
       }}
       className={cn(
@@ -692,7 +841,10 @@ function LutRow({
                 <DropdownMenu.Separator className="my-1 h-px bg-border" />
 
                 <DropdownMenu.Label className="px-2.5 py-1 text-2xs uppercase tracking-wide text-text-tertiary">
-                  Move to group
+                  {/* `groups` is whichever library this row lives in — a
+                      platform LUT is only offered platform groups, matching
+                      what the server will accept. */}
+                  {lut.is_platform_wide ? 'Move to platform group' : 'Move to group'}
                 </DropdownMenu.Label>
                 <DropdownMenu.Item
                   onSelect={() => void patch({ group_id: null })}
@@ -747,12 +899,16 @@ function LutRow({
 function GroupSection({
   group,
   count,
+  canManage = true,
   onChanged,
   onDelete,
   children,
 }: {
   group: LutGroup
   count: number
+  /** Personal groups are always the viewer's own; a platform group is only
+   *  editable by a superadmin, and shows no actions to anyone else. */
+  canManage?: boolean
   onChanged: () => void | Promise<void>
   onDelete: () => void
   children: React.ReactNode
@@ -764,7 +920,12 @@ function GroupSection({
     const name = draftName.trim()
     setRenaming(false)
     if (!name || name === group.name) return
-    await api.patch(`/me/lut-groups/${group.id}`, { name })
+    await api.patch(
+      group.is_platform
+        ? `/luts/platform-groups/${group.id}`
+        : `/me/lut-groups/${group.id}`,
+      { name },
+    )
     await onChanged()
   }
 
@@ -775,7 +936,7 @@ function GroupSection({
       title={group.name}
       count={count}
       titleOverride={
-        renaming ? (
+        renaming && canManage ? (
           <input
             className="min-w-0 flex-1 border-b border-accent bg-transparent px-0.5 text-sm font-semibold text-text-primary outline-none"
             value={draftName}
@@ -794,24 +955,26 @@ function GroupSection({
         ) : undefined
       }
       actions={
-        <>
-          <button
-            onClick={() => {
-              setDraftName(group.name)
-              setRenaming(true)
-            }}
-            aria-label={`Rename group ${group.name}`}
-            className="text-xs text-text-tertiary hover:text-text-primary transition-colors"
-          >
-            Rename
-          </button>
-          <button
-            onClick={onDelete}
-            className="text-xs text-text-tertiary hover:text-status-error transition-colors"
-          >
-            Delete group
-          </button>
-        </>
+        canManage ? (
+          <>
+            <button
+              onClick={() => {
+                setDraftName(group.name)
+                setRenaming(true)
+              }}
+              aria-label={`Rename group ${group.name}`}
+              className="text-xs text-text-tertiary hover:text-text-primary transition-colors"
+            >
+              Rename
+            </button>
+            <button
+              onClick={onDelete}
+              className="text-xs text-text-tertiary hover:text-status-error transition-colors"
+            >
+              Delete group
+            </button>
+          </>
+        ) : undefined
       }
     >
       {children}

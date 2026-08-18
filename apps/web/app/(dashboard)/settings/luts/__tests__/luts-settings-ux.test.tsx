@@ -133,8 +133,9 @@ describe('multi-file upload', () => {
 
     await waitFor(() => expect(upload).toHaveBeenCalledTimes(3))
     expect(upload.mock.calls.map((c) => c[0])).toEqual(['/me/luts', '/me/luts', '/me/luts'])
-    // One refresh for the batch, not one per file: three endpoints, once each.
-    await waitFor(() => expect(get).toHaveBeenCalledTimes(3))
+    // One refresh for the batch, not one per file: the four endpoints
+    // refreshAll revalidates, once each.
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(4))
   })
 
   it('keeps going after a failure and names the file that failed', async () => {
@@ -218,21 +219,33 @@ describe('drag and drop grouping', () => {
     expect(target).not.toHaveAttribute('data-drop-active')
   })
 
-  it('does not make a promoted LUT a drag source', async () => {
+  it('marks a promoted LUT with the platform drag type, so it cannot leave', async () => {
     get.mockImplementation((path: string) => {
       if (path === '/me/luts') return Promise.resolve([UNGROUPED])
       if (path === '/luts/platform')
         return Promise.resolve([{ ...UNGROUPED, is_platform_wide: true }])
-      if (path === '/me/lut-groups') return Promise.resolve([])
+      if (path === '/me/lut-groups') return Promise.resolve([GROUP])
       return Promise.resolve([])
     })
     renderPage()
     const heading = await screen.findByRole('heading', { name: 'Kodak 2383', level: 3 })
     const row = heading.closest('div[draggable]') as HTMLElement
 
-    // Dragging back OUT of Platform was deliberately not built: a promoted
-    // LUT is still someone's own row underneath, so "out" has no one target.
-    expect(row).toHaveAttribute('draggable', 'false')
+    // §39 made platform rows draggable so they can be filed into platform
+    // groups. "Not out of Platform" is now enforced by the drag TYPE rather
+    // than by refusing to drag at all: a personal group never lights up.
+    const dt = dataTransfer()
+    fireEvent.dragStart(row, { dataTransfer: dt })
+    expect(dt.getData('application/x-freeframe-platform-lut')).toBe('lut-1')
+    expect(dt.getData('application/x-freeframe-lut')).toBe('')
+
+    const personal = await sectionFor('Show LUTs')
+    fireEvent.dragOver(personal, { dataTransfer: dt })
+    expect(personal).not.toHaveAttribute('data-drop-active')
+
+    fireEvent.drop(personal, { dataTransfer: dt })
+    await Promise.resolve()
+    expect(patch).not.toHaveBeenCalled()
   })
 
   it('promotes a LUT dropped on the Platform section, for a superadmin only', async () => {

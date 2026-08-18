@@ -29,16 +29,37 @@ class LutGroup(Base):
     for nested LUT groups, and adding parent_id later is a cheap column
     rather than something to build preemptively.
 
-    Orthogonal to visibility: a group says nothing about who can see a LUT.
-    is_platform_wide and ProjectLutShare control that, so a superadmin can
-    file a platform-wide LUT under their own "Sony Cameras" group purely
-    for their own organization.
+    Two kinds, split by `is_platform` (§39):
+
+    * personal (the default) -- owned by one user, listed only for them.
+    * platform -- one shared set, listed identically for everyone and
+      editable by any superadmin. `owner_id` still records who created it;
+      it is not who may change it.
+
+    The split mirrors Lut.is_platform_wide below rather than inventing a
+    second mechanism: a flag alongside unchanged ownership, not a transfer
+    and not a nullable owner. Keeping owner_id NOT NULL also means no
+    existing query or FK had to be revisited.
+
+    A LUT and its group must agree on that flag -- a platform LUT belongs
+    to a platform group, a personal LUT to a personal one -- enforced in
+    routers/luts.py::update_lut. That narrows this docstring's original
+    claim that groups are entirely orthogonal to visibility: filing a
+    platform-wide LUT under a personal group is no longer allowed. It was
+    never actually reachable, since the Settings page lists a platform LUT
+    only in the Platform section and never under the personal group its
+    group_id pointed at.
     """
     __tablename__ = "lut_groups"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Shared/global rather than one user's. Any superadmin may create,
+    # rename, delete and file into these; every user can see them.
+    is_platform: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

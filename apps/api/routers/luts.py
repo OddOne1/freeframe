@@ -100,11 +100,54 @@ def _to_response(
     )
 
 
+def _require_superadmin(current_user: User) -> None:
+    if current_user.role != UserGlobalRole.superadmin:
+        raise HTTPException(
+            status_code=403,
+            detail="Only superadmins can manage platform LUT groups",
+        )
+
+
 def _get_own_group(db: Session, group_id: uuid.UUID, current_user: User) -> LutGroup:
+    """A personal group belonging to the caller. Platform groups are
+    deliberately not reachable here -- they are shared, so ownership is the
+    wrong question to ask about them (see _get_platform_group)."""
     group = db.query(LutGroup).filter(
         LutGroup.id == group_id,
         LutGroup.owner_id == current_user.id,
+        LutGroup.is_platform.is_(False),
         LutGroup.deleted_at.is_(None),
+    ).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return group
+
+
+def _get_platform_group(db: Session, group_id: uuid.UUID) -> LutGroup:
+    """One shared platform group, whoever created it.
+
+    No owner filter on purpose: §39's whole point is that every superadmin
+    sees and edits the same set. The caller checks superadmin separately --
+    reading one is allowed to anyone, changing it is not.
+    """
+    group = db.query(LutGroup).filter(
+        LutGroup.id == group_id,
+        LutGroup.is_platform.is_(True),
+        LutGroup.deleted_at.is_(None),
+    ).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return group
+
+
+def _group_for_assignment(db: Session, group_id: uuid.UUID, current_user: User) -> LutGroup:
+    """The group a LUT is being filed into: the caller's own, or any
+    platform group."""
+    group = db.query(LutGroup).filter(
+        LutGroup.id == group_id,
+        LutGroup.deleted_at.is_(None),
+    ).filter(
+        (LutGroup.is_platform.is_(True)) | (LutGroup.owner_id == current_user.id),
     ).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -236,6 +279,9 @@ def list_lut_groups(
 ):
     return db.query(LutGroup).filter(
         LutGroup.owner_id == current_user.id,
+        # A superadmin's own platform groups belong in the platform listing,
+        # not doubled into their personal library.
+        LutGroup.is_platform.is_(False),
         LutGroup.deleted_at.is_(None),
     ).order_by(LutGroup.name).all()
 
@@ -268,6 +314,93 @@ def delete_lut_group(
     pointing at a deleted row -- the FK's ON DELETE SET NULL only fires on a
     hard delete, which this deliberately isn't."""
     group = _get_own_group(db, group_id, current_user)
+    group.deleted_at = datetime.now(timezone.utc)
+    db.query(Lut).filter(Lut.group_id == group.id).update(
+        {"group_id": None}, synchronize_session=False
+    )
+    db.commit()
+
+
+# ─── Platform groups (§39) ───────────────────────────────────────────────────
+#
+# One shared set, not a private view per superadmin. Any superadmin creates,
+# renames, deletes and files into them; every authenticated user can read
+# them, matching GET /luts/platform, which is likewise readable by everyone
+# and manageable by nobody else.
+
+
+@router.get("/luts/platform-groups", response_model=list[LutGroupResponse])
+def list_platform_lut_groups(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Every platform group, identically, for whoever asks.
+
+    Deliberately unfiltered by owner: two superadmins organising the same
+    shared list into contradictory sets of groups is the thing this design
+    rejects.
+    """
+    return db.query(LutGroup).filter(
+        LutGroup.is_platform.is_(True),
+        LutGroup.deleted_at.is_(None),
+    ).order_by(LutGroup.name).all()
+
+
+@router.post(
+    "/luts/platform-groups",
+    response_model=LutGroupResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_platform_lut_group(
+    body: LutGroupCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_superadmin(current_user)
+    name = (body.name or "").strip()[:255]
+    if not name:
+        raise HTTPException(status_code=400, detail="Group name is required")
+    # owner_id records who created it; it is not who may change it.
+    group = LutGroup(owner_id=current_user.id, name=name, is_platform=True)
+    db.add(group)
+    db.commit()
+    db.refresh(group)
+    return group
+
+
+@router.patch("/luts/platform-groups/{group_id}", response_model=LutGroupResponse)
+def rename_platform_lut_group(
+    group_id: uuid.UUID,
+    body: LutGroupUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_superadmin(current_user)
+    group = _get_platform_group(db, group_id)
+    if body.name is not None:
+        name = body.name.strip()[:255]
+        if not name:
+            raise HTTPException(status_code=400, detail="Group name is required")
+        group.name = name
+    db.commit()
+    db.refresh(group)
+    return group
+
+
+@router.delete(
+    "/luts/platform-groups/{group_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_platform_lut_group(
+    group_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Soft delete, same shape as the personal one: members are explicitly
+    ungrouped rather than left pointing at a deleted row, since the FK's
+    ON DELETE SET NULL only fires on a hard delete."""
+    _require_superadmin(current_user)
+    group = _get_platform_group(db, group_id)
     group.deleted_at = datetime.now(timezone.utc)
     db.query(Lut).filter(Lut.group_id == group.id).update(
         {"group_id": None}, synchronize_session=False
@@ -311,8 +444,29 @@ def update_lut(
         if body.group_id is None:
             lut.group_id = None
         else:
-            _get_own_group(db, body.group_id, current_user)  # 404s if not the caller's
+            # The caller's own group, or any platform group (§39).
+            group = _group_for_assignment(db, body.group_id, current_user)
+            # A platform LUT belongs in a platform group and a personal LUT
+            # in a personal one. Checked against the values this request is
+            # leaving behind, so promoting and filing in one call is fine.
+            if group.is_platform != lut.is_platform_wide:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "A platform-wide LUT can only go in a platform group"
+                        if lut.is_platform_wide
+                        else "A personal LUT can only go in one of your own groups"
+                    ),
+                )
             lut.group_id = body.group_id
+    elif "is_platform_wide" in fields_set and lut.group_id is not None:
+        # Promoting or demoting without saying anything about the group:
+        # drop a group that the LUT no longer belongs in, rather than
+        # leaving a pair the rule above would reject. This is the path the
+        # Settings page's Platform button and its drag-to-promote take.
+        existing = db.query(LutGroup).filter(LutGroup.id == lut.group_id).first()
+        if existing is not None and existing.is_platform != lut.is_platform_wide:
+            lut.group_id = None
 
     db.commit()
     db.refresh(lut)

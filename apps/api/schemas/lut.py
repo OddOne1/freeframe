@@ -8,6 +8,9 @@ from pydantic import BaseModel
 class LutGroupResponse(BaseModel):
     id: uuid.UUID
     name: str
+    #: Shared/global rather than one user's. Sent on personal groups too, so
+    #: the client never has to infer which endpoint a group came from.
+    is_platform: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}
