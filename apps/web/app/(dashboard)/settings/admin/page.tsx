@@ -765,10 +765,10 @@ function roleBadgeClass(role: ProjectRole): string {
 // to the server (_check_owner_storage_allocation returns early on it) and to
 // the rest of this UI, so the input says so out loud rather than letting a
 // superadmin clear the field expecting the default and hand out unlimited
-// storage instead. The 200GB is a column server_default that only ever
-// applied at INSERT.
-
-const DEFAULT_USER_STORAGE_GB = 200;
+// storage instead. The 200GB default applies at INSERT only -- it now lives
+// on the model itself (§37), so a new account reads "Currently 200 GB" here
+// on its own and the line no longer has to advertise a default the field
+// was not showing.
 
 function UserStorageLimit({ user }: { user: AdminUser }) {
   const toField = React.useCallback(
@@ -839,8 +839,6 @@ function UserStorageLimit({ user }: { user: AdminUser }) {
         {user.storage_limit_bytes === null || user.storage_limit_bytes === undefined
           ? "Currently unlimited"
           : `Currently ${formatBytes(user.storage_limit_bytes)}`}
-        {" · "}
-        {DEFAULT_USER_STORAGE_GB} GB default
       </p>
       {error && <p className="max-w-[200px] text-[10px] text-status-error">{error}</p>}
     </div>

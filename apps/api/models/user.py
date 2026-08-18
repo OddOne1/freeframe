@@ -21,6 +21,14 @@ class UserGlobalRole(str, PyEnum):
     superuser = "superuser"
     user = "user"
 
+#: Every new account starts with this much storage. Declared here, on the
+#: model, and not only as the migration's schema-level default -- at least one
+#: real row (2026-08-18) was inserted with NULL despite that default existing,
+#: and nothing in code can audit why after the fact. NULL still means
+#: "unlimited"; an admin can set that deliberately afterwards. This only
+#: governs what a row gets when nobody says otherwise.
+DEFAULT_STORAGE_LIMIT_BYTES = 200 * 1024 ** 3
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -31,7 +39,16 @@ class User(Base):
     password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[UserStatus] = mapped_column(Enum(UserStatus), default=UserStatus.active)
     role: Mapped[UserGlobalRole] = mapped_column(Enum(UserGlobalRole), default=UserGlobalRole.user, server_default='user')
-    storage_limit_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # Both defaults on purpose, matching `role` directly above: the Python one
+    # fills the value in for every INSERT this app makes regardless of insert
+    # path, the server_default covers anything that reaches the table without
+    # going through the ORM.
+    storage_limit_bytes: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        nullable=True,
+        default=DEFAULT_STORAGE_LIMIT_BYTES,
+        server_default=str(DEFAULT_STORAGE_LIMIT_BYTES),
+    )
     email_verified: Mapped[bool] = mapped_column(default=False)
     invite_token: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     invite_token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
