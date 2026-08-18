@@ -36,7 +36,16 @@ export function LutThumbnail({ lut, className }: LutThumbnailProps) {
     >
       {src && (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={src} alt="" aria-hidden="true" className="h-full w-full object-cover" />
+        <img
+          src={src}
+          alt=""
+          aria-hidden="true"
+          // An <img> is natively draggable with no attribute set (CLAUDE.md
+          // §24b), and that drag wins over a draggable ancestor's -- which
+          // would break dragging a Settings row by its swatch.
+          draggable={false}
+          className="h-full w-full object-cover"
+        />
       )}
     </span>
   )
