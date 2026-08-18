@@ -15,6 +15,7 @@ vi.mock('@/lib/api', () => ({
 }))
 
 import { AssetGrid } from '../asset-grid'
+import { useViewStore } from '@/stores/view-store'
 
 function asset(id: string, name: string): Asset {
   return {
@@ -53,8 +54,7 @@ function setup(overrides: Record<string, unknown> = {}) {
       assets={ASSETS}
       projectId="p-1"
       projectName="Proj"
-      layout="grid"
-      {...(handlers as Record<string, never>)}
+      {...handlers}
     />,
   )
   return { ...utils, handlers }
@@ -71,7 +71,13 @@ function menuItems() {
   return screen.queryAllByRole('menuitem').map((i) => i.textContent?.trim())
 }
 
-beforeEach(() => { vi.clearAllMocks() })
+beforeEach(() => {
+  vi.clearAllMocks()
+  // `layout` is not a prop — the grid reads it from useViewStore, so it is
+  // set here rather than passed. An earlier version passed layout="grid"
+  // as a prop, which TypeScript rejected and which had been doing nothing.
+  useViewStore.setState({ layout: 'grid', flattenFolders: false })
+})
 
 describe('single-asset right-click', () => {
   it('offers exactly what the kebab menu offers', async () => {
@@ -243,8 +249,7 @@ describe('folder tiles are not empty canvas', () => {
         folders={[{ id: 'f-1', name: 'Dailies', project_id: 'p-1' } as never]}
         projectId="p-1"
         projectName="Proj"
-        layout="grid"
-        {...(allHandlers() as Record<string, never>)}
+          {...allHandlers()}
       />,
     )
     const folder = document.querySelector('[data-folder-card="f-1"]')

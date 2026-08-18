@@ -133,8 +133,33 @@ export default function ProjectDetailPage() {
   );
   const { rightPanelOpen, flattenFolders } = useViewStore();
 
-  const [currentFolderId, setCurrentFolderId] = React.useState<string | null>(
-    searchParams.get("folder") || null,
+  /**
+   * The URL is the source of truth for which folder is open (§29).
+   *
+   * This used to be `useState(searchParams.get("folder"))`. A useState
+   * initializer runs once, and a breadcrumb click is a same-route,
+   * query-only transition — so Next never remounts the page, the state
+   * never updated, and clicking a crumb changed the address bar and
+   * nothing else. Back/forward were broken for the same reason, and
+   * additionally because the only writer used window.history.replaceState,
+   * which the Next router never hears about.
+   *
+   * Derived every render instead, so the crumb links, the back button and a
+   * cold load with ?folder= in the URL all go through one mechanism.
+   */
+  const currentFolderId = searchParams.get("folder") || null;
+
+  const goToFolder = React.useCallback(
+    (folderId: string | null, opts?: { replace?: boolean }) => {
+      const url = folderId
+        ? `/projects/${projectId}?folder=${folderId}`
+        : `/projects/${projectId}`;
+      // scroll:false — moving between folders shouldn't jump the page to
+      // the top the way a genuine route change would.
+      if (opts?.replace) router.replace(url, { scroll: false });
+      else router.push(url, { scroll: false });
+    },
+    [projectId, router],
   );
   const [showTrash, setShowTrash] = React.useState(false);
   const [showShareLinks, setShowShareLinks] = React.useState(false);
@@ -555,16 +580,14 @@ export default function ProjectDetailPage() {
 
   const handleSelectFolder = React.useCallback(
     (folderId: string | null) => {
-      setCurrentFolderId(folderId);
       setShowTrash(false);
       setShowShareLinks(false);
       setSelectedShareLink(null);
-      const url = folderId
-        ? `/projects/${projectId}?folder=${folderId}`
-        : `/projects/${projectId}`;
-      window.history.replaceState(null, "", url);
+      // push, not replace: stepping in and out of folders with the back
+      // button is the behaviour this fix exists to provide.
+      goToFolder(folderId);
     },
-    [projectId],
+    [goToFolder],
   );
 
   return (
@@ -605,7 +628,10 @@ export default function ProjectDetailPage() {
             onSelectFolder={handleSelectFolder}
             onShowTrash={() => {
               setShowTrash(true);
-              setCurrentFolderId(null);
+              // replace, not push: Trash and Share Links aren't in the URL,
+              // so a history entry here would let Back restore the folder
+              // while leaving this view open (§29).
+              goToFolder(null, { replace: true });
               setShowShareLinks(false);
               setSelectedShareLink(null);
             }}
@@ -674,7 +700,10 @@ export default function ProjectDetailPage() {
                   setShowShareLinks(true);
                   setSelectedShareLink(null);
                   setShowTrash(false);
-                  setCurrentFolderId(null);
+                  // replace, not push: Trash and Share Links aren't in the URL,
+                  // so a history entry here would let Back restore the folder
+                  // while leaving this view open (§29).
+                  goToFolder(null, { replace: true });
                 }}
                 className={cn(
                   "w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm transition-colors",
@@ -705,7 +734,10 @@ export default function ProjectDetailPage() {
                     setShowShareLinks(true);
                     setSelectedShareLink(link.token);
                     setShowTrash(false);
-                    setCurrentFolderId(null);
+                    // replace, not push: Trash and Share Links aren't in the URL,
+                    // so a history entry here would let Back restore the folder
+                    // while leaving this view open (§29).
+                    goToFolder(null, { replace: true });
                   }}
                 >
                   {link.share_type === "folder" ? (
