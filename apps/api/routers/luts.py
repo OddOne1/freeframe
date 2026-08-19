@@ -37,10 +37,13 @@ from .hls_proxy import proxy_url_for
 
 router = APIRouter(tags=["luts"])
 
-# A .cube is plain text: `LUT_3D_SIZE N` then N^3 float triples. Size 64 is
-# already ~1MB of text; anything past that is far outside normal use and is
-# far more likely to be a mis-uploaded file than a real LUT.
-MAX_CUBE_BYTES = 8 * 1024 * 1024
+# A .cube is plain text: `LUT_3D_SIZE N` then N^3 float triples. MAX_LUT_SIZE
+# is what actually bounds a sane LUT -- 64^3 is ~1MB of text -- and the byte
+# cap is only a backstop against something absurd being streamed in before
+# the header is even parsed. Raised from 8MB to 1GB (§42): the old figure was
+# rejecting legitimate high-precision exports, and the real guard against a
+# nonsense file is _parse_cube_size, which runs on every upload regardless.
+MAX_CUBE_BYTES = 1 * 1024 * 1024 * 1024
 MAX_LUT_SIZE = 64
 
 
@@ -309,7 +312,7 @@ async def upload_lut(
     """
     body = await file.read()
     if len(body) > MAX_CUBE_BYTES:
-        raise HTTPException(status_code=400, detail="LUT file too large (max 8MB)")
+        raise HTTPException(status_code=400, detail="LUT file too large (max 1GB)")
     try:
         text = body.decode("utf-8-sig")
     except UnicodeDecodeError:

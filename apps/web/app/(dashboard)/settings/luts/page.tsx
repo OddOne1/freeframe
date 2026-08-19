@@ -14,6 +14,7 @@ import {
   Check,
   Globe,
   FolderPlus,
+  FolderUp,
   ChevronDown,
   Pencil,
 } from 'lucide-react'
@@ -44,6 +45,48 @@ const PLATFORM_SECTION_LABEL = 'Platform LUTs'
  *  one *out* of Platform is deliberately not a thing (§34 revision), and
  *  gating on the type means the zone never lights up for it rather than
  *  accepting a drop the server would reject. */
+/** Mirrors MAX_CUBE_BYTES in apps/api/routers/luts.py. Checked here as well
+ *  as there so an oversized file is refused before it is streamed up (§42) —
+ *  the server's answer is authoritative, this one is just not wasting the
+ *  upload. */
+const MAX_CUBE_BYTES = 1 * 1024 * 1024 * 1024
+
+/** Case-insensitive, because a card written on Windows is as likely to say
+ *  .CUBE. Everything else in a dropped folder is ignored rather than
+ *  reported — same spirit as the camera-card junk handling in §23. */
+function isCube(name: string) {
+  return name.toLowerCase().endsWith('.cube')
+}
+
+/**
+ * Walk a dropped directory for .cube files.
+ *
+ * webkitGetAsEntry is the only way to see a *folder* in a drop;
+ * DataTransfer.files flattens to the top level and silently loses anything
+ * nested. Non-standard but implemented everywhere this app runs.
+ */
+async function readEntry(entry: FileSystemEntry, out: File[]): Promise<void> {
+  if (entry.isFile) {
+    const file = await new Promise<File | null>((resolve) =>
+      (entry as FileSystemFileEntry).file(resolve, () => resolve(null)),
+    )
+    if (file && isCube(file.name)) out.push(file)
+    return
+  }
+  if (!entry.isDirectory) return
+
+  const reader = (entry as FileSystemDirectoryEntry).createReader()
+  // readEntries returns at most ~100 per call and signals the end with an
+  // empty batch; a single call would silently truncate a large folder.
+  for (;;) {
+    const batch = await new Promise<FileSystemEntry[]>((resolve) =>
+      reader.readEntries(resolve, () => resolve([])),
+    )
+    if (batch.length === 0) break
+    for (const child of batch) await readEntry(child, out)
+  }
+}
+
 const LUT_DRAG_TYPE = 'application/x-freeframe-lut'
 const PLATFORM_LUT_DRAG_TYPE = 'application/x-freeframe-platform-lut'
 
@@ -137,6 +180,7 @@ export default function LutsSettingsPage() {
   )
 
   const fileRef = React.useRef<HTMLInputElement>(null)
+  const folderRef = React.useRef<HTMLInputElement>(null)
   // Progress across a whole batch, not a bare boolean: picking twelve .cube
   // files and watching one spinner say nothing for a minute is worse than
   // watching a count.
@@ -154,6 +198,11 @@ export default function LutsSettingsPage() {
   // than being swallowed, which is what happened before §44 gave PATCH a
   // reason to fail that the user can act on.
   const [actionError, setActionError] = React.useState<string | null>(null)
+  const [dropActive, setDropActive] = React.useState(false)
+  // Offered after a folder upload finishes, once for the batch (§42).
+  const [groupPrompt, setGroupPrompt] = React.useState<
+    { folderName: string; lutIds: string[] } | null
+  >(null)
   const [deleting, setDeleting] = React.useState<Lut | null>(null)
   // Which LUT's frame is open in the zoom dialog. One dialog for the page,
   // the same way `deleting` is one ConfirmDialog rather than one per row.
@@ -175,21 +224,54 @@ export default function LutsSettingsPage() {
   async function handleFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? [])
     e.target.value = '' // let the same files be re-picked after a failure
+    await uploadFiles(files)
+  }
+
+  /** The folder picker and a folder drop both land here. `webkitRelativePath`
+   *  is what the directory input gives instead of a folder handle. */
+  async function handleFolderInput(e: React.ChangeEvent<HTMLInputElement>) {
+    const all = Array.from(e.target.files ?? [])
+    const folderName = all[0]?.webkitRelativePath?.split('/')[0] ?? null
+    e.target.value = ''
+    await uploadFiles(all.filter((f) => isCube(f.name)), folderName)
+  }
+
+  async function uploadFiles(files: File[], folderName: string | null = null) {
     if (files.length === 0) return
 
     setUploadErrors([])
-    setUploading({ done: 0, total: files.length })
+    setActionError(null)
+    setGroupPrompt(null)
+
+    // Size is checked before anything is streamed. The server checks too;
+    // this just avoids sending a gigabyte to be told no.
+    const oversized = files.filter((f) => f.size > MAX_CUBE_BYTES)
+    const sendable = files.filter((f) => f.size <= MAX_CUBE_BYTES)
+    const failures: { file: string; detail: string; kind: 'duplicate' | 'error' }[] =
+      oversized.map((f) => ({
+        file: f.name,
+        detail: 'Larger than the 1GB limit.',
+        kind: 'error' as const,
+      }))
+
+    if (sendable.length === 0) {
+      setUploadErrors(failures)
+      return
+    }
+
+    setUploading({ done: 0, total: sendable.length })
 
     // Sequential on purpose. /me/luts is one small text upload per call, the
     // count is a user-picked handful, and a failure has to be attributable to
     // its own file -- none of which a parallel burst buys anything for.
-    const failures: { file: string; detail: string; kind: 'duplicate' | 'error' }[] = []
+    const uploaded: Lut[] = []
     let succeeded = 0
-    for (const file of files) {
+    for (const file of sendable) {
       try {
         const form = new FormData()
         form.append('file', file)
-        await api.upload<Lut>('/me/luts', form)
+        const created = await api.upload<Lut>('/me/luts', form)
+        if (created) uploaded.push(created)
         succeeded += 1
       } catch (err: unknown) {
         const detail = err && typeof err === 'object' && 'detail' in err
@@ -207,6 +289,54 @@ export default function LutsSettingsPage() {
     setUploadErrors(failures)
     // One refresh for the batch. Nothing to refresh if every file failed.
     if (succeeded > 0) await refreshAll()
+
+    // Asked once for the batch, after the uploads, and non-blocking: a modal
+    // in front of a running upload would be the worst of both.
+    if (folderName && uploaded.length > 0) {
+      setGroupPrompt({ folderName, lutIds: uploaded.map((l) => l.id) })
+    }
+  }
+
+  /** Accepts a folder as well as loose files; a folder is only visible
+   *  through webkitGetAsEntry, since dataTransfer.files flattens it. */
+  async function handleDrop(e: React.DragEvent) {
+    // Not our own LUT drags — those are handled by the section drop zones.
+    if (e.dataTransfer.types.some((t) => t.startsWith('application/x-freeframe'))) return
+    e.preventDefault()
+    setDropActive(false)
+
+    const items = Array.from(e.dataTransfer.items ?? [])
+    const entries = items
+      .map((item) => (item.kind === 'file' ? item.webkitGetAsEntry?.() ?? null : null))
+      .filter((entry): entry is FileSystemEntry => entry !== null)
+
+    if (entries.length === 0) {
+      await uploadFiles(Array.from(e.dataTransfer.files ?? []).filter((f) => isCube(f.name)))
+      return
+    }
+
+    const collected: File[] = []
+    for (const entry of entries) await readEntry(entry, collected)
+    // A single dropped folder names the group; several at once has no one
+    // name to offer, so the prompt is skipped rather than guessing.
+    const folders = entries.filter((entry) => entry.isDirectory)
+    await uploadFiles(collected, folders.length === 1 ? folders[0].name : null)
+  }
+
+  async function createGroupFromFolder() {
+    if (!groupPrompt) return
+    const prompt = groupPrompt
+    setGroupPrompt(null)
+    const group = await api.post<LutGroup>('/me/lut-groups', {
+      name: prompt.folderName,
+      parent_group_id: null,
+    })
+    // Sequentially, for the same reason the uploads are: one refusal has to
+    // be attributable, and this is a handful of rows.
+    for (const lutId of prompt.lutIds) {
+      await api.patch(`/me/luts/${lutId}`, { group_id: group.id })
+    }
+    await refreshAll()
   }
 
   async function handleDelete() {
@@ -527,6 +657,25 @@ export default function LutsSettingsPage() {
           <FolderPlus className="h-4 w-4" />
           New group
         </Button>
+        <input
+          ref={folderRef}
+          type="file"
+          // Non-standard attributes, and the only way to offer a folder in a
+          // file picker. React needs them spelled this way.
+          {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
+          multiple
+          onChange={handleFolderInput}
+          className="hidden"
+        />
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => folderRef.current?.click()}
+          disabled={uploading !== null}
+        >
+          <FolderUp className="h-4 w-4" />
+          Upload folder
+        </Button>
         <Button size="sm" onClick={() => fileRef.current?.click()} disabled={uploading !== null}>
           {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
           {uploading && uploading.total > 1
@@ -534,6 +683,49 @@ export default function LutsSettingsPage() {
             : 'Upload .cube'}
         </Button>
       </div>
+
+      {/* Drop target for loose .cube files or a whole folder. Deliberately
+          ignores this page's own LUT drags, which the section drop zones
+          own — otherwise dragging a LUT between groups would look like an
+          upload. */}
+      <div
+        data-testid="lut-drop-zone"
+        data-drop-active={dropActive ? 'true' : undefined}
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.some((t) => t.startsWith('application/x-freeframe'))) return
+          e.preventDefault()
+          setDropActive(true)
+        }}
+        onDragLeave={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+          setDropActive(false)
+        }}
+        onDrop={(e) => void handleDrop(e)}
+        className={cn(
+          'rounded-lg border border-dashed border-border px-4 py-6 text-center text-xs text-text-tertiary transition-colors',
+          dropActive && 'border-accent bg-accent/5 text-text-primary',
+        )}
+      >
+        Drop .cube files or a whole folder here. Anything that isn&apos;t a
+        .cube is ignored.
+      </div>
+
+      {groupPrompt && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-bg-secondary px-3 py-2">
+          <p className="text-xs text-text-secondary">
+            Put the {groupPrompt.lutIds.length} LUT
+            {groupPrompt.lutIds.length === 1 ? '' : 's'} from{' '}
+            <span className="font-medium text-text-primary">{groupPrompt.folderName}</span>{' '}
+            into a group of that name?
+          </p>
+          <Button size="sm" onClick={() => void createGroupFromFolder()}>
+            Create group
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setGroupPrompt(null)}>
+            No thanks
+          </Button>
+        </div>
+      )}
 
       {uploadErrors.length > 0 && (
         <div className="space-y-1 rounded-md border border-border bg-bg-secondary px-3 py-2">
