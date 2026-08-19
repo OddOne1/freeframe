@@ -28,6 +28,7 @@ import { EmptyState } from '@/components/shared/empty-state'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CollapsibleSection } from '@/components/shared/collapsible-section'
 import { SortControl, sortRows, useSort, useSortState } from '@/components/shared/sortable'
+import { readDroppedEntries } from '@/lib/read-dropped-entries'
 import { LutThumbnail } from '@/components/shared/lut-thumbnail'
 import { LutPreviewDialog } from '@/components/shared/lut-preview-dialog'
 import { useAuthStore } from '@/stores/auth-store'
@@ -58,35 +59,6 @@ const MAX_CUBE_BYTES = 1 * 1024 * 1024 * 1024
  *  reported — same spirit as the camera-card junk handling in §23. */
 function isCube(name: string) {
   return name.toLowerCase().endsWith('.cube')
-}
-
-/**
- * Walk a dropped directory for .cube files.
- *
- * webkitGetAsEntry is the only way to see a *folder* in a drop;
- * DataTransfer.files flattens to the top level and silently loses anything
- * nested. Non-standard but implemented everywhere this app runs.
- */
-async function readEntry(entry: FileSystemEntry, out: File[]): Promise<void> {
-  if (entry.isFile) {
-    const file = await new Promise<File | null>((resolve) =>
-      (entry as FileSystemFileEntry).file(resolve, () => resolve(null)),
-    )
-    if (file && isCube(file.name)) out.push(file)
-    return
-  }
-  if (!entry.isDirectory) return
-
-  const reader = (entry as FileSystemDirectoryEntry).createReader()
-  // readEntries returns at most ~100 per call and signals the end with an
-  // empty batch; a single call would silently truncate a large folder.
-  for (;;) {
-    const batch = await new Promise<FileSystemEntry[]>((resolve) =>
-      reader.readEntries(resolve, () => resolve([])),
-    )
-    if (batch.length === 0) break
-    for (const child of batch) await readEntry(child, out)
-  }
 }
 
 const LUT_DRAG_TYPE = 'application/x-freeframe-lut'
@@ -353,22 +325,20 @@ export default function LutsSettingsPage() {
     e.preventDefault()
     setDropActive(false)
 
-    const items = Array.from(e.dataTransfer.items ?? [])
-    const entries = items
-      .map((item) => (item.kind === 'file' ? item.webkitGetAsEntry?.() ?? null : null))
-      .filter((entry): entry is FileSystemEntry => entry !== null)
-
-    if (entries.length === 0) {
+    const dropped = await readDroppedEntries(e.dataTransfer)
+    if (dropped === null) {
+      // This browser did not populate `items`; the flat list is all there is.
       await uploadFiles(Array.from(e.dataTransfer.files ?? []).filter((f) => isCube(f.name)))
       return
     }
 
-    const collected: File[] = []
-    for (const entry of entries) await readEntry(entry, collected)
     // A single dropped folder names the group; several at once has no one
     // name to offer, so the prompt is skipped rather than guessing.
-    const folders = entries.filter((entry) => entry.isDirectory)
-    await uploadFiles(collected, folders.length === 1 ? folders[0].name : null)
+    const roots = new Set(dropped.map((d) => d.path[0]).filter(Boolean))
+    await uploadFiles(
+      dropped.map((d) => d.file).filter((f) => isCube(f.name)),
+      roots.size === 1 ? Array.from(roots)[0]! : null,
+    )
   }
 
   async function createGroupFromFolder() {

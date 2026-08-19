@@ -320,7 +320,7 @@ export async function uploadSidecars(
   return results
 }
 
-function isMediaFile(file: File): boolean {
+export function isMediaFile(file: File): boolean {
   return (
     file.type.startsWith('video/') ||
     file.type.startsWith('audio/') ||

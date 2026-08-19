@@ -42,11 +42,13 @@ import { Avatar } from "@/components/shared/avatar";
 import { AssetGrid } from "@/components/projects/asset-grid";
 import { CommentPanel } from "@/components/review/comment-panel";
 import { UploadZone } from "@/components/upload/upload-zone";
+import type { DroppedFile } from "@/lib/read-dropped-entries";
 import {
   useUploadStore,
   isCameraJunkFile,
   isSidecarFile,
   uploadSidecars,
+  isMediaFile,
 } from "@/stores/upload-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useViewStore } from "@/stores/view-store";
@@ -124,7 +126,12 @@ export default function ProjectDetailPage() {
 
   const [uploadOpen, setUploadOpen] = React.useState(false);
   const [assetName, setAssetName] = React.useState("");
-  const [pendingFiles, setPendingFiles] = React.useState<File[]>([]);
+  // Each carries the folder path it came from (§49). A loose file has an
+  // empty path, which is what makes "flatten" the unchanged default.
+  const [pendingFiles, setPendingFiles] = React.useState<DroppedFile[]>([]);
+  // Whether a folder was involved at all — only then is there a structure
+  // question to ask.
+  const [keepStructure, setKeepStructure] = React.useState(false);
   const [selectedAsset, setSelectedAsset] =
     React.useState<AssetResponse | null>(null);
   const [shareLinksExpanded, setShareLinksExpanded] = React.useState(true);
@@ -535,29 +542,72 @@ export default function ProjectDetailPage() {
 
   const [skippedJunkCount, setSkippedJunkCount] = React.useState(0);
 
-  const handleFilesSelected = (files: File[]) => {
+  const handleFilesSelected = (files: DroppedFile[]) => {
     // Camera housekeeping files are dropped here rather than at upload time,
     // so they never appear in the selected-files list either -- a dropped card
     // folder should read as "12 clips", not "12 clips and 40 index files".
-    const usable = files.filter((f) => !isCameraJunkFile(f));
+    // Anything that is neither media nor a sidecar goes the same way: a
+    // folder full of PDFs and notes is normal, not an error (§23's spirit).
+    const usable = files.filter(
+      (d) => !isCameraJunkFile(d.file) && (isMediaFile(d.file) || isSidecarFile(d.file)),
+    );
     setSkippedJunkCount(files.length - usable.length);
     setPendingFiles(usable);
-    if (usable.length > 0) setAssetName(usable[0].name.replace(/\.[^/.]+$/, ""));
+    // Default to keeping structure when there is any, since that is the
+    // shape the person on the other end already chose.
+    setKeepStructure(usable.some((d) => d.path.length > 0));
+    if (usable.length > 0) setAssetName(usable[0].file.name.replace(/\.[^/.]+$/, ""));
   };
 
-  const handleStartUpload = () => {
+  /**
+   * Ensure a Folder row exists for every directory level in `path`, under
+   * `currentFolderId`, and hand back the deepest one's id.
+   *
+   * Folders already nest and POST /projects/{id}/folders already accepts a
+   * parent_id, so this needed no backend work — the gap was only that
+   * nothing ever walked a dropped tree to call it.
+   */
+  const ensureFolderPath = async (
+    path: string[],
+    cache: Map<string, string | null>,
+  ): Promise<string | null> => {
+    let parent: string | null = currentFolderId;
+    let key = "";
+    for (const name of path) {
+      key = key ? `${key}/${name}` : name;
+      const known = cache.get(key);
+      if (known !== undefined) {
+        parent = known;
+        continue;
+      }
+      const folder = await api.post<{ id: string }>(`/projects/${projectId}/folders`, {
+        name,
+        parent_id: parent,
+      });
+      cache.set(key, folder.id);
+      parent = folder.id;
+    }
+    return parent;
+  };
+
+  const handleStartUpload = async () => {
     // Sidecars (.cdl/.cc/.ccc/.ale/.xml) are split out before anything is
     // uploaded as an asset: dropping a folder of clips alongside their CDLs
     // should attach them, not create a batch of unplayable "assets".
-    const sidecars = pendingFiles.filter(isSidecarFile);
-    const media = pendingFiles.filter((f) => !isSidecarFile(f));
+    const sidecars = pendingFiles.filter((d) => isSidecarFile(d.file));
+    const media = pendingFiles.filter((d) => !isSidecarFile(d.file));
 
-    media.forEach((file) => {
-      const name = media.length === 1 ? assetName || file.name : file.name;
-      // Note: startUpload does not yet accept folderId — assets will upload to root.
-      // Upload store needs to be updated in a future task to support folder placement.
-      startUpload(file, projectId, name, project?.name, currentFolderId);
-    });
+    // One cache for the batch, so a folder of 200 clips creates its Folder
+    // row once rather than 200 times.
+    const folderCache = new Map<string, string | null>();
+    for (const entry of media) {
+      const name = media.length === 1 ? assetName || entry.file.name : entry.file.name;
+      const folderId = keepStructure
+        ? await ensureFolderPath(entry.path, folderCache)
+        : currentFolderId;
+      startUpload(entry.file, projectId, name, project?.name, folderId);
+    }
+    if (keepStructure && media.some((d) => d.path.length > 0)) mutateSubfolders();
 
     if (sidecars.length > 0) {
       // Deliberately after the media loop: a clip and its sidecar dropped
@@ -565,7 +615,7 @@ export default function ProjectDetailPage() {
       // not exist until its upload completes. The failure is reported
       // plainly so the user can re-drop the sidecar, per the spec's
       // no-match rule -- no silent discard, no holding state.
-      void uploadSidecars(sidecars, projectId).then((results) => {
+      void uploadSidecars(sidecars.map((d) => d.file), projectId).then((results) => {
         const failed = results.filter((r) => !r.ok);
         setSidecarResults(failed.length > 0 ? failed : null);
         if (results.some((r) => r.ok)) void mutateAssets();
@@ -1302,7 +1352,7 @@ export default function ProjectDetailPage() {
                           {pendingFiles.length} file{pendingFiles.length !== 1 ? "s" : ""} selected
                         </div>
                         <div className="max-h-40 overflow-y-auto divide-y divide-border">
-                          {pendingFiles.map((f, i) => (
+                          {pendingFiles.map(({ file: f }, i) => (
                             <div key={i} className="flex items-center justify-between px-3 py-1.5">
                               <span className="text-sm text-text-primary truncate mr-2">{f.name}</span>
                               <span className="text-xs text-text-tertiary shrink-0">
@@ -1314,6 +1364,44 @@ export default function ProjectDetailPage() {
                           ))}
                         </div>
                       </div>
+                      {/* Asked once for the batch, and only when a folder
+                          was actually involved — a loose multi-file drop has
+                          no structure to preserve and gets no question. */}
+                      {pendingFiles.some((d) => d.path.length > 0) && (
+                        <div
+                          data-testid="structure-prompt"
+                          className="rounded-lg border border-border bg-bg-tertiary p-3"
+                        >
+                          <p className="text-xs font-medium text-text-secondary">
+                            This selection came from{" "}
+                            {new Set(pendingFiles.map((d) => d.path[0]).filter(Boolean)).size > 1
+                              ? "folders"
+                              : "a folder"}
+                            .
+                          </p>
+                          <div className="mt-2 flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant={keepStructure ? "primary" : "secondary"}
+                              onClick={() => setKeepStructure(true)}
+                            >
+                              Keep folders
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant={keepStructure ? "secondary" : "primary"}
+                              onClick={() => setKeepStructure(false)}
+                            >
+                              Flatten
+                            </Button>
+                          </div>
+                          <p className="mt-2 text-2xs text-text-tertiary">
+                            {keepStructure
+                              ? "Matching folders will be created here."
+                              : "Everything lands here, with no folders created."}
+                          </p>
+                        </div>
+                      )}
                       {pendingFiles.length === 1 && (
                         <Input
                           label="Asset name"
@@ -1334,7 +1422,7 @@ export default function ProjectDetailPage() {
                         >
                           Change files
                         </Button>
-                        <Button size="sm" onClick={handleStartUpload}>
+                        <Button size="sm" onClick={() => void handleStartUpload()}>
                           Start upload
                         </Button>
                       </div>
