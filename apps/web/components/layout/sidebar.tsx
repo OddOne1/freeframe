@@ -3,13 +3,10 @@
 import * as React from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import {
   Layers,
   Bell,
   Upload,
-  Settings,
-  LogOut,
   User,
   ChevronsLeft,
 } from 'lucide-react'
@@ -18,7 +15,6 @@ import { useAuthStore } from '@/stores/auth-store'
 import { useUploadStore } from '@/stores/upload-store'
 import { useNotificationStore } from '@/stores/notification-store'
 import { useSiteSettings } from '@/hooks/use-site-settings'
-import { useHasProjectPrivilege } from '@/hooks/use-project-privilege'
 import { useThemeStore } from '@/stores/theme-store'
 import { Avatar } from '@/components/shared/avatar'
 import { NotificationDrawer } from './notification-drawer'
@@ -40,11 +36,10 @@ interface SidebarProps {
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const pathname = usePathname()
-  const { user, isSuperAdmin, logout } = useAuthStore()
+  const { user } = useAuthStore()
   const { files: uploadFiles, togglePanel, panelOpen } = useUploadStore()
   const { unreadCount, fetchNotifications } = useNotificationStore()
   const { orgName, logoDarkUrl, logoLightUrl } = useSiteSettings()
-  const hasSettingsAccess = useHasProjectPrivilege()
   const { resolvedTheme } = useThemeStore()
     // Pick logo based on resolved theme; fall back to the other if only one is set.
     // Uses resolvedTheme (not theme) because theme can be 'system', which never
@@ -200,77 +195,31 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
       {/* Bottom section */}
       <div className="border-t border-nav-border p-2 space-y-1 shrink-0">
-        {/* User dropdown */}
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger asChild>
-            <button
-              className={cn(
-                'flex w-full items-center rounded-md text-nav-text/60 hover:bg-nav-text/10 hover:text-nav-text transition-colors',
-                collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2 py-1.5',
-              )}
-              title={collapsed ? (user?.name ?? 'Account') : undefined}
-            >
-              <Avatar
-                src={user?.avatar_url}
-                name={user?.name}
-                size="sm"
-              />
-              {!collapsed && (
-                <div className="flex flex-col items-start overflow-hidden min-w-0">
-                  <span className="truncate text-[13px] font-medium text-nav-text leading-tight w-full text-left">
-                    {user?.name ?? 'User'}
-                  </span>
-                  <span className="truncate text-[10px] text-nav-text/50 leading-tight w-full text-left">
-                    {user?.email ?? ''}
-                  </span>
-                </div>
-              )}
-            </button>
-          </DropdownMenu.Trigger>
-
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content
-              side="top"
-              align={collapsed ? 'start' : 'end'}
-              sideOffset={8}
-              className="z-50 min-w-[180px] rounded-lg border border-border bg-bg-elevated p-1 shadow-xl animate-slide-up"
-            >
-              <DropdownMenu.Item asChild>
-                <Link
-                  href="/settings/profile"
-                  className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-[13px] text-text-secondary hover:bg-bg-hover hover:text-text-primary focus:outline-none"
-                >
-                  <User className="h-4 w-4" />
-                  Profile
-                </Link>
-              </DropdownMenu.Item>
-              {hasSettingsAccess && (
-                <DropdownMenu.Item asChild>
-                  {/* Non-superadmins only ever reach this branch via an
-                      owner/admin project role -- /settings/admin is
-                      superadmin-only and would bounce them straight back
-                      out, so send them to their own Settings > Projects
-                      view instead. */}
-                  <Link
-                    href={isSuperAdmin ? '/settings/admin' : '/settings/projects'}
-                    className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-[13px] text-text-secondary hover:bg-bg-hover hover:text-text-primary focus:outline-none"
-                  >
-                    <Settings className="h-4 w-4" />
-                    Settings
-                  </Link>
-                </DropdownMenu.Item>
-              )}
-              <DropdownMenu.Separator className="my-1 h-px bg-border" />
-              <DropdownMenu.Item
-                onSelect={logout}
-                className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-[13px] text-status-error hover:bg-status-error/10 focus:outline-none"
-              >
-                <LogOut className="h-4 w-4" />
-                Log out
-              </DropdownMenu.Item>
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
+        {/* The avatar is a plain link now, not a menu (§46). Settings itself
+            already gates what each user sees once they arrive, so the old
+            per-role routing between /settings/admin and /settings/projects
+            was picking a destination the destination already handles. Log
+            out moved to the Profile page, which is where this lands. */}
+        <Link
+          href="/settings/profile"
+          title={collapsed ? (user?.name ?? 'Account') : undefined}
+          className={cn(
+            'flex w-full items-center rounded-md text-nav-text/60 hover:bg-nav-text/10 hover:text-nav-text transition-colors',
+            collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2 py-1.5',
+          )}
+        >
+          <Avatar src={user?.avatar_url} name={user?.name} size="sm" />
+          {!collapsed && (
+            <div className="flex flex-col items-start overflow-hidden min-w-0">
+              <span className="truncate text-[13px] font-medium text-nav-text leading-tight w-full text-left">
+                {user?.name ?? 'User'}
+              </span>
+              <span className="truncate text-[10px] text-nav-text/50 leading-tight w-full text-left">
+                {user?.email ?? ''}
+              </span>
+            </div>
+          )}
+        </Link>
 
         {/* Collapse toggle */}
         <button

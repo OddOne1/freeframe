@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { User, Camera } from 'lucide-react'
+import { User, Camera, LogOut } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -13,7 +13,7 @@ import { setTokens } from '@/lib/auth'
 import type { VerifyCodeResponse } from '@/types'
 
 export default function ProfilePage() {
-  const { user, fetchUser } = useAuthStore()
+  const { user, fetchUser, logout } = useAuthStore()
 
   const [firstName, setFirstName] = React.useState(user?.first_name ?? '')
   const [lastName, setLastName] = React.useState(user?.last_name ?? '')
@@ -262,6 +262,25 @@ async function handleAvatarCropped(blob: Blob) {
           {passwordSuccess && <p className="text-xs text-status-success">Password changed successfully.</p>}
           <Button type="submit" variant="secondary" size="sm" loading={isSavingPassword}>Save Password</Button>
         </form>
+      </section>
+
+      {/* Log out lives here now that the sidebar avatar is a plain link
+          rather than a menu (§46). Removing the popup should not remove the
+          only way out. */}
+      <section className="rounded-lg border border-border bg-bg-secondary p-5">
+        <h2 className="text-sm font-semibold text-text-primary">Session</h2>
+        <p className="mt-1 text-xs text-text-tertiary">
+          Signed in as {user?.email ?? 'this account'}.
+        </p>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={logout}
+          className="mt-4 text-status-error hover:text-status-error"
+        >
+          <LogOut className="h-4 w-4" />
+          Log out
+        </Button>
       </section>
 
       <Dialog.Root open={pwCodeDialogOpen} onOpenChange={setPwCodeDialogOpen}>
