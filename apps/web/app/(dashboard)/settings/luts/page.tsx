@@ -226,6 +226,18 @@ export default function LutsSettingsPage() {
     } | null
   >(null)
   const [deleting, setDeleting] = React.useState<Lut | null>(null)
+  // One set across all four lists (Platform-grouped, Platform-ungrouped,
+  // Private-grouped incl. sub-groups, Private-ungrouped) — same Set<string>
+  // convention as the two multi-select UIs this app already has (§54).
+  const [selectedLutIds, setSelectedLutIds] = React.useState<Set<string>>(new Set())
+  const [bulkDeleting, setBulkDeleting] = React.useState(false)
+  const [bulkBusy, setBulkBusy] = React.useState(false)
+  // Per-LUT outcome. An aggregate "3 of 4 deleted" would leave the user
+  // guessing which one failed and why — same call project-members-dialog
+  // made.
+  const [bulkResults, setBulkResults] = React.useState<
+    { id: string; name: string; ok: boolean; error?: string }[] | null
+  >(null)
   // Which LUT's frame is open in the zoom dialog. One dialog for the page,
   // the same way `deleting` is one ConfirmDialog rather than one per row.
   const [previewing, setPreviewing] = React.useState<Lut | null>(null)
@@ -428,6 +440,69 @@ export default function LutsSettingsPage() {
     setDeleting(null)
     await api.delete(`/me/luts/${target.id}`)
     await refreshAll()
+  }
+
+  /** For the per-item failure lines. Reads the SWR data directly rather than
+   *  the derived lists, which are computed further down. */
+  const nameOfLut = React.useCallback(
+    (lutId: string) =>
+      [...(luts ?? []), ...(platformLuts ?? [])].find((l) => l.id === lutId)?.name ?? 'This LUT',
+    [luts, platformLuts],
+  )
+
+  const toggleLutSelected = React.useCallback((lutId: string) => {
+    setSelectedLutIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(lutId)) next.delete(lutId)
+      else next.add(lutId)
+      return next
+    })
+  }, [])
+
+  /**
+   * Loops the existing single-item endpoint rather than adding a batch route.
+   *
+   * That is this app's established convention, not a shortcut: a bulk
+   * endpoint would have to re-implement DELETE /me/luts/{id}'s ownership
+   * check, and one gate checked in two places is exactly the drift
+   * project-members-dialog's own comment warns about. Every row here is one
+   * the viewer is already allowed to delete.
+   *
+   * allSettled, not all: a partial failure must not discard the deletions
+   * that did succeed, and the caller needs to know WHICH failed.
+   */
+  async function handleBulkDelete() {
+    const ids = Array.from(selectedLutIds)
+    if (ids.length === 0) return
+    setBulkBusy(true)
+    setBulkResults(null)
+    try {
+      const settled = await Promise.allSettled(
+        ids.map((id) => api.delete(`/me/luts/${id}`)),
+      )
+      const collected = settled.map((r, i) => ({
+        id: ids[i]!,
+        name: nameOfLut(ids[i]!),
+        ok: r.status === 'fulfilled',
+        // The API's own message, not a generic one.
+        error:
+          r.status === 'rejected'
+            ? r.reason && typeof r.reason === 'object' && 'detail' in r.reason
+              ? String((r.reason as { detail: unknown }).detail)
+              : r.reason instanceof Error
+                ? r.reason.message
+                : String(r.reason)
+            : undefined,
+      }))
+      setBulkResults(collected)
+      // Only the failures stay selected, so a retry does not re-run the
+      // successes against ids that are already gone.
+      setSelectedLutIds(new Set(collected.filter((c) => !c.ok).map((c) => c.id)))
+      await refreshAll()
+    } finally {
+      setBulkBusy(false)
+      setBulkDeleting(false)
+    }
   }
 
   async function handleDeleteGroup() {
@@ -746,6 +821,9 @@ export default function LutsSettingsPage() {
       onPreview={() => setPreviewing(lut)}
       canDrag
       onError={setActionError}
+      // Personal rows are always the viewer's own, so always selectable.
+      selected={selectedLutIds.has(lut.id)}
+      onToggleSelected={() => toggleLutSelected(lut.id)}
     />
   )
 
@@ -772,6 +850,13 @@ export default function LutsSettingsPage() {
       // that accept this drag type are all on the platform side.
       canDrag={isSuperAdmin && lut.is_owner}
       onError={setActionError}
+      // The same condition that already gates the ⋯ menu (and therefore
+      // Delete) on a platform row. Reused, not re-derived: a row without the
+      // menu must not become deletable through the toolbar.
+      selected={isSuperAdmin && lut.is_owner ? selectedLutIds.has(lut.id) : undefined}
+      onToggleSelected={
+        isSuperAdmin && lut.is_owner ? () => toggleLutSelected(lut.id) : undefined
+      }
     />
   )
 
@@ -955,6 +1040,53 @@ export default function LutsSettingsPage() {
           <Button size="sm" variant="ghost" onClick={() => setGroupPrompt(null)}>
             No thanks
           </Button>
+        </div>
+      )}
+
+      {/* Same shape as project-members-dialog's: only present when something
+          is selected, count first, clear beside it. */}
+      {selectedLutIds.size > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-bg-tertiary px-3 py-2">
+          <span className="text-xs font-medium text-text-primary">
+            {selectedLutIds.size} selected
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedLutIds(new Set())
+              setBulkResults(null)
+            }}
+            className="text-xs text-text-tertiary hover:text-text-primary transition-colors"
+          >
+            Clear selection
+          </button>
+          <div className="flex-1" />
+          <Button
+            size="sm"
+            variant="destructive"
+            disabled={bulkBusy}
+            onClick={() => setBulkDeleting(true)}
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete selected
+          </Button>
+        </div>
+      )}
+
+      {/* Per-LUT outcome. An aggregate "3 of 4 deleted" would leave the user
+          guessing which one failed and why. */}
+      {bulkResults && (
+        <div className="space-y-1 rounded-lg border border-border bg-bg-tertiary px-3 py-2">
+          <p className="text-xs font-medium text-text-primary">
+            {bulkResults.filter((r) => r.ok).length} of {bulkResults.length} deleted
+          </p>
+          {bulkResults
+            .filter((r) => !r.ok)
+            .map((r) => (
+              <p key={r.id} className="text-xs text-status-error">
+                {r.name}: {r.error}
+              </p>
+            ))}
         </div>
       )}
 
@@ -1275,6 +1407,28 @@ export default function LutsSettingsPage() {
         onConfirm={handleDelete}
       />
 
+      {/* The same dialog component, counted rather than named: with several
+          selected there is no one name to show, and listing them all in a
+          confirmation is worse than the number (§54). */}
+      <ConfirmDialog
+        open={bulkDeleting}
+        onOpenChange={(open) => !open && setBulkDeleting(false)}
+        title={
+          selectedLutIds.size === 1
+            ? 'Delete LUT'
+            : `Delete ${selectedLutIds.size} LUTs`
+        }
+        description={
+          selectedLutIds.size === 1
+            ? `"${nameOfLut(Array.from(selectedLutIds)[0]!)}" will be removed from your library and unshared from every project. Any shot currently graded with it falls back to no grade.`
+            : `${selectedLutIds.size} LUTs will be removed from your library and unshared from every project. Any shot currently graded with one falls back to no grade.`
+        }
+        confirmLabel="Delete"
+        variant="danger"
+        loading={bulkBusy}
+        onConfirm={handleBulkDelete}
+      />
+
       <ConfirmDialog
         open={deletingGroup !== null}
         onOpenChange={(open) => !open && setDeletingGroup(null)}
@@ -1311,6 +1465,8 @@ function LutRow({
   onPreview,
   canDrag,
   onError,
+  selected,
+  onToggleSelected,
 }: {
   lut: Lut
   groups: LutGroup[]
@@ -1330,6 +1486,11 @@ function LutRow({
   canDrag: boolean
   /** Surfaces a refused PATCH where the user can see it; null clears it. */
   onError: (message: string | null) => void
+  /** Undefined means this row is not selectable at all — which is how a row
+   *  the viewer may not delete stays out of a bulk action by construction
+   *  rather than by a second check (§54). */
+  selected?: boolean
+  onToggleSelected?: () => void
 }) {
   const [busy, setBusy] = React.useState(false)
   const [renaming, setRenaming] = React.useState(false)
@@ -1388,6 +1549,15 @@ function LutRow({
         canDrag && !renaming && 'cursor-grab active:cursor-grabbing',
       )}
     >
+      {onToggleSelected && (
+        <input
+          type="checkbox"
+          checked={selected ?? false}
+          onChange={onToggleSelected}
+          aria-label={`Select ${lut.name}`}
+          className="h-4 w-4 shrink-0 accent-accent"
+        />
+      )}
       {/* The swatch is the zoom trigger. Deliberately only here: a
           LutPicker row already selects the LUT on click, so a second
           click meaning on the same row would be a genuine ambiguity. */}

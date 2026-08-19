@@ -302,9 +302,9 @@ function InviteUserDialog() {
  *  again by the back door. */
 const projectGridColsMap: Record<CardSize, string> = {
   XS: "grid-cols-3 sm:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9",
-  S: "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5",
-  M: "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
-  L: "grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3",
+  S: "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
+  M: "grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3",
+  L: "grid-cols-1 sm:grid-cols-1 lg:grid-cols-1 xl:grid-cols-2",
 }
 
 export default function ProjectsPage() {
