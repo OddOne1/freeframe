@@ -69,7 +69,8 @@ function renderPage() {
 /** Group headings in the order they are rendered, excluding the fixed
  *  section headers. */
 function groupOrder() {
-  const fixed = ['Platform LUTs', 'Your LUTs', 'Ungrouped']
+  // The frame-box titles (§41 renamed "Your LUTs" to "Private"), not groups.
+  const fixed = ['Platform LUTs', 'Private', 'Ungrouped']
   return screen
     .getAllByRole('heading', { level: 2 })
     .map((h) => (h.textContent ?? '').replace(/\(\d+\)$/, ''))

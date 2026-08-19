@@ -166,7 +166,7 @@ describe('creating a sub-group', () => {
     // Straight to the top-level button, WITHOUT cancelling first — cancelling
     // clears the parent too, which would let this pass even if the button
     // did not.
-    await userEvent.click(screen.getByRole('button', { name: /New group/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'New Private Group' }))
     await userEvent.type(screen.getByLabelText('New group name'), 'Top{Enter}')
 
     await waitFor(() =>

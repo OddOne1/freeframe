@@ -29,7 +29,7 @@ from ..models.project import ProjectRole
 from ..schemas.asset import StreamUrlResponse
 from ..schemas.lut import (
     LutResponse, LutExportResponse, ApplyLutRequest, LutUpdate,
-    LutGroupResponse, LutGroupCreate, LutGroupUpdate,
+    LutGroupResponse, LutGroupCreate, LutGroupUpdate, PromoteGroupResponse,
 )
 from ..services import s3_service
 from ..services.permissions import require_project_role, require_asset_access
@@ -577,6 +577,84 @@ def delete_platform_lut_group(
         {"parent_group_id": None}, synchronize_session=False
     )
     db.commit()
+
+
+@router.post("/luts/platform-groups/promote/{group_id}", response_model=PromoteGroupResponse)
+def promote_group_to_platform(
+    group_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Promote a whole personal group, its sub-groups and every LUT inside
+    them, in one operation (§41).
+
+    One endpoint rather than N calls from the browser on purpose: a partial
+    failure halfway through would leave a group that is platform-wide with
+    some of its LUTs still personal, which is a state nothing in the UI can
+    explain. Everything here commits together.
+
+    Duplicates are *skipped*, not fatal (§44). A group of twenty where one
+    already exists on the platform list should promote the nineteen and say
+    which one it left behind -- refusing the whole drag would make one
+    collision undo an otherwise correct action.
+    """
+    _require_superadmin(current_user)
+
+    group = db.query(LutGroup).filter(
+        LutGroup.id == group_id,
+        LutGroup.owner_id == current_user.id,
+        LutGroup.is_platform.is_(False),
+        LutGroup.deleted_at.is_(None),
+    ).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    if group.parent_group_id is not None:
+        # A sub-group would land on the platform side with its parent still
+        # personal, which §45's pairing rule forbids.
+        raise HTTPException(
+            status_code=400,
+            detail="Promote the whole main group, not one of its sub-groups",
+        )
+
+    groups = [group] + db.query(LutGroup).filter(
+        LutGroup.parent_group_id == group.id,
+        LutGroup.deleted_at.is_(None),
+    ).all()
+    group_ids = [g.id for g in groups]
+
+    luts = db.query(Lut).filter(
+        Lut.group_id.in_(group_ids),
+        Lut.deleted_at.is_(None),
+    ).all()
+
+    promoted = 0
+    skipped: list[str] = []
+    for lut in luts:
+        if lut.is_platform_wide:
+            promoted += 1
+            continue
+        clash = (
+            _find_platform_duplicate(db, lut.content_hash, exclude_id=lut.id)
+            if lut.content_hash
+            else None
+        )
+        if clash is not None:
+            # Left where it is: personal, in a group that is about to become
+            # a platform group. Reported so it can be dealt with by hand.
+            skipped.append(f"{lut.name} — already on the platform list as {_describe(clash, db)}")
+            continue
+        lut.is_platform_wide = True
+        promoted += 1
+
+    for g in groups:
+        g.is_platform = True
+
+    db.commit()
+    return PromoteGroupResponse(
+        group_id=group.id,
+        promoted=promoted,
+        skipped=skipped,
+    )
 
 
 @router.patch("/me/luts/{lut_id}", response_model=LutResponse)

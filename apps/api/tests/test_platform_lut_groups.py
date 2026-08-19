@@ -287,3 +287,105 @@ def test_someone_elses_personal_group_is_still_unreachable(db):
     with pytest.raises(HTTPException) as exc:
         update_lut(lut.id, LutUpdate(group_id=theirs.id), db=session, current_user=a)
     assert exc.value.status_code == 404
+
+
+# ─── promoting a whole group (§41) ───────────────────────────────────────────
+
+def test_promoting_a_group_takes_its_luts_and_sub_groups_with_it(db):
+    session, made = db
+    from apps.api.models.lut import Lut, LutGroup
+    from apps.api.routers.luts import create_lut_group, promote_group_to_platform
+    from apps.api.schemas.lut import LutGroupCreate
+
+    admin = make_user(session, made, superadmin=True)
+    main = create_lut_group(LutGroupCreate(name="Cameras"), db=session, current_user=admin)
+    made["groups"].append(main.id)
+    sub = create_lut_group(
+        LutGroupCreate(name="Sony", parent_group_id=main.id), db=session, current_user=admin
+    )
+    made["groups"].append(sub.id)
+
+    a = make_lut(session, made, admin, group_id=main.id)
+    b = make_lut(session, made, admin, group_id=sub.id)
+    a.content_hash = uuid.uuid4().hex
+    b.content_hash = uuid.uuid4().hex
+    session.commit()
+
+    out = promote_group_to_platform(main.id, db=session, current_user=admin)
+    session.expire_all()
+
+    assert out.promoted == 2
+    assert out.skipped == []
+    # Both groups and both LUTs, in one operation -- a partial result would
+    # be a state the UI cannot explain.
+    assert session.query(LutGroup).filter(LutGroup.id == main.id).one().is_platform is True
+    assert session.query(LutGroup).filter(LutGroup.id == sub.id).one().is_platform is True
+    assert session.query(Lut).filter(Lut.id == a.id).one().is_platform_wide is True
+    assert session.query(Lut).filter(Lut.id == b.id).one().is_platform_wide is True
+
+
+def test_a_duplicate_inside_the_group_is_skipped_not_fatal(db):
+    session, made = db
+    from apps.api.models.lut import Lut
+    from apps.api.routers.luts import create_lut_group, promote_group_to_platform
+    from apps.api.schemas.lut import LutGroupCreate
+
+    admin = make_user(session, made, superadmin=True)
+    shared_hash = uuid.uuid4().hex
+
+    already = make_lut(session, made, admin, platform=True)
+    already.name = "House Look"
+    already.content_hash = shared_hash
+    session.commit()
+
+    other = make_user(session, made, superadmin=True)
+    group = create_lut_group(LutGroupCreate(name="Mine"), db=session, current_user=other)
+    made["groups"].append(group.id)
+    clash = make_lut(session, made, other, group_id=group.id)
+    clash.content_hash = shared_hash
+    fine = make_lut(session, made, other, group_id=group.id)
+    fine.content_hash = uuid.uuid4().hex
+    session.commit()
+
+    out = promote_group_to_platform(group.id, db=session, current_user=other)
+    session.expire_all()
+
+    # One collision must not undo the other nineteen.
+    assert out.promoted == 1
+    assert len(out.skipped) == 1
+    assert "House Look" in out.skipped[0]
+    assert session.query(Lut).filter(Lut.id == clash.id).one().is_platform_wide is False
+    assert session.query(Lut).filter(Lut.id == fine.id).one().is_platform_wide is True
+
+
+def test_a_sub_group_cannot_be_promoted_on_its_own(db):
+    session, made = db
+    from apps.api.routers.luts import create_lut_group, promote_group_to_platform
+    from apps.api.schemas.lut import LutGroupCreate
+
+    admin = make_user(session, made, superadmin=True)
+    main = create_lut_group(LutGroupCreate(name="Main"), db=session, current_user=admin)
+    made["groups"].append(main.id)
+    sub = create_lut_group(
+        LutGroupCreate(name="Sub", parent_group_id=main.id), db=session, current_user=admin
+    )
+    made["groups"].append(sub.id)
+
+    # It would land platform-side with a personal parent, which §45 forbids.
+    with pytest.raises(HTTPException) as exc:
+        promote_group_to_platform(sub.id, db=session, current_user=admin)
+    assert exc.value.status_code == 400
+
+
+def test_promoting_a_group_is_superadmin_only(db):
+    session, made = db
+    from apps.api.routers.luts import create_lut_group, promote_group_to_platform
+    from apps.api.schemas.lut import LutGroupCreate
+
+    user = make_user(session, made, superadmin=False)
+    group = create_lut_group(LutGroupCreate(name="Mine"), db=session, current_user=user)
+    made["groups"].append(group.id)
+
+    with pytest.raises(HTTPException) as exc:
+        promote_group_to_platform(group.id, db=session, current_user=user)
+    assert exc.value.status_code == 403

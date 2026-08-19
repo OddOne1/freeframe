@@ -84,3 +84,15 @@ class LutExportResponse(BaseModel):
 class ApplyLutRequest(BaseModel):
     """null clears the asset's grade."""
     lut_id: Optional[uuid.UUID] = None
+
+
+class PromoteGroupResponse(BaseModel):
+    """Result of promoting a whole group to Platform (§41).
+
+    `skipped` carries one line per LUT left behind as a duplicate, naming
+    where the existing copy lives — a collision inside a twenty-LUT group
+    must not silently vanish, nor undo the other nineteen.
+    """
+    group_id: uuid.UUID
+    promoted: int
+    skipped: list[str] = []

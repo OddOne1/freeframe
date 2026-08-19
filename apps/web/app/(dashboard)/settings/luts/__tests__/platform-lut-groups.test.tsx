@@ -132,14 +132,14 @@ describe('platform groups are fetched and shown', () => {
     expect(within(group).getByRole('heading', { name: 'Someone Elses', level: 3 })).toBeInTheDocument()
     // Read-only: no rename, no delete, no create.
     expect(screen.queryByLabelText('Rename group House Looks')).not.toBeInTheDocument()
-    expect(screen.queryByText('New platform group')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New Platform Group' })).not.toBeInTheDocument()
   })
 })
 
 describe('managing platform groups', () => {
   it('creates one through the platform endpoint', async () => {
     renderPage()
-    await userEvent.click(await screen.findByText('New platform group'))
+    await userEvent.click(await screen.findByRole('button', { name: 'New Platform Group' }))
     await userEvent.type(screen.getByLabelText('New platform group name'), 'Delivery')
     await userEvent.click(screen.getByRole('button', { name: 'Create' }))
 
@@ -154,7 +154,7 @@ describe('managing platform groups', () => {
 
   it('creates a personal group through the personal endpoint', async () => {
     renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: /New group/ }))
+    await userEvent.click(await screen.findByRole('button', { name: 'New Private Group' }))
     await userEvent.type(screen.getByLabelText('New group name'), 'Mine')
     await userEvent.click(screen.getByRole('button', { name: 'Create' }))
 

@@ -20,6 +20,7 @@ const KEY_PREFIX = 'ff-collapse-'
 function useCollapsed(
   storageKey: string | undefined,
   defaultCollapsed: boolean,
+  onChange?: (collapsed: boolean) => void,
 ): [boolean, () => void] {
   const [collapsed, setCollapsed] = React.useState(defaultCollapsed)
 
@@ -30,16 +31,28 @@ function useCollapsed(
     if (!storageKey) return
     try {
       const stored = window.localStorage.getItem(KEY_PREFIX + storageKey)
-      if (stored === '1' || stored === '0') setCollapsed(stored === '1')
+      if (stored === '1' || stored === '0') {
+        setCollapsed(stored === '1')
+        // Told on the restore too, not only on a click: a parent that
+        // summarises what is folded up underneath it has no other way to
+        // learn about state restored from a previous session.
+        onChangeRef.current?.(stored === '1')
+      }
     } catch {
       // Private mode, or storage disabled. The section still collapses, it
       // just forgets -- which is strictly better than not rendering.
     }
   }, [storageKey])
 
+  // A ref, so a caller passing an inline arrow does not re-run the restore
+  // effect on every render.
+  const onChangeRef = React.useRef(onChange)
+  onChangeRef.current = onChange
+
   const toggle = React.useCallback(() => {
     setCollapsed((prev) => {
       const next = !prev
+      onChangeRef.current?.(next)
       if (storageKey) {
         try {
           window.localStorage.setItem(KEY_PREFIX + storageKey, next ? '1' : '0')
@@ -75,6 +88,17 @@ interface CollapsibleSectionProps {
    *  cannot legally contain another one. */
   actions?: React.ReactNode
   /**
+   * Shown beside the count when this section is expanded but something
+   * inside it is collapsed (§41). The count is a total, and a nested
+   * collapsed group makes it look like rows went missing; this says they
+   * are hidden, not gone.
+   */
+  hiddenNote?: React.ReactNode
+  /** Fired when this section folds or unfolds, including when a stored state
+   *  is restored on mount — for a parent that summarises what is hidden
+   *  underneath it (§41). */
+  onCollapsedChange?: (collapsed: boolean) => void
+  /**
    * Replaces the title inside the header, leaving a chevron-only toggle
    * beside it. Exists for one case: a section whose title is being edited
    * inline, where the name has to become an `<input>` that cannot live inside
@@ -100,11 +124,13 @@ export function CollapsibleSection({
   defaultCollapsed = false,
   tone = 'plain',
   actions,
+  hiddenNote,
+  onCollapsedChange,
   titleOverride,
   className,
   children,
 }: CollapsibleSectionProps) {
-  const [collapsed, toggle] = useCollapsed(storageKey, defaultCollapsed)
+  const [collapsed, toggle] = useCollapsed(storageKey, defaultCollapsed, onCollapsedChange)
   const block = tone === 'block'
 
   const chevron = (
@@ -180,6 +206,9 @@ export function CollapsibleSection({
             </button>
             {titleOverride}
           </>
+        )}
+        {hiddenNote && !collapsed && (
+          <span className="text-2xs text-text-tertiary">{hiddenNote}</span>
         )}
         {actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}
       </div>

@@ -89,6 +89,10 @@ async function readEntry(entry: FileSystemEntry, out: File[]): Promise<void> {
 
 const LUT_DRAG_TYPE = 'application/x-freeframe-lut'
 const PLATFORM_LUT_DRAG_TYPE = 'application/x-freeframe-platform-lut'
+/** A whole group being dragged (§41). Its own type rather than overloading
+ *  the LUT one: a group id and a LUT id are not interchangeable, and the drop
+ *  handler has to know which it has before deciding what to do. */
+const GROUP_DRAG_TYPE = 'application/x-freeframe-lut-group'
 
 /**
  * A section that accepts a dragged LUT.
@@ -99,7 +103,10 @@ const PLATFORM_LUT_DRAG_TYPE = 'application/x-freeframe-platform-lut'
 function LutDropZone({
   enabled,
   accept = [LUT_DRAG_TYPE],
+  dragType,
+  dragId,
   onDropLut,
+  onDropGroup,
   className,
   children,
 }: {
@@ -109,16 +116,41 @@ function LutDropZone({
   /** Which kinds of LUT this zone takes. A personal group takes personal
    *  LUTs only; the platform side takes both, promoting a personal one. */
   accept?: string[]
+  /** Set to make this section itself draggable (§41's whole-group drag). */
+  dragType?: string
+  dragId?: string
   onDropLut: (lutId: string, fromPlatform: boolean) => void
+  /** Only the Platform frame box takes a group drop. */
+  onDropGroup?: (groupId: string) => void
   className?: string
   children: React.ReactNode
 }) {
   const [over, setOver] = React.useState(false)
 
-  if (!enabled) return <section className={className}>{children}</section>
+  const dragProps = dragType
+    ? {
+        draggable: true,
+        onDragStart: (e: React.DragEvent) => {
+          e.dataTransfer.setData(dragType, dragId ?? '')
+          e.dataTransfer.effectAllowed = 'move'
+          // Otherwise the LUT rows inside also start their own drag as the
+          // pointer crosses them.
+          e.stopPropagation()
+        },
+      }
+    : {}
+
+  if (!enabled) {
+    return (
+      <section className={className} {...dragProps}>
+        {children}
+      </section>
+    )
+  }
 
   return (
     <section
+      {...dragProps}
       className={cn(
         className,
         'rounded-lg transition-shadow',
@@ -139,10 +171,13 @@ function LutDropZone({
       }}
       onDrop={(e) => {
         const type = accept.find((t) => e.dataTransfer.getData(t))
-        const lutId = type ? e.dataTransfer.getData(type) : ''
+        const id = type ? e.dataTransfer.getData(type) : ''
         e.preventDefault()
+        e.stopPropagation()
         setOver(false)
-        if (lutId) onDropLut(lutId, type === PLATFORM_LUT_DRAG_TYPE)
+        if (!id) return
+        if (type === GROUP_DRAG_TYPE) onDropGroup?.(id)
+        else onDropLut(id, type === PLATFORM_LUT_DRAG_TYPE)
       }}
     >
       {children}
@@ -199,6 +234,10 @@ export default function LutsSettingsPage() {
   // reason to fail that the user can act on.
   const [actionError, setActionError] = React.useState<string | null>(null)
   const [dropActive, setDropActive] = React.useState(false)
+  // Which nested sections are folded up right now, reported by the sections
+  // themselves — reading localStorage during render would go stale, since a
+  // child toggling its own state does not re-render this page (§41).
+  const [collapsedKeys, setCollapsedKeys] = React.useState<Set<string>>(new Set())
   // Offered after a folder upload finishes, once for the batch (§42).
   const [groupPrompt, setGroupPrompt] = React.useState<
     { folderName: string; lutIds: string[] } | null
@@ -405,6 +444,35 @@ export default function LutsSettingsPage() {
   /** Dropping onto the pinned section promotes, matching the row's own
    *  Platform button. Demoting by dragging back out isn't offered: a promoted
    *  LUT is still someone's own row underneath, so "out" has no one target. */
+  /** One call, not N (§41): a partial failure halfway through would leave a
+   *  group platform-wide with some of its LUTs still personal — a state
+   *  nothing in the UI can explain. Duplicates inside it are skipped and
+   *  reported rather than failing the whole drag. */
+  const promoteGroupToPlatform = React.useCallback(
+    async (groupId: string) => {
+      try {
+        const result = await api.post<{ promoted: number; skipped: string[] }>(
+          `/luts/platform-groups/promote/${groupId}`,
+          {},
+        )
+        setActionError(
+          result?.skipped?.length
+            ? `Promoted ${result.promoted}. Left behind: ${result.skipped.join('; ')}`
+            : null,
+        )
+      } catch (err: unknown) {
+        setActionError(
+          err && typeof err === 'object' && 'detail' in err
+            ? String((err as { detail: unknown }).detail)
+            : 'That group could not be promoted.',
+        )
+        return
+      }
+      await refreshAll()
+    },
+    [refreshAll],
+  )
+
   const promoteLutToPlatform = React.useCallback(
     async (lutId: string) => {
       const current = (luts ?? []).find((l) => l.id === lutId)
@@ -497,6 +565,38 @@ export default function LutsSettingsPage() {
   // ...and just the Main ones, which is what the tree iterates (§45).
   const mainGroups = groupList.filter((g) => !g.parent_group_id)
   const platformMainGroups = platformGroupList.filter((g) => !g.parent_group_id)
+  /** How many of a side's nested sections are currently collapsed.
+   *
+   *  The count badge on a frame box is the true total (§41's "8 vs 4" report
+   *  was a collapsed nested group, not a missing row). Rather than making the
+   *  badge mean "visible right now" — which would then disagree with the
+   *  server and change meaning as you click around — the frame box says how
+   *  many groups are folded up, so "8" and four visible rows stops reading as
+   *  four rows lost. Read from localStorage directly because that is where
+   *  CollapsibleSection keeps it; re-read on every render, which is cheap and
+   *  keeps it honest as sections are toggled.
+   */
+  const noteCollapsed = React.useCallback((key: string, collapsed: boolean) => {
+    setCollapsedKeys((prev) => {
+      if (prev.has(key) === collapsed) return prev
+      const next = new Set(prev)
+      if (collapsed) next.add(key)
+      else next.delete(key)
+      return next
+    })
+  }, [])
+
+  const collapsedCount = (keys: string[]) => keys.filter((k) => collapsedKeys.has(k)).length
+
+  const privateHidden = collapsedCount([
+    ...groupList.map((g) => `luts-group-${g.id}`),
+    'luts-ungrouped',
+  ])
+  const platformHidden = collapsedCount([
+    ...platformGroupList.map((g) => `luts-group-${g.id}`),
+    'luts-platform-ungrouped',
+  ])
+
   const parentName = newGroupParent
     ? allGroups.find((g) => g.id === newGroupParent)?.name
     : undefined
@@ -532,6 +632,11 @@ export default function LutsSettingsPage() {
     return (
       <LutDropZone
         key={group.id}
+        // A whole personal Main group can be dragged onto Platform (§41).
+        // Sub-groups cannot: they would land platform-side with a personal
+        // parent, which §45's pairing rule forbids and the server refuses.
+        dragType={!platformSide && !nested && isSuperAdmin ? GROUP_DRAG_TYPE : undefined}
+        dragId={group.id}
         enabled={platformSide ? canManage : true}
         accept={platformSide ? [LUT_DRAG_TYPE, PLATFORM_LUT_DRAG_TYPE] : [LUT_DRAG_TYPE]}
         onDropLut={(lutId) =>
@@ -547,6 +652,7 @@ export default function LutsSettingsPage() {
           canManage={canManage}
           onChanged={refreshAll}
           onDelete={() => setDeletingGroup(group)}
+          onCollapsedChange={noteCollapsed}
           onAddSubGroup={
             // Only a Main group may gain one; the server would refuse a
             // deeper nesting anyway, so the action is not offered.
@@ -655,8 +761,25 @@ export default function LutsSettingsPage() {
           }}
         >
           <FolderPlus className="h-4 w-4" />
-          New group
+          New Private Group
         </Button>
+        {/* Beside its counterpart rather than buried at the bottom of the
+            Platform section (§41). Moving it changes where it is, not who
+            sees it — still superadmin-only. */}
+        {isSuperAdmin && (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              setNewGroupName('')
+              setNewGroupParent(null)
+              setNewGroupIn('platform')
+            }}
+          >
+            <Globe className="h-4 w-4" />
+            New Platform Group
+          </Button>
+        )}
         <input
           ref={folderRef}
           type="file"
@@ -784,25 +907,34 @@ export default function LutsSettingsPage() {
           since these aren't their LUTs to manage. */}
       <LutDropZone
         enabled={isSuperAdmin}
+        accept={[LUT_DRAG_TYPE, GROUP_DRAG_TYPE]}
         onDropLut={(lutId) => void promoteLutToPlatform(lutId)}
+        onDropGroup={(groupId) => void promoteGroupToPlatform(groupId)}
         className="space-y-3"
       >
         <CollapsibleSection
+          tone="block"
           storageKey="luts-platform"
-          className="space-y-3"
+          className="p-0"
           title={
-            <span className="flex items-center gap-2">
-              <Globe className="h-4 w-4 text-text-tertiary" />
+            <span className="inline-flex items-center gap-2">
+              <Globe className="h-3.5 w-3.5" />
               {PLATFORM_SECTION_LABEL}
             </span>
           }
           count={platform.length}
+          hiddenNote={
+            platformHidden > 0
+              ? `${platformHidden} group${platformHidden === 1 ? '' : 's'} collapsed`
+              : undefined
+          }
           actions={
             <span className="text-xs text-text-tertiary">
               Available in every project, to everyone
             </span>
           }
         >
+        <div className="space-y-3 p-4">
         {platform.length === 0 && platformGroupList.length === 0 ? (
           <p className="text-xs text-text-tertiary border border-border border-dashed rounded-lg px-3 py-4">
             {isSuperAdmin
@@ -832,6 +964,7 @@ export default function LutsSettingsPage() {
                 {platformGroupList.length > 0 ? (
                   <CollapsibleSection
                     storageKey="luts-platform-ungrouped"
+                    onCollapsedChange={(c) => noteCollapsed('luts-platform-ungrouped', c)}
                     title="Ungrouped"
                     count={platformUngrouped.length}
                     className="space-y-3"
@@ -854,21 +987,9 @@ export default function LutsSettingsPage() {
               </LutDropZone>
             )}
 
-            {isSuperAdmin && (
-              <button
-                onClick={() => {
-                  setNewGroupName('')
-                  setNewGroupParent(null)
-                  setNewGroupIn('platform')
-                }}
-                className="flex items-center gap-1.5 text-xs text-text-tertiary hover:text-text-primary transition-colors"
-              >
-                <FolderPlus className="h-3.5 w-3.5" />
-                New platform group
-              </button>
-            )}
           </div>
         )}
+        </div>
         </CollapsibleSection>
       </LutDropZone>
 
@@ -887,12 +1008,23 @@ export default function LutsSettingsPage() {
         />
       ) : (
         <CollapsibleSection
+          tone="block"
           storageKey="luts-personal"
-          title="Your LUTs"
+          title={
+            <span className="inline-flex items-center gap-2">
+              <SwatchBook className="h-3.5 w-3.5" />
+              Private
+            </span>
+          }
           count={ownNotPlatform.length}
-          className="space-y-3"
+          hiddenNote={
+            privateHidden > 0
+              ? `${privateHidden} group${privateHidden === 1 ? '' : 's'} collapsed`
+              : undefined
+          }
+          className="p-0"
         >
-        <div className="space-y-6">
+        <div className="space-y-6 p-4">
           {mainGroups.map((group) =>
             renderGroupTree(group, {
               platformSide: false,
@@ -912,6 +1044,7 @@ export default function LutsSettingsPage() {
             >
               <CollapsibleSection
                 storageKey="luts-ungrouped"
+                onCollapsedChange={(c) => noteCollapsed('luts-ungrouped', c)}
                 title="Ungrouped"
                 count={ungrouped.length}
                 className="space-y-3"
@@ -1287,6 +1420,7 @@ function GroupSection({
   onChanged,
   onDelete,
   onAddSubGroup,
+  onCollapsedChange,
   children,
 }: {
   group: LutGroup
@@ -1299,6 +1433,9 @@ function GroupSection({
   /** Undefined on a sub-group: one level only (§45), so the action is not
    *  offered where the server would refuse it. */
   onAddSubGroup?: () => void
+  /** Reports fold state up to the page, which summarises it on the frame
+   *  box (§41). */
+  onCollapsedChange?: (key: string, collapsed: boolean) => void
   children: React.ReactNode
 }) {
   const [renaming, setRenaming] = React.useState(false)
@@ -1320,6 +1457,7 @@ function GroupSection({
   return (
     <CollapsibleSection
       storageKey={`luts-group-${group.id}`}
+      onCollapsedChange={(collapsed) => onCollapsedChange?.(`luts-group-${group.id}`, collapsed)}
       className="space-y-3"
       title={group.name}
       count={count}
