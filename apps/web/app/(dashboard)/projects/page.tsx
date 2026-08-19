@@ -16,6 +16,8 @@ import {
   UserPlus,
 } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
+import { useProjectViewStore } from "@/stores/project-view-store";
+import type { CardSize } from "@/stores/view-store";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -107,6 +109,7 @@ function ProjectSection({
   icon,
   projects,
   viewMode,
+  cardSize,
   emptyMessage,
   onNewProject,
   showNewButton,
@@ -117,6 +120,7 @@ function ProjectSection({
   icon?: React.ReactNode;
   projects: Project[];
   viewMode: ViewMode;
+  cardSize: CardSize;
   emptyMessage: string;
   onNewProject?: () => void;
   showNewButton?: boolean;
@@ -155,7 +159,7 @@ function ProjectSection({
           </div>
         </button>
       ) : viewMode === "grid" ? (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        <div className={cn("grid gap-4", projectGridColsMap[cardSize])}>
           {projects.map((project) => (
             <ProjectCard
               key={project.id}
@@ -292,11 +296,23 @@ function InviteUserDialog() {
   );
 }
 
+/** The overview's own density ladder — it had none before §51, and it is
+ *  deliberately not shared with the asset grid's: these are different cards
+ *  at different sizes, and one map serving both would tie them together
+ *  again by the back door. */
+const projectGridColsMap: Record<CardSize, string> = {
+  XS: "grid-cols-3 sm:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9",
+  S: "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5",
+  M: "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
+  L: "grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3",
+}
+
 export default function ProjectsPage() {
   usePageTitle("Projects");
   const router = useRouter();
   const { isSuperuserOrAbove } = useAuthStore();
   const [viewMode, setViewMode] = React.useState<ViewMode>("grid");
+  const { projectCardSize, setProjectCardSize } = useProjectViewStore();
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [isCreating, setIsCreating] = React.useState(false);
   const [formError, setFormError] = React.useState("");
@@ -378,6 +394,31 @@ export default function ProjectsPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Overview size, independent of the in-project grid's (§51) —
+              its own store, its own localStorage key. Ascending order. */}
+          {viewMode === "grid" && (
+            <div
+              role="group"
+              aria-label="Card size"
+              className="flex items-center rounded-lg border border-border overflow-hidden"
+            >
+              {(["XS", "S", "M", "L"] as CardSize[]).map((size) => (
+                <button
+                  key={size}
+                  onClick={() => setProjectCardSize(size)}
+                  aria-pressed={projectCardSize === size}
+                  className={cn(
+                    "px-2 py-1.5 text-xs transition-colors",
+                    projectCardSize === size
+                      ? "bg-accent-muted text-accent"
+                      : "text-text-tertiary hover:bg-bg-hover hover:text-text-secondary",
+                  )}
+                >
+                  {size}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex items-center rounded-lg border border-border overflow-hidden">
             <button
               onClick={() => setViewMode("grid")}
@@ -518,6 +559,7 @@ export default function ProjectsPage() {
             icon={<FolderOpen className="h-4 w-4 text-text-tertiary" />}
             projects={myProjects}
             viewMode={viewMode}
+            cardSize={projectCardSize}
             emptyMessage="You haven't created any projects yet."
             onNewProject={() => setDialogOpen(true)}
             showNewButton
@@ -529,6 +571,7 @@ export default function ProjectsPage() {
               icon={<Share2 className="h-4 w-4 text-text-tertiary" />}
               projects={sharedProjects}
               viewMode={viewMode}
+              cardSize={projectCardSize}
               emptyMessage=""
               showRole
               onMutate={() => mutateProjects()}
@@ -540,6 +583,7 @@ export default function ProjectsPage() {
               icon={<Globe className="h-4 w-4 text-text-tertiary" />}
               projects={publicProjects}
               viewMode={viewMode}
+              cardSize={projectCardSize}
               emptyMessage=""
               onMutate={() => mutateProjects()}
             />

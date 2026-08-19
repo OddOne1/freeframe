@@ -241,11 +241,29 @@ export function AssetCard({
             </p>
           )}
 
-          {/* Author + date + file size row */}
-          <p className="text-2xs text-text-tertiary line-clamp-1">
-            {showUploader && authorName && <span>{authorName} &bull; </span>}
-            {formatRelativeTime(asset.created_at)}
-            {showFileSize && fileSize ? <span> &bull; {formatBytes(fileSize)}</span> : null}
+          {/* Author + date + file size row.
+              The whole line used to be `line-clamp-1`, so a long uploader
+              name pushed the date and file size past the clamp and they
+              vanished entirely (§51). Only the NAME truncates now — it is
+              the one part that can be arbitrarily long — and the date and
+              size sit outside the truncated span, where an ellipsis cannot
+              eat them. `min-w-0` on the flex child is what actually lets the
+              name shrink; without it a long name refuses to and pushes the
+              rest out again. */}
+          <p className="flex items-center gap-1 text-2xs text-text-tertiary">
+            {showUploader && authorName && (
+              <>
+                <span className="min-w-0 truncate">{authorName}</span>
+                <span className="shrink-0">&bull;</span>
+              </>
+            )}
+            <span className="shrink-0">{formatRelativeTime(asset.created_at)}</span>
+            {showFileSize && fileSize ? (
+              <>
+                <span className="shrink-0">&bull;</span>
+                <span className="shrink-0">{formatBytes(fileSize)}</span>
+              </>
+            ) : null}
           </p>
         </div>
       )}

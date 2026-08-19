@@ -2,7 +2,8 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
 export type ViewLayout = 'grid' | 'list'
-export type CardSize = 'S' | 'M' | 'L'
+/** XS first: the UI lists them smallest-to-largest (§51). */
+export type CardSize = 'XS' | 'S' | 'M' | 'L'
 export type AspectRatio = 'landscape' | 'square' | 'portrait'
 export type ThumbnailScale = 'fit' | 'fill'
 export type TitleLines = '1' | '2' | '3'

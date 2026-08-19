@@ -79,8 +79,10 @@ interface AssetGridProps {
   onAssetVote?: (asset: Asset, stars: number) => void
 }
 
-// Grid column classes based on card size
+// Grid column classes based on card size. XS is denser than S at every
+// breakpoint (§51) — that is the whole point of adding it.
 const gridColsMap = {
+  XS: 'grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8',
   S: 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5',
   M: 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3',
   L: 'grid-cols-1 sm:grid-cols-1 lg:grid-cols-2',

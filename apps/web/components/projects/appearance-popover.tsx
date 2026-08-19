@@ -170,7 +170,9 @@ export function AppearancePopover() {
             <div className="flex items-center justify-between">
               <span className="text-sm text-text-secondary">Card Size</span>
               <Segment<CardSize>
+                // Ascending, smallest first (§51).
                 options={[
+                  { value: 'XS', label: 'XS' },
                   { value: 'S', label: 'S' },
                   { value: 'M', label: 'M' },
                   { value: 'L', label: 'L' },
