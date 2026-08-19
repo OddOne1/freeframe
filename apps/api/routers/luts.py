@@ -12,6 +12,7 @@ whole file:
   reference to a personal LUT they cannot read.
 """
 
+import hashlib
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -74,6 +75,103 @@ def _parse_cube_size(text: str) -> int:
                 detail="1D LUTs are not supported — upload a 3D .cube file",
             )
     raise HTTPException(status_code=400, detail="No LUT_3D_SIZE found — is this a .cube file?")
+
+
+def _content_hash(text: str) -> str:
+    """SHA-256 of the LUT's *canonical* contents (§44).
+
+    Deliberately not a hash of the raw bytes. The same grade re-exported by
+    a different tool differs in its TITLE line, its comments, its line
+    endings and its float formatting while describing an identical
+    transform -- and "two differently-named files with identical LUT data
+    are the same duplicate" is the whole point. Hashing raw bytes would
+    catch only byte-identical copies, which is the easy half.
+
+    Canonical form is: the 3D size, the input domain, and every entry
+    formatted to 6 decimals. Six because .cube values are display-referred
+    floats that no real grading tool authors past that, and because a
+    re-export that lands on 0.100000001 instead of 0.1 must not read as a
+    different LUT. Two genuinely different LUTs that agree to six decimals
+    would collide -- they would also be visually indistinguishable, so that
+    is the right side to err on.
+
+    DOMAIN_MIN/MAX are included, not normalised away: they change what the
+    table means, so two files with identical entries and different domains
+    are genuinely different LUTs.
+    """
+    size: Optional[int] = None
+    domain_min = ["0.000000", "0.000000", "0.000000"]
+    domain_max = ["1.000000", "1.000000", "1.000000"]
+    entries: list[str] = []
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        keyword = parts[0].upper()
+        if keyword == "LUT_3D_SIZE":
+            size = int(parts[1])
+            continue
+        if keyword in ("TITLE", "LUT_1D_SIZE"):
+            continue
+        if keyword in ("DOMAIN_MIN", "DOMAIN_MAX"):
+            try:
+                values = [f"{float(v):.6f}" for v in parts[1:4]]
+            except ValueError:
+                continue
+            if len(values) == 3:
+                if keyword == "DOMAIN_MIN":
+                    domain_min = values
+                else:
+                    domain_max = values
+            continue
+        try:
+            triple = [f"{float(v):.6f}" for v in parts[:3]]
+        except ValueError:
+            # Any other keyword line. Ignored rather than fatal: the file has
+            # already passed _parse_cube_size, so it is a .cube.
+            continue
+        if len(triple) == 3:
+            entries.append(" ".join(triple))
+
+    canonical = "\n".join([f"SIZE {size}", "MIN " + " ".join(domain_min), "MAX " + " ".join(domain_max), *entries])
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _describe(lut: Lut, db: Session) -> str:
+    """"Kodak 2383" (in "House Looks")" -- the user asked to be told where
+    the existing copy already lives, not just that one exists."""
+    where = ""
+    if lut.group_id:
+        group = db.query(LutGroup).filter(LutGroup.id == lut.group_id).first()
+        if group:
+            where = f' (in "{group.name}")'
+    return f'"{lut.name}"{where}'
+
+
+def _find_owner_duplicate(db: Session, owner_id, content_hash: str, exclude_id=None) -> Optional[Lut]:
+    q = db.query(Lut).filter(
+        Lut.owner_id == owner_id,
+        Lut.content_hash == content_hash,
+        Lut.deleted_at.is_(None),
+    )
+    if exclude_id is not None:
+        q = q.filter(Lut.id != exclude_id)
+    return q.first()
+
+
+def _find_platform_duplicate(db: Session, content_hash: str, exclude_id=None) -> Optional[Lut]:
+    """Across every owner: Platform is one curated shared list, so two
+    identical entries on it are a duplicate no matter who uploaded them."""
+    q = db.query(Lut).filter(
+        Lut.is_platform_wide.is_(True),
+        Lut.content_hash == content_hash,
+        Lut.deleted_at.is_(None),
+    )
+    if exclude_id is not None:
+        q = q.filter(Lut.id != exclude_id)
+    return q.first()
 
 
 def _to_response(
@@ -219,6 +317,17 @@ async def upload_lut(
 
     lut_size = _parse_cube_size(text)
 
+    content_hash = _content_hash(text)
+    existing = _find_owner_duplicate(db, current_user.id, content_hash)
+    if existing is not None:
+        # Per-owner, not global: two different people owning the identical
+        # file is fine and expected (§44). Names where it already lives,
+        # because "duplicate rejected" leaves the user hunting for it.
+        raise HTTPException(
+            status_code=409,
+            detail=f"You already have this LUT as {_describe(existing, db)}.",
+        )
+
     display_name = (name or file.filename or "Untitled LUT").strip()
     if display_name.lower().endswith(".cube"):
         display_name = display_name[: -len(".cube")]
@@ -227,7 +336,13 @@ async def upload_lut(
     key = f"luts/{current_user.id}/{uuid.uuid4()}.cube"
     s3_service.put_object(key, body, content_type="text/plain", cache_control="max-age=86400")
 
-    lut = Lut(owner_id=current_user.id, name=display_name, s3_key=key, lut_size=lut_size)
+    lut = Lut(
+        owner_id=current_user.id,
+        name=display_name,
+        s3_key=key,
+        lut_size=lut_size,
+        content_hash=content_hash,
+    )
     db.add(lut)
     db.commit()
     db.refresh(lut)
@@ -484,6 +599,21 @@ def update_lut(
                 status_code=403,
                 detail="Only superadmins can make a LUT platform-wide",
             )
+        if body.is_platform_wide and not lut.is_platform_wide:
+            # Checked on promotion as well as on upload (§44): this LUT
+            # passed its per-owner check when it was uploaded, and can still
+            # collide with another owner's copy that is already on the
+            # platform list.
+            clash = _find_platform_duplicate(db, lut.content_hash, exclude_id=lut.id) \
+                if lut.content_hash else None
+            if clash is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "This LUT is already on the platform list as "
+                        f"{_describe(clash, db)}."
+                    ),
+                )
         lut.is_platform_wide = body.is_platform_wide
 
     if "name" in fields_set and body.name is not None:

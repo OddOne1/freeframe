@@ -107,6 +107,12 @@ class Lut(Base):
     is_platform_wide: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # SHA-256 of the LUT's *canonical* contents, not of the raw file (§44).
+    # See routers/luts.py::_content_hash for what canonical means and why.
+    # Nullable: rows uploaded before this column existed have no hash until
+    # scripts/backfill_lut_hashes.py has run against them, and a null never
+    # matches anything, so it can neither block an upload nor be blocked.
+    content_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     # At most one group, or none. SET NULL so deleting a group ungroups its
     # LUTs rather than taking them with it.
     group_id: Mapped[Optional[uuid.UUID]] = mapped_column(

@@ -143,7 +143,17 @@ export default function LutsSettingsPage() {
   const [uploading, setUploading] = React.useState<{ done: number; total: number } | null>(null)
   // Per file, not one aggregate line. Two bad .cubes in a batch of ten must
   // name themselves; the other eight are already in the library by then.
-  const [uploadErrors, setUploadErrors] = React.useState<{ file: string; detail: string }[]>([])
+  // `kind` separates a duplicate (409 — nothing went wrong, the LUT is
+  // already there) from a real failure, because reporting "you already have
+  // this" in red reads as something being broken (§44).
+  const [uploadErrors, setUploadErrors] = React.useState<
+    { file: string; detail: string; kind: 'duplicate' | 'error' }[]
+  >([])
+  // A promote/patch that the server refused — a duplicate on the platform
+  // list, most often. Shown in the same panel as the upload results rather
+  // than being swallowed, which is what happened before §44 gave PATCH a
+  // reason to fail that the user can act on.
+  const [actionError, setActionError] = React.useState<string | null>(null)
   const [deleting, setDeleting] = React.useState<Lut | null>(null)
   // Which LUT's frame is open in the zoom dialog. One dialog for the page,
   // the same way `deleting` is one ConfirmDialog rather than one per row.
@@ -173,7 +183,7 @@ export default function LutsSettingsPage() {
     // Sequential on purpose. /me/luts is one small text upload per call, the
     // count is a user-picked handful, and a failure has to be attributable to
     // its own file -- none of which a parallel burst buys anything for.
-    const failures: { file: string; detail: string }[] = []
+    const failures: { file: string; detail: string; kind: 'duplicate' | 'error' }[] = []
     let succeeded = 0
     for (const file of files) {
       try {
@@ -185,7 +195,10 @@ export default function LutsSettingsPage() {
         const detail = err && typeof err === 'object' && 'detail' in err
           ? String((err as { detail: unknown }).detail)
           : 'Upload failed'
-        failures.push({ file: file.name, detail })
+        const status = err && typeof err === 'object' && 'status' in err
+          ? Number((err as { status: unknown }).status)
+          : 0
+        failures.push({ file: file.name, detail, kind: status === 409 ? 'duplicate' : 'error' })
       }
       setUploading((prev) => (prev ? { ...prev, done: prev.done + 1 } : prev))
     }
@@ -240,10 +253,20 @@ export default function LutsSettingsPage() {
       const alreadyThere =
         current.is_platform_wide && (current.group_id ?? null) === groupId
       if (alreadyThere) return
-      await api.patch(`/me/luts/${lutId}`, {
-        group_id: groupId,
-        ...(current.is_platform_wide ? {} : { is_platform_wide: true }),
-      })
+      try {
+        await api.patch(`/me/luts/${lutId}`, {
+          group_id: groupId,
+          ...(current.is_platform_wide ? {} : { is_platform_wide: true }),
+        })
+        setActionError(null)
+      } catch (err: unknown) {
+        setActionError(
+          err && typeof err === 'object' && 'detail' in err
+            ? String((err as { detail: unknown }).detail)
+            : 'That LUT could not be moved.',
+        )
+        return
+      }
       await refreshAll()
     },
     [luts, refreshAll],
@@ -256,9 +279,19 @@ export default function LutsSettingsPage() {
     async (lutId: string) => {
       const current = (luts ?? []).find((l) => l.id === lutId)
       if (!current || current.is_platform_wide) return
-      // No group_id sent: the server drops a personal group the LUT no
-      // longer belongs in rather than leaving an invalid pair behind.
-      await api.patch(`/me/luts/${lutId}`, { is_platform_wide: true })
+      try {
+        // No group_id sent: the server drops a personal group the LUT no
+        // longer belongs in rather than leaving an invalid pair behind.
+        await api.patch(`/me/luts/${lutId}`, { is_platform_wide: true })
+        setActionError(null)
+      } catch (err: unknown) {
+        setActionError(
+          err && typeof err === 'object' && 'detail' in err
+            ? String((err as { detail: unknown }).detail)
+            : 'That LUT could not be promoted.',
+        )
+        return
+      }
       await refreshAll()
     },
     [luts, refreshAll],
@@ -432,6 +465,7 @@ export default function LutsSettingsPage() {
       onDelete={() => setDeleting(lut)}
       onPreview={() => setPreviewing(lut)}
       canDrag
+      onError={setActionError}
     />
   )
 
@@ -457,6 +491,7 @@ export default function LutsSettingsPage() {
       // Draggable between platform groups, not out of Platform: the zones
       // that accept this drag type are all on the platform side.
       canDrag={isSuperAdmin && lut.is_owner}
+      onError={setActionError}
     />
   )
 
@@ -501,13 +536,28 @@ export default function LutsSettingsPage() {
       </div>
 
       {uploadErrors.length > 0 && (
-        <div className="space-y-1 rounded-md border border-red-400/30 bg-red-400/5 px-3 py-2">
+        <div className="space-y-1 rounded-md border border-border bg-bg-secondary px-3 py-2">
           {uploadErrors.map((f) => (
-            <p key={f.file} className="text-xs text-red-400">
-              <span className="font-medium">{f.file}</span> — {f.detail}
+            <p
+              key={f.file}
+              data-kind={f.kind}
+              className={cn(
+                'text-xs',
+                f.kind === 'duplicate' ? 'text-text-tertiary' : 'text-red-400',
+              )}
+            >
+              <span className="font-medium">{f.file}</span>
+              {f.kind === 'duplicate' ? ' — already in your library. ' : ' — '}
+              {f.detail}
             </p>
           ))}
         </div>
+      )}
+
+      {actionError && (
+        <p className="rounded-md border border-red-400/30 bg-red-400/5 px-3 py-2 text-xs text-red-400">
+          {actionError}
+        </p>
       )}
 
       {/* Two independent controls, as asked: one orders the groups, the other
@@ -786,6 +836,7 @@ function LutRow({
   onDelete,
   onPreview,
   canDrag,
+  onError,
 }: {
   lut: Lut
   groups: LutGroup[]
@@ -803,6 +854,8 @@ function LutRow({
   /** False on the pinned Platform rows, which have nowhere meaningful to be
    *  dragged to. */
   canDrag: boolean
+  /** Surfaces a refused PATCH where the user can see it; null clears it. */
+  onError: (message: string | null) => void
 }) {
   const [busy, setBusy] = React.useState(false)
   const [renaming, setRenaming] = React.useState(false)
@@ -817,7 +870,17 @@ function LutRow({
     setBusy(true)
     try {
       await api.patch(`/me/luts/${lut.id}`, body)
+      onError(null)
       await onChanged()
+    } catch (err: unknown) {
+      // Promotion can legitimately be refused now (§44: already on the
+      // platform list). Swallowing it would leave the button looking like
+      // it did nothing.
+      onError(
+        err && typeof err === 'object' && 'detail' in err
+          ? String((err as { detail: unknown }).detail)
+          : 'That change could not be saved.',
+      )
     } finally {
       setBusy(false)
     }
