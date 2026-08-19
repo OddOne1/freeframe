@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import useSWR from 'swr'
+import * as Dialog from '@radix-ui/react-dialog'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import * as Popover from '@radix-ui/react-popover'
 import {
@@ -17,6 +18,7 @@ import {
   FolderUp,
   ChevronDown,
   Pencil,
+  X,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { cn, formatRelativeTime } from '@/lib/utils'
@@ -234,6 +236,7 @@ export default function LutsSettingsPage() {
   // reason to fail that the user can act on.
   const [actionError, setActionError] = React.useState<string | null>(null)
   const [dropActive, setDropActive] = React.useState(false)
+  const [uploadOpen, setUploadOpen] = React.useState(false)
   // Which nested sections are folded up right now, reported by the sections
   // themselves — reading localStorage during render would go stale, since a
   // child toggling its own state does not re-render this page (§41).
@@ -278,6 +281,12 @@ export default function LutsSettingsPage() {
   async function uploadFiles(files: File[], folderName: string | null = null) {
     if (files.length === 0) return
 
+    // The dialog closes as soon as there is something to upload. Radix's
+    // modal makes the rest of the page inert, so leaving it open would put
+    // the per-file results and the group prompt behind an overlay the user
+    // has to dismiss before they can see them. Progress is on the header
+    // button meanwhile.
+    setUploadOpen(false)
     setUploadErrors([])
     setActionError(null)
     setGroupPrompt(null)
@@ -731,6 +740,35 @@ export default function LutsSettingsPage() {
     />
   )
 
+  /** Declared once and rendered inside the upload dialog — the same zone,
+   *  not a second copy that could drift (§48-REVISED). */
+  const dropZone = (
+    // Deliberately ignores this page's own LUT drags, which the section drop
+    // zones own — otherwise dragging a LUT between groups would look like an
+    // upload.
+    <div
+      data-testid="lut-drop-zone"
+      data-drop-active={dropActive ? 'true' : undefined}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.some((t) => t.startsWith('application/x-freeframe'))) return
+        e.preventDefault()
+        setDropActive(true)
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+        setDropActive(false)
+      }}
+      onDrop={(e) => void handleDrop(e)}
+      className={cn(
+        'rounded-lg border border-dashed border-border px-4 py-6 text-center text-xs text-text-tertiary transition-colors',
+        dropActive && 'border-accent bg-accent/5 text-text-primary',
+      )}
+    >
+      Drop .cube files or a whole folder here. Anything that isn&apos;t a
+      .cube is ignored.
+    </div>
+  )
+
   return (
     <div className="p-6 max-w-3xl space-y-8">
       <div className="flex items-center gap-3">
@@ -743,14 +781,6 @@ export default function LutsSettingsPage() {
             Your personal color LUTs, available in every project you work on.
           </p>
         </div>
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".cube"
-          multiple
-          onChange={handleFiles}
-          className="hidden"
-        />
         <Button
           size="sm"
           variant="secondary"
@@ -780,58 +810,89 @@ export default function LutsSettingsPage() {
             New Platform Group
           </Button>
         )}
-        <input
-          ref={folderRef}
-          type="file"
-          // Non-standard attributes, and the only way to offer a folder in a
-          // file picker. React needs them spelled this way.
-          {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
-          multiple
-          onChange={handleFolderInput}
-          className="hidden"
-        />
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={() => folderRef.current?.click()}
-          disabled={uploading !== null}
-        >
-          <FolderUp className="h-4 w-4" />
-          Upload folder
-        </Button>
-        <Button size="sm" onClick={() => fileRef.current?.click()} disabled={uploading !== null}>
+        <Button size="sm" onClick={() => setUploadOpen(true)} disabled={uploading !== null}>
           {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
           {uploading && uploading.total > 1
             ? `Uploading ${uploading.done + 1}/${uploading.total}`
-            : 'Upload .cube'}
+            : 'Upload'}
         </Button>
       </div>
 
-      {/* Drop target for loose .cube files or a whole folder. Deliberately
-          ignores this page's own LUT drags, which the section drop zones
-          own — otherwise dragging a LUT between groups would look like an
-          upload. */}
-      <div
-        data-testid="lut-drop-zone"
-        data-drop-active={dropActive ? 'true' : undefined}
-        onDragOver={(e) => {
-          if (e.dataTransfer.types.some((t) => t.startsWith('application/x-freeframe'))) return
-          e.preventDefault()
-          setDropActive(true)
-        }}
-        onDragLeave={(e) => {
-          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-          setDropActive(false)
-        }}
-        onDrop={(e) => void handleDrop(e)}
-        className={cn(
-          'rounded-lg border border-dashed border-border px-4 py-6 text-center text-xs text-text-tertiary transition-colors',
-          dropActive && 'border-accent bg-accent/5 text-text-primary',
-        )}
-      >
-        Drop .cube files or a whole folder here. Anything that isn&apos;t a
-        .cube is ignored.
-      </div>
+      {/* Same Dialog shape as the project uploader (projects/[id]/page.tsx),
+          so the two uploaders feel like one feature rather than two.
+
+          Two browse buttons, not one: macOS Chromium's webkitdirectory
+          dialog happens to allow picking loose files too, but Windows'
+          genuinely blocks it — and blocks folder selection in the plain
+          picker. WeTransfer ships the same split for the same reason
+          (§48-REVISED, confirmed by the user testing both OSes). */}
+      <Dialog.Root open={uploadOpen} onOpenChange={setUploadOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary p-6 shadow-xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+            <Dialog.Close className="absolute right-4 top-4 text-text-tertiary hover:text-text-primary transition-colors">
+              <X className="h-4 w-4" />
+            </Dialog.Close>
+            <Dialog.Title className="text-base font-semibold text-text-primary">
+              Upload LUTs
+            </Dialog.Title>
+            <Dialog.Description className="mt-1 text-sm text-text-secondary">
+              Add .cube files to your library, or a whole folder of them.
+            </Dialog.Description>
+
+            <div className="mt-4 space-y-3">
+              {/* Inside the dialog, with the buttons that drive them: Radix's
+                  modal makes everything outside it inert, and an input the
+                  user cannot reach is a trap waiting for the day someone
+                  clicks it directly. */}
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".cube"
+                multiple
+                onChange={handleFiles}
+                className="hidden"
+              />
+              <input
+                ref={folderRef}
+                type="file"
+                // Non-standard attributes, and the only way to offer a folder
+                // in a file picker. React needs them spelled this way.
+                {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
+                multiple
+                onChange={handleFolderInput}
+                className="hidden"
+              />
+              {dropZone}
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={uploading !== null}
+                >
+                  <Upload className="h-4 w-4" />
+                  Add files
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => folderRef.current?.click()}
+                  disabled={uploading !== null}
+                >
+                  <FolderUp className="h-4 w-4" />
+                  Add folder
+                </Button>
+                {uploading && (
+                  <span className="text-xs text-text-tertiary tabular-nums">
+                    Uploading {uploading.done + 1}/{uploading.total}
+                  </span>
+                )}
+              </div>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
 
       {groupPrompt && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-bg-secondary px-3 py-2">

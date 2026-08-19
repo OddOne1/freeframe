@@ -69,6 +69,13 @@ function file(name: string) {
   return new File(['LUT_3D_SIZE 2\n'], name, { type: 'text/plain' })
 }
 
+/** The uploader lives in a dialog now (§48-REVISED): its inputs and drop zone
+ *  only exist once it is open. */
+async function openUploader() {
+  await userEvent.click(await screen.findByRole('button', { name: /^Upload/ }))
+  await screen.findByTestId('lut-drop-zone')
+}
+
 describe('a duplicate upload', () => {
   it('names where the existing copy lives, per file', async () => {
     renderPage()
@@ -84,6 +91,7 @@ describe('a duplicate upload', () => {
         : Promise.resolve({})
     })
 
+    await openUploader()
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     await userEvent.upload(input, [file('fresh.cube'), file('dupe.cube')])
 
@@ -99,6 +107,7 @@ describe('a duplicate upload', () => {
     await screen.findByRole('heading', { name: 'Kodak 2383', level: 3 })
 
     upload.mockRejectedValue({ status: 409, detail: 'You already have this LUT as "A".' })
+    await openUploader()
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     await userEvent.upload(input, [file('dupe.cube')])
 
@@ -113,6 +122,7 @@ describe('a duplicate upload', () => {
     await screen.findByRole('heading', { name: 'Kodak 2383', level: 3 })
 
     upload.mockRejectedValue({ status: 400, detail: 'No LUT_3D_SIZE found — is this a .cube file?' })
+    await openUploader()
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     await userEvent.upload(input, [file('broken.cube')])
 

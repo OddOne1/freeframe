@@ -54,6 +54,13 @@ function renderPage() {
   )
 }
 
+/** The uploader lives in a dialog now (§48-REVISED), so the drop zone and
+ *  both browse buttons only exist once it is open. */
+async function openUploader() {
+  await userEvent.click(await screen.findByRole('button', { name: /^Upload/ }))
+  return screen.findByTestId('lut-drop-zone')
+}
+
 function file(name: string, size = 10) {
   const f = new File(['LUT_3D_SIZE 2\n'], name, { type: 'text/plain' })
   Object.defineProperty(f, 'size', { value: size })
@@ -108,7 +115,7 @@ function uploadedNames() {
 describe('dropping a folder', () => {
   it('uploads only the .cube files and ignores the rest', async () => {
     renderPage()
-    await screen.findByTestId('lut-drop-zone')
+    await openUploader()
 
     drop([
       dirEntry('Show LUTs', [
@@ -128,7 +135,7 @@ describe('dropping a folder', () => {
 
   it('walks nested folders rather than only the top level', async () => {
     renderPage()
-    await screen.findByTestId('lut-drop-zone')
+    await openUploader()
 
     drop([
       dirEntry('Show', [
@@ -143,7 +150,7 @@ describe('dropping a folder', () => {
 
   it('asks once for the batch whether to make a group of the folder', async () => {
     renderPage()
-    await screen.findByTestId('lut-drop-zone')
+    await openUploader()
 
     drop([dirEntry('Show LUTs', [fileEntry('a.cube'), fileEntry('b.cube')])])
     const prompt = await screen.findByText(/into a group of that name/)
@@ -155,7 +162,7 @@ describe('dropping a folder', () => {
 
   it('creates the group and files the uploads into it when accepted', async () => {
     renderPage()
-    await screen.findByTestId('lut-drop-zone')
+    await openUploader()
     drop([dirEntry('Show LUTs', [fileEntry('a.cube'), fileEntry('b.cube')])])
     await screen.findByText(/into a group of that name/)
 
@@ -173,7 +180,7 @@ describe('dropping a folder', () => {
 
   it('leaves everything ungrouped when declined', async () => {
     renderPage()
-    await screen.findByTestId('lut-drop-zone')
+    await openUploader()
     drop([dirEntry('Show LUTs', [fileEntry('a.cube')])])
     await screen.findByText(/into a group of that name/)
 
@@ -187,7 +194,7 @@ describe('dropping a folder', () => {
 
   it('offers no group name when several folders are dropped at once', async () => {
     renderPage()
-    await screen.findByTestId('lut-drop-zone')
+    await openUploader()
     drop([
       dirEntry('One', [fileEntry('a.cube')]),
       dirEntry('Two', [fileEntry('b.cube')]),
@@ -200,7 +207,7 @@ describe('dropping a folder', () => {
 
   it('does not treat this page’s own LUT drag as an upload', async () => {
     renderPage()
-    const zone = await screen.findByTestId('lut-drop-zone')
+    const zone = await openUploader()
     fireEvent.dragOver(zone, {
       dataTransfer: { types: ['application/x-freeframe-lut'], items: [], files: [] },
     })
@@ -223,6 +230,7 @@ describe('dropping a folder', () => {
 describe('the size limit', () => {
   it('refuses an oversized file before uploading it', async () => {
     renderPage()
+    await openUploader()
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     await userEvent.upload(input, [file('huge.cube', 2 * 1024 * 1024 * 1024)])
 
@@ -233,6 +241,7 @@ describe('the size limit', () => {
 
   it('still uploads the rest of a batch around an oversized one', async () => {
     renderPage()
+    await openUploader()
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     await userEvent.upload(input, [
       file('fine.cube', 9 * 1024 * 1024),
@@ -246,6 +255,7 @@ describe('the size limit', () => {
 
   it('accepts a file that the old 8MB limit would have rejected', async () => {
     renderPage()
+    await openUploader()
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     await userEvent.upload(input, [file('big.cube', 50 * 1024 * 1024)])
 

@@ -120,12 +120,20 @@ function file(name: string) {
   return new File(['LUT_3D_SIZE 2\n'], name, { type: 'text/plain' })
 }
 
+/** The uploader lives in a dialog now (§48-REVISED): its inputs and drop zone
+ *  only exist once it is open. */
+async function openUploader() {
+  await userEvent.click(await screen.findByRole('button', { name: /^Upload/ }))
+  await screen.findByTestId('lut-drop-zone')
+}
+
 describe('multi-file upload', () => {
   it('uploads every picked file and refreshes once', async () => {
     renderPage()
     await screen.findByRole('heading', { name: 'Kodak 2383', level: 3 })
     get.mockClear()
 
+    await openUploader()
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     expect(input).toHaveAttribute('multiple')
 
@@ -149,6 +157,7 @@ describe('multi-file upload', () => {
         : Promise.resolve({})
     })
 
+    await openUploader()
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     await userEvent.upload(input, [file('good.cube'), file('bad.cube'), file('third.cube')])
 
