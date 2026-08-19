@@ -762,6 +762,9 @@ export interface LutGroup {
   /** Shared/global rather than one user's (§39). Sent on personal groups too,
    *  so a group never has to be identified by which endpoint it came from. */
   is_platform: boolean
+  /** null = a top-level Main group; otherwise the Main group this Sub group
+   *  sits under (§45). Exactly one level, enforced server-side. */
+  parent_group_id: string | null
   created_at: string
 }
 

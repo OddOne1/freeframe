@@ -144,7 +144,11 @@ describe('managing platform groups', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create' }))
 
     await waitFor(() =>
-      expect(post).toHaveBeenCalledWith('/luts/platform-groups', { name: 'Delivery' }),
+      expect(post).toHaveBeenCalledWith('/luts/platform-groups', {
+        name: 'Delivery',
+        // Top-level, not a sub-group (§45).
+        parent_group_id: null,
+      }),
     )
   })
 
@@ -154,7 +158,12 @@ describe('managing platform groups', () => {
     await userEvent.type(screen.getByLabelText('New group name'), 'Mine')
     await userEvent.click(screen.getByRole('button', { name: 'Create' }))
 
-    await waitFor(() => expect(post).toHaveBeenCalledWith('/me/lut-groups', { name: 'Mine' }))
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith('/me/lut-groups', {
+        name: 'Mine',
+        parent_group_id: null,
+      }),
+    )
   })
 
   it('renames one through the platform endpoint', async () => {

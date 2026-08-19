@@ -8,6 +8,9 @@ from pydantic import BaseModel
 class LutGroupResponse(BaseModel):
     id: uuid.UUID
     name: str
+    #: NULL = a top-level Main group; otherwise the Main group this Sub group
+    #: sits under (§45). Exactly one level, enforced server-side.
+    parent_group_id: Optional[uuid.UUID] = None
     #: Shared/global rather than one user's. Sent on personal groups too, so
     #: the client never has to infer which endpoint a group came from.
     is_platform: bool = False
@@ -18,6 +21,10 @@ class LutGroupResponse(BaseModel):
 
 class LutGroupCreate(BaseModel):
     name: str
+    #: Creating a Sub group goes through the same endpoint as a Main one,
+    #: with a parent named. A separate endpoint would duplicate the name
+    #: validation and the platform/personal split for no gain.
+    parent_group_id: Optional[uuid.UUID] = None
 
 
 class LutGroupUpdate(BaseModel):

@@ -22,12 +22,14 @@ except ImportError:
 
 
 class LutGroup(Base):
-    """A user's own folder for organizing their LUT library.
+    """A folder for organizing a LUT library.
 
-    Deliberately flat -- no parent_id. Folder (models/folder.py) is
-    self-referential because project folders genuinely nest; nobody asked
-    for nested LUT groups, and adding parent_id later is a cheap column
-    rather than something to build preemptively.
+    **Exactly one level of nesting** (§45). A Main group (parent_group_id
+    NULL) may hold Sub groups; a Sub group may not hold anything further.
+    This was the "cheap column later" the original flat design anticipated,
+    and the depth cap is enforced in routers/luts.py rather than by the
+    schema -- Postgres cannot express "at most one level" on a
+    self-referential FK.
 
     Two kinds, split by `is_platform` (§39):
 
@@ -60,6 +62,16 @@ class LutGroup(Base):
     # rename, delete and file into these; every user can see them.
     is_platform: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
+    )
+    # NULL = a top-level Main group. SET NULL rather than CASCADE so
+    # deleting a Main group promotes its Sub groups to top level instead of
+    # taking them and their LUTs with it -- matching how Lut.group_id
+    # already refuses to let a deleted group delete its members.
+    parent_group_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("lut_groups.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

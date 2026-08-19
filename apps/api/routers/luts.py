@@ -123,6 +123,35 @@ def _get_own_group(db: Session, group_id: uuid.UUID, current_user: User) -> LutG
     return group
 
 
+def _validate_parent(db: Session, parent_id: uuid.UUID, is_platform: bool) -> LutGroup:
+    """The Main group a new Sub group is being created under (§45).
+
+    Exactly one level, and the cap is enforced here because Postgres cannot
+    express "at most one level of self-reference" on a self-referential FK.
+    """
+    parent = db.query(LutGroup).filter(
+        LutGroup.id == parent_id,
+        LutGroup.deleted_at.is_(None),
+    ).first()
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent group not found")
+    if parent.parent_group_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="A sub-group cannot hold sub-groups of its own",
+        )
+    if parent.is_platform != is_platform:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A platform sub-group must sit under a platform group"
+                if is_platform
+                else "A personal sub-group must sit under one of your own groups"
+            ),
+        )
+    return parent
+
+
 def _get_platform_group(db: Session, group_id: uuid.UUID) -> LutGroup:
     """One shared platform group, whoever created it.
 
@@ -265,7 +294,16 @@ def create_lut_group(
     name = (body.name or "").strip()[:255]
     if not name:
         raise HTTPException(status_code=400, detail="Group name is required")
-    group = LutGroup(owner_id=current_user.id, name=name)
+    if body.parent_group_id is not None:
+        parent = _validate_parent(db, body.parent_group_id, is_platform=False)
+        # A personal sub-group has to sit under one of the caller's own.
+        if parent.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Parent group not found")
+    group = LutGroup(
+        owner_id=current_user.id,
+        name=name,
+        parent_group_id=body.parent_group_id,
+    )
     db.add(group)
     db.commit()
     db.refresh(group)
@@ -312,11 +350,15 @@ def delete_lut_group(
 ):
     """Soft delete. Member LUTs are explicitly ungrouped rather than left
     pointing at a deleted row -- the FK's ON DELETE SET NULL only fires on a
-    hard delete, which this deliberately isn't."""
+    hard delete, which this deliberately isn't. Sub-groups are promoted to
+    top level for the same reason (§45): they and their own LUTs survive."""
     group = _get_own_group(db, group_id, current_user)
     group.deleted_at = datetime.now(timezone.utc)
     db.query(Lut).filter(Lut.group_id == group.id).update(
         {"group_id": None}, synchronize_session=False
+    )
+    db.query(LutGroup).filter(LutGroup.parent_group_id == group.id).update(
+        {"parent_group_id": None}, synchronize_session=False
     )
     db.commit()
 
@@ -360,8 +402,15 @@ def create_platform_lut_group(
     name = (body.name or "").strip()[:255]
     if not name:
         raise HTTPException(status_code=400, detail="Group name is required")
+    if body.parent_group_id is not None:
+        _validate_parent(db, body.parent_group_id, is_platform=True)
     # owner_id records who created it; it is not who may change it.
-    group = LutGroup(owner_id=current_user.id, name=name, is_platform=True)
+    group = LutGroup(
+        owner_id=current_user.id,
+        name=name,
+        is_platform=True,
+        parent_group_id=body.parent_group_id,
+    )
     db.add(group)
     db.commit()
     db.refresh(group)
@@ -397,13 +446,17 @@ def delete_platform_lut_group(
     current_user: User = Depends(get_current_user),
 ):
     """Soft delete, same shape as the personal one: members are explicitly
-    ungrouped rather than left pointing at a deleted row, since the FK's
-    ON DELETE SET NULL only fires on a hard delete."""
+    ungrouped and sub-groups promoted to top level rather than left pointing
+    at a deleted row, since the FK's ON DELETE SET NULL only fires on a hard
+    delete."""
     _require_superadmin(current_user)
     group = _get_platform_group(db, group_id)
     group.deleted_at = datetime.now(timezone.utc)
     db.query(Lut).filter(Lut.group_id == group.id).update(
         {"group_id": None}, synchronize_session=False
+    )
+    db.query(LutGroup).filter(LutGroup.parent_group_id == group.id).update(
+        {"parent_group_id": None}, synchronize_session=False
     )
     db.commit()
 

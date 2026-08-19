@@ -153,6 +153,10 @@ export default function LutsSettingsPage() {
   // it is closed. Platform groups are superadmin-only, gated at the button.
   const [newGroupIn, setNewGroupIn] = React.useState<'personal' | 'platform' | null>(null)
   const [newGroupName, setNewGroupName] = React.useState('')
+  // The Main group a new group is being created under, or null for a
+  // top-level one (§45). Set by a group's own "New sub-group" action, so the
+  // parent is never something the user has to pick out of a list.
+  const [newGroupParent, setNewGroupParent] = React.useState<string | null>(null)
 
   const refreshAll = React.useCallback(async () => {
     await Promise.all([mutate(), mutatePlatform(), mutateGroups(), mutatePlatformGroups()])
@@ -265,10 +269,11 @@ export default function LutsSettingsPage() {
     if (!name || !newGroupIn) return
     await api.post(
       newGroupIn === 'platform' ? '/luts/platform-groups' : '/me/lut-groups',
-      { name },
+      { name, parent_group_id: newGroupParent },
     )
     setNewGroupName('')
     setNewGroupIn(null)
+    setNewGroupParent(null)
     await refreshAll()
   }
 
@@ -322,10 +327,113 @@ export default function LutsSettingsPage() {
   const orderedGroups = (platformSide: boolean) =>
     sortedGroups.filter((g) => Boolean(g.is_platform) === platformSide)
 
+  // Every group of that kind, flat — what the ⋯ menu's "Move to group" list
+  // and the sub-group parent picker read.
   const groupList = orderedGroups(false)
   const platformGroupList = orderedGroups(true)
+  // ...and just the Main ones, which is what the tree iterates (§45).
+  const mainGroups = groupList.filter((g) => !g.parent_group_id)
+  const platformMainGroups = platformGroupList.filter((g) => !g.parent_group_id)
+  const parentName = newGroupParent
+    ? allGroups.find((g) => g.id === newGroupParent)?.name
+    : undefined
+  const subGroupsOf = (parentId: string, platformSide: boolean) =>
+    (platformSide ? platformGroupList : groupList).filter(
+      (g) => g.parent_group_id === parentId,
+    )
   const ungrouped = sortLuts(ownNotPlatform.filter((l) => !l.group_id))
   const platformUngrouped = sortLuts(platform.filter((l) => !l.group_id))
+
+  /**
+   * One group and, beneath it, its sub-groups (§45). Recursive in shape but
+   * capped at one level by the server, so a sub-group is rendered with
+   * `nested` and never asks for children of its own.
+   *
+   * The same function draws both sides: they differ only in which drop
+   * mutation runs and who may manage them, which is what the arguments are.
+   */
+  const renderGroupTree = (
+    group: LutGroup,
+    opts: {
+      platformSide: boolean
+      canManage: boolean
+      renderRow: (lut: Lut) => React.ReactNode
+      luts: Lut[]
+      nested?: boolean
+    },
+  ): React.ReactNode => {
+    const { platformSide, canManage, renderRow, luts: pool, nested } = opts
+    const members = sortLuts(pool.filter((l) => l.group_id === group.id))
+    const children = nested ? [] : subGroupsOf(group.id, platformSide)
+
+    return (
+      <LutDropZone
+        key={group.id}
+        enabled={platformSide ? canManage : true}
+        accept={platformSide ? [LUT_DRAG_TYPE, PLATFORM_LUT_DRAG_TYPE] : [LUT_DRAG_TYPE]}
+        onDropLut={(lutId) =>
+          void (platformSide
+            ? moveLutToPlatformGroup(lutId, group.id)
+            : moveLutToGroup(lutId, group.id))
+        }
+        className="space-y-3"
+      >
+        <GroupSection
+          group={group}
+          count={members.length}
+          canManage={canManage}
+          onChanged={refreshAll}
+          onDelete={() => setDeletingGroup(group)}
+          onAddSubGroup={
+            // Only a Main group may gain one; the server would refuse a
+            // deeper nesting anyway, so the action is not offered.
+            nested
+              ? undefined
+              : () => {
+                  setNewGroupName('')
+                  setNewGroupIn(platformSide ? 'platform' : 'personal')
+                  setNewGroupParent(group.id)
+                }
+          }
+        >
+          {members.length === 0 && children.length === 0 ? (
+            <p className="text-xs text-text-tertiary">
+              Empty — drag a LUT here, or move it from its ⋯ menu.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {members.map((lut) => renderRow(lut))}
+              {children.length > 0 && (
+                // Indented, so a sub-group reads as inside its parent rather
+                // than as another group that happens to follow it.
+                <div className="space-y-3 border-l border-border pl-3">
+                  {children.map((child) =>
+                    renderGroupTree(child, { ...opts, nested: true }),
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </GroupSection>
+      </LutDropZone>
+    )
+  }
+
+  const renderPersonalRow = (lut: Lut) => (
+    <LutRow
+      key={lut.id}
+      lut={lut}
+      groups={groupList}
+      projects={projects ?? []}
+      canManage
+      canTogglePlatform={isSuperAdmin}
+      showTimestamp
+      onChanged={refreshAll}
+      onDelete={() => setDeleting(lut)}
+      onPreview={() => setPreviewing(lut)}
+      canDrag
+    />
+  )
 
   /** One row in the Platform section. Read-only for non-superadmins even when
    *  they happen to own it: managing a published platform LUT is a superadmin
@@ -377,6 +485,7 @@ export default function LutsSettingsPage() {
           variant="secondary"
           onClick={() => {
             setNewGroupName('')
+            setNewGroupParent(null)
             setNewGroupIn('personal')
           }}
         >
@@ -460,36 +569,14 @@ export default function LutsSettingsPage() {
           </p>
         ) : (
           <div className="space-y-6">
-            {platformGroupList.map((group) => {
-              const members = sortLuts(platform.filter((l) => l.group_id === group.id))
-              return (
-                <LutDropZone
-                  key={group.id}
-                  enabled={isSuperAdmin}
-                  accept={[LUT_DRAG_TYPE, PLATFORM_LUT_DRAG_TYPE]}
-                  onDropLut={(lutId) => void moveLutToPlatformGroup(lutId, group.id)}
-                  className="space-y-3"
-                >
-                  <GroupSection
-                    group={group}
-                    count={members.length}
-                    canManage={isSuperAdmin}
-                    onChanged={refreshAll}
-                    onDelete={() => setDeletingGroup(group)}
-                  >
-                    {members.length === 0 ? (
-                      <p className="text-xs text-text-tertiary">
-                        {isSuperAdmin ? 'Empty — drag a LUT here.' : 'Empty.'}
-                      </p>
-                    ) : (
-                      <div className="space-y-3">
-                        {members.map((lut) => renderPlatformRow(lut))}
-                      </div>
-                    )}
-                  </GroupSection>
-                </LutDropZone>
-              )
-            })}
+            {platformMainGroups.map((group) =>
+              renderGroupTree(group, {
+                platformSide: true,
+                canManage: isSuperAdmin,
+                renderRow: renderPlatformRow,
+                luts: platform,
+              }),
+            )}
 
             {/* Ungrouped platform LUTs. Rendered whenever a platform group
                 exists, so a LUT can be dragged back out of one. */}
@@ -529,6 +616,7 @@ export default function LutsSettingsPage() {
               <button
                 onClick={() => {
                   setNewGroupName('')
+                  setNewGroupParent(null)
                   setNewGroupIn('platform')
                 }}
                 className="flex items-center gap-1.5 text-xs text-text-tertiary hover:text-text-primary transition-colors"
@@ -563,48 +651,14 @@ export default function LutsSettingsPage() {
           className="space-y-3"
         >
         <div className="space-y-6">
-          {groupList.map((group) => {
-            const members = sortLuts(ownNotPlatform.filter((l) => l.group_id === group.id))
-            return (
-              <LutDropZone
-                key={group.id}
-                enabled
-                onDropLut={(lutId) => void moveLutToGroup(lutId, group.id)}
-                className="space-y-3"
-              >
-                <GroupSection
-                  group={group}
-                  count={members.length}
-                  onChanged={refreshAll}
-                  onDelete={() => setDeletingGroup(group)}
-                >
-                {members.length === 0 ? (
-                  <p className="text-xs text-text-tertiary">
-                    Empty — drag a LUT here, or move it from its ⋯ menu.
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {members.map((lut) => (
-                      <LutRow
-                        key={lut.id}
-                        lut={lut}
-                        groups={groupList}
-                        projects={projects ?? []}
-                        canManage
-                        canTogglePlatform={isSuperAdmin}
-                        showTimestamp
-                        onChanged={refreshAll}
-                        onDelete={() => setDeleting(lut)}
-                        onPreview={() => setPreviewing(lut)}
-                        canDrag
-                      />
-                    ))}
-                  </div>
-                )}
-                </GroupSection>
-              </LutDropZone>
-            )
-          })}
+          {mainGroups.map((group) =>
+            renderGroupTree(group, {
+              platformSide: false,
+              canManage: true,
+              renderRow: renderPersonalRow,
+              luts: ownNotPlatform,
+            }),
+          )}
 
           {/* Rendered even when empty as soon as a group exists: it is the
               only drop target that takes a LUT back out of a group. */}
@@ -626,21 +680,7 @@ export default function LutsSettingsPage() {
                 </p>
               ) : (
                 <div className="space-y-3">
-                  {ungrouped.map((lut) => (
-                    <LutRow
-                      key={lut.id}
-                      lut={lut}
-                      groups={groupList}
-                      projects={projects ?? []}
-                      canManage
-                      canTogglePlatform={isSuperAdmin}
-                      showTimestamp
-                      onChanged={refreshAll}
-                      onDelete={() => setDeleting(lut)}
-                      onPreview={() => setPreviewing(lut)}
-                      canDrag
-                    />
-                  ))}
+                  {ungrouped.map((lut) => renderPersonalRow(lut))}
                 </div>
               )}
               </CollapsibleSection>
@@ -660,20 +700,38 @@ export default function LutsSettingsPage() {
             onChange={(e) => setNewGroupName(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') void handleCreateGroup()
-              if (e.key === 'Escape') setNewGroupIn(null)
+              if (e.key === 'Escape') {
+                setNewGroupIn(null)
+                setNewGroupParent(null)
+              }
             }}
             placeholder={
-              newGroupIn === 'platform' ? 'Platform group name' : 'Group name'
+              newGroupParent
+                ? `Sub-group of ${parentName ?? 'group'}`
+                : newGroupIn === 'platform'
+                  ? 'Platform group name'
+                  : 'Group name'
             }
             aria-label={
-              newGroupIn === 'platform' ? 'New platform group name' : 'New group name'
+              newGroupParent
+                ? 'New sub-group name'
+                : newGroupIn === 'platform'
+                  ? 'New platform group name'
+                  : 'New group name'
             }
             className="h-8 text-xs"
           />
           <Button size="sm" onClick={handleCreateGroup} disabled={!newGroupName.trim()}>
             Create
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => setNewGroupIn(null)}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setNewGroupIn(null)
+              setNewGroupParent(null)
+            }}
+          >
             Cancel
           </Button>
         </div>
@@ -973,6 +1031,7 @@ function GroupSection({
   canManage = true,
   onChanged,
   onDelete,
+  onAddSubGroup,
   children,
 }: {
   group: LutGroup
@@ -982,6 +1041,9 @@ function GroupSection({
   canManage?: boolean
   onChanged: () => void | Promise<void>
   onDelete: () => void
+  /** Undefined on a sub-group: one level only (§45), so the action is not
+   *  offered where the server would refuse it. */
+  onAddSubGroup?: () => void
   children: React.ReactNode
 }) {
   const [renaming, setRenaming] = React.useState(false)
@@ -1028,6 +1090,15 @@ function GroupSection({
       actions={
         canManage ? (
           <>
+            {onAddSubGroup && (
+              <button
+                onClick={onAddSubGroup}
+                aria-label={`New sub-group in ${group.name}`}
+                className="text-xs text-text-tertiary hover:text-text-primary transition-colors"
+              >
+                New sub-group
+              </button>
+            )}
             <button
               onClick={() => {
                 setDraftName(group.name)
