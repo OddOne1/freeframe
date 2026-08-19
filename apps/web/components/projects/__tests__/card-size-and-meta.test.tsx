@@ -11,10 +11,9 @@ import { useProjectViewStore } from '@/stores/project-view-store'
 import { AssetCard } from '../asset-card'
 import type { Asset } from '@/types'
 
-const GRID = fs.readFileSync(
-  path.join(process.cwd(), 'components/projects/asset-grid.tsx'),
-  'utf8',
-)
+// The column counts moved from asset-grid.tsx into container queries in
+// globals.css (§50). Same numbers, new home.
+const CSS = fs.readFileSync(path.join(process.cwd(), 'app/globals.css'), 'utf8')
 const POPOVER = fs.readFileSync(
   path.join(process.cwd(), 'components/projects/appearance-popover.tsx'),
   'utf8',
@@ -44,14 +43,17 @@ beforeEach(() => {
 
 describe('XS', () => {
   it('is denser than S at every breakpoint', () => {
-    const map = /const gridColsMap = \{([\s\S]*?)\}/.exec(GRID)![1]
-    // Anchored: an unanchored "S: '" also matches inside "XS: '".
+    // One entry per breakpoint, in source order (base, 640, 1024, 1280).
     const cols = (size: string) =>
-      (new RegExp(`\\b${size}: '([^']+)'`).exec(map)![1].match(/grid-cols-(\d+)/g) ?? []).map((c) =>
-        Number(c.replace('grid-cols-', '')),
-      )
+      Array.from(
+        CSS.matchAll(
+          new RegExp(`\\.asset-grid\\[data-size='${size}'\\][^;]*repeat\\((\\d+)`, 'g'),
+        ),
+      ).map((m) => Number(m[1]))
+
     const xs = cols('XS')
     const s = cols('S')
+    expect(xs.length).toBeGreaterThan(1)
     expect(xs).toHaveLength(s.length)
     xs.forEach((n, i) => expect(n).toBeGreaterThan(s[i]))
   })

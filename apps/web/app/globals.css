@@ -85,3 +85,52 @@
     text-wrap: balance;
   }
 }
+
+/* ─── Asset grid: container queries, not viewport queries (§50) ────────────
+ *
+ * The grid's column count used to key off viewport breakpoints while its
+ * available width came from a flex sibling — so opening the 360px
+ * Comments/Fields panel kept the column count and shrank every card to fit.
+ * Card size is what the user wants held constant; column count is what gives.
+ *
+ * Written as plain CSS rather than through @tailwindcss/container-queries on
+ * purpose: Tailwind 3.4 needs a plugin for `@container`, and adding a
+ * dependency to apps/web is exactly what left the production image
+ * unbuildable for eleven days (CLAUDE.md §13c). This needs no install, no
+ * lockfile change and nothing new in the Docker build, and the breakpoints
+ * are the same numbers Tailwind's own sm/lg/xl use.
+ */
+.asset-grid-container {
+  container-type: inline-size;
+  container-name: assetgrid;
+}
+
+.asset-grid {
+  display: grid;
+}
+
+.asset-grid[data-size='XS'] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.asset-grid[data-size='S']  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.asset-grid[data-size='M']  { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+.asset-grid[data-size='L']  { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+
+@container assetgrid (min-width: 640px) {
+  .asset-grid[data-size='XS'] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .asset-grid[data-size='S']  { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .asset-grid[data-size='M']  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .asset-grid[data-size='L']  { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+}
+
+@container assetgrid (min-width: 1024px) {
+  .asset-grid[data-size='XS'] { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .asset-grid[data-size='S']  { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .asset-grid[data-size='M']  { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .asset-grid[data-size='L']  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@container assetgrid (min-width: 1280px) {
+  .asset-grid[data-size='XS'] { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+  .asset-grid[data-size='S']  { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .asset-grid[data-size='M']  { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .asset-grid[data-size='L']  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

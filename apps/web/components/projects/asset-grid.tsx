@@ -79,14 +79,22 @@ interface AssetGridProps {
   onAssetVote?: (asset: Asset, stars: number) => void
 }
 
-// Grid column classes based on card size. XS is denser than S at every
-// breakpoint (§51) — that is the whole point of adding it.
-const gridColsMap = {
-  XS: 'grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8',
-  S: 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5',
-  M: 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3',
-  L: 'grid-cols-1 sm:grid-cols-1 lg:grid-cols-2',
-}
+/**
+ * Column counts live in app/globals.css as CONTAINER queries, keyed off
+ * `data-size` (§50). They used to be Tailwind `grid-cols-N` classes keyed to
+ * the viewport, which is what made a card shrink when the 360px side panel
+ * opened: the column count stayed put while the container lost 360px, so
+ * every 1fr track narrowed.
+ *
+ * XS is denser than S at every breakpoint (§51); the numbers moved to CSS
+ * unchanged.
+ *
+ * The tradeoff is real and worth naming: holding card size constant in less
+ * width means the column count drops instead — fewer cards visible and more
+ * scrolling when the panel is open. That is the direction that was asked
+ * for, but it is a trade, not a free win.
+ */
+const gridClass = 'asset-grid'
 
 // Aspect ratio classes
 const aspectMap = {
@@ -253,7 +261,7 @@ export function AssetGrid({
 
   if (isLoading) {
     return (
-      <div className={cn('grid gap-4', gridColsMap[cardSize])}>
+      <div className={cn(gridClass, 'gap-4')} data-size={cardSize}>
         {Array.from({ length: 6 }).map((_, i) => (
           <div key={i} className="flex flex-col gap-2">
             <div className={cn('animate-pulse rounded-lg bg-bg-tertiary', aspectMap[aspectRatio])} />
@@ -345,7 +353,7 @@ export function AssetGrid({
               {folders!.length} {folders!.length === 1 ? 'Folder' : 'Folders'}
             </span>
           </div>
-          <div className={cn('grid gap-3', gridColsMap[cardSize])}>
+          <div className={cn(gridClass, 'gap-3')} data-size={cardSize}>
             {folders!.map((folder) => {
               const isFolderSelected = selectedFolderIds.has(folder.id)
               return (
@@ -410,7 +418,7 @@ export function AssetGrid({
           />
         </div>
       ) : layout === 'grid' && filtered.length > 0 ? (
-        <div className={cn('grid gap-3', gridColsMap[cardSize])}>
+        <div className={cn(gridClass, 'gap-3')} data-size={cardSize}>
           {filtered.map((asset) => (
             <div
               key={asset.id}

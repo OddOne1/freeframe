@@ -927,7 +927,11 @@ export default function ProjectDetailPage() {
 
       {/* ─── Main Content ───────────────────────────────────────────────── */}
       <div
-        className="flex-1 flex flex-col min-w-0 bg-bg-primary h-full overflow-y-auto"
+        // asset-grid-container establishes the containment the grid's column
+        // counts query (§50). It goes on the element whose width actually
+        // changes when the side panel mounts — this flex child — not on the
+        // grid itself, which would query its own already-shrunk width.
+        className="asset-grid-container flex-1 flex flex-col min-w-0 bg-bg-primary h-full overflow-y-auto"
         onClick={() => setSelectedAsset(null)}
       >
         <div className="px-5 pt-3 pb-6 space-y-3">
