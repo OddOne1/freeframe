@@ -25,9 +25,12 @@ export interface ParsedCube {
 
 export class CubeParseError extends Error {}
 
-/** Matches MAX_LUT_SIZE in apps/api/routers/luts.py — a 64³ LUT is already
- *  ~786k entries; beyond that it's a malformed file, not a real LUT. */
-const MAX_SIZE = 64
+/** Matches MAX_LUT_SIZE in apps/api/routers/luts.py — raised from 64 to 129
+ *  (§52) because 65-point LUTs are an ordinary camera-manufacturer export,
+ *  not malformed data. 129³ is ~2.1M entries, comfortably inside WebGL2's
+ *  guaranteed minimum MAX_3D_TEXTURE_SIZE of 256, which is the real ceiling
+ *  the preview has to respect. */
+const MAX_SIZE = 129
 
 export function parseCube(text: string): ParsedCube {
   let size = 0

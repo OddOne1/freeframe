@@ -28,7 +28,11 @@ import { EmptyState } from '@/components/shared/empty-state'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CollapsibleSection } from '@/components/shared/collapsible-section'
 import { SortControl, sortRows, useSort, useSortState } from '@/components/shared/sortable'
-import { readDroppedEntries } from '@/lib/read-dropped-entries'
+import {
+  fromDirectoryInput,
+  readDroppedEntries,
+  type DroppedFile,
+} from '@/lib/read-dropped-entries'
 import { LutThumbnail } from '@/components/shared/lut-thumbnail'
 import { LutPreviewDialog } from '@/components/shared/lut-preview-dialog'
 import { useAuthStore } from '@/stores/auth-store'
@@ -215,7 +219,11 @@ export default function LutsSettingsPage() {
   const [collapsedKeys, setCollapsedKeys] = React.useState<Set<string>>(new Set())
   // Offered after a folder upload finishes, once for the batch (§42).
   const [groupPrompt, setGroupPrompt] = React.useState<
-    { folderName: string; lutIds: string[] } | null
+    {
+      folderName: string
+      subgroups: string[]
+      entries: { id: string; subgroup: string | null }[]
+    } | null
   >(null)
   const [deleting, setDeleting] = React.useState<Lut | null>(null)
   // Which LUT's frame is open in the zoom dialog. One dialog for the page,
@@ -238,19 +246,37 @@ export default function LutsSettingsPage() {
   async function handleFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? [])
     e.target.value = '' // let the same files be re-picked after a failure
-    await uploadFiles(files)
+    // Loose files: no folder, so no group and no subgroup.
+    await uploadFiles(files.map((file) => ({ file, subgroup: null })))
   }
 
   /** The folder picker and a folder drop both land here. `webkitRelativePath`
    *  is what the directory input gives instead of a folder handle. */
   async function handleFolderInput(e: React.ChangeEvent<HTMLInputElement>) {
     const all = Array.from(e.target.files ?? [])
-    const folderName = all[0]?.webkitRelativePath?.split('/')[0] ?? null
     e.target.value = ''
-    await uploadFiles(all.filter((f) => isCube(f.name)), folderName)
+    // Through the same shared helper the drop path uses, so a folder picked
+    // from the dialog builds the same subgroups a dropped one does.
+    const cubes = fromDirectoryInput(all).filter((d) => isCube(d.file.name))
+    const roots = new Set(cubes.map((d) => d.path[0]).filter(Boolean))
+    await uploadFiles(toUploadItems(cubes), roots.size === 1 ? Array.from(roots)[0]! : null)
   }
 
-  async function uploadFiles(files: File[], folderName: string | null = null) {
+  /**
+   * `subgroup` is the immediate subfolder a file sat in, or null for one
+   * sitting directly in the dropped root (§52).
+   *
+   * Anything deeper than one subfolder is folded into that first subfolder's
+   * group rather than erroring: LUT groups are exactly one level (§45), and
+   * refusing a three-deep folder would be worse than filing it sensibly. It
+   * is not silent — the prompt names the subgroups it is about to create, so
+   * a folded-in third level shows up as its parent's name.
+   */
+  async function uploadFiles(
+    items: { file: File; subgroup: string | null }[],
+    folderName: string | null = null,
+  ) {
+    const files = items.map((i) => i.file)
     if (files.length === 0) return
 
     // The dialog closes as soon as there is something to upload. Radix's
@@ -284,14 +310,15 @@ export default function LutsSettingsPage() {
     // Sequential on purpose. /me/luts is one small text upload per call, the
     // count is a user-picked handful, and a failure has to be attributable to
     // its own file -- none of which a parallel burst buys anything for.
-    const uploaded: Lut[] = []
+    const uploaded: { id: string; subgroup: string | null }[] = []
+    const subgroupOf = new Map(items.map((i) => [i.file, i.subgroup]))
     let succeeded = 0
     for (const file of sendable) {
       try {
         const form = new FormData()
         form.append('file', file)
         const created = await api.upload<Lut>('/me/luts', form)
-        if (created) uploaded.push(created)
+        if (created) uploaded.push({ id: created.id, subgroup: subgroupOf.get(file) ?? null })
         succeeded += 1
       } catch (err: unknown) {
         const detail = err && typeof err === 'object' && 'detail' in err
@@ -313,8 +340,31 @@ export default function LutsSettingsPage() {
     // Asked once for the batch, after the uploads, and non-blocking: a modal
     // in front of a running upload would be the worst of both.
     if (folderName && uploaded.length > 0) {
-      setGroupPrompt({ folderName, lutIds: uploaded.map((l) => l.id) })
+      setGroupPrompt({
+        folderName,
+        // Distinct, in the order they were met, so the banner reads the way
+        // the folder looks.
+        subgroups: Array.from(
+          new Set(uploaded.map((u) => u.subgroup).filter((n): n is string => n !== null)),
+        ),
+        entries: uploaded,
+      })
     }
+  }
+
+  /**
+   * `path` from readDroppedEntries is directory components only — the
+   * filename is not in it. So `['Leica']` is a file at the dropped root and
+   * `['Leica', 'Rec2020']` is one in a subfolder; the depth test is
+   * `length > 1`, not `> 2`.
+   */
+  function toUploadItems(dropped: DroppedFile[]) {
+    return dropped.map((d) => ({
+      file: d.file,
+      // Index 1 always: a deeper file folds into its first subfolder's group,
+      // because that is the only level LUT groups have (§45).
+      subgroup: d.path.length > 1 ? d.path[1]! : null,
+    }))
   }
 
   /** Accepts a folder as well as loose files; a folder is only visible
@@ -328,31 +378,46 @@ export default function LutsSettingsPage() {
     const dropped = await readDroppedEntries(e.dataTransfer)
     if (dropped === null) {
       // This browser did not populate `items`; the flat list is all there is.
-      await uploadFiles(Array.from(e.dataTransfer.files ?? []).filter((f) => isCube(f.name)))
+      await uploadFiles(
+        Array.from(e.dataTransfer.files ?? [])
+          .filter((f) => isCube(f.name))
+          .map((file) => ({ file, subgroup: null })),
+      )
       return
     }
 
     // A single dropped folder names the group; several at once has no one
     // name to offer, so the prompt is skipped rather than guessing.
-    const roots = new Set(dropped.map((d) => d.path[0]).filter(Boolean))
-    await uploadFiles(
-      dropped.map((d) => d.file).filter((f) => isCube(f.name)),
-      roots.size === 1 ? Array.from(roots)[0]! : null,
-    )
+    const cubes = dropped.filter((d) => isCube(d.file.name))
+    const roots = new Set(cubes.map((d) => d.path[0]).filter(Boolean))
+    await uploadFiles(toUploadItems(cubes), roots.size === 1 ? Array.from(roots)[0]! : null)
   }
 
   async function createGroupFromFolder() {
     if (!groupPrompt) return
     const prompt = groupPrompt
     setGroupPrompt(null)
-    const group = await api.post<LutGroup>('/me/lut-groups', {
+
+    // Root first: every subgroup needs its id as parent_group_id, through
+    // the same endpoint the manual "new sub-group" action already uses.
+    const root = await api.post<LutGroup>('/me/lut-groups', {
       name: prompt.folderName,
       parent_group_id: null,
     })
+    const subgroupIds = new Map<string, string>()
+    for (const name of prompt.subgroups) {
+      const sub = await api.post<LutGroup>('/me/lut-groups', {
+        name,
+        parent_group_id: root.id,
+      })
+      subgroupIds.set(name, sub.id)
+    }
+
     // Sequentially, for the same reason the uploads are: one refusal has to
     // be attributable, and this is a handful of rows.
-    for (const lutId of prompt.lutIds) {
-      await api.patch(`/me/luts/${lutId}`, { group_id: group.id })
+    for (const entry of prompt.entries) {
+      const target = entry.subgroup ? subgroupIds.get(entry.subgroup) ?? root.id : root.id
+      await api.patch(`/me/luts/${entry.id}`, { group_id: target })
     }
     await refreshAll()
   }
@@ -756,7 +821,6 @@ export default function LutsSettingsPage() {
           variant="secondary"
           onClick={() => {
             setNewGroupName('')
-            setNewGroupParent(null)
             setNewGroupIn('personal')
           }}
         >
@@ -772,7 +836,6 @@ export default function LutsSettingsPage() {
             variant="secondary"
             onClick={() => {
               setNewGroupName('')
-              setNewGroupParent(null)
               setNewGroupIn('platform')
             }}
           >
@@ -867,10 +930,24 @@ export default function LutsSettingsPage() {
       {groupPrompt && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-bg-secondary px-3 py-2">
           <p className="text-xs text-text-secondary">
-            Put the {groupPrompt.lutIds.length} LUT
-            {groupPrompt.lutIds.length === 1 ? '' : 's'} from{' '}
+            Put the {groupPrompt.entries.length} LUT
+            {groupPrompt.entries.length === 1 ? '' : 's'} from{' '}
             <span className="font-medium text-text-primary">{groupPrompt.folderName}</span>{' '}
-            into a group of that name?
+            into a group of that name
+            {/* Named, not counted: the copy has to describe what will
+                actually be created, and a folded-in third level shows up
+                here as its parent's name rather than disappearing. */}
+            {groupPrompt.subgroups.length > 0 && (
+              <>
+                , with {groupPrompt.subgroups.length} sub-group
+                {groupPrompt.subgroups.length === 1 ? '' : 's'} (
+                <span className="font-medium text-text-primary">
+                  {groupPrompt.subgroups.join(', ')}
+                </span>
+                )
+              </>
+            )}
+            ?
           </p>
           <Button size="sm" onClick={() => void createGroupFromFolder()}>
             Create group
@@ -1098,50 +1175,91 @@ export default function LutsSettingsPage() {
 
       {/* New group — the same form for both libraries; which one it creates
           into is `newGroupIn`, so there is one create path rather than two. */}
-      {newGroupIn && (
-        <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-secondary p-3">
-          <Input
-            autoFocus
-            value={newGroupName}
-            onChange={(e) => setNewGroupName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void handleCreateGroup()
-              if (e.key === 'Escape') {
-                setNewGroupIn(null)
-                setNewGroupParent(null)
-              }
-            }}
-            placeholder={
-              newGroupParent
-                ? `Sub-group of ${parentName ?? 'group'}`
+      {/* A dialog, not an inline block (§53). The form used to render at one
+          fixed point in the page — after Platform, before Private — so
+          pressing "+ sub-group" on something scrolled well down the page
+          made it appear somewhere the user was not looking, which reads as
+          nothing having happened. Same Dialog shape as the upload dialogs.
+
+          `open` is derived from the same state the three triggers already
+          set, so none of them needed changing. */}
+      <Dialog.Root
+        open={newGroupIn !== null}
+        onOpenChange={(open) => {
+          if (open) return
+          // The ONLY place the remembered parent is cleared. It used to be
+          // cleared by each of the three triggers as well, which meant four
+          // places doing one job and no way to tell whether any single one
+          // still worked. Closing is the one moment that always happens.
+          // Covers Escape and an overlay click as well as Cancel.
+          setNewGroupIn(null)
+          setNewGroupParent(null)
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary p-6 shadow-xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+            <Dialog.Close className="absolute right-4 top-4 text-text-tertiary hover:text-text-primary transition-colors">
+              <X className="h-4 w-4" />
+            </Dialog.Close>
+            <Dialog.Title className="text-base font-semibold text-text-primary">
+              {newGroupParent
+                ? 'New sub-group'
                 : newGroupIn === 'platform'
-                  ? 'Platform group name'
-                  : 'Group name'
-            }
-            aria-label={
-              newGroupParent
-                ? 'New sub-group name'
+                  ? 'New Platform Group'
+                  : 'New Private Group'}
+            </Dialog.Title>
+            <Dialog.Description className="mt-1 text-sm text-text-secondary">
+              {newGroupParent
+                ? `Inside ${parentName ?? 'the selected group'}.`
                 : newGroupIn === 'platform'
-                  ? 'New platform group name'
-                  : 'New group name'
-            }
-            className="h-8 text-xs"
-          />
-          <Button size="sm" onClick={handleCreateGroup} disabled={!newGroupName.trim()}>
-            Create
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setNewGroupIn(null)
-              setNewGroupParent(null)
-            }}
-          >
-            Cancel
-          </Button>
-        </div>
-      )}
+                  ? 'Shared with everyone on the platform.'
+                  : 'Only in your own library.'}
+            </Dialog.Description>
+
+            <div className="mt-4 space-y-3">
+              <Input
+                autoFocus
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                // Radix does not submit on Enter, so this stays. Escape is
+                // deliberately NOT handled here: the dialog owns dismissal,
+                // and a second handler would be a second place that has to
+                // remember to clear the parent.
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void handleCreateGroup()
+                }}
+                placeholder={
+                  newGroupParent
+                    ? `Sub-group of ${parentName ?? 'group'}`
+                    : newGroupIn === 'platform'
+                      ? 'Platform group name'
+                      : 'Group name'
+                }
+                aria-label={
+                  newGroupParent
+                    ? 'New sub-group name'
+                    : newGroupIn === 'platform'
+                      ? 'New platform group name'
+                      : 'New group name'
+                }
+              />
+              <div className="flex justify-end gap-2">
+                {/* Through Dialog.Close, so Cancel dismisses the same way
+                    Escape and the overlay do — one path, one clear. */}
+                <Dialog.Close asChild>
+                  <Button size="sm" variant="ghost">
+                    Cancel
+                  </Button>
+                </Dialog.Close>
+                <Button size="sm" onClick={handleCreateGroup} disabled={!newGroupName.trim()}>
+                  Create
+                </Button>
+              </div>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
 
       <ConfirmDialog
         open={deleting !== null}

@@ -160,12 +160,16 @@ describe('creating a sub-group', () => {
     expect(screen.queryByLabelText('New sub-group in Show')).not.toBeInTheDocument()
   })
 
-  it('forgets a remembered parent when the top-level button is used next', async () => {
+  it('forgets a remembered parent once the dialog closes', async () => {
     renderPage()
     await userEvent.click(await screen.findByLabelText('New sub-group in Cameras'))
-    // Straight to the top-level button, WITHOUT cancelling first — cancelling
-    // clears the parent too, which would let this pass even if the button
-    // did not.
+    // The form is a modal now (§53), so reaching another trigger while it is
+    // open is not possible — dismissing it is the only route, and dismissing
+    // is what has to clear the parent. Escape rather than Cancel, since that
+    // path goes through onOpenChange rather than the button's own handler.
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
     await userEvent.click(screen.getByRole('button', { name: 'New Private Group' }))
     await userEvent.type(screen.getByLabelText('New group name'), 'Top{Enter}')
 

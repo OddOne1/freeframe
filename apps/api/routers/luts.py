@@ -38,13 +38,20 @@ from .hls_proxy import proxy_url_for
 router = APIRouter(tags=["luts"])
 
 # A .cube is plain text: `LUT_3D_SIZE N` then N^3 float triples. MAX_LUT_SIZE
-# is what actually bounds a sane LUT -- 64^3 is ~1MB of text -- and the byte
-# cap is only a backstop against something absurd being streamed in before
-# the header is even parsed. Raised from 8MB to 1GB (§42): the old figure was
-# rejecting legitimate high-precision exports, and the real guard against a
-# nonsense file is _parse_cube_size, which runs on every upload regardless.
+# is what actually bounds a sane LUT, and the byte cap is only a backstop
+# against something absurd being streamed in before the header is even
+# parsed. Raised from 8MB to 1GB (§42): the old figure was rejecting
+# legitimate high-precision exports, and the real guard against a nonsense
+# file is _parse_cube_size, which runs on every upload regardless.
 MAX_CUBE_BYTES = 1 * 1024 * 1024 * 1024
-MAX_LUT_SIZE = 64
+# Raised from 64 (§52). 65-point LUTs are an ordinary camera-manufacturer
+# export -- Leica and Sony both ship them -- and the old cap rejected real
+# files as malformed. 129 keeps the guard meaningful while leaving real
+# headroom: 129^3 is ~2.1M entries, still far inside WebGL2's guaranteed
+# minimum MAX_3D_TEXTURE_SIZE of 256, which is what the preview actually
+# allocates against (lib/lut/webgl-lut.ts's texImage3D call takes cube.size
+# directly). Keep in sync with MAX_SIZE in apps/web/lib/lut/cube-parser.ts.
+MAX_LUT_SIZE = 129
 
 
 def _parse_cube_size(text: str) -> int:
