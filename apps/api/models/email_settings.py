@@ -51,6 +51,17 @@ class EmailSettings(Base):
     smtp_password_encrypted: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
     smtp_use_tls: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
+    # Where the Settings -> Contact form delivers (§47). Lives here rather
+    # than on SiteSettings for the same reason everything else here does:
+    # GET /site-settings is unauthenticated, and a support inbox has no
+    # business being readable by an anonymous request.
+    #
+    # Unlike every other column in this table, null does NOT mean "fall back
+    # to the environment" -- there is no env var for it. Null means the form
+    # is not configured, and the form says so and refuses to send rather
+    # than dropping messages into nothing.
+    contact_target_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
