@@ -235,9 +235,10 @@ export default function LutsSettingsPage() {
   // Per-LUT outcome. An aggregate "3 of 4 deleted" would leave the user
   // guessing which one failed and why — same call project-members-dialog
   // made.
-  const [bulkResults, setBulkResults] = React.useState<
-    { id: string; name: string; ok: boolean; error?: string }[] | null
-  >(null)
+  const [bulkResults, setBulkResults] = React.useState<{
+    verb: 'deleted' | 'updated'
+    items: { id: string; name: string; ok: boolean; error?: string }[]
+  } | null>(null)
   // Which LUT's frame is open in the zoom dialog. One dialog for the page,
   // the same way `deleting` is one ConfirmDialog rather than one per row.
   const [previewing, setPreviewing] = React.useState<Lut | null>(null)
@@ -250,6 +251,9 @@ export default function LutsSettingsPage() {
   // top-level one (§45). Set by a group's own "New sub-group" action, so the
   // parent is never something the user has to pick out of a list.
   const [newGroupParent, setNewGroupParent] = React.useState<string | null>(null)
+  // True when the dialog was opened from the bulk toolbar, which wants the
+  // selection filed into the new group as well as the group created.
+  const [newGroupForSelection, setNewGroupForSelection] = React.useState(false)
 
   const refreshAll = React.useCallback(async () => {
     await Promise.all([mutate(), mutatePlatform(), mutateGroups(), mutatePlatformGroups()])
@@ -471,15 +475,29 @@ export default function LutsSettingsPage() {
    * allSettled, not all: a partial failure must not discard the deletions
    * that did succeed, and the caller needs to know WHICH failed.
    */
-  async function handleBulkDelete() {
-    const ids = Array.from(selectedLutIds)
+  /**
+   * One partial-failure path for every bulk action (§56 extends §54's).
+   *
+   * `ids` is passed in rather than read from the selection, because the
+   * Platform actions deliberately act on a SUBSET — promoting a mixed
+   * selection touches only the ones that are not already platform-wide, and
+   * the ones it skips are a no-op, not a failure.
+   *
+   * allSettled, not all: a partial failure must not discard the items that
+   * did succeed, and the caller needs to know WHICH failed.
+   */
+  async function runBulk(
+    ids: string[],
+    action: (id: string) => Promise<unknown>,
+    // What actually happened, for the results line. Every action shared one
+    // report before this, so a move announced itself as a delete.
+    verb: 'deleted' | 'updated' = 'updated',
+  ) {
     if (ids.length === 0) return
     setBulkBusy(true)
     setBulkResults(null)
     try {
-      const settled = await Promise.allSettled(
-        ids.map((id) => api.delete(`/me/luts/${id}`)),
-      )
+      const settled = await Promise.allSettled(ids.map((id) => action(id)))
       const collected = settled.map((r, i) => ({
         id: ids[i]!,
         name: nameOfLut(ids[i]!),
@@ -494,16 +512,53 @@ export default function LutsSettingsPage() {
                 : String(r.reason)
             : undefined,
       }))
-      setBulkResults(collected)
+      setBulkResults({ verb, items: collected })
       // Only the failures stay selected, so a retry does not re-run the
-      // successes against ids that are already gone.
-      setSelectedLutIds(new Set(collected.filter((c) => !c.ok).map((c) => c.id)))
+      // successes. Anything the action deliberately skipped stays selected
+      // too — it was never attempted, so clearing it would be a lie.
+      const failed = new Set(collected.filter((c) => !c.ok).map((c) => c.id))
+      const attempted = new Set(ids)
+      setSelectedLutIds(
+        (prev) => new Set(Array.from(prev).filter((id) => !attempted.has(id) || failed.has(id))),
+      )
       await refreshAll()
     } finally {
       setBulkBusy(false)
       setBulkDeleting(false)
     }
   }
+
+  const handleBulkDelete = () =>
+    runBulk(Array.from(selectedLutIds), (id) => api.delete(`/me/luts/${id}`), 'deleted')
+
+  const handleBulkUngroup = () =>
+    runBulk(Array.from(selectedLutIds), (id) =>
+      api.patch(`/me/luts/${id}`, { group_id: null }),
+    )
+
+  /** Only the ones not already platform-wide. The rest are a no-op, not a
+   *  failure — skipping them silently is the point (§56). group_id is
+   *  cleared in the same PATCH because a personal group is not a valid home
+   *  for a platform LUT (§39's pairing rule), and the server would drop it
+   *  anyway. */
+  const handleBulkPromote = () =>
+    runBulk(
+      selectedLuts.filter((l) => !l.is_platform_wide).map((l) => l.id),
+      (id) => api.patch(`/me/luts/${id}`, { is_platform_wide: true, group_id: null }),
+    )
+
+  /** The mirror: only the ones currently platform-wide, and their platform
+   *  group goes with them for the same reason. */
+  const handleBulkDemote = () =>
+    runBulk(
+      selectedLuts.filter((l) => l.is_platform_wide).map((l) => l.id),
+      (id) => api.patch(`/me/luts/${id}`, { is_platform_wide: false, group_id: null }),
+    )
+
+  const handleBulkMoveToGroup = (groupId: string) =>
+    runBulk(Array.from(selectedLutIds), (id) =>
+      api.patch(`/me/luts/${id}`, { group_id: groupId }),
+    )
 
   async function handleDeleteGroup() {
     if (!deletingGroup) return
@@ -617,13 +672,21 @@ export default function LutsSettingsPage() {
   async function handleCreateGroup() {
     const name = newGroupName.trim()
     if (!name || !newGroupIn) return
-    await api.post(
+    const created = await api.post<LutGroup>(
       newGroupIn === 'platform' ? '/luts/platform-groups' : '/me/lut-groups',
       { name, parent_group_id: newGroupParent },
     )
+    const moveSelection = newGroupForSelection
     setNewGroupName('')
     setNewGroupIn(null)
     setNewGroupParent(null)
+    setNewGroupForSelection(false)
+    // Opened from the bulk toolbar's "New group…": creating it is only half
+    // of what was asked for (§56). runBulk refreshes, so no second refresh.
+    if (moveSelection && created?.id) {
+      await handleBulkMoveToGroup(created.id)
+      return
+    }
     await refreshAll()
   }
 
@@ -706,6 +769,33 @@ export default function LutsSettingsPage() {
   }, [])
 
   const collapsedCount = (keys: string[]) => keys.filter((k) => collapsedKeys.has(k)).length
+
+  /** The selected rows themselves, so the toolbar can reason about scope
+   *  rather than just ids. */
+  const selectedLuts = React.useMemo(
+    () =>
+      [...(luts ?? []), ...(platformLuts ?? [])]
+        // A LUT promoted to platform appears in both lists; dedupe by id so
+        // it is not counted or acted on twice.
+        .filter((l, i, all) => all.findIndex((o) => o.id === l.id) === i)
+        .filter((l) => selectedLutIds.has(l.id)),
+    [luts, platformLuts, selectedLutIds],
+  )
+  const selectedPlatformCount = selectedLuts.filter((l) => l.is_platform_wide).length
+  const selectedPrivateCount = selectedLuts.length - selectedPlatformCount
+  /**
+   * A group belongs to exactly one scope (`LutGroup.is_platform`), and a LUT
+   * can only sit in a group in its own scope. So "move to group" only has a
+   * meaningful list of targets when the whole selection is on one side —
+   * mixed gets an explanation instead of a guess (§56).
+   */
+  const selectionScope: 'personal' | 'platform' | 'mixed' =
+    selectedPlatformCount > 0 && selectedPrivateCount > 0
+      ? 'mixed'
+      : selectedPlatformCount > 0
+        ? 'platform'
+        : 'personal'
+  const moveTargets = selectionScope === 'platform' ? platformGroupList : groupList
 
   const privateHidden = collapsedCount([
     ...groupList.map((g) => `luts-group-${g.id}`),
@@ -1061,6 +1151,105 @@ export default function LutsSettingsPage() {
             Clear selection
           </button>
           <div className="flex-1" />
+
+          {/* A group is scoped to one side, and a LUT cannot sit in a group
+              on the other (§39). With a mixed selection there is no correct
+              list to offer, so this says why instead of guessing. */}
+          {selectionScope === 'mixed' ? (
+            <span className="text-xs text-text-tertiary">
+              Select only private or only Platform LUTs to move as a group
+            </span>
+          ) : (
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger asChild>
+                <Button size="sm" variant="secondary" disabled={bulkBusy}>
+                  <FolderPlus className="h-4 w-4" />
+                  Move to group
+                  <ChevronDown className="h-3 w-3" />
+                </Button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  align="end"
+                  sideOffset={4}
+                  className="z-[100] w-56 max-h-80 overflow-y-auto rounded-lg border border-border bg-bg-elevated shadow-xl py-1"
+                >
+                  {moveTargets.length === 0 && (
+                    <p className="px-2.5 py-1.5 text-xs text-text-tertiary">
+                      No {selectionScope === 'platform' ? 'platform' : 'private'} groups yet
+                    </p>
+                  )}
+                  {moveTargets.map((g) => (
+                    <DropdownMenu.Item
+                      key={g.id}
+                      onSelect={() => void handleBulkMoveToGroup(g.id)}
+                      className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
+                    >
+                      <span className="truncate">{g.name}</span>
+                      {g.parent_group_id && (
+                        <span className="ml-auto shrink-0 text-2xs text-text-tertiary">
+                          sub-group
+                        </span>
+                      )}
+                    </DropdownMenu.Item>
+                  ))}
+                  <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                  <DropdownMenu.Item
+                    onSelect={() => {
+                      setNewGroupName('')
+                      setNewGroupParent(null)
+                      // Scoped to the side the selection is already on, so
+                      // the group it creates can actually hold them.
+                      setNewGroupIn(selectionScope === 'platform' ? 'platform' : 'personal')
+                      setNewGroupForSelection(true)
+                    }}
+                    className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
+                  >
+                    <FolderPlus className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
+                    New group…
+                  </DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
+          )}
+
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={bulkBusy}
+            onClick={() => void handleBulkUngroup()}
+          >
+            Remove from group
+          </Button>
+
+          {/* Platform is a role gate, not an ownership one — §54's checkbox
+              already guarantees every selected row is manageable. Each button
+              appears only when it has something to do. */}
+          {isSuperAdmin && selectedPrivateCount > 0 && (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={bulkBusy}
+              onClick={() => void handleBulkPromote()}
+            >
+              <Globe className="h-4 w-4" />
+              Move to Platform
+              {selectionScope === 'mixed' && ` (${selectedPrivateCount})`}
+            </Button>
+          )}
+          {isSuperAdmin && selectedPlatformCount > 0 && (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={bulkBusy}
+              onClick={() => void handleBulkDemote()}
+            >
+              <SwatchBook className="h-4 w-4" />
+              Move to Private
+              {selectionScope === 'mixed' && ` (${selectedPlatformCount})`}
+            </Button>
+          )}
+
           <Button
             size="sm"
             variant="destructive"
@@ -1078,9 +1267,10 @@ export default function LutsSettingsPage() {
       {bulkResults && (
         <div className="space-y-1 rounded-lg border border-border bg-bg-tertiary px-3 py-2">
           <p className="text-xs font-medium text-text-primary">
-            {bulkResults.filter((r) => r.ok).length} of {bulkResults.length} deleted
+            {bulkResults.items.filter((r) => r.ok).length} of {bulkResults.items.length}{' '}
+            {bulkResults.verb}
           </p>
-          {bulkResults
+          {bulkResults.items
             .filter((r) => !r.ok)
             .map((r) => (
               <p key={r.id} className="text-xs text-status-error">
@@ -1326,6 +1516,7 @@ export default function LutsSettingsPage() {
           // Covers Escape and an overlay click as well as Cancel.
           setNewGroupIn(null)
           setNewGroupParent(null)
+          setNewGroupForSelection(false)
         }}
       >
         <Dialog.Portal>
