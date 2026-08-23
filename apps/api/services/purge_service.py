@@ -202,6 +202,9 @@ def purge_asset(db: Session, asset: Asset) -> dict:
             stored_keys += [
                 mf.s3_key_raw, mf.s3_key_processed, mf.s3_key_thumbnail,
                 mf.s3_key_transcript, mf.s3_key_captions,
+                # §57's persisted download proxy. Permanent, unlike an
+                # export, so nothing else would ever clean it up.
+                mf.proxy_1080p_key,
             ]
 
     comment_ids = [c.id for c in db.query(Comment.id).filter(Comment.asset_id == asset_id).all()]
@@ -233,7 +236,11 @@ def purge_asset(db: Session, asset: Asset) -> dict:
 
     objects = 0
     for project_prefix in project_prefixes:
-        for area in ("raw", "processed", "sidecars"):
+        # "proxies" added with §57. Both this and the stored_keys entry
+        # above, deliberately: listing a prefix that holds nothing is a cheap
+        # no-op, missing one leaks storage silently, and that asymmetry is
+        # this module's whole lesson.
+        for area in ("raw", "processed", "sidecars", "proxies"):
             objects += _delete_prefix(f"{area}/{project_prefix}/{asset_id}")
     for cid in comment_ids:
         objects += _delete_prefix(f"comment-attachments/{cid}")

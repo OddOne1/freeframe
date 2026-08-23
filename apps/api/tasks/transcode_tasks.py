@@ -107,6 +107,29 @@ def process_asset(self, asset_id: str, version_id: str):
         db.close()
 
 
+# A source is "heavy" when re-encoding it per download is the expensive part
+# (§57). Either test alone qualifies it.
+HEAVY_BITRATE_BPS = 100_000_000  # 100 Mbit/s
+# Compared against the LONGER side, not width: a 2160x3840 vertical shoot or
+# an anamorphic 4K source is exactly as heavy to decode as a landscape one,
+# and testing width alone would quietly exclude both.
+HEAVY_LONG_EDGE = 3840
+
+
+def _needs_download_proxy(result) -> bool:
+    """Decided once, from the ffprobe pass the transcode already ran (§57).
+
+    Deliberately reuses `result` rather than probing again: the numbers are
+    already in hand, and a second ffprobe on a multi-GB original to learn
+    what we just learned would cost more than the check saves.
+    """
+    bitrate = (result.technical_metadata or {}).get("video_bit_rate")
+    if isinstance(bitrate, int) and bitrate > HEAVY_BITRATE_BPS:
+        return True
+    long_edge = max(result.width or 0, result.height or 0)
+    return long_edge >= HEAVY_LONG_EDGE
+
+
 def _process_video(db, asset, version, media_file, s3, output_prefix):
     from packages.transcoder.ffmpeg_transcoder import FFmpegTranscoder
     from packages.transcoder.base import TranscodeJob
@@ -143,6 +166,28 @@ def _process_video(db, asset, version, media_file, s3, output_prefix):
         media_file.fps = result.fps
     if result.technical_metadata:
         media_file.technical_metadata = result.technical_metadata
+
+    # Built alongside the ladder rather than behind a separate trigger, so a
+    # qualifying source has its proxy by the time anyone can ask to download
+    # it. A failure here must NOT fail the upload: playback is already
+    # complete and correct at this point, and the only consequence of no
+    # proxy is that downloads re-encode from the original — which is exactly
+    # what every non-qualifying asset does anyway.
+    if _needs_download_proxy(result):
+        # Same {project_prefix}/{asset}/{version} tail as the HLS output,
+        # under its own area — which is what lets purge_service delete it by
+        # prefix alongside `processed/` and `raw/` rather than needing the
+        # exact key.
+        proxy_key = f"{output_prefix.replace('processed/', 'proxies/', 1)}/1080p.mp4"
+        try:
+            transcoder.build_download_proxy(media_file.s3_key_raw, proxy_key)
+            media_file.proxy_1080p_key = proxy_key
+        except Exception:
+            logger.exception(
+                "Download proxy failed for asset %s; downloads will re-encode "
+                "from the original", asset.id,
+            )
+
     db.flush()
 
 

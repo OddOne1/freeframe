@@ -287,6 +287,29 @@ def test_purged_asset_clears_its_storage(real_db, s3_recorder):
     assert f"comment-attachments/{comment_id}/" in prefixes
 
 
+def test_purge_clears_a_persisted_download_proxy(real_db, s3_recorder):
+    """§57's proxy is permanent — unlike an export nothing else ever deletes
+    it, so a purge that missed it would leak a 1080p file per heavy asset."""
+    from apps.api.models.asset import MediaFile
+    from apps.api.services.purge_service import purge_expired
+
+    project, asset, version, _c = _seed_asset(real_db, deleted_days_ago=31)
+    proxy_key = f"proxies/{project.id}/{asset.id}/{version.id}/1080p.mp4"
+    real_db.query(MediaFile).filter(MediaFile.version_id == version.id).update(
+        {"proxy_1080p_key": proxy_key}
+    )
+    real_db.commit()
+    project_id, asset_id = project.id, asset.id
+
+    purge_expired(real_db)
+
+    # Both routes, deliberately: by prefix alongside raw/processed, and by
+    # the exact stored key as a backstop. Listing a prefix that holds
+    # nothing is a cheap no-op; missing one leaks silently.
+    assert f"proxies/{project_id}/{asset_id}/" in s3_recorder["prefixes"]
+    assert proxy_key in s3_recorder["keys"]
+
+
 def test_multi_item_share_link_survives_losing_one_asset(real_db, s3_recorder):
     """Purging one asset out of a multi-asset share must not revoke the
     others — only its own entry goes."""

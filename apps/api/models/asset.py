@@ -108,6 +108,16 @@ class MediaFile(Base):
     s3_key_raw: Mapped[str] = mapped_column(String(1000), nullable=False)
     s3_key_processed: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     s3_key_thumbnail: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    # A standalone 1080p MP4, built at upload ONLY for sources heavy enough
+    # that re-encoding them per download hurts: >100 Mbit/s or 4K+ (§57).
+    # Null for everything else, and null means every download for that asset
+    # behaves exactly as it did before this existed.
+    #
+    # Deliberately NOT the HLS ladder (`s3_key_processed`): that is segmented
+    # for adaptive playback, this is one file for downloads and NLE ingest.
+    # And unlike an export it is permanent -- that is what makes the second
+    # and every later download of a heavy source fast, not just the first.
+    proxy_1080p_key: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     width: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     height: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     duration_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

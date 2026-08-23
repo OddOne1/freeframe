@@ -70,13 +70,40 @@ QUALITY_LADDER = {
 }
 
 
+def _export_source_key(variant: DownloadVariant, media_file) -> str:
+    """Which stored file this export reads from (§57).
+
+    The persisted 1080p proxy, when the source was heavy enough to have one
+    and the variant is at or below 1080p. Decoding a 6K 400 Mbit/s original
+    to produce a 720p download is most of that job's cost, and the proxy is
+    the same picture the export would have produced anyway — the ladder
+    settings are identical on both sides deliberately.
+
+    A LUT does not change this: it is a per-pixel colour transform,
+    independent of resolution, so burning it on the 1080p proxy and then
+    scaling is equivalent to burning it on the original at the same output
+    size.
+
+    `raw` and `raw_lut` are never chained — "the original, graded" has to
+    mean the original.
+    """
+    proxy = getattr(media_file, "proxy_1080p_key", None)
+    if proxy and VARIANT_QUALITY[variant]:
+        return proxy
+    return media_file.s3_key_raw
+
+
 def _build_export_command(variant: DownloadVariant, input_url: str, local_lut, output_path: str) -> list[str]:
     """ffmpeg argv for one download variant.
 
-    Always a re-encode from the original, never a remux of the HLS
-    renditions (§30): burning a LUT requires decode+encode anyway, and
-    mixing the two would put two files with different quality
-    characteristics under one label.
+    Never a remux of the HLS renditions (§30): burning a LUT requires
+    decode+encode anyway, and mixing the two would put two files with
+    different quality characteristics under one label.
+
+    The input may be the persisted 1080p proxy rather than the original
+    (§57) — see _export_source_key. That is a different question from this
+    one: the argv is identical either way, because the proxy was encoded
+    with the same ladder settings the export uses.
     """
     filters = []
     if VARIANT_USES_LUT[variant]:
@@ -183,18 +210,48 @@ def burn_lut_export(
                 local_lut = os.path.join(work_dir, "grade.cube")
                 get_s3_client().download_file(settings.s3_bucket, lut.s3_key, local_lut)
 
-            output_path = os.path.join(work_dir, "export.mp4")
-            input_url = _presigned_input_url(media_file.s3_key_raw)
+            source_key = _export_source_key(variant_enum, media_file)
 
-            cmd = _build_export_command(variant_enum, input_url, local_lut, output_path)
-            subprocess.run(cmd, capture_output=True, check=True, timeout=14400)
-
-            s3_service.get_s3_client().upload_file(
-                output_path,
-                settings.s3_bucket,
-                export_key,
-                ExtraArgs={"ContentType": "video/mp4", "CacheControl": "no-store"},
+            # Plain 1080p on an asset that already HAS a persisted 1080p
+            # proxy is a request for a file that exists, unmodified (§57).
+            # Re-encoding it would spend minutes producing a worse copy of
+            # itself.
+            #
+            # A server-side copy rather than handing back the proxy's own
+            # key: the URL endpoint reconstructs the export key from ids and
+            # never learns which object was produced, so pointing it at the
+            # persisted file would mean changing that contract — and, worse,
+            # would put the permanent proxy behind the TTL delete that every
+            # export schedules. The copy is metadata-only in S3; no bytes
+            # move through this worker and ffmpeg is never invoked.
+            serve_stored = (
+                source_key == getattr(media_file, "proxy_1080p_key", None)
+                and not needs_lut
+                and VARIANT_QUALITY[variant_enum] == "1080p"
             )
+
+            if serve_stored:
+                s3_service.get_s3_client().copy_object(
+                    Bucket=settings.s3_bucket,
+                    CopySource={"Bucket": settings.s3_bucket, "Key": source_key},
+                    Key=export_key,
+                    ContentType="video/mp4",
+                    CacheControl="no-store",
+                    MetadataDirective="REPLACE",
+                )
+            else:
+                output_path = os.path.join(work_dir, "export.mp4")
+                input_url = _presigned_input_url(source_key)
+
+                cmd = _build_export_command(variant_enum, input_url, local_lut, output_path)
+                subprocess.run(cmd, capture_output=True, check=True, timeout=14400)
+
+                s3_service.get_s3_client().upload_file(
+                    output_path,
+                    settings.s3_bucket,
+                    export_key,
+                    ExtraArgs={"ContentType": "video/mp4", "CacheControl": "no-store"},
+                )
 
             # Name it after what it actually is, so two variants of one
             # asset do not land in the downloads folder as the same file.

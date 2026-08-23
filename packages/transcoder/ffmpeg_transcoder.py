@@ -280,6 +280,48 @@ class FFmpegTranscoder(BaseTranscoder):
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
 
+    def build_download_proxy(self, input_s3_key: str, output_s3_key: str) -> None:
+        """Transcode one standalone 1080p MP4 and upload it (§57).
+
+        A plain file, NOT an HLS ladder: this is what downloads and NLE
+        ingest consume, and a segmented stream is the wrong shape for both.
+        `transcode()` above stays untouched — playback is unchanged.
+
+        The encode settings deliberately match the 1080p rung of
+        QUALITY_MAP and lut_tasks' own export ladder (scale to fit, pad to
+        even, libx264, crf 20), so a download derived from this file is the
+        same picture a download re-encoded from the original would have
+        been. If those two ever diverge, a "1080p" download would silently
+        mean two different things depending on how heavy the source was.
+
+        Extra beyond the ladder, and needed because this is a file someone
+        downloads rather than a segment a player consumes: an explicit audio
+        codec (the ladder inherits ffmpeg's mpegts default, which is wrong
+        for MP4) and +faststart, so it plays before it has fully arrived.
+        """
+        work_dir = Path(tempfile.mkdtemp(prefix="proxy1080_"))
+        try:
+            output_path = work_dir / "proxy_1080p.mp4"
+            cmd = [
+                "ffmpeg", "-y", "-i", self._get_presigned_url(input_s3_key),
+                "-vf",
+                "scale=1920:1080:force_original_aspect_ratio=decrease,"
+                "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart",
+                # No -r, matching the ladder: ffmpeg keeps the source's rate.
+                str(output_path),
+            ]
+            subprocess.run(cmd, check=True, capture_output=True, timeout=14400)
+            self.s3.upload_file(
+                str(output_path), self.bucket, output_s3_key,
+                ExtraArgs={"ContentType": "video/mp4", "CacheControl": "max-age=31536000"},
+            )
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
     @staticmethod
     def _get_content_type(filename: str) -> tuple[str, str]:
         ext = Path(filename).suffix.lower()
