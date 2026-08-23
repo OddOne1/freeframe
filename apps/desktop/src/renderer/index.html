@@ -744,6 +744,24 @@
       align-items: center; justify-content: center;
     }
     #fragile-backdrop.open { display: flex; }
+    /* Its own rule, not the shared class: .ff-backdrop carries no styles,
+       and a backdrop relying on it alone sits permanently over the app with
+       nothing thrown (§23d's own finding). */
+    #settings-backdrop {
+      position: fixed; inset: 0; z-index: 1200; display: none;
+      background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
+      align-items: center; justify-content: center;
+    }
+    #settings-backdrop.open { display: flex; }
+    .settings-modal { width: 460px; max-width: calc(100vw - 40px); margin: auto; }
+    .settings-modal .setting { margin-top: 14px; }
+    .settings-modal .setting-label { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+    .settings-modal .setting-sub {
+      font-size: 11px; color: var(--text-tertiary); margin: 2px 0 6px;
+      word-break: break-all;
+    }
+    .settings-modal select { width: 100%; }
+    .progress-rate { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
     .preset-modal { width: 620px; max-width: calc(100vw - 40px); margin: auto; }
     .preset-cols { display: grid; grid-template-columns: 180px minmax(0,1fr); gap: 12px; }
     .preset-list { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-secondary); padding: 4px; max-height: 320px; overflow-y: auto; }
@@ -986,6 +1004,7 @@
     <span class="spacer"></span>
     <button id="account">Sign in to FreeFrame</button>
     <button id="refresh"><span class="icon" data-icon="refresh"></span> Refresh</button>
+    <button id="settings-btn" title="Settings">Settings</button>
     <button id="fields-show">Naming Fields</button>
     <button id="clear">Clear</button>
     <button id="start" class="primary" disabled>Copy &amp; Verify</button>
@@ -1061,6 +1080,9 @@
       </div>
       <div class="bar"><div id="p-bar"></div></div>
       <div class="progress-file" id="p-file"></div>
+      <!-- §58. Its own line rather than appended to p-counts, which shows
+           the job's totals and should not flicker with every tick. -->
+      <div class="progress-rate" id="p-rate"></div>
       <div class="released" id="p-released"></div>
     </div>
     <div class="summary" id="summary"></div>
@@ -1192,6 +1214,39 @@
       <div class="modal-actions"><div class="row2">
         <button id="fragile-cancel">Cancel</button>
         <button id="fragile-go" class="primary" disabled>Rename anyway</button>
+      </div></div>
+    </div>
+  </div>
+
+  <!-- §58. Same shape as every other modal in this file: an id-specific
+       backdrop rule (the shared .ff-backdrop class carries no styles — see
+       the note above), .open to show it. -->
+  <div id="settings-backdrop" class="ff-backdrop">
+    <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div class="modal-head"><h3 id="settings-title">Settings</h3></div>
+
+      <div class="setting">
+        <div class="setting-label">Default checksum algorithm</div>
+        <div class="setting-sub">
+          Pre-selects the picker for a new job. Any job can still be changed
+          before it starts.
+        </div>
+        <select id="settings-algo"></select>
+      </div>
+
+      <div class="setting">
+        <div class="setting-label">Logs</div>
+        <div class="setting-sub" id="settings-logs-path"></div>
+        <button id="settings-open-logs">Open logs folder</button>
+      </div>
+
+      <div class="setting">
+        <div class="setting-label">About</div>
+        <div class="setting-sub" id="settings-about"></div>
+      </div>
+
+      <div class="modal-actions"><div class="row2">
+        <button id="settings-close" class="primary">Done</button>
       </div></div>
     </div>
   </div>
@@ -2804,6 +2859,28 @@
     }
 
     // ── Progress ──
+    /** "3m 20s" / "45s". Coarse on purpose: an ETA that reports seconds
+     *  precisely invites the user to believe it, and it is an estimate from
+     *  a five-second window. */
+    function fmtEta(seconds) {
+      if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return "";
+      if (seconds < 60) return `${Math.max(1, Math.round(seconds))}s`;
+      const m = Math.floor(seconds / 60);
+      const rest = Math.round(seconds % 60);
+      if (m < 60) return rest ? `${m}m ${rest}s` : `${m}m`;
+      return `${Math.floor(m / 60)}h ${m % 60}m`;
+    }
+
+    function renderRate(p) {
+      const bits = [];
+      if (typeof p.speed === "number" && p.speed > 0) bits.push(`${formatBytes(p.speed)}/s`);
+      const eta = fmtEta(p.eta);
+      if (eta) bits.push(`${eta} remaining`);
+      // Left blank rather than showing a stale figure: the first couple of
+      // ticks genuinely have nothing to say yet.
+      $("p-rate").textContent = bits.join(" · ");
+    }
+
     function onProgress(p) {
       if (p.phase === "start") {
         $("progress").style.display = "block";
@@ -2820,6 +2897,7 @@
       } else if (p.phase === "bytes") {
         if (typeof p.percent === "number") $("p-bar").style.width = `${p.percent.toFixed(1)}%`;
         $("p-file").textContent = p.file || "";
+        renderRate(p);
         // Per-node bars: every node in this leg shares the leg's progress.
         for (const id of p.nodeIds || []) {
           const prev = nodeStatus.get(id) || {};
@@ -2829,6 +2907,9 @@
       } else if (p.phase === "verifying") {
         $("p-phase").textContent = "Verifying checksums…";
         $("p-file").textContent = p.file || "";
+        // Verification is not a transfer; a speed left over from the copy
+        // phase would be describing something that is no longer happening.
+        $("p-rate").textContent = "";
       } else if (p.phase === "source-released") {
         // The actual payoff of cascading: the card is free before the whole
         // chain finishes.
@@ -4177,12 +4258,75 @@
         if ($("algo-menu").style.display === "block") closeAlgoMenu();
         else openAlgoMenu();
       });
-      window.freeframe.getAlgorithms().then(({ algorithms: list, default: def }) => {
+      window.freeframe.getAlgorithms().then(async ({ algorithms: list, default: def }) => {
         algorithms = list || [];
         algorithm = def || "xxhash64";
+        // The saved default wins over the built-in one, but only if it is
+        // still a real algorithm — a stale id from an older build would
+        // otherwise leave the picker showing nothing selected (§58).
+        try {
+          const saved = await window.freeframe.getSettings();
+          const wanted = saved && saved.defaultChecksumAlgo;
+          if (wanted && algorithms.some((a) => a.id === wanted)) algorithm = wanted;
+        } catch { /* no settings yet — the built-in default stands */ }
         const label = $("algo-label");
         if (label) label.textContent = algoLabel();
       }).catch(() => {});
+    });
+
+    // ── Settings (§58) ──
+    initStep("settings", () => {
+      const backdrop = () => $("settings-backdrop");
+
+      function closeSettings() { backdrop().classList.remove("open"); }
+
+      async function openSettings() {
+        const select = $("settings-algo");
+        select.replaceChildren();
+        // Built from the same list the per-job picker uses, so the two can
+        // never offer different algorithms.
+        for (const a of algorithms) {
+          // `value` set directly: el() only knows class/text/title/dataset/
+          // style/onClick/disabled, so passing it through would silently
+          // leave the option valued at its own label — which then fails the
+          // stale-id guard on the next launch and quietly reverts the
+          // setting. Caught by the e2e, not by reading.
+          const opt = el("option", { text: a.label });
+          opt.value = a.id;
+          select.appendChild(opt);
+        }
+        try {
+          const saved = await window.freeframe.getSettings();
+          select.value = (saved && saved.defaultChecksumAlgo) || algorithm;
+        } catch { select.value = algorithm; }
+
+        try {
+          const info = await window.freeframe.appInfo();
+          $("settings-about").textContent =
+            `FreeFrame Offload ${info.version} · Electron ${info.electron}`;
+          $("settings-logs-path").textContent = info.logsPath || "";
+        } catch { /* about text is not load-bearing */ }
+
+        backdrop().classList.add("open");
+      }
+
+      on("settings-btn", "click", () => { void openSettings(); });
+      on("settings-close", "click", closeSettings);
+      on("settings-algo", "change", (e) => {
+        const value = e.target.value;
+        // Saved immediately rather than on Done: there is no Cancel here,
+        // so a "Save" step would only invite closing the window and losing
+        // the change.
+        void window.freeframe.setSettings({ defaultChecksumAlgo: value });
+      });
+      on("settings-open-logs", "click", () => { void window.freeframe.openLogsFolder(); });
+      // Same dismissal affordances every other modal here has.
+      backdrop().addEventListener("click", (e) => {
+        if (e.target === backdrop()) closeSettings();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && backdrop().classList.contains("open")) closeSettings();
+      });
     });
 
     initStep("recent folders", () => {

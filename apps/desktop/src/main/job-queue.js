@@ -49,6 +49,8 @@
 // destination and reports a hash mismatch — but it is a real edge and
 // worth knowing about.
 
+const { RateTracker } = require("./rate");
+
 const MODES = new Set(["free", "source", "destination"]);
 
 /** Does `a` tolerate running alongside `b`? */
@@ -94,6 +96,9 @@ class JobQueue {
     // Kept so the panel has history without growing without bound. The
     // running/queued jobs are never trimmed — only finished ones.
     this.maxHistory = 50;
+    // Per-job rolling transfer rate (§58). Lives here because this is
+    // where the ticks arrive and where job identity is known.
+    this.rate = new RateTracker();
   }
 
   get running() {
@@ -183,12 +188,29 @@ class JobQueue {
     for (const j of [...this.queued, ...this.running]) this.cancel(j.id);
   }
 
-  /** Live progress from a running job, forwarded to the panel. */
+  /**
+   * Live progress from a running job, forwarded to the panel.
+   *
+   * Speed and ETA are computed HERE rather than at each call site: this is
+   * the one place every progress tick already passes through, and it is
+   * the only place that knows which job a tick belongs to — the rate has
+   * to be per-job or two concurrent copies would pollute each other's
+   * figures.
+   *
+   * Returns the enriched object so the caller can forward the same numbers
+   * to the docked footer, which listens on its own IPC channel rather than
+   * reading the job list.
+   */
   updateProgress(id, progress) {
     const job = this.jobs.find((j) => j.id === id);
-    if (!job || job.status !== "running") return;
-    job.progress = { ...(job.progress || {}), ...progress };
+    if (!job || job.status !== "running") return progress;
+    const merged = { ...(job.progress || {}), ...progress };
+    const { speed, eta } = this.rate.update(id, merged.copiedBytes, merged.totalBytes);
+    merged.speed = speed;
+    merged.eta = eta;
+    job.progress = merged;
     this.onChange();
+    return merged;
   }
 
   /**
@@ -257,6 +279,10 @@ class JobQueue {
     }
 
     this._trimHistory();
+    // The samples are per-job and this one is over; keeping them would
+    // grow a map for the life of the session.
+    this.rate.forget(job.id);
+
     this.onChange();
     this._schedule();
 

@@ -17,6 +17,17 @@
     return `${n.toFixed(1)} ${u[i]}`;
   }
 
+  /** Coarse on purpose: this is an estimate from a five-second window, and
+   *  reporting it to the second invites more trust than it has earned. */
+  function fmtEta(seconds) {
+    if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return "";
+    if (seconds < 60) return `${Math.max(1, Math.round(seconds))}s`;
+    const m = Math.floor(seconds / 60);
+    const rest = Math.round(seconds % 60);
+    if (m < 60) return rest ? `${m}m ${rest}s` : `${m}m`;
+    return `${Math.floor(m / 60)}h ${m % 60}m`;
+  }
+
   function fmtDuration(ms) {
     if (!ms || ms < 0) return "";
     if (ms < 1000) return `${ms} ms`;
@@ -99,6 +110,13 @@
       if (legs > 1) bits.push(`${legs} cascade legs`);
       if (p.totalFiles != null) bits.push(`${p.totalFiles} files`);
       if (p.copiedBytes != null) bits.push(fmtBytes(p.copiedBytes));
+      // §58. Only while running: a speed on a finished row would be
+      // describing something that stopped happening.
+      if (j.status === "running") {
+        if (typeof p.speed === "number" && p.speed > 0) bits.push(`${fmtBytes(p.speed)}/s`);
+        const eta = fmtEta(p.eta);
+        if (eta) bits.push(`${eta} remaining`);
+      }
       if (j.status === "queued" && j.blockedBy && j.blockedBy.length) {
         bits.push(`waiting on ${j.blockedBy.join(", ")}`);
       }

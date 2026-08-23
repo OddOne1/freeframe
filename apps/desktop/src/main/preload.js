@@ -35,6 +35,13 @@ contextBridge.exposeInMainWorld("freeframe", {
       allowFragileRename: allowFragileRename === true,
     }),
 
+  /** App settings (§58) — local JSON in userData, same as presets. */
+  getSettings: () => ipcRenderer.invoke("settings:get"),
+  /** Partial: only the fields sent are changed. */
+  setSettings: (patch) => ipcRenderer.invoke("settings:set", { patch }),
+  openLogsFolder: () => ipcRenderer.invoke("settings:open-logs"),
+  appInfo: () => ipcRenderer.invoke("app:info"),
+
   /** Naming presets (§10 / §18b) — local JSON in userData, no login. */
   listPresets: () => ipcRenderer.invoke("presets:list"),
   savePreset: (preset) => ipcRenderer.invoke("presets:save", { preset }),

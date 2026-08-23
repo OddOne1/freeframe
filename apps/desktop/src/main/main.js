@@ -8,6 +8,7 @@ const crypto = require("node:crypto");
 const { listVolumes } = require("./volumes");
 const { runCopyJob } = require("./copy-engine");
 const presets = require("./presets");
+const settings = require("./settings");
 const { buildRelMapper, unknownTokens, omitTokens } = require("./naming");
 const { normalizeFilters, wantsFlatten } = require("./filters");
 const { JobQueue } = require("./job-queue");
@@ -301,6 +302,25 @@ ipcMain.handle("volumes:eject", async (_event, { mountPoint } = {}) => {
 // Local only: one JSON file in userData, no login, no server. Everything
 // here is preferences-shaped, so a failure returns a value rather than
 // throwing — a broken preferences file must never block a copy.
+// §58 — app settings. Read on startup by the renderer to pre-select the
+// per-job checksum picker; the per-job override is untouched.
+ipcMain.handle("settings:get", async () => settings.readSettings());
+ipcMain.handle("settings:set", async (_e, { patch } = {}) => settings.writeSettings(patch || {}));
+ipcMain.handle("settings:open-logs", async () => {
+  // The same directory job logs are written to (LOG_DIR), created first so
+  // opening it before any job has run shows an empty folder rather than
+  // failing silently.
+  const dir = LOG_DIR();
+  await fsp.mkdir(dir, { recursive: true });
+  const error = await shell.openPath(dir);
+  return { ok: !error, error: error || null, path: dir };
+});
+ipcMain.handle("app:info", async () => ({
+  version: app.getVersion(),
+  electron: process.versions.electron,
+  logsPath: LOG_DIR(),
+}));
+
 ipcMain.handle("presets:list", async () => presets.list());
 ipcMain.handle("presets:save", async (_e, { preset } = {}) => presets.save(preset || {}));
 ipcMain.handle("presets:delete", async (_e, { id } = {}) => presets.remove(id));
@@ -532,8 +552,10 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
   let cancelled = false;
   self._cancel = () => { cancelled = true; };
   const send = (p) => {
-    jobs.updateProgress(self.id, p);
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("copy:progress", p);
+    // The enriched object, so the docked footer gets the same speed/ETA the
+    // jobs panel does rather than a second, differently-computed one (§58).
+    const enriched = jobs.updateProgress(self.id, p) || p;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("copy:progress", enriched);
   };
   const startedAt = Date.now();
 
@@ -787,12 +809,14 @@ ipcMain.handle("copy:start", async (event, payload) => {
         allowFragileRename,
         isCancelled: () => cancelled,
         onProgress: (p) => {
-          jobs.updateProgress(self.id, p);
+          // Enriched with speed/ETA (§58) before it goes anywhere, so both
+          // listeners see one set of numbers rather than two.
+          const enriched = jobs.updateProgress(self.id, p) || p;
           // The legacy single-job channel stays for now: the footer and
           // several existing tests still listen on it. The panel uses
           // jobs:changed instead.
           if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send("copy:progress", p);
+            mainWindow.webContents.send("copy:progress", enriched);
           }
         },
       });

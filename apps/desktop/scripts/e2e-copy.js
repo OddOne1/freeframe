@@ -153,7 +153,11 @@ async function main() {
 
     const bridge = await cdp.eval("Object.keys(window.freeframe).sort().join(',')");
     check(
-      bridge === "bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearRecentFolders,deletePreset,detachPanel,dockPanel,ejectVolume,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,listJobs,listPresets,listVolumes,onCopyProgress,onJobsChanged,onPanelDockChanged,onVolumesChanged,openJobLog,pathForFile,previewNaming,rememberFolder,savePreset,setDisplayName,setSourceCounter,startCopy",
+      // appInfo/getSettings/setSettings/openLogsFolder added with §58.
+      // This list is an allowlist, not a snapshot: it is here so a new
+      // channel has to be a deliberate act rather than something that
+      // arrives unnoticed.
+      bridge === "appInfo,bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearRecentFolders,deletePreset,detachPanel,dockPanel,ejectVolume,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,getSettings,listJobs,listPresets,listVolumes,onCopyProgress,onJobsChanged,onPanelDockChanged,onVolumesChanged,openJobLog,openLogsFolder,pathForFile,previewNaming,rememberFolder,savePreset,setDisplayName,setSettings,setSourceCounter,startCopy",
       "contextBridge exposes exactly the intended API", bridge);
     check(await cdp.eval("typeof window.require") === "undefined", "no window.require");
     check(await cdp.eval("typeof window.process") === "undefined", "no window.process");
