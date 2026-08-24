@@ -69,6 +69,34 @@ const check = (ok, label, detail = "") => {
     return r.result.value;
   };
 
+  /** §61 — the preset editor moved into the Settings window, so this
+   *  section drives that window instead of the main one. */
+  async function attachSettings(tries = 40) {
+    for (let i = 0; i < tries; i++) {
+      try {
+        const t = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
+        const pg = t.find((x) => x.type === "page" && x.url.includes("settings.html"));
+        if (pg?.webSocketDebuggerUrl) {
+          const w = new WebSocket(pg.webSocketDebuggerUrl);
+          await new Promise((r) => w.addEventListener("open", r));
+          let n = 0; const q = new Map();
+          w.addEventListener("message", (e) => {
+            const m = JSON.parse(e.data);
+            if (m.id && q.has(m.id)) { const f = q.get(m.id); q.delete(m.id); f(m.result); }
+          });
+          const call = (me, pa = {}) => new Promise((res) => {
+            const i = ++n; q.set(i, res); w.send(JSON.stringify({ id: i, method: me, params: pa }));
+          });
+          await call("Runtime.enable");
+          return { ws: w, ev: async (x) => (await call("Runtime.evaluate",
+            { expression: x, awaitPromise: true, returnByValue: true, timeout: 30000 })).result?.value };
+        }
+      } catch {}
+      await sleep(250);
+    }
+    return null;
+  }
+
   const pageErrors = [];
   await send("Runtime.enable");
   ws.addEventListener("message", (e) => {
@@ -139,7 +167,7 @@ const check = (ok, label, detail = "") => {
     // with the code under test.
     await ev(`(async () => {
       const s = await window.freeframe.listPresets();
-      for (const p of s.presets.filter((x) => ["Filter Test", "Plain"].includes(x.name))) {
+      for (const p of s.presets.filter((x) => ["Filter Test", "Plain", "Filter Open Test"].includes(x.name))) {
         await window.freeframe.deletePreset(p.id);
       }
       return true;
@@ -181,31 +209,53 @@ const check = (ok, label, detail = "") => {
       JSON.stringify(plain));
 
     console.log("\n6. The editor renders the section without throwing");
-    const editor = await ev(`(() => {
-      const before = document.querySelectorAll(".filter-block").length;
-      editingPreset = { id: null, name: "x", folderTemplate: "", fileTemplate: "", fields: [], filters: null };
-      renderPresetPane();
-      const block = document.querySelector(".filter-block");
-      return {
-        before,
-        rendered: !!block,
-        openByDefault: block ? block.open : null,
-        rows: document.querySelectorAll(".filter-block .filter-row").length,
-      };
-    })()`);
-    check(editor.rendered, "the filtering block renders");
-    check(editor.openByDefault === false, "collapsed by default — it is opt-in, not a decision to make");
-    check(editor.rows >= 4, "all four controls are present", String(editor.rows));
+    // Driven through the real UI now that the editor lives in its own
+    // window: its draft is private to the module, and poking at it from
+    // outside would be testing a shape this no longer has.
+    await ev(`document.getElementById("settings-btn").click(); true`);
+    const st = await attachSettings();
+    check(Boolean(st), "the Settings window opened");
+    if (st) {
+      await st.ev(`document.querySelector('nav button[data-tab="presets"]').click(); true`);
+      for (let i = 0; i < 40 && !(await st.ev(`!!document.getElementById("preset-new")`)); i++) await sleep(200);
+      await st.ev(`document.getElementById("preset-new").click(); true`);
+      await sleep(400);
+      const editor = await st.ev(`(() => {
+        const block = document.querySelector(".filter-block");
+        return {
+          rendered: !!block,
+          openByDefault: block ? block.open : null,
+          rows: document.querySelectorAll(".filter-block .filter-row").length,
+        };
+      })()`);
+      check(editor && editor.rendered, "the filtering block renders");
+      check(editor && editor.openByDefault === false,
+        "collapsed by default — it is opt-in, not a decision to make");
+      check(editor && editor.rows >= 4, "all four controls are present", String(editor?.rows));
 
-    const opened = await ev(`(() => {
-      editingPreset = { id: null, name: "x", folderTemplate: "", fileTemplate: "", fields: [],
-                        filters: { doNotCopyExtensions: [".thm"] } };
-      renderPresetPane();
-      const block = document.querySelector(".filter-block");
-      return { open: block.open, summary: block.querySelector("summary").textContent };
-    })()`);
-    check(opened.open === true, "a preset that HAS filtering opens the section on sight");
-    check(/ON/.test(opened.summary), "and says so in the heading", opened.summary);
+      // A preset that already HAS filtering, selected from the list the
+      // same way a user would.
+      await ev(`window.freeframe.savePreset({ id: null, name: "Filter Open Test",
+        folderTemplate: "{date}", fileTemplate: "", fields: [],
+        filters: { doNotCopyExtensions: [".thm"] } })`);
+      // The Settings window follows the presets:changed broadcast, so the
+      // row appears without this window being told directly.
+      for (let i = 0; i < 40; i++) {
+        if (await st.ev(`[...document.querySelectorAll("#preset-list button")].some(x => x.textContent.trim() === "Filter Open Test")`)) break;
+        await sleep(200);
+      }
+      const opened = await st.ev(`(() => {
+        const b = [...document.querySelectorAll("#preset-list button")]
+          .find(x => x.textContent.trim() === "Filter Open Test");
+        if (!b) return null;
+        b.click();
+        const block = document.querySelector(".filter-block");
+        return { open: block.open, summary: block.querySelector("summary").textContent };
+      })()`);
+      check(opened && opened.open === true, "a preset that HAS filtering opens the section on sight");
+      check(opened && /ON/.test(opened.summary), "and says so in the heading", opened?.summary);
+      try { st.ws.close(); } catch {}
+    }
 
     // Cleanup, so a later run of any other suite doesn't inherit these.
     await ev(`(async () => {

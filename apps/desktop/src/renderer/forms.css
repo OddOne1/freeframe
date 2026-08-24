@@ -1,0 +1,104 @@
+/* Form and editor vocabulary shared by the main window and the Settings
+   window (§61).
+   Extracted from index.html when Settings became a real BrowserWindow: the
+   hide list, the naming-preset editor and the filtering block moved out,
+   while the main window still uses .token-help, .values-grid, .tok and .ack
+   for the per-transfer Fields panel. One definition, two consumers —
+   copying the rules into settings.html would have been the same drift this
+   project keeps hitting in its logic. */
+
+.hide-list { max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+.hide-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; font-size: 12px; color: var(--text-primary);
+}
+.hide-row + .hide-row { border-top: 1px solid var(--border); }
+.hide-row .hide-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hide-row .hide-kind { font-size: 10px; color: var(--text-tertiary); flex-shrink: 0; }
+.hide-empty { padding: 8px; font-size: 11px; color: var(--text-tertiary); }
+.preset-cols { display: grid; grid-template-columns: 180px minmax(0,1fr); gap: 12px; }
+.preset-list { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-secondary); padding: 4px; max-height: 320px; overflow-y: auto; }
+.preset-list button {
+  display: block; width: 100%; text-align: left; border: none; background: transparent;
+  color: var(--text-primary); font-size: 12px; font-family: inherit;
+  padding: 6px 8px; border-radius: 4px;
+}
+.preset-list button:hover { background: var(--bg-hover); }
+.preset-list button.active { background: var(--accent-muted); }
+.preset-pane { min-width: 0; }
+/* §22d — the row's fixed controls (token, type, Required, ↑ ↓ ✕) come to
+   ~300px, which is most of the ~400px pane. The name input then collapsed
+   to nothing and the row still spilled past the modal edge, because
+   `.tok` and `.req` are nowrap and the select has an intrinsic minimum.
+   Wrapping the control cluster as a unit is what fixes it: the row grows
+   to two lines when it must, instead of overflowing. */
+.field-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+.field-row input[type="text"] {
+  height: 28px; border-radius: 6px; padding: 0 8px; font-size: 12px; font-family: inherit;
+  background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);
+  flex: 1 1 150px; min-width: 110px;
+}
+/* Wraps internally as well as travelling as a unit: at a narrow window
+   the modal's max-width collapses this pane to ~190px, and a rigid
+   248px control group simply hangs off the edge — which is the overflow
+   that was actually reported. */
+.field-row-controls {
+  display: flex; align-items: center; gap: 6px;
+  margin-left: auto; flex-wrap: wrap; justify-content: flex-end;
+  min-width: 0; max-width: 100%;
+}
+.field-row-controls select { max-width: 100%; }
+.field-row select {
+  height: 28px; border-radius: 6px; font-size: 12px; font-family: inherit;
+  background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);
+}
+.field-row .tok { font-size: 10px; color: var(--text-tertiary); font-family: ui-monospace, monospace; white-space: nowrap; }
+.field-row .req { font-size: 10px; color: var(--text-tertiary); display: flex; align-items: center; gap: 3px; white-space: nowrap; }
+.icon-btn {
+  height: 24px; width: 24px; border: none; background: transparent; border-radius: 4px;
+  color: var(--text-tertiary); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.tpl-input {
+  width: 100%; height: 30px; border-radius: 6px; padding: 0 9px; box-sizing: border-box;
+  background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);
+  font-size: 12px; font-family: ui-monospace, monospace;
+}
+.tpl-preview {
+  font-size: 11px; color: var(--text-tertiary); font-family: ui-monospace, monospace;
+  margin-top: 4px; word-break: break-all;
+}
+.tpl-preview.bad { color: var(--status-error); }
+.token-help { font-size: 10px; color: var(--text-tertiary); margin-top: 4px; line-height: 1.5; }
+.token-help code {
+  font-family: ui-monospace, monospace; background: var(--bg-tertiary);
+  padding: 1px 4px; border-radius: 3px; cursor: pointer;
+}
+.token-help code:hover { background: var(--bg-hover); color: var(--text-primary); }
+.values-grid { display: grid; grid-template-columns: 120px minmax(0,1fr); gap: 6px 8px; align-items: center; }
+.values-grid label { font-size: 11px; color: var(--text-secondary); }
+.values-grid input { height: 28px; border-radius: 6px; padding: 0 8px; font-size: 12px; font-family: inherit;
+  background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary); width: 100%; box-sizing: border-box; }
+.values-grid .missing { border-color: var(--status-error); }
+
+/* §23d acknowledgement, and §23c's opt-in filtering block. */
+.ack { display: flex; gap: 8px; align-items: flex-start; font-size: 11px;
+  color: var(--text-secondary); margin: 4px 0 12px; line-height: 1.5; cursor: pointer; }
+.ack input { margin: 1px 0 0; flex-shrink: 0; }
+.filter-block { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.filter-block > summary {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-tertiary); cursor: pointer; list-style: none;
+}
+.filter-block > summary::-webkit-details-marker { display: none; }
+.filter-block > summary::before { content: "▸ "; }
+.filter-block[open] > summary::before { content: "▾ "; }
+.filter-block .warn { color: var(--status-warning); }
+.filter-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.filter-row label { font-size: 11px; color: var(--text-secondary); width: 92px; flex-shrink: 0; }
+.filter-row select, .filter-row input {
+  height: 26px; border-radius: 6px; padding: 0 8px; font-size: 11px; font-family: inherit;
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  color: var(--text-primary); flex: 1; min-width: 0; box-sizing: border-box;
+}
+

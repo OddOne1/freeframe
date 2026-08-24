@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Settings</title>
+  <link rel="stylesheet" href="tokens.css" />
+  <link rel="stylesheet" href="forms.css" />
+  <script src="icons.js"></script>
+  <style>
+    :root { --border: var(--border-primary); }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; height: 100vh; display: flex;
+      background: var(--bg-primary); color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12px; -webkit-font-smoothing: antialiased;
+    }
+    /* Tab list + panel, the shape §18d asked for so a section can be added
+       later without a structural rework. */
+    nav {
+      width: 168px; flex-shrink: 0; padding: 12px 8px;
+      border-right: 1px solid var(--border); background: var(--bg-secondary);
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    nav button {
+      display: block; width: 100%; text-align: left;
+      border: 1px solid transparent; background: transparent;
+      color: var(--text-secondary); font-family: inherit; font-size: 12px;
+      padding: 7px 10px; border-radius: 6px; cursor: pointer;
+    }
+    nav button:hover { background: var(--bg-hover); color: var(--text-primary); }
+    nav button.active {
+      background: var(--bg-tertiary); border-color: var(--border);
+      color: var(--text-primary); font-weight: 600;
+    }
+    main { flex: 1; min-width: 0; overflow-y: auto; padding: 16px 18px; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+    .setting { margin-bottom: 18px; }
+    .setting-label { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+    .setting-sub {
+      font-size: 11px; color: var(--text-tertiary); margin: 2px 0 6px;
+      line-height: 1.5; word-break: break-word;
+    }
+    button.plain {
+      border: 1px solid var(--border); background: var(--bg-tertiary);
+      color: var(--text-primary); font-family: inherit; font-size: 11px;
+      height: 26px; padding: 0 10px; border-radius: 6px; cursor: pointer;
+    }
+    button.plain:hover { background: var(--bg-hover); }
+    button.primary {
+      border: 1px solid var(--accent); background: var(--accent);
+      color: var(--text-on-accent, #fff); font-family: inherit; font-size: 11px;
+      height: 26px; padding: 0 12px; border-radius: 6px; cursor: pointer;
+    }
+
+    /* ── Themed checksum picker ──
+       Ported from the toolbar's #algo-menu, which this replaces. A native
+       <select> cannot carry the per-option explanation, and the explanation
+       is the entire reason that menu exists — "xxh3 vs c4" is not a choice
+       anyone makes from a name alone. Rendered inline here rather than as a
+       floating panel: there is room for it in a window, and a popup inside
+       a settings pane is a click nobody needs. */
+    .algo-list {
+      border: 1px solid var(--border); border-radius: 8px;
+      background: var(--bg-secondary); padding: 4px;
+    }
+    .algo-opt {
+      display: block; width: 100%; text-align: left; border: none;
+      background: transparent; padding: 8px 10px; border-radius: 7px;
+      cursor: pointer; white-space: normal; font-family: inherit;
+      color: var(--text-primary);
+    }
+    .algo-opt:hover { background: var(--bg-hover); }
+    .algo-opt.selected { background: var(--accent-muted); }
+    .algo-top { display: flex; align-items: center; gap: 8px; }
+    .algo-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+    .algo-tag {
+      font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+      padding: 1px 6px; border-radius: 999px;
+      color: var(--status-success); border: 1px solid var(--status-success);
+    }
+    .algo-check { margin-left: auto; color: var(--accent); display: flex; }
+    .algo-check svg { height: 14px; width: 14px; }
+    .algo-blurb { font-size: 11px; color: var(--text-tertiary); margin-top: 3px; line-height: 1.5; }
+    .algo-guidance {
+      font-size: 10px; color: var(--text-tertiary);
+      padding: 8px 10px 4px; line-height: 1.6;
+    }
+
+    /* A hidden item that is no longer connected. It is listed in the SAME
+       list rather than a second one — the old two-list version rendered
+       every hidden-but-connected item twice, and the only unique content
+       was this case. */
+    .hide-row .hide-orphan {
+      font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+      padding: 1px 6px; border-radius: 999px; flex-shrink: 0;
+      color: var(--text-tertiary); border: 1px solid var(--border);
+    }
+
+    /* ── Naming presets tab ── */
+    .preset-cols { display: grid; grid-template-columns: 180px minmax(0,1fr); gap: 12px; }
+    .preset-list {
+      border: 1px solid var(--border); border-radius: 6px;
+      background: var(--bg-secondary); padding: 4px;
+      max-height: 60vh; overflow-y: auto;
+    }
+    .preset-list button {
+      display: block; width: 100%; text-align: left; border: none; background: transparent;
+      color: var(--text-primary); font-size: 12px; font-family: inherit;
+      padding: 6px 8px; border-radius: 4px; cursor: pointer;
+    }
+    .preset-list button:hover { background: var(--bg-hover); }
+    .preset-list button.active { background: var(--accent-muted); }
+    .preset-pane { min-width: 0; }
+    /* §61 item 7 — titled cards instead of one continuous list. */
+    .pe-section {
+      border: 1px solid var(--border); border-radius: 8px;
+      background: var(--bg-secondary); padding: 10px 12px; margin-bottom: 12px;
+    }
+    .pe-section-title {
+      margin: 0 0 2px; font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .05em; color: var(--text-tertiary);
+    }
+    .pe-section-sub { margin-bottom: 8px; }
+    .pe-label {
+      display: block; font-size: 10px; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--text-tertiary); margin: 12px 0 4px;
+    }
+    .pe-section .field label {
+      display: block; font-size: 10px; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--text-tertiary); margin-bottom: 4px;
+    }
+    .pe-section .field input {
+      width: 100%; height: 30px; border-radius: 6px; padding: 0 9px;
+      background: var(--bg-primary); border: 1px solid var(--border);
+      color: var(--text-primary); font-size: 12px; font-family: inherit;
+    }
+    .pe-section .filter-block { margin-top: 0; padding-top: 0; border-top: none; }
+    .preset-actions { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+    .preset-actions .spacer { flex: 1; }
+    .saved-note { font-size: 11px; color: var(--status-success); }
+  </style>
+</head>
+<body>
+  <nav role="tablist" aria-label="Settings sections">
+    <button class="active" data-tab="general" role="tab" aria-selected="true">General</button>
+    <button data-tab="volumes" role="tab" aria-selected="false">Volumes</button>
+    <button data-tab="presets" role="tab" aria-selected="false">Naming Presets</button>
+    <button data-tab="about" role="tab" aria-selected="false">About</button>
+  </nav>
+
+  <main>
+    <section class="tab-panel active" id="tab-general" role="tabpanel">
+      <h2>General</h2>
+      <div class="setting">
+        <div class="setting-label">Checksum algorithm</div>
+        <div class="setting-sub">
+          Used to verify every copy. Applies to all jobs — there is no
+          per-job override.
+        </div>
+        <div id="algo-list" class="algo-list"></div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-volumes" role="tabpanel">
+      <h2>Volumes</h2>
+      <div class="setting">
+        <div class="setting-label">Show in Volumes</div>
+        <div class="setting-sub">
+          Unticked items disappear from the middle column only. A drive
+          already set as a Source or Destination keeps its tile in that
+          column. Drives are remembered by name, so two drives sharing a
+          name hide together.
+        </div>
+        <div id="settings-visible" class="hide-list"></div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-presets" role="tabpanel">
+      <h2>Naming Presets</h2>
+      <div class="setting-sub">
+        Build the destination folder and file names from fields you define.
+        Values are filled in per job, and everything stays on this machine.
+      </div>
+      <div class="preset-cols">
+        <div>
+          <div id="preset-list" class="preset-list"></div>
+          <button id="preset-new" class="plain" style="margin-top:6px;width:100%">New preset</button>
+        </div>
+        <div>
+          <div class="preset-actions">
+            <span id="preset-saved" class="saved-note"></span>
+            <span class="spacer"></span>
+            <button id="preset-save" class="primary">Save preset</button>
+          </div>
+          <div id="preset-pane" class="preset-pane"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-about" role="tabpanel">
+      <h2>About</h2>
+      <div class="setting">
+        <div class="setting-label">Logs</div>
+        <div class="setting-sub" id="settings-logs-path"></div>
+        <button id="settings-open-logs" class="plain">Open logs folder</button>
+      </div>
+      <div class="setting">
+        <div class="setting-label">Version</div>
+        <div class="setting-sub" id="settings-about"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="preset-editor.js"></script>
+  <script src="settings-window.js"></script>
+</body>
+</html>

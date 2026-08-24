@@ -157,50 +157,24 @@ async function launch() {
   check(await ev(`isHiddenEntry({ kind: "freeframe", projectId: "proj-1", name: "Renamed" })`),
     "still hidden after a rename — a project has a real stable id to key on");
 
-  console.log("5. Settings lists both, and hiding is reversible");
+  console.log("5. Un-hiding, and persistence");
+  // The Settings UI itself moved to its own window in §61 and is covered
+  // by e2e-settings.js — including the single list and the "not connected"
+  // tag. What belongs HERE is the half that stayed: the store, and the
+  // Volumes column that reads it.
   await ev(`hiddenProjectIds = []; hiddenVolumeNames = ["CardA"]; render(); true`);
-  await ev(`document.getElementById("settings-btn").click(); true`);
-  await sleep(500);
-
-  const visibleRows = await ev(`[...document.querySelectorAll("#settings-visible .hide-row .hide-name")].map(n => n.textContent.trim())`);
-  check(visibleRows.includes("CardA"),
-    "a hidden drive is STILL listed in Settings — otherwise toggling it would make its own undo vanish",
-    visibleRows.join(", "));
-  const hiddenRows = await ev(`[...document.querySelectorAll("#settings-hidden .hide-row .hide-name")].map(n => n.textContent.trim())`);
-  check(hiddenRows.includes("CardA"), "and it appears in the Hidden items list", hiddenRows.join(", "));
-
-  // An unplugged hidden drive: the whole point of listing orphans.
-  await ev(`document.getElementById("settings-close").click(); true`);
-  await sleep(300);
-  await ev(`hiddenVolumeNames = ["CardA", "GoneForever"]; true`);
-  await ev(`document.getElementById("settings-btn").click(); true`);
-  await sleep(500);
-  const orphans = await ev(`[...document.querySelectorAll("#settings-hidden .hide-row .hide-name")].map(n => n.textContent.trim())`);
-  check(orphans.includes("GoneForever"),
-    "a hidden drive that is no longer connected is listed too, so it can still be un-hidden",
-    orphans.join(", "));
-
-  await ev(`
-    (() => {
-      const rows = [...document.querySelectorAll("#settings-hidden .hide-row")];
-      const row = rows.find(r => r.querySelector(".hide-name").textContent.trim() === "CardA");
-      const box = row.querySelector("input[type=checkbox]");
-      box.checked = true;
-      box.dispatchEvent(new Event("change"));
-      return true;
-    })()
-  `);
-  await sleep(400);
-  check(!(await ev(`hiddenVolumeNames.includes("CardA")`)), "un-hiding from that list works");
-  check((await tiles()).includes("CardA"), "and the drive comes back to the Volumes column");
+  check(!(await tiles()).includes("CardA"), "a hidden drive is out of the column");
+  await ev(`window.freeframe.setSettings({ hiddenVolumeNames: [] })`);
+  await sleep(600);
+  check((await tiles()).includes("CardA"),
+    "and un-hiding brings it back — hiding is not a one-way door");
 
   console.log("6. It persists");
+  await ev(`window.freeframe.setSettings({ hiddenVolumeNames: ["GoneForever"] })`);
   const stored = await ev(`window.freeframe.getSettings().then(s => JSON.stringify(s.hiddenVolumeNames))`);
   check(JSON.parse(stored).includes("GoneForever"),
     "the hidden list is written to settings.json, not just held in memory", stored);
-
-  await ev(`document.getElementById("settings-close").click(); true`);
-  await sleep(300);
+  await ev(`window.freeframe.setSettings({ hiddenVolumeNames: [] })`);
 
   console.log("7. Page switcher (§60b)");
   check(await ev(`!!document.getElementById("page-offload") && !!document.getElementById("page-freeframe")`),

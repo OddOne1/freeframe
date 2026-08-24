@@ -9,6 +9,7 @@
        the exact release apps/web pins via lucide-react). -->
   <link rel="stylesheet" href="tokens.css" />
   <link rel="stylesheet" href="panel.css" />
+  <link rel="stylesheet" href="forms.css" />
   <script src="icons.js"></script>
   <script src="panel.js" defer></script>
   <style>
@@ -91,64 +92,6 @@
     header .mode .caret { display: inline-flex; opacity: .7; transition: transform 120ms; }
     header .mode:hover .caret { opacity: 1; }
     header .mode.open .caret { transform: rotate(180deg); }
-
-    /* Item 3 — persistent per-card menu trigger. Right-click still works;
-       this makes the same menu discoverable without knowing it's there. */
-    .card-menu, .tile-menu {
-      -webkit-app-region: no-drag;
-      background: transparent; border: none; padding: 0;
-      width: 20px; height: 20px; border-radius: 5px;
-      color: var(--text-tertiary);
-      display: flex; align-items: center; justify-content: center;
-      flex-shrink: 0; cursor: pointer;
-    }
-    .card-menu:hover, .tile-menu:hover { background: var(--bg-hover); color: var(--text-primary); }
-    .card-menu svg, .tile-menu svg { height: 14px; width: 14px; }
-    .tile-menu {
-      position: absolute; top: 6px; right: 6px; z-index: 2;
-      background: rgba(0,0,0,.55); color: rgba(255,255,255,.85);
-      backdrop-filter: blur(4px);
-    }
-    .tile-menu:hover { background: rgba(0,0,0,.8); color: #fff; }
-
-    /* Algorithm picker — a menu, not a bare <select>, because each option
-       carries a paragraph of explanation. Somebody choosing between MD5,
-       SHA-1, xxHash and C4 from four names alone will just pick the first
-       one or whatever they've heard of. */
-    #algo-menu {
-      position: fixed; z-index: 1000; display: none;
-      background: var(--bg-elevated); border: 1px solid var(--border);
-      border-radius: 10px; padding: 6px; width: 380px;
-      box-shadow: 0 16px 40px rgba(0,0,0,.6);
-      max-height: 70vh; overflow-y: auto;
-    }
-    /* white-space:normal is load-bearing: the global `button` rule below
-       sets nowrap, and these options are buttons, so without this every
-       blurb is clipped mid-word instead of wrapping — and a readable
-       explanation is the entire point of this menu. */
-    .algo-opt {
-      display: block; width: 100%; text-align: left; border: none;
-      background: transparent; padding: 8px 10px; border-radius: 7px; cursor: pointer;
-      white-space: normal;
-    }
-    .algo-opt:hover { background: var(--bg-hover); }
-    .algo-opt .algo-top { display: flex; align-items: center; gap: 8px; }
-    .algo-opt .algo-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
-    .algo-opt .algo-tag {
-      font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
-      padding: 1px 6px; border-radius: 999px;
-      color: var(--status-success); border: 1px solid var(--status-success);
-    }
-    .algo-opt .algo-check { margin-left: auto; color: var(--accent); display: flex; }
-    .algo-opt .algo-check svg { height: 14px; width: 14px; }
-    .algo-opt .algo-blurb {
-      margin-top: 3px; font-size: 11px; line-height: 1.45; color: var(--text-secondary);
-    }
-    .algo-guidance {
-      padding: 8px 10px 4px; font-size: 10px; line-height: 1.5;
-      color: var(--text-tertiary); border-top: 1px solid var(--border); margin-top: 4px;
-    }
-
     button {
       -webkit-app-region: no-drag;
       background: var(--bg-elevated); color: var(--text-primary);
@@ -739,13 +682,30 @@
     .login-tagline { margin: 20px 0 0; font-size: 11px; color: var(--text-tertiary); }
 
     /* ── Naming presets (§10 / §18b) ── */
-    #preset-backdrop {
-      position: fixed; inset: 0; z-index: 1100; display: none;
-      background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
-      align-items: center; justify-content: center;
-      overflow-y: auto; padding: 24px 0;
+
+    /* Item 3 — persistent per-card menu trigger. Right-click still works;
+       this makes the same menu discoverable without knowing it's there. */
+    .card-menu, .tile-menu {
+      -webkit-app-region: no-drag;
+      background: transparent; border: none; padding: 0;
+      width: 20px; height: 20px; border-radius: 5px;
+      color: var(--text-tertiary);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; cursor: pointer;
     }
-    #preset-backdrop.open { display: flex; }
+    .card-menu:hover, .tile-menu:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .card-menu svg, .tile-menu svg { height: 14px; width: 14px; }
+    .tile-menu {
+      position: absolute; top: 6px; right: 6px; z-index: 2;
+      background: rgba(0,0,0,.55); color: rgba(255,255,255,.85);
+      backdrop-filter: blur(4px);
+    }
+    .tile-menu:hover { background: rgba(0,0,0,.8); color: #fff; }
+
+    /* Algorithm picker — a menu, not a bare <select>, because each option
+       carries a paragraph of explanation. Somebody choosing between MD5,
+       SHA-1, xxHash and C4 from four names alone will just pick the first
+       one or whatever they've heard of. */
     /* .ff-backdrop carries no styles -- every backdrop in this file is
        styled by id. Matching that rather than introducing a shared class
        only this one would use. */
@@ -767,117 +727,7 @@
     /* Its own rule, not the shared class: .ff-backdrop carries no styles,
        and a backdrop relying on it alone sits permanently over the app with
        nothing thrown (§23d's own finding). */
-    #settings-backdrop {
-      position: fixed; inset: 0; z-index: 1200; display: none;
-      background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
-      align-items: center; justify-content: center;
-    }
-    #settings-backdrop.open { display: flex; }
-    .settings-modal { width: 460px; max-width: calc(100vw - 40px); margin: auto; }
-    .settings-modal .setting { margin-top: 14px; }
-    .settings-modal .setting-label { font-size: 12px; font-weight: 600; color: var(--text-primary); }
-    .settings-modal .setting-sub {
-      font-size: 11px; color: var(--text-tertiary); margin: 2px 0 6px;
-      word-break: break-all;
-    }
-    .settings-modal select { width: 100%; }
-    .hide-list { max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
-    .hide-row {
-      display: flex; align-items: center; gap: 8px;
-      padding: 5px 8px; font-size: 12px; color: var(--text-primary);
-    }
-    .hide-row + .hide-row { border-top: 1px solid var(--border); }
-    .hide-row .hide-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .hide-row .hide-kind { font-size: 10px; color: var(--text-tertiary); flex-shrink: 0; }
-    .hide-empty { padding: 8px; font-size: 11px; color: var(--text-tertiary); }
     .progress-rate { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
-    .preset-modal { width: 620px; max-width: calc(100vw - 40px); margin: auto; }
-    .preset-cols { display: grid; grid-template-columns: 180px minmax(0,1fr); gap: 12px; }
-    .preset-list { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-secondary); padding: 4px; max-height: 320px; overflow-y: auto; }
-    .preset-list button {
-      display: block; width: 100%; text-align: left; border: none; background: transparent;
-      color: var(--text-primary); font-size: 12px; font-family: inherit;
-      padding: 6px 8px; border-radius: 4px;
-    }
-    .preset-list button:hover { background: var(--bg-hover); }
-    .preset-list button.active { background: var(--accent-muted); }
-    .preset-pane { min-width: 0; }
-    /* §22d — the row's fixed controls (token, type, Required, ↑ ↓ ✕) come to
-       ~300px, which is most of the ~400px pane. The name input then collapsed
-       to nothing and the row still spilled past the modal edge, because
-       `.tok` and `.req` are nowrap and the select has an intrinsic minimum.
-       Wrapping the control cluster as a unit is what fixes it: the row grows
-       to two lines when it must, instead of overflowing. */
-    .field-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
-    .field-row input[type="text"] {
-      height: 28px; border-radius: 6px; padding: 0 8px; font-size: 12px; font-family: inherit;
-      background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);
-      flex: 1 1 150px; min-width: 110px;
-    }
-    /* Wraps internally as well as travelling as a unit: at a narrow window
-       the modal's max-width collapses this pane to ~190px, and a rigid
-       248px control group simply hangs off the edge — which is the overflow
-       that was actually reported. */
-    .field-row-controls {
-      display: flex; align-items: center; gap: 6px;
-      margin-left: auto; flex-wrap: wrap; justify-content: flex-end;
-      min-width: 0; max-width: 100%;
-    }
-    .field-row-controls select { max-width: 100%; }
-    .field-row select {
-      height: 28px; border-radius: 6px; font-size: 12px; font-family: inherit;
-      background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);
-    }
-    .field-row .tok { font-size: 10px; color: var(--text-tertiary); font-family: ui-monospace, monospace; white-space: nowrap; }
-    .field-row .req { font-size: 10px; color: var(--text-tertiary); display: flex; align-items: center; gap: 3px; white-space: nowrap; }
-    .icon-btn {
-      height: 24px; width: 24px; border: none; background: transparent; border-radius: 4px;
-      color: var(--text-tertiary); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
-    }
-    .icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-    .tpl-input {
-      width: 100%; height: 30px; border-radius: 6px; padding: 0 9px; box-sizing: border-box;
-      background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);
-      font-size: 12px; font-family: ui-monospace, monospace;
-    }
-    .tpl-preview {
-      font-size: 11px; color: var(--text-tertiary); font-family: ui-monospace, monospace;
-      margin-top: 4px; word-break: break-all;
-    }
-    .tpl-preview.bad { color: var(--status-error); }
-    .token-help { font-size: 10px; color: var(--text-tertiary); margin-top: 4px; line-height: 1.5; }
-    .token-help code {
-      font-family: ui-monospace, monospace; background: var(--bg-tertiary);
-      padding: 1px 4px; border-radius: 3px; cursor: pointer;
-    }
-    .token-help code:hover { background: var(--bg-hover); color: var(--text-primary); }
-    .values-grid { display: grid; grid-template-columns: 120px minmax(0,1fr); gap: 6px 8px; align-items: center; }
-    .values-grid label { font-size: 11px; color: var(--text-secondary); }
-    .values-grid input { height: 28px; border-radius: 6px; padding: 0 8px; font-size: 12px; font-family: inherit;
-      background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary); width: 100%; box-sizing: border-box; }
-    .values-grid .missing { border-color: var(--status-error); }
-
-    /* §23d acknowledgement, and §23c's opt-in filtering block. */
-    .ack { display: flex; gap: 8px; align-items: flex-start; font-size: 11px;
-      color: var(--text-secondary); margin: 4px 0 12px; line-height: 1.5; cursor: pointer; }
-    .ack input { margin: 1px 0 0; flex-shrink: 0; }
-    .filter-block { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
-    .filter-block > summary {
-      font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
-      color: var(--text-tertiary); cursor: pointer; list-style: none;
-    }
-    .filter-block > summary::-webkit-details-marker { display: none; }
-    .filter-block > summary::before { content: "▸ "; }
-    .filter-block[open] > summary::before { content: "▾ "; }
-    .filter-block .warn { color: var(--status-warning); }
-    .filter-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-    .filter-row label { font-size: 11px; color: var(--text-secondary); width: 92px; flex-shrink: 0; }
-    .filter-row select, .filter-row input {
-      height: 26px; border-radius: 6px; padding: 0 8px; font-size: 11px; font-family: inherit;
-      background: var(--bg-secondary); border: 1px solid var(--border);
-      color: var(--text-primary); flex: 1; min-width: 0; box-sizing: border-box;
-    }
-
     /* ── Docked job panel (§18c) ── */
     #jobs-tab {
       display: flex; align-items: center; gap: 8px;
@@ -1019,10 +869,6 @@
       <button class="page-tab active" id="page-offload" role="tab" aria-selected="true">Offload</button>
       <button class="page-tab" id="page-freeframe" role="tab" aria-selected="false">FreeFrame</button>
     </div>
-    <button class="mode" id="algo-btn" title="Change checksum algorithm">
-      <span id="algo-label">SECURE · xxHash64</span>
-      <span class="icon caret" data-icon="chevronDown"></span>
-    </button>
     <!-- Naming preset (§10 / §18b). Sits beside the checksum pill because
          both are "how this job runs" settings chosen before starting. -->
     <!-- §18c: which other jobs this one will run alongside. Deliberately
@@ -1186,35 +1032,6 @@
     </div>
   </div>
 
-  <!-- Naming presets (§10 / §18b). Left pane: saved presets. Right pane:
-       the selected preset's fields and name patterns, with a live preview
-       rendered by the SAME code the copy will use. -->
-  <div id="preset-backdrop">
-    <div class="modal preset-modal" role="dialog" aria-modal="true" aria-labelledby="preset-title">
-      <div class="modal-head"><h3 id="preset-title">Naming presets</h3></div>
-      <p>
-        Build the destination folder and file names from fields you define.
-        Values are filled in per job, and everything stays on this machine.
-      </p>
-
-      <div class="preset-cols">
-        <div>
-          <div id="preset-list" class="preset-list"></div>
-          <button id="preset-new" style="margin-top:6px;width:100%">New preset</button>
-        </div>
-
-        <div id="preset-pane" class="preset-pane"></div>
-      </div>
-
-      <div class="modal-actions">
-        <div class="row2">
-          <button id="preset-close">Close</button>
-          <button id="preset-save" class="primary">Save preset</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- Per-job field values. Separate from the editor on purpose: editing
        the shape of a preset and filling it in for tonight's card are
        different tasks, done at different moments. -->
@@ -1257,54 +1074,6 @@
   <!-- §58. Same shape as every other modal in this file: an id-specific
        backdrop rule (the shared .ff-backdrop class carries no styles — see
        the note above), .open to show it. -->
-  <div id="settings-backdrop" class="ff-backdrop">
-    <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-      <div class="modal-head"><h3 id="settings-title">Settings</h3></div>
-
-      <div class="setting">
-        <div class="setting-label">Default checksum algorithm</div>
-        <div class="setting-sub">
-          Pre-selects the picker for a new job. Any job can still be changed
-          before it starts.
-        </div>
-        <select id="settings-algo"></select>
-      </div>
-
-      <div class="setting">
-        <div class="setting-label">Show in Volumes</div>
-        <div class="setting-sub">
-          Hidden items disappear from the middle column only. A drive already
-          set as a Source or Destination keeps its tile in that column.
-        </div>
-        <div id="settings-visible" class="hide-list"></div>
-      </div>
-
-      <div class="setting" id="settings-hidden-wrap">
-        <div class="setting-label">Hidden items</div>
-        <div class="setting-sub">
-          Listed here because they are invisible everywhere else — otherwise
-          hiding would be a one-way door.
-        </div>
-        <div id="settings-hidden" class="hide-list"></div>
-      </div>
-
-      <div class="setting">
-        <div class="setting-label">Logs</div>
-        <div class="setting-sub" id="settings-logs-path"></div>
-        <button id="settings-open-logs">Open logs folder</button>
-      </div>
-
-      <div class="setting">
-        <div class="setting-label">About</div>
-        <div class="setting-sub" id="settings-about"></div>
-      </div>
-
-      <div class="modal-actions"><div class="row2">
-        <button id="settings-close" class="primary">Done</button>
-      </div></div>
-    </div>
-  </div>
-
   <div id="rename-backdrop" class="ff-backdrop">
     <div class="modal" role="dialog" aria-modal="true">
       <div class="modal-head"><h3 id="rename-title">Rename</h3></div>
@@ -1317,7 +1086,6 @@
     </div>
   </div>
 
-  <div id="algo-menu"></div>
 
   <div id="modal-backdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -1483,59 +1251,6 @@
     const newId = () => `d${nextId++}`;
 
     // ── Checksum algorithm picker ──
-    function algoLabel() {
-      const a = algorithms.find((x) => x.id === algorithm);
-      return `SECURE · ${a ? a.short : "xxHash64"}`;
-    }
-
-    function renderAlgoMenu() {
-      const menuEl = $("algo-menu");
-      menuEl.replaceChildren();
-      for (const a of algorithms) {
-        const top = el("div", { class: "algo-top" }, [
-          el("span", { class: "algo-name", text: a.label }),
-          a.recommended ? el("span", { class: "algo-tag", text: "Default" }) : null,
-        ]);
-        if (a.id === algorithm) {
-          const chk = el("span", { class: "algo-check" });
-          chk.appendChild(icon("check"));
-          top.appendChild(chk);
-        }
-        const opt = el("button", {
-          class: "algo-opt",
-          onClick: () => {
-            algorithm = a.id;
-            $("algo-label").textContent = algoLabel();
-            closeAlgoMenu();
-            render();
-          },
-        }, [top, el("div", { class: "algo-blurb", text: a.blurb })]);
-        menuEl.appendChild(opt);
-      }
-      // The one-line summary from the roadmap's own guidance, kept as the
-      // takeaway under the detail rather than instead of it.
-      menuEl.appendChild(el("div", {
-        class: "algo-guidance",
-        text: "xxHash for speed (default) · MD5/SHA-1 to match an existing pipeline · C4 when the checksum itself might need to prove something in a dispute.",
-      }));
-    }
-
-    function openAlgoMenu() {
-      // No longer gated: the algorithm is captured when a job starts, so
-      // changing it mid-copy affects only the next one.
-      renderAlgoMenu();
-      const menuEl = $("algo-menu");
-      const r = $("algo-btn").getBoundingClientRect();
-      menuEl.style.display = "block";
-      menuEl.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 396))}px`;
-      menuEl.style.top = `${r.bottom + 6}px`;
-      $("algo-btn").classList.add("open");   // flips the caret
-    }
-    const closeAlgoMenu = () => {
-      $("algo-menu").style.display = "none";
-      $("algo-btn")?.classList.remove("open");
-    };
-
     // ── Icons ──
     // window.FF_ICONS comes from the generated icons.js (lucide@0.511.0,
     // the same release apps/web pins). Inserted as innerHTML deliberately:
@@ -2724,8 +2439,6 @@
     }
     window.addEventListener("mousedown", (e) => {
       if (!menu.contains(e.target)) closeMenu();
-      const am = $("algo-menu");
-      if (!am.contains(e.target) && e.target !== $("algo-btn") && !$("algo-btn").contains(e.target)) closeAlgoMenu();
     });
 
     // ── Rendering ──
@@ -3418,407 +3131,6 @@
       nextSourceCounter = presetStore.sourceCounter || 1;
       if (activePresetId && !activePreset()) activePresetId = null;
       updatePresetLabel();
-      renderPresetList();
-    }
-
-    /**
-     * Which built-in tokens each template may use (§22c/§22h).
-     *
-     * Split because the two answer different questions. `{counter}` numbers
-     * files WITHIN one source, so putting it in a folder pattern creates a
-     * separate folder per file — the exact bug this fixes, previously
-     * unavoidable because every chip wrote into the folder field regardless
-     * of where the cursor was. `{sourcecounter}` numbers the sources
-     * themselves, which is only meaningful for a folder.
-     *
-     * Typing a token by hand is still allowed either way; naming.js resolves
-     * whatever it is given. This governs which one-click chips are offered,
-     * so the footgun isn't handed over by default.
-     */
-    const TOKENS_ANYWHERE = [
-      "date", "yyyy", "yy", "mm", "dd", "time", "datetime", "cardname",
-    ];
-    const TOKENS_FOLDER_ONLY = ["sourcecounter"];
-    const TOKENS_FILE_ONLY = ["counter", "name", "ext"];
-
-    function tokensFor(key) {
-      return key === "fileTemplate"
-        ? [...TOKENS_ANYWHERE, ...TOKENS_FILE_ONLY]
-        : [...TOKENS_ANYWHERE, ...TOKENS_FOLDER_ONLY];
-    }
-
-    /**
-     * Insert text at the caret of an input, leaving the caret after it.
-     *
-     * Appending to the end (what this used to do) loses the user's place in
-     * a pattern they are part-way through typing, and the full re-render
-     * that followed threw away focus as well.
-     */
-    function insertAtCaret(input, text) {
-      const start = input.selectionStart ?? input.value.length;
-      const end = input.selectionEnd ?? start;
-      input.value = input.value.slice(0, start) + text + input.value.slice(end);
-      const caret = start + text.length;
-      input.focus();
-      input.setSelectionRange(caret, caret);
-    }
-
-    function renderPresetList() {
-      const host = $("preset-list");
-      if (!host) return;
-      host.replaceChildren();
-      if (presetStore.presets.length === 0) {
-        host.appendChild(el("div", { class: "token-help", style: "padding:6px", text: "No presets yet." }));
-      }
-      for (const p of presetStore.presets) {
-        const b = el("button", {
-          text: p.name,
-          class: editingPreset && editingPreset.id === p.id ? "active" : "",
-          onClick: () => { editingPreset = JSON.parse(JSON.stringify(p)); renderPresetList(); renderPresetPane(); },
-        });
-        host.appendChild(b);
-      }
-    }
-
-    function newPresetDraft() {
-      return {
-        id: null,
-        name: "",
-        folderTemplate: "{date}_{cardname}",
-        fileTemplate: "",
-        fields: [],
-      };
-    }
-
-    /** Live preview, rendered by main using the same code the copy runs —
-     *  a preview computed by a lookalike would build confidence in the
-     *  wrong thing. */
-    async function refreshPresetPreview() {
-      const out = $("tpl-preview");
-      if (!out || !editingPreset) return;
-      const sample = {};
-      for (const f of editingPreset.fields) sample[f.key] = f.label || f.key;
-      const res = await window.freeframe.previewNaming(
-        editingPreset.folderTemplate, editingPreset.fileTemplate, sample,
-        sourcePath && !isProject(sourcePath) ? sourcePath : "/Volumes/A001",
-      );
-      out.classList.toggle("bad", !res.ok);
-      out.textContent = res.ok
-        ? `${res.sample}  →  ${res.result}`
-        : res.error;
-    }
-
-    function renderPresetPane() {
-      const host = $("preset-pane");
-      if (!host) return;
-      host.replaceChildren();
-      if (!editingPreset) {
-        host.appendChild(el("div", { class: "token-help", text: "Pick a preset on the left, or create a new one." }));
-        return;
-      }
-
-      const nameWrap = el("div", { class: "field" });
-      nameWrap.appendChild(el("label", { text: "Preset name" }));
-      const nameInput = el("input", { dataset: { role: "preset-name" } });
-      nameInput.type = "text";
-      nameInput.value = editingPreset.name;
-      nameInput.addEventListener("input", () => { editingPreset.name = nameInput.value; });
-      nameWrap.appendChild(nameInput);
-      host.appendChild(nameWrap);
-
-      // ── Fields ──
-      host.appendChild(el("label", {
-        style: "display:block;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-tertiary);margin:10px 0 4px",
-        text: "Fields",
-      }));
-
-      editingPreset.fields.forEach((f, i) => {
-        const row = el("div", { class: "field-row" });
-
-        // Sizing lives in .field-row's CSS now, so the row can wrap rather
-        // than the input collapsing to nothing (§22d).
-        const label = el("input");
-        label.type = "text";
-        label.placeholder = "Field name (e.g. Operator)";
-        label.value = f.label;
-        label.addEventListener("input", () => {
-          f.label = label.value;
-          // The token follows the label until the user has typed one, so
-          // {operator} appears as they name the field.
-          f.key = label.value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
-          tok.textContent = f.key ? `{${f.key}}` : "";
-        });
-        row.appendChild(label);
-
-        const tok = el("span", { class: "tok", text: f.key ? `{${f.key}}` : "" });
-        row.appendChild(tok);
-
-        // Everything after the name travels together, so it wraps to a
-        // second line as a block rather than one control at a time.
-        const controls = el("div", { class: "field-row-controls" });
-
-        const type = el("select");
-        for (const [v, t] of [["text", "Text"], ["select", "Suggesting"]]) {
-          const o = el("option", { text: t });
-          o.value = v;
-          if (f.type === v) o.selected = true;
-          type.appendChild(o);
-        }
-        type.title = "Suggesting fields offer what you've typed before";
-        type.addEventListener("change", () => { f.type = type.value; });
-        controls.appendChild(type);
-
-        const reqWrap = el("label", { class: "req" });
-        const req = el("input");
-        req.type = "checkbox";
-        req.checked = Boolean(f.required);
-        req.addEventListener("change", () => { f.required = req.checked; });
-        reqWrap.appendChild(req);
-        reqWrap.appendChild(el("span", { text: "Required" }));
-        controls.appendChild(reqWrap);
-
-        const up = el("button", { class: "icon-btn", title: "Move up", disabled: i === 0,
-          onClick: () => {
-            const [m] = editingPreset.fields.splice(i, 1);
-            editingPreset.fields.splice(i - 1, 0, m);
-            renderPresetPane();
-          } });
-        up.textContent = "↑";
-        controls.appendChild(up);
-
-        const down = el("button", { class: "icon-btn", title: "Move down", disabled: i === editingPreset.fields.length - 1,
-          onClick: () => {
-            const [m] = editingPreset.fields.splice(i, 1);
-            editingPreset.fields.splice(i + 1, 0, m);
-            renderPresetPane();
-          } });
-        down.textContent = "↓";
-        controls.appendChild(down);
-
-        const del = el("button", { class: "icon-btn", title: "Remove field",
-          onClick: () => { editingPreset.fields.splice(i, 1); renderPresetPane(); refreshPresetPreview(); } });
-        del.appendChild(icon("close"));
-        controls.appendChild(del);
-
-        row.appendChild(controls);
-        host.appendChild(row);
-      });
-
-      const addField = el("button", {
-        text: "Add field",
-        onClick: () => {
-          editingPreset.fields.push({ key: "", label: "", type: "text", required: false });
-          renderPresetPane();
-        },
-      });
-      host.appendChild(addField);
-
-      // ── Patterns ──
-      for (const [key, title, placeholder, hint] of [
-        ["folderTemplate", "Destination folder", "{date}_{cardname}", "Subfolder created under each destination. Use / for nesting."],
-        ["fileTemplate", "File name (optional)", "leave empty to keep original names", "The extension is always kept from the source."],
-      ]) {
-        host.appendChild(el("label", {
-          style: "display:block;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-tertiary);margin:12px 0 4px",
-          text: title,
-        }));
-        const input = el("input", { class: "tpl-input", dataset: { tpl: key } });
-        input.type = "text";
-        input.placeholder = placeholder;
-        input.value = editingPreset[key] || "";
-        input.addEventListener("input", () => { editingPreset[key] = input.value; refreshPresetPreview(); });
-        host.appendChild(input);
-        host.appendChild(el("div", { class: "token-help", text: hint }));
-
-        // One chip row per field, holding only the tokens valid there.
-        // Previously a single shared row wrote every token into
-        // folderTemplate no matter which input had focus — so clicking
-        // {counter} while editing the file name silently created a
-        // uniquely-numbered FOLDER for every file (§22c).
-        const chips = el("div", { class: "token-help" });
-        chips.appendChild(document.createTextNode("Click to insert: "));
-        const fieldTokens = editingPreset.fields.map((f) => f.key).filter(Boolean);
-        for (const t of [...fieldTokens, ...tokensFor(key)]) {
-          const code = el("code", { text: `{${t}}` });
-          // mousedown, not click: the default mousedown would blur the
-          // input first and take the caret position with it.
-          code.addEventListener("mousedown", (e) => {
-            e.preventDefault();
-            insertAtCaret(input, `{${t}}`);
-            editingPreset[key] = input.value;
-            refreshPresetPreview();
-          });
-          chips.appendChild(code);
-          chips.appendChild(document.createTextNode(" "));
-        }
-        host.appendChild(chips);
-      }
-
-      host.appendChild(el("div", { id: "tpl-preview", class: "tpl-preview" }));
-
-      // §22h — the source counter is shared across presets, not part of the
-      // one being edited, so it sits apart from the pattern fields. Shown
-      // here anyway because this is the only window where {sourcecounter}
-      // is visible at all, and a number that advances by itself needs to be
-      // correctable when a shoot restarts.
-      const counterRow = el("div", { class: "filter-row", style: "margin-top:14px" });
-      counterRow.appendChild(el("label", { text: "Next card #" }));
-      const counterInput = el("input", { id: "source-counter" });
-      counterInput.type = "number";
-      counterInput.min = "1";
-      counterInput.value = String(nextSourceCounter);
-      counterInput.addEventListener("change", async () => {
-        nextSourceCounter = await window.freeframe.setSourceCounter(counterInput.value);
-        counterInput.value = String(nextSourceCounter);
-        // Numbers already handed to assigned sources stay as they were —
-        // this sets what the NEXT card gets, not a retroactive renumber.
-      });
-      counterRow.appendChild(counterInput);
-      host.appendChild(counterRow);
-      host.appendChild(el("div", {
-        class: "token-help",
-        text: "What {sourcecounter} renders as for the next source you add. Advances on its own each time a card is assigned.",
-      }));
-
-      host.appendChild(renderFilterBlock());
-
-      if (editingPreset.id) {
-        const del = el("button", {
-          style: "margin-top:10px",
-          text: "Delete preset",
-          onClick: async () => {
-            await window.freeframe.deletePreset(editingPreset.id);
-            if (activePresetId === editingPreset.id) activePresetId = null;
-            editingPreset = null;
-            await reloadPresets();
-            renderPresetPane();
-          },
-        });
-        host.appendChild(del);
-      }
-
-      refreshPresetPreview();
-    }
-
-    /**
-     * Opt-in copy filtering (§23c).
-     *
-     * Collapsed by default and empty by default, and that is the feature:
-     * a preset that never opens this section copies everything, which is
-     * the guarantee this app is built on. Main re-normalizes whatever is
-     * entered here, so a half-filled form can't become an active filter.
-     */
-    function renderFilterBlock() {
-      const f = editingPreset.filters || {};
-      const active =
-        (f.doNotCopyExtensions || []).length ||
-        (f.doNotCopyNames || []).length ||
-        (f.ignoreBundles?.extensions || []).length ||
-        (f.ignoreFolders?.mode && f.ignoreFolders.mode !== "off");
-
-      const block = el("details", { class: "filter-block" });
-      if (active) block.open = true;
-      block.appendChild(el("summary", {
-        text: active ? "File filtering — ON" : "File filtering (optional)",
-        class: active ? "warn" : "",
-      }));
-      block.appendChild(el("div", {
-        class: "token-help",
-        text: "Off by default: everything on the card is copied. Anything you skip here is "
-            + "listed in the job's summary and log, never dropped silently.",
-      }));
-
-      // Writes into the draft and re-renders the summary line only — a full
-      // re-render would collapse the section the user is typing in.
-      function set(mutate) {
-        editingPreset.filters = editingPreset.filters || {};
-        mutate(editingPreset.filters);
-      }
-
-      function textRow(label, placeholder, get, put) {
-        const row = el("div", { class: "filter-row" });
-        row.appendChild(el("label", { text: label }));
-        const input = el("input");
-        input.type = "text";
-        input.placeholder = placeholder;
-        input.value = (get() || []).join(", ");
-        input.addEventListener("input", () => {
-          const parts = input.value.split(",").map((s) => s.trim()).filter(Boolean);
-          set((x) => put(x, parts));
-        });
-        row.appendChild(input);
-        return row;
-      }
-
-      block.appendChild(textRow(
-        "Skip types", ".thm, .ppn, .bmp",
-        () => f.doNotCopyExtensions,
-        (x, v) => { x.doNotCopyExtensions = v; },
-      ));
-      block.appendChild(textRow(
-        "Skip names", "index.mif, lastclip.txt",
-        () => f.doNotCopyNames,
-        (x, v) => { x.doNotCopyNames = v; },
-      ));
-      block.appendChild(textRow(
-        "Ignore bundles", ".rdc, .avchd",
-        () => f.ignoreBundles?.extensions,
-        (x, v) => {
-          x.ignoreBundles = { ...(x.ignoreBundles || {}), extensions: v };
-        },
-      ));
-
-      const sizeRow = el("div", { class: "filter-row" });
-      sizeRow.appendChild(el("label", { text: "…under (MB)" }));
-      const sizeInput = el("input");
-      sizeInput.type = "number";
-      sizeInput.min = "0";
-      sizeInput.placeholder = "blank = any size";
-      sizeInput.value = Number.isFinite(f.ignoreBundles?.maxBytes)
-        ? String(Math.round(f.ignoreBundles.maxBytes / (1024 * 1024)))
-        : "";
-      sizeInput.addEventListener("input", () => {
-        const mb = Number(sizeInput.value);
-        set((x) => {
-          x.ignoreBundles = {
-            ...(x.ignoreBundles || {}),
-            maxBytes: sizeInput.value.trim() && Number.isFinite(mb) ? mb * 1024 * 1024 : null,
-          };
-        });
-      });
-      sizeRow.appendChild(sizeInput);
-      block.appendChild(sizeRow);
-      block.appendChild(el("div", {
-        class: "token-help",
-        text: "A size limit is what makes ignoring bundles safe — it targets the empty shells, "
-            + "and a bundle holding real footage is over any sane limit. Leave it blank and every "
-            + "matching bundle is dropped regardless of what's inside.",
-      }));
-
-      const folderRow = el("div", { class: "filter-row" });
-      folderRow.appendChild(el("label", { text: "Folders" }));
-      const select = el("select");
-      for (const [value, label] of [
-        ["off", "Keep the source's folder structure"],
-        ["whenEmpty", "Skip folders left empty by filtering"],
-        ["flatten", "Flatten — copy every file into one folder"],
-      ]) {
-        const opt = el("option", { text: label });
-        opt.value = value;
-        if ((f.ignoreFolders?.mode || "off") === value) opt.selected = true;
-        select.appendChild(opt);
-      }
-      select.addEventListener("change", () => set((x) => { x.ignoreFolders = { mode: select.value }; }));
-      folderRow.appendChild(select);
-      block.appendChild(folderRow);
-      block.appendChild(el("div", {
-        class: "token-help",
-        text: "Flattening discards the card's own DCIM/CLIP folders. Two files with the same name "
-            + "in different folders would collide, and the job is refused rather than one of them "
-            + "being overwritten.",
-      }));
-
-      return block;
     }
 
     /**
@@ -4410,12 +3722,11 @@
     // depends on anything above completing.
     initStep("account", () => { refreshAccount().catch(() => {}); });
 
-    initStep("algorithm picker", () => {
-      on("algo-btn", "click", (e) => {
-        e.stopPropagation();
-        if ($("algo-menu").style.display === "block") closeAlgoMenu();
-        else openAlgoMenu();
-      });
+    // §61 — the toolbar picker is gone; the algorithm is a Settings value
+    // now, read here at load and whenever Settings writes it. There is no
+    // per-job override any more: a job captures whatever this holds when it
+    // starts.
+    initStep("checksum algorithm", () => {
       window.freeframe.getAlgorithms().then(async ({ algorithms: list, default: def }) => {
         algorithms = list || [];
         algorithm = def || "xxhash64";
@@ -4430,164 +3741,24 @@
           hiddenProjectIds = (saved && saved.hiddenProjectIds) || [];
           render();
         } catch { /* no settings yet — the built-in default stands */ }
-        const label = $("algo-label");
-        if (label) label.textContent = algoLabel();
       }).catch(() => {});
+
+      // Settings is another window now, so its writes arrive as a
+      // broadcast rather than as a local re-render.
+      window.freeframe.onSettingsChanged((saved) => {
+        const wanted = saved && saved.defaultChecksumAlgo;
+        if (wanted && algorithms.some((a) => a.id === wanted)) algorithm = wanted;
+        hiddenVolumeNames = (saved && saved.hiddenVolumeNames) || [];
+        hiddenProjectIds = (saved && saved.hiddenProjectIds) || [];
+        render();
+      });
     });
 
-    // ── Settings (§58) ──
+    // §61 — Settings is a real window now (see settings.html). The modal
+    // that used to live here, its hide-list rendering and its algorithm
+    // <select> all moved there; the button only opens the window.
     initStep("settings", () => {
-      const backdrop = () => $("settings-backdrop");
-
-      function closeSettings() { backdrop().classList.remove("open"); }
-
-      async function openSettings() {
-        const select = $("settings-algo");
-        select.replaceChildren();
-        // Built from the same list the per-job picker uses, so the two can
-        // never offer different algorithms.
-        for (const a of algorithms) {
-          // `value` set directly: el() only knows class/text/title/dataset/
-          // style/onClick/disabled, so passing it through would silently
-          // leave the option valued at its own label — which then fails the
-          // stale-id guard on the next launch and quietly reverts the
-          // setting. Caught by the e2e, not by reading.
-          const opt = el("option", { text: a.label });
-          opt.value = a.id;
-          select.appendChild(opt);
-        }
-        try {
-          const saved = await window.freeframe.getSettings();
-          select.value = (saved && saved.defaultChecksumAlgo) || algorithm;
-        } catch { select.value = algorithm; }
-
-        renderHideLists();
-
-        try {
-          const info = await window.freeframe.appInfo();
-          $("settings-about").textContent =
-            `FreeFrame Offload ${info.version} · Electron ${info.electron}`;
-          $("settings-logs-path").textContent = info.logsPath || "";
-        } catch { /* about text is not load-bearing */ }
-
-        backdrop().classList.add("open");
-      }
-
-      /**
-       * Both lists, from one place (§60a).
-       *
-       * The visible list is built from what the middle column would show
-       * WITHOUT the hide filter, not from what it currently shows —
-       * otherwise an item would vanish from Settings the moment it was
-       * hidden, and the toggle would have nowhere to live.
-       */
-      function renderHideLists() {
-        const visible = $("settings-visible");
-        const hidden = $("settings-hidden");
-        visible.replaceChildren();
-        hidden.replaceChildren();
-
-        const row = (label, kind, checked, onToggle) => {
-          const box = el("input", { });
-          box.type = "checkbox";
-          box.checked = checked;
-          box.addEventListener("change", onToggle);
-          return el("label", { class: "hide-row" }, [
-            box,
-            el("span", { class: "hide-name", text: label, title: label }),
-            el("span", { class: "hide-kind", text: kind }),
-          ]);
-        };
-
-        // Everything hideable, hidden or not — drives and projects only.
-        // A picked folder is not offered: it has no stable identity to
-        // remember and is already removed by the column's own filter.
-        const items = [
-          ...volumes.map((v) => ({
-            key: v.name,
-            kind: "drive",
-            // The label the tiles show, which may be a §22e display-name
-            // override — but the stored key is the REAL name, so renaming a
-            // drive in this app does not silently unhide it.
-            label: displayNames[v.mountPoint] || v.name,
-            hidden: hiddenVolumeNames.includes(v.name),
-          })),
-          ...ffProjects.map((p) => ({
-            key: p.id,
-            kind: "project",
-            label: p.name,
-            hidden: hiddenProjectIds.includes(p.id),
-          })),
-        ];
-
-        for (const it of items) {
-          visible.appendChild(row(it.label, it.kind, !it.hidden, (e) => {
-            void setHidden(it.kind, it.key, !e.target.checked);
-          }));
-        }
-        if (!items.length) {
-          visible.appendChild(el("div", { class: "hide-empty", text: "Nothing to show yet." }));
-        }
-
-        // Anything on the hidden lists that is NOT currently connected —
-        // an unplugged drive still has to be un-hideable, or unplugging it
-        // while hidden would strand the setting.
-        const orphans = [
-          ...hiddenVolumeNames
-            .filter((n) => !volumes.some((v) => v.name === n))
-            .map((n) => ({ key: n, kind: "drive", label: n })),
-          ...hiddenProjectIds
-            .filter((id) => !ffProjects.some((p) => p.id === id))
-            .map((id) => ({ key: id, kind: "project", label: id })),
-        ];
-        const allHidden = [
-          ...items.filter((i) => i.hidden),
-          ...orphans.map((o) => ({ ...o, hidden: true })),
-        ];
-        for (const it of allHidden) {
-          hidden.appendChild(row(it.label, `${it.kind} · hidden`, false, () => {
-            void setHidden(it.kind, it.key, false);
-          }));
-        }
-        if (!allHidden.length) {
-          hidden.appendChild(el("div", { class: "hide-empty", text: "Nothing hidden." }));
-        }
-      }
-
-      async function setHidden(kind, key, hide) {
-        const list = kind === "project" ? hiddenProjectIds : hiddenVolumeNames;
-        const next = hide
-          ? Array.from(new Set([...list, key]))
-          : list.filter((x) => x !== key);
-        if (kind === "project") hiddenProjectIds = next;
-        else hiddenVolumeNames = next;
-        // Rendered immediately from local state rather than waiting on the
-        // write: the middle column should react to the click, not to a
-        // filesystem round trip.
-        render();
-        renderHideLists();
-        await window.freeframe.setSettings(
-          kind === "project" ? { hiddenProjectIds: next } : { hiddenVolumeNames: next },
-        );
-      }
-
-      on("settings-btn", "click", () => { void openSettings(); });
-      on("settings-close", "click", closeSettings);
-      on("settings-algo", "change", (e) => {
-        const value = e.target.value;
-        // Saved immediately rather than on Done: there is no Cancel here,
-        // so a "Save" step would only invite closing the window and losing
-        // the change.
-        void window.freeframe.setSettings({ defaultChecksumAlgo: value });
-      });
-      on("settings-open-logs", "click", () => { void window.freeframe.openLogsFolder(); });
-      // Same dismissal affordances every other modal here has.
-      backdrop().addEventListener("click", (e) => {
-        if (e.target === backdrop()) closeSettings();
-      });
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape" && backdrop().classList.contains("open")) closeSettings();
-      });
+      on("settings-btn", "click", () => { void window.freeframe.openSettingsWindow(); });
     });
 
     initStep("recent folders", () => {
@@ -4691,36 +3862,45 @@
     });
 
     initStep("naming presets", () => {
-      on("preset-btn", "click", async () => {
+      // §61 — the editor moved to the Settings window, but this pill was
+      // the ONLY way to choose an active preset: there was no selector,
+      // saving one in the editor is what made it active. Removing the
+      // trigger without replacing it would have left the app with no way
+      // to pick a preset at all. So the pill now does what its caret has
+      // always promised — it selects — and hands editing to Settings.
+      on("preset-btn", "click", async (e) => {
+        e.stopPropagation();
         await reloadPresets();
-        // Open on the active preset if there is one, so the button leads
-        // to what it names rather than a blank pane.
-        const current = activePreset();
-        editingPreset = current ? JSON.parse(JSON.stringify(current)) : null;
-        renderPresetList();
-        renderPresetPane();
-        $("preset-backdrop").classList.add("open");
+        menu.replaceChildren();
+        menu.appendChild(el("div", { class: "label", text: "Naming preset" }));
+
+        const pick = (id) => { activePresetId = id; updatePresetLabel(); closeMenu(); render(); };
+        menu.appendChild(el("button", {
+          text: (activePresetId ? "" : "✓ ") + "No naming preset",
+          onClick: () => pick(null),
+        }));
+        for (const p of presetStore.presets) {
+          menu.appendChild(el("button", {
+            text: (p.id === activePresetId ? "✓ " : "") + p.name,
+            onClick: () => pick(p.id),
+          }));
+        }
+        menu.appendChild(el("div", { class: "label", text: "" }));
+        menu.appendChild(el("button", {
+          text: "Manage presets…",
+          onClick: () => { closeMenu(); void window.freeframe.openSettingsWindow("presets"); },
+        }));
+
+        const r = e.currentTarget.getBoundingClientRect();
+        menu.style.display = "block";
+        menu.style.left = `${Math.min(r.left, window.innerWidth - 300)}px`;
+        menu.style.top = `${r.bottom + 4}px`;
       });
-      on("preset-close", "click", () => $("preset-backdrop").classList.remove("open"));
-      on("preset-new", "click", () => {
-        editingPreset = newPresetDraft();
-        renderPresetList();
-        renderPresetPane();
-      });
-      on("preset-save", "click", async () => {
-        if (!editingPreset) return;
-        presetStore = await window.freeframe.savePreset(editingPreset);
-        // Saving selects it: the reason to build a preset is to use it.
-        const saved = presetStore.presets.find((p) => p.name === (editingPreset.name || "Untitled preset"));
-        if (saved) activePresetId = saved.id;
-        editingPreset = saved ? JSON.parse(JSON.stringify(saved)) : null;
-        updatePresetLabel();
-        renderPresetList();
-        renderPresetPane();
-      });
-      on("preset-backdrop", "keydown", (e) => {
-        if (e.key === "Escape") $("preset-backdrop").classList.remove("open");
-      });
+
+      // The editor is in another window; its saves and deletes arrive as a
+      // broadcast. reloadPresets() already drops an active id that no
+      // longer exists, so deleting the active preset there clears it here.
+      window.freeframe.onPresetsChanged(() => { void reloadPresets(); });
 
       on("values-cancel", "click", () => {
         $("values-backdrop").classList.remove("open");

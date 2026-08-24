@@ -19,6 +19,9 @@ const { spawnElectron } = require("./lib/electron-harness");
 
 const APP = path.join(__dirname, "..");
 const PORT = 9377;
+// Unique per run: this writes into the real preset store, and a fixed name
+// piles up a duplicate every time the suite is run.
+const PRESET_NAME = `E2E Preset ${Date.now()}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let fail = 0;
@@ -74,6 +77,54 @@ async function shutdown(child, ws) {
   await sleep(600);
 }
 
+/** Attach to another of this app's windows by URL fragment. Settings is a
+ *  real BrowserWindow now (§61), so it is a separate target — not a node in
+ *  the main window's DOM. */
+async function attach(urlPart, tries = 40) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      const t = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
+      const page = t.find((x) => x.type === "page" && x.url.includes(urlPart));
+      if (page?.webSocketDebuggerUrl) {
+        const ws = new WebSocket(page.webSocketDebuggerUrl);
+        await new Promise((r) => ws.addEventListener("open", r));
+        let id = 0; const pend = new Map();
+        ws.addEventListener("message", (e) => {
+          const m = JSON.parse(e.data);
+          if (m.id && pend.has(m.id)) {
+            const q = pend.get(m.id); pend.delete(m.id);
+            m.error ? q.reject(new Error(JSON.stringify(m.error))) : q.resolve(m.result);
+          }
+        });
+        const send = (me, pa = {}) => new Promise((res, rej) => {
+          const i = ++id; pend.set(i, { resolve: res, reject: rej });
+          ws.send(JSON.stringify({ id: i, method: me, params: pa }));
+        });
+        await send("Runtime.enable");
+        const ev = async (x) => {
+          const r = await send("Runtime.evaluate", { expression: x, awaitPromise: true, returnByValue: true, timeout: 30000 });
+          if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || "threw");
+          return r.result.value;
+        };
+        return { ws, ev, url: page.url };
+      }
+    } catch {}
+    await sleep(250);
+  }
+  return null;
+}
+
+/** The Settings window populates asynchronously (algorithms, volumes and
+ *  projects all come from main). Attaching succeeds the moment the target
+ *  exists, which is before any of that has landed. */
+async function waitFor(ev, expr, tries = 40) {
+  for (let i = 0; i < tries; i++) {
+    try { if (await ev(expr)) return true; } catch {}
+    await sleep(200);
+  }
+  return false;
+}
+
 (async () => {
   try { execSync(`pkill -f 'apps/desktop.*remote-debugging-port=${PORT}' || true`); } catch {}
   await sleep(800);
@@ -96,86 +147,185 @@ async function shutdown(child, ws) {
     "app info reports the logs folder the app actually writes to", settingsPath);
 
   check(await ev(`!!document.getElementById("settings-btn")`), "there is a way in");
-  check(await ev(`getComputedStyle(document.getElementById("settings-backdrop")).display === "none"`),
-    "and it starts closed");
+  check(!(await ev(`!!document.getElementById("settings-backdrop")`)),
+    "and the old in-page modal is gone, not merely hidden");
 
   await ev(`document.getElementById("settings-btn").click(); true`);
-  await sleep(400);
+  const settings = await attach("settings.html");
+  check(Boolean(settings), "clicking it opens a REAL separate window, not a modal", settings?.url || "(none)");
+  if (!settings) { console.log("\ncannot continue without the Settings window."); process.exit(1); }
+  const sev = settings.ev;
 
-  check(await ev(`document.getElementById("settings-backdrop").classList.contains("open")`),
-    "clicking it opens the modal");
-  // The scar this guards: a backdrop styled only by .ff-backdrop is
-  // invisible-but-present, and nothing throws.
-  check(await ev(`getComputedStyle(document.getElementById("settings-backdrop")).display === "flex"`),
-    "and the backdrop has a real rule of its own, not just the shared class");
-  check(await ev(`getComputedStyle(document.getElementById("settings-backdrop")).position === "fixed"`),
-    "covering the app rather than sitting in the flow");
+  // "Not a modal" is asserted at the SOURCE, and that limitation is worth
+  // stating: a modal's input blocking is enforced by the OS, and CDP's
+  // dispatchMouseEvent goes straight to the renderer, so no runtime probe
+  // from here can tell a parented modal from an independent window.
+  const mainSrc = await fsp.readFile(path.join(APP, "src", "main", "main.js"), "utf8");
+  // Comments stripped first — the block's own comment explains why it is
+  // NOT parented, and matching that would pass forever regardless of code.
+  const block = mainSrc
+    .slice(mainSrc.indexOf('ipcMain.handle("settings:open"'), mainSrc.indexOf("settingsWindow.loadFile"))
+    .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  check(!/\bmodal:\s*true/.test(block) && !/\bparent:\s*mainWindow/.test(block),
+    "created without parent or modal — it sits beside the main window rather than on top of it");
+  check(/minWidth|resizable:\s*true/.test(block) || !/resizable:\s*false/.test(block),
+    "and is resizable");
 
-  const optionCount = await ev(`document.getElementById("settings-algo").options.length`);
-  check(optionCount > 1, "the algorithm list is populated from the app's own list", `${optionCount} options`);
+  console.log("2. General — a themed picker, not a native select");
+  check(await waitFor(sev, `document.querySelectorAll("#algo-list .algo-opt").length > 1`),
+    "the picker populates from main's own algorithm list");
+  check(!(await sev(`!!document.getElementById("settings-algo")`)),
+    "the native <select> is gone");
+  const opts = await sev(`document.querySelectorAll("#algo-list .algo-opt").length`);
+  check(opts > 1, "replaced by the app's own option list", `${opts} options`);
+  check(await sev(`!!document.querySelector("#algo-list .algo-opt .algo-name")
+      && !!document.querySelector("#algo-list .algo-opt .algo-blurb")`),
+    "carrying a name AND the explanation a native select cannot show");
+  check(await sev(`getComputedStyle(document.querySelector("#algo-list")).backgroundColor !== "rgb(255, 255, 255)"`),
+    "and it is themed with the app's own colours");
+  check(await sev(`document.querySelectorAll("#algo-list .algo-opt.selected").length === 1`),
+    "exactly one option reads as chosen");
 
-  // Deliberately something OTHER than the built-in default, so the
-  // relaunch check below can tell "the saved value was applied" from "the
-  // default happened to be right anyway".
   const builtIn = await ev(`window.freeframe.getAlgorithms().then(r => r.default || "xxhash64")`);
-  const chosen = await ev(`
+  // Deliberately something OTHER than the built-in default, so the relaunch
+  // check below can tell "the saved value was applied" from "the default
+  // happened to be right anyway".
+  const chosen = await sev(`
     (() => {
-      const s = document.getElementById("settings-algo");
-      const other = [...s.options].find(o => o.value && o.value !== ${JSON.stringify(builtIn)});
-      s.value = other.value;
-      s.dispatchEvent(new Event("change", { bubbles: true }));
-      return other.value;
+      const sel = document.querySelector("#algo-list .algo-opt.selected");
+      const other = [...document.querySelectorAll("#algo-list .algo-opt")].find(o => o !== sel);
+      other.click();
+      return [...document.querySelectorAll("#algo-list .algo-opt")].indexOf(other);
     })()
   `);
-  check(chosen !== builtIn, "the test is exercising a non-default choice", `${builtIn} → ${chosen}`);
   await sleep(600);
-
   const persisted = await ev(`window.freeframe.getSettings().then(s => s.defaultChecksumAlgo)`);
-  check(persisted === chosen, "the choice is written straight away, with no Save step to forget",
-    `${persisted}`);
+  check(typeof persisted === "string" && persisted !== builtIn,
+    "picking one writes it straight away, with no Save step to forget",
+    `${builtIn} → ${persisted}`);
 
-  check(await ev(`!!document.getElementById("settings-open-logs")`), "there is an Open logs folder button");
-  check((await ev(`document.getElementById("settings-about").textContent`) || "").includes("Offload"),
-    "and an about line with a version in it");
+  console.log("3. Volumes — exactly one list");
+  await sev(`document.querySelector('nav button[data-tab="volumes"]').click(); true`);
+  check(!(await sev(`!!document.getElementById("settings-hidden")`)),
+    "the second 'Hidden items' list is gone — it duplicated every connected row");
+  check(await sev(`document.querySelectorAll(".hide-list").length === 1`), "there is exactly one list");
 
-  await ev(`document.getElementById("settings-close").click(); true`);
+  // A hidden drive that is not plugged in was the only content unique to
+  // the old second list. It has to survive the merge, or hiding an item
+  // and unplugging it would strand the setting with no way back.
+  await ev(`window.freeframe.setSettings({ hiddenVolumeNames: ["GoneForever"] })`);
+  // Written from the MAIN window on purpose: it proves the broadcast, which
+  // is what replaced the modal's local re-render when Settings became a
+  // separate window.
+  check(await waitFor(sev, `[...document.querySelectorAll(".hide-name")].some(n => n.textContent.trim() === "GoneForever")`),
+    "an edit made in another window reaches this one via the broadcast");
+  const orphanRow = await sev(`
+    (() => {
+      const row = [...document.querySelectorAll(".hide-row")]
+        .find(r => r.querySelector(".hide-name").textContent.trim() === "GoneForever");
+      if (!row) return null;
+      return {
+        tagged: !!row.querySelector(".hide-orphan"),
+        text: (row.querySelector(".hide-orphan") || {}).textContent || "",
+        checked: row.querySelector("input").checked,
+      };
+    })()
+  `);
+  check(Boolean(orphanRow), "a disconnected hidden drive is still listed");
+  check(orphanRow && orphanRow.tagged && /not connected/i.test(orphanRow.text),
+    "tagged in place rather than exiled to a second list", orphanRow?.text);
+  check(orphanRow && orphanRow.checked === false, "and shown as hidden");
+  await ev(`window.freeframe.setSettings({ hiddenVolumeNames: [] })`);
+
+  console.log("4. Naming Presets — relocated and grouped");
+  check(!(await ev(`!!document.getElementById("preset-backdrop")`)),
+    "the standalone preset modal is gone from the main window");
+  await sev(`document.querySelector('nav button[data-tab="presets"]').click(); true`);
+  check(await sev(`!!document.getElementById("preset-list") && !!document.getElementById("preset-pane")`),
+    "the editor is here instead");
+
+  await sev(`document.getElementById("preset-new").click(); true`);
   await sleep(300);
-  check(!(await ev(`document.getElementById("settings-backdrop").classList.contains("open")`)),
-    "Done closes it");
+  const sections = await sev(`[...document.querySelectorAll("#preset-pane .pe-section-title")].map(n => n.textContent)`);
+  check(Array.isArray(sections) && sections.length >= 4,
+    "and reads as titled sections rather than one continuous list", (sections || []).join(" | "));
+  check((sections || []).some((t) => /field/i.test(t)) && (sections || []).some((t) => /pattern/i.test(t)),
+    "including Fields and the naming pattern");
+  // The filtering block already had this treatment; it must not have been
+  // left as the odd one out now that everything else is a card.
+  check(await sev(`!!document.querySelector("#preset-pane .pe-section .filter-block")`),
+    "with the existing filtering block folded into the same language");
 
+  // The pill in the main window was the ONLY way to choose an active
+  // preset — there is no other selector, and saving in the editor is what
+  // used to make one active. Moving the editor out without replacing it
+  // would have left the app unable to select a preset at all.
+  console.log("4b. Choosing a preset still works from the main window");
+  await sev(`
+    (() => {
+      const input = document.querySelector('#preset-pane input[data-role="preset-name"]');
+      input.value = ${JSON.stringify(PRESET_NAME)};
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      document.getElementById("preset-save").click();
+      return true;
+    })()
+  `);
+  check(await waitFor(ev, `presetStore.presets.some(p => p.name === ${JSON.stringify(PRESET_NAME)})`),
+    "a preset saved in the Settings window reaches the main window on its own");
+
+  // The handler reloads presets from main before drawing, so the menu
+  // fills a tick after the click rather than during it.
+  await ev(`document.getElementById("preset-btn").click(); true`);
+  await sleep(600);
+  const menuItems = await ev(`[...document.querySelectorAll("#menu button")].map(b => b.textContent.trim())`);
+  check(Array.isArray(menuItems) && menuItems.some((t) => t.includes(PRESET_NAME)),
+    "the pill opens a selector listing it", (menuItems || []).join(" | "));
+  check((menuItems || []).some((t) => /No naming preset/.test(t)),
+    "with a way back to no preset at all");
+  check((menuItems || []).some((t) => /Manage presets/.test(t)),
+    "and a route to the editor, which now lives in Settings");
+
+  const picked = await ev(`
+    (() => {
+      const b = [...document.querySelectorAll("#menu button")].find(x => x.textContent.includes(${JSON.stringify(PRESET_NAME)}));
+      b.click();
+      return document.getElementById("preset-label").textContent;
+    })()
+  `);
+  check(picked === PRESET_NAME, "picking one makes it active", picked);
+
+  // Deleting the active preset in the other window has to clear it here,
+  // or the main window would go on naming a preset that no longer exists.
+  const delResult = await sev(`
+    (() => {
+      const del = [...document.querySelectorAll("#preset-pane button")]
+        .find(b => b.textContent.trim() === "Delete preset");
+      if (!del) return [...document.querySelectorAll("#preset-pane button")].map(b => b.textContent.trim());
+      del.click();
+      return true;
+    })()
+  `);
+  check(delResult === true, "the editor offers Delete for a saved preset",
+    Array.isArray(delResult) ? delResult.join(" | ") : String(delResult));
+  check(await waitFor(ev, `document.getElementById("preset-label").textContent === "No naming preset"`),
+    "and deleting it there clears the selection here");
+
+  console.log("5. The toolbar picker is gone");
+  check(!(await ev(`!!document.getElementById("algo-btn")`)),
+    "no checksum control anywhere in the main window");
+  check(!(await ev(`!!document.getElementById("algo-menu")`)), "and its menu went with it");
+
+  try { settings.ws.close(); } catch {}
   await shutdown(child, ws);
 
   // ── Launch 2: the saved default is applied ──
-  console.log("2. It survives a relaunch");
+  console.log("6. It survives a relaunch");
   ({ child, ws, ev } = await launch());
 
-  const label = await ev(`document.getElementById("algo-label").textContent`);
   const active = await ev(`window.freeframe.getSettings().then(s => s.defaultChecksumAlgo)`);
-  check(active === chosen, "the setting is still there", active);
-  const expectedShort = await ev(`
-    window.freeframe.getAlgorithms().then(({ algorithms }) =>
-      (algorithms.find(a => a.id === ${JSON.stringify(chosen)}) || {}).short)
-  `);
-  check(typeof expectedShort === "string" && label.includes(expectedShort),
-    "and the per-job picker starts on it rather than the built-in default",
-    `label "${label}"`);
-
-  // The whole point of a *default*: it pre-selects, it does not lock.
-  const overrode = await ev(`
-    (() => {
-      document.getElementById("algo-btn").click();
-      const opts = [...document.querySelectorAll("#algo-menu .algo-opt")];
-      const other = opts.find(o => !o.querySelector(".algo-check"));
-      if (!other) return null;
-      other.click();
-      return document.getElementById("algo-label").textContent;
-    })()
-  `);
-  await sleep(300);
-  check(typeof overrode === "string" && overrode !== label,
-    "a job can still pick something else", `${label} → ${overrode}`);
-  const untouched = await ev(`window.freeframe.getSettings().then(s => s.defaultChecksumAlgo)`);
-  check(untouched === chosen, "and the per-job override does not rewrite the default");
+  check(active === persisted, "the setting is still there", active);
+  check(await ev(`algorithm === ${JSON.stringify(persisted)}`),
+    "and a job started now would use it — this is the only place it comes from");
 
   // ── Speed / ETA reaches both surfaces ──
   console.log("3. Speed and ETA");

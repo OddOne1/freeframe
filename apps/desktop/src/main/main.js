@@ -22,6 +22,8 @@ const execFileAsync = promisify(execFile);
 let mainWindow = null;
 // The detached progress panel, when the user has popped it out (§18c).
 let panelWindow = null;
+// §61 — Settings is a real window now, not an in-page modal.
+let settingsWindow = null;
 
 // §18c replaced the single `activeJob` with a real queue. Jobs run
 // concurrently when their chosen modes permit it; see job-queue.js for
@@ -306,7 +308,14 @@ ipcMain.handle("volumes:eject", async (_event, { mountPoint } = {}) => {
 // §58 — app settings. Read on startup by the renderer to pre-select the
 // per-job checksum picker; the per-job override is untouched.
 ipcMain.handle("settings:get", async () => settings.readSettings());
-ipcMain.handle("settings:set", async (_e, { patch } = {}) => settings.writeSettings(patch || {}));
+ipcMain.handle("settings:set", async (_e, { patch } = {}) => {
+  const next = await settings.writeSettings(patch || {});
+  // The hide list is edited in the Settings window and applied by the main
+  // window's Volumes column — two windows now, so this cannot stay a local
+  // re-render.
+  broadcast("settings:changed", next);
+  return next;
+});
 ipcMain.handle("settings:open-logs", async () => {
   // The same directory job logs are written to (LOG_DIR), created first so
   // opening it before any job has run shows an empty folder rather than
@@ -315,6 +324,55 @@ ipcMain.handle("settings:open-logs", async () => {
   await fsp.mkdir(dir, { recursive: true });
   const error = await shell.openPath(dir);
   return { ok: !error, error: error || null, path: dir };
+});
+
+// ── Settings window (§61) ────────────────────────────────────────────────
+//
+// Settings used to be a modal inside index.html. It is a real BrowserWindow
+// now, following the detached job panel's precedent exactly: its own HTML
+// file, the same preload, singleton (focus rather than duplicate).
+//
+// Moving it out of the main window means a change made in one window has to
+// reach the other, which a modal never had to do. Both stores broadcast to
+// every window rather than the settings window telling the main window what
+// to do — same shape as `jobs:changed`, and it keeps the settings window
+// from needing any knowledge of what the main window does with the news.
+function broadcast(channel, payload) {
+  for (const w of [mainWindow, panelWindow, settingsWindow]) {
+    if (w && !w.isDestroyed()) w.webContents.send(channel, payload);
+  }
+}
+
+ipcMain.handle("settings:open", async (_e, { tab } = {}) => {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.focus();
+    // Focusing an already-open window is not enough when the caller asked
+    // for a specific section — "Manage presets…" has to land on the
+    // presets tab whether or not the window was already up.
+    if (tab) settingsWindow.webContents.send("settings:tab", tab);
+    return { ok: true };
+  }
+  settingsWindow = new BrowserWindow({
+    width: 780, height: 620,
+    minWidth: 620, minHeight: 460,
+    title: "Settings",
+    // Deliberately NOT `parent: mainWindow`: the point of a real window is
+    // that it sits beside the main one and can be moved independently. A
+    // parented window is always on top of it, which is a modal with extra
+    // steps.
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true, nodeIntegration: false, sandbox: true,
+    },
+  });
+  settingsWindow.loadFile(path.join(__dirname, "..", "renderer", "settings.html"));
+  if (tab) {
+    settingsWindow.webContents.once("did-finish-load", () => {
+      settingsWindow.webContents.send("settings:tab", tab);
+    });
+  }
+  settingsWindow.on("closed", () => { settingsWindow = null; });
+  return { ok: true };
 });
 
 // ── Embedded FreeFrame web view (§60b) ───────────────────────────────────
@@ -337,14 +395,26 @@ ipcMain.handle("app:info", async () => ({
 }));
 
 ipcMain.handle("presets:list", async () => presets.list());
-ipcMain.handle("presets:save", async (_e, { preset } = {}) => presets.save(preset || {}));
-ipcMain.handle("presets:delete", async (_e, { id } = {}) => presets.remove(id));
+ipcMain.handle("presets:save", async (_e, { preset } = {}) => {
+  const out = await presets.save(preset || {});
+  broadcast("presets:changed");
+  return out;
+});
+ipcMain.handle("presets:delete", async (_e, { id } = {}) => {
+  const out = await presets.remove(id);
+  broadcast("presets:changed");
+  return out;
+});
 
 // §22h — the source counter. Claimed when a source is assigned, so the
 // number identifies the card rather than the job: cancelling or re-running
 // must not advance it, and adding a second card must.
 ipcMain.handle("presets:bump-source-counter", async () => presets.bumpSourceCounter());
-ipcMain.handle("presets:set-source-counter", async (_e, { value } = {}) => presets.setSourceCounter(value));
+ipcMain.handle("presets:set-source-counter", async (_e, { value } = {}) => {
+  const out = await presets.setSourceCounter(value);
+  broadcast("presets:changed");
+  return out;
+});
 
 /**
  * Preview what a template will produce, for the editor's live example.

@@ -40,6 +40,15 @@ contextBridge.exposeInMainWorld("freeframe", {
   /** Partial: only the fields sent are changed. */
   setSettings: (patch) => ipcRenderer.invoke("settings:set", { patch }),
   openLogsFolder: () => ipcRenderer.invoke("settings:open-logs"),
+  /** §61 — Settings is its own window now. Singleton: a second call
+   *  focuses the existing one. */
+  openSettingsWindow: (tab) => ipcRenderer.invoke("settings:open", { tab }),
+  /** Which tab the Settings window should show, when it was opened from a
+   *  control that names one. */
+  onSettingsTab: (cb) => ipcRenderer.on("settings:tab", (_e, tab) => cb(tab)),
+  /** Broadcast whenever any window writes settings, so the main window's
+   *  Volumes column follows an edit made in the Settings window. */
+  onSettingsChanged: (cb) => ipcRenderer.on("settings:changed", (_e, s) => cb(s)),
 
   /** Embedded FreeFrame web view (§60b). Show/hide only — the renderer
    *  never gets a handle on the view itself. */
@@ -52,6 +61,9 @@ contextBridge.exposeInMainWorld("freeframe", {
   listPresets: () => ipcRenderer.invoke("presets:list"),
   savePreset: (preset) => ipcRenderer.invoke("presets:save", { preset }),
   deletePreset: (id) => ipcRenderer.invoke("presets:delete", { id }),
+  /** Same reason as onSettingsChanged: the editor lives in the Settings
+   *  window, the active-preset label and Fields panel live in the main one. */
+  onPresetsChanged: (cb) => ipcRenderer.on("presets:changed", () => cb()),
   /** `disabled` (§22g) is the list of field keys switched off for this
    *  transfer, so the preview shows the name the job will actually make. */
   previewNaming: (folderTemplate, fileTemplate, values, sourceLabel, disabled) =>
