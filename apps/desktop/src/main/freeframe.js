@@ -197,6 +197,30 @@ function status() {
   };
 }
 
+/**
+ * What the embedded web view needs to adopt this session (§60b).
+ *
+ * `webUrl` is derived from the SAME baseUrl the API calls use rather than
+ * a second hardcoded copy — a desktop pointed at a staging API must not
+ * open production's web app.
+ *
+ * Refreshes first when only a refresh token is in hand: the access token
+ * is deliberately not persisted (see loadSession), so on a cold start
+ * there is nothing to inject until one is minted.
+ */
+async function webSession() {
+  if (!state.accessToken && state.refreshToken) {
+    try { await refreshAccessToken(); } catch { /* fall through unauthenticated */ }
+  }
+  // Strip the API path segment; everything before it is the web app.
+  const webUrl = state.baseUrl.replace(/\/api\/?$/, "") || "https://frame.yon.studio";
+  return {
+    webUrl,
+    accessToken: state.accessToken || null,
+    refreshToken: state.refreshToken || null,
+  };
+}
+
 // ── Resources ────────────────────────────────────────────────────────────
 
 const listProjects = () => apiRequest("GET", "/projects");
@@ -404,6 +428,7 @@ async function uploadFile({ projectId, filePath, assetName, folderId = null, onP
 
 module.exports = {
   DEFAULT_BASE_URL,
+  webSession,
   loadSession,
   clearSession,
   login,

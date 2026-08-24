@@ -40,6 +40,12 @@ contextBridge.exposeInMainWorld("freeframe", {
   /** Partial: only the fields sent are changed. */
   setSettings: (patch) => ipcRenderer.invoke("settings:set", { patch }),
   openLogsFolder: () => ipcRenderer.invoke("settings:open-logs"),
+
+  /** Embedded FreeFrame web view (§60b). Show/hide only — the renderer
+   *  never gets a handle on the view itself. */
+  showWebView: (top) => ipcRenderer.invoke("webview:show", { top }),
+  hideWebView: () => ipcRenderer.invoke("webview:hide"),
+  setWebViewInset: (top) => ipcRenderer.invoke("webview:inset", { top }),
   appInfo: () => ipcRenderer.invoke("app:info"),
 
   /** Naming presets (§10 / §18b) — local JSON in userData, no login. */

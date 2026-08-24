@@ -3,7 +3,7 @@
   "productName": "FreeFrame Desktop (name TBD)",
   "version": "0.1.0",
   "private": true,
-  "description": "Camera/drive offload app for FreeFrame — capture, upload, verify. Mac first, Windows to follow.",
+  "description": "Camera/drive offload app for FreeFrame \u2014 capture, upload, verify. Mac first, Windows to follow.",
   "main": "src/main/main.js",
   "scripts": {
     "build": "electron-builder --mac",
@@ -16,7 +16,7 @@
     "pretest": "npm run kill-strays && node scripts/sync-tokens.js && node scripts/sync-icons.js",
     "posttest": "npm run kill-strays",
     "sync": "node scripts/sync-tokens.js && node scripts/sync-icons.js",
-    "test": "node scripts/test-copy.js && node scripts/test-naming.js && node scripts/test-filters.js && node scripts/test-job-queue.js && node scripts/test-rate-settings.js && node scripts/test-history-cleanup.js && node scripts/test-auth-refresh.js && node scripts/e2e-filters.js && node scripts/e2e-copy.js && node scripts/e2e-bugs22.js && node scripts/e2e-field-panel.js && node scripts/e2e-settings.js && node scripts/e2e-tile-dedup.js",
+    "test": "node scripts/test-copy.js && node scripts/test-naming.js && node scripts/test-filters.js && node scripts/test-job-queue.js && node scripts/test-rate-settings.js && node scripts/test-webview.js && node scripts/test-history-cleanup.js && node scripts/test-auth-refresh.js && node scripts/e2e-filters.js && node scripts/e2e-copy.js && node scripts/e2e-bugs22.js && node scripts/e2e-field-panel.js && node scripts/e2e-settings.js && node scripts/e2e-tile-dedup.js && node scripts/e2e-hide-pages.js",
     "test:auth": "node scripts/test-auth-refresh.js",
     "test:e2e": "node scripts/e2e-copy.js",
     "test:engine": "node scripts/test-copy.js",
@@ -35,7 +35,8 @@
     "test:presets": "node scripts/e2e-presets.js",
     "test:queue": "node scripts/test-job-queue.js",
     "test:subfolder": "node scripts/e2e-subfolder.js",
-    "test:upload": "node scripts/e2e-upload.js"
+    "test:upload": "node scripts/e2e-upload.js",
+    "test:webview": "node scripts/test-webview.js && node scripts/e2e-hide-pages.js"
   },
   "devDependencies": {
     "@electron/notarize": "^2.5.0",

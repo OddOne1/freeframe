@@ -154,11 +154,13 @@ async function main() {
     const bridge = await cdp.eval("Object.keys(window.freeframe).sort().join(',')");
     check(
       // appInfo/getSettings/setSettings/openLogsFolder added with §58;
-      // removeJob/clearFinishedJobs with §59.
+      // removeJob/clearFinishedJobs with §59; showWebView/hideWebView/
+      // setWebViewInset with §60b — show/hide/position only, deliberately
+      // NO handle on the embedded view itself.
       // This list is an allowlist, not a snapshot: it is here so a new
       // channel has to be a deliberate act rather than something that
       // arrives unnoticed.
-      bridge === "appInfo,bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearFinishedJobs,clearRecentFolders,deletePreset,detachPanel,dockPanel,ejectVolume,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,getSettings,listJobs,listPresets,listVolumes,onCopyProgress,onJobsChanged,onPanelDockChanged,onVolumesChanged,openJobLog,openLogsFolder,pathForFile,previewNaming,rememberFolder,removeJob,savePreset,setDisplayName,setSettings,setSourceCounter,startCopy",
+      bridge === "appInfo,bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearFinishedJobs,clearRecentFolders,deletePreset,detachPanel,dockPanel,ejectVolume,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,getSettings,hideWebView,listJobs,listPresets,listVolumes,onCopyProgress,onJobsChanged,onPanelDockChanged,onVolumesChanged,openJobLog,openLogsFolder,pathForFile,previewNaming,rememberFolder,removeJob,savePreset,setDisplayName,setSettings,setSourceCounter,setWebViewInset,showWebView,startCopy",
       "contextBridge exposes exactly the intended API", bridge);
     check(await cdp.eval("typeof window.require") === "undefined", "no window.require");
     check(await cdp.eval("typeof window.process") === "undefined", "no window.process");

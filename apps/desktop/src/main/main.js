@@ -9,6 +9,7 @@ const { listVolumes } = require("./volumes");
 const { runCopyJob } = require("./copy-engine");
 const presets = require("./presets");
 const settings = require("./settings");
+const webview = require("./webview");
 const { buildRelMapper, unknownTokens, omitTokens } = require("./naming");
 const { normalizeFilters, wantsFlatten } = require("./filters");
 const { JobQueue } = require("./job-queue");
@@ -315,6 +316,20 @@ ipcMain.handle("settings:open-logs", async () => {
   const error = await shell.openPath(dir);
   return { ok: !error, error: error || null, path: dir };
 });
+
+// ── Embedded FreeFrame web view (§60b) ───────────────────────────────────
+
+ipcMain.handle("webview:show", async (_e, { top } = {}) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, error: "No window" };
+  // The session is read fresh on every show, not cached at startup: the
+  // access token is short-lived and deliberately never persisted, so a
+  // cold launch has nothing to inject until webSession() mints one.
+  const session = await freeframe.webSession();
+  return webview.show(mainWindow, session, top);
+});
+
+ipcMain.handle("webview:hide", async () => webview.hide());
+ipcMain.handle("webview:inset", async (_e, { top } = {}) => webview.setInset(top));
 ipcMain.handle("app:info", async () => ({
   version: app.getVersion(),
   electron: process.versions.electron,
@@ -377,7 +392,14 @@ ipcMain.handle("freeframe:login", async (_e, { email, password, baseUrl } = {}) 
   }
 });
 
-ipcMain.handle("freeframe:logout", async () => { await freeframe.clearSession(); return freeframe.status(); });
+// Logging out of the desktop app also destroys the embedded web view —
+// see webview.js's destroy() for why this direction is synced and the
+// other deliberately is not.
+ipcMain.handle("freeframe:logout", async () => {
+  webview.destroy();
+  await freeframe.clearSession();
+  return freeframe.status();
+});
 ipcMain.handle("freeframe:status", async () => freeframe.status());
 
 ipcMain.handle("freeframe:projects", async () => {

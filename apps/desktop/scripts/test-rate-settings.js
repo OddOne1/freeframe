@@ -11,7 +11,7 @@ const path = require("node:path");
 const { RateTracker, MIN_SPAN_MS, WINDOW_MS } = require(
   path.join(__dirname, "..", "src", "main", "rate.js"),
 );
-const { normalize, DEFAULTS } = require(
+const { normalize, normalizeIdList, DEFAULTS } = require(
   path.join(__dirname, "..", "src", "main", "settings.js"),
 );
 
@@ -170,6 +170,22 @@ check(normalize({ defaultChecksumAlgo: 42 }).defaultChecksumAlgo === DEFAULTS.de
   "so does a non-string");
 check(Object.keys(normalize({ junk: true })).length === Object.keys(DEFAULTS).length,
   "unknown keys are dropped rather than written back out");
+
+console.log("7. Hidden drives and projects (\u00a760a)");
+check(Array.isArray(normalize(null).hiddenVolumeNames) && normalize(null).hiddenVolumeNames.length === 0,
+  "nothing is hidden by default");
+check(normalizeIdList(["A", "B"]).join() === "A,B", "a plain list survives");
+check(normalizeIdList(["A", "A"]).length === 1,
+  "duplicates collapse — hiding twice is not hiding harder");
+check(normalizeIdList(["  Card A  "])[0] === "Card A", "entries are trimmed");
+check(normalizeIdList(["", "   ", "A"]).join() === "A",
+  "blanks are dropped: a stray empty string would sit in the list matching nothing");
+check(normalizeIdList([1, null, {}, "A"]).join() === "A", "non-strings are dropped");
+check(normalizeIdList("A").length === 0 && normalizeIdList(null).length === 0,
+  "a non-array is not coerced into a one-item list");
+check(normalize({ hiddenVolumeNames: ["A", "A", ""], hiddenProjectIds: ["p1"] }).hiddenVolumeNames.join() === "A"
+  && normalize({ hiddenProjectIds: ["p1"] }).hiddenProjectIds.join() === "p1",
+  "and normalize() applies the same rule to both lists");
 
 console.log(fail === 0 ? "\nAll checks passed." : `\n${fail} check(s) FAILED.`);
 process.exit(fail === 0 ? 0 : 1);

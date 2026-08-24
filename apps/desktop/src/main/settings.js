@@ -18,7 +18,29 @@ const { app } = require("electron");
  *  fresh install and a saved-then-cleared setting land in the same place. */
 const DEFAULTS = Object.freeze({
   defaultChecksumAlgo: "xxhash64",
+  // §60a. Drives are matched by NAME because nothing better exists:
+  // deviceId changes across reboots and replugs and is empty for network
+  // volumes, and mountPoint is derived from the name anyway. The known
+  // cost is that two drives sharing a name hide together — stated rather
+  // than papered over, since there is no unique id to reach for.
+  hiddenVolumeNames: [],
+  // Projects DO have a real stable id, so they use it.
+  hiddenProjectIds: [],
 });
+
+/** Strings only, trimmed, de-duplicated, empties dropped. A malformed
+ *  entry here would silently hide nothing or — worse with a stray "" —
+ *  match nothing while looking like it should. */
+function normalizeIdList(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  for (const v of raw) {
+    if (typeof v !== "string") continue;
+    const t = v.trim();
+    if (t) seen.add(t);
+  }
+  return Array.from(seen);
+}
 
 function settingsFile() {
   return path.join(app.getPath("userData"), "settings.json");
@@ -32,6 +54,8 @@ function normalize(raw) {
     // algorithm id from an older build must not leave the picker with
     // nothing selected.
     if (typeof algo === "string" && algo.trim()) out.defaultChecksumAlgo = algo.trim();
+    out.hiddenVolumeNames = normalizeIdList(raw.hiddenVolumeNames);
+    out.hiddenProjectIds = normalizeIdList(raw.hiddenProjectIds);
   }
   return out;
 }
@@ -56,4 +80,4 @@ async function writeSettings(patch) {
   return next;
 }
 
-module.exports = { readSettings, writeSettings, normalize, DEFAULTS, settingsFile };
+module.exports = { readSettings, writeSettings, normalize, normalizeIdList, DEFAULTS, settingsFile };

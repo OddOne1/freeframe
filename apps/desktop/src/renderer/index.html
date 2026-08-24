@@ -50,6 +50,26 @@
       flex-shrink: 0;
     }
     header h1 { font-size: 13px; font-weight: 600; margin: 0; }
+    /* §60b — segmented page switcher, styled off the existing .mode pill
+       so it reads as the same family of control rather than new chrome. */
+    .pages { display: inline-flex; gap: 2px; -webkit-app-region: no-drag; }
+    .page-tab {
+      font: inherit; font-size: 12px; font-weight: 600;
+      padding: 4px 10px; border-radius: 6px;
+      border: 1px solid transparent; background: transparent;
+      color: var(--muted); cursor: pointer;
+    }
+    .page-tab:hover { color: var(--fg); }
+    .page-tab.active {
+      background: var(--panel-2, rgba(255,255,255,.06));
+      border-color: var(--border); color: var(--fg);
+    }
+    /* The embedded view is a native child of the window, not an element,
+       so the Offload UI is hidden rather than covered — leaving it laid
+       out underneath would keep it doing layout work forever. */
+    body.page-web .workspace,
+    body.page-web #jobs-panel,
+    body.page-web #progress { display: none !important; }
     header .spacer { flex: 1; }
     header .mode {
       -webkit-app-region: no-drag;
@@ -761,6 +781,15 @@
       word-break: break-all;
     }
     .settings-modal select { width: 100%; }
+    .hide-list { max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+    .hide-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 5px 8px; font-size: 12px; color: var(--text-primary);
+    }
+    .hide-row + .hide-row { border-top: 1px solid var(--border); }
+    .hide-row .hide-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .hide-row .hide-kind { font-size: 10px; color: var(--text-tertiary); flex-shrink: 0; }
+    .hide-empty { padding: 8px; font-size: 11px; color: var(--text-tertiary); }
     .progress-rate { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
     .preset-modal { width: 620px; max-width: calc(100vw - 40px); margin: auto; }
     .preset-cols { display: grid; grid-template-columns: 180px minmax(0,1fr); gap: 12px; }
@@ -983,7 +1012,13 @@
 </head>
 <body>
   <header>
-    <h1>Offload</h1>
+    <!-- §60b — page switcher. Lives in the header because the header is
+         the one strip the embedded web view is told not to cover; a
+         switcher anywhere else would be underneath it and unreachable. -->
+    <div class="pages" id="pages" role="tablist" aria-label="Page">
+      <button class="page-tab active" id="page-offload" role="tab" aria-selected="true">Offload</button>
+      <button class="page-tab" id="page-freeframe" role="tab" aria-selected="false">FreeFrame</button>
+    </div>
     <button class="mode" id="algo-btn" title="Change checksum algorithm">
       <span id="algo-label">SECURE · xxHash64</span>
       <span class="icon caret" data-icon="chevronDown"></span>
@@ -1236,6 +1271,24 @@
       </div>
 
       <div class="setting">
+        <div class="setting-label">Show in Volumes</div>
+        <div class="setting-sub">
+          Hidden items disappear from the middle column only. A drive already
+          set as a Source or Destination keeps its tile in that column.
+        </div>
+        <div id="settings-visible" class="hide-list"></div>
+      </div>
+
+      <div class="setting" id="settings-hidden-wrap">
+        <div class="setting-label">Hidden items</div>
+        <div class="setting-sub">
+          Listed here because they are invisible everywhere else — otherwise
+          hiding would be a one-way door.
+        </div>
+        <div id="settings-hidden" class="hide-list"></div>
+      </div>
+
+      <div class="setting">
         <div class="setting-label">Logs</div>
         <div class="setting-sub" id="settings-logs-path"></div>
         <button id="settings-open-logs">Open logs folder</button>
@@ -1420,6 +1473,11 @@
     /** Item 6 — recent folder per device, mirrored from the main process so
      *  it survives a restart. Keyed by mountPoint. */
     let recentFolders = {};
+
+    /** §60a — mirrored from settings.json so the filter is synchronous.
+     *  Names for drives, ids for projects. */
+    let hiddenVolumeNames = [];
+    let hiddenProjectIds = [];
 
     let nextId = 1;
     const newId = () => `d${nextId++}`;
@@ -1644,10 +1702,29 @@
      */
     function volumesColumnEntries() {
       return allEntries().filter((e) => {
+        // §60a — hidden in Settings. Only this column filters: the
+        // Source/Dest columns render from sourcePath/destNodes directly and
+        // are deliberately untouched, so hiding a drive that is currently
+        // assigned declutters the browse view without quietly dismantling a
+        // configured job.
+        if (isHiddenEntry(e)) return false;
         const isPickedFolder = e.type === "folder" && extraFolders.includes(e.mountPoint);
         if (!isPickedFolder) return true;
         return deviceFor(e.mountPoint) === null;
       });
+    }
+
+    /** Drives by name (nothing more stable exists — see settings.js),
+     *  projects by their real id. */
+    function isHiddenEntry(entry) {
+      if (entry.kind === "freeframe") {
+        return hiddenProjectIds.includes(entry.projectId);
+      }
+      // Only real volumes are hideable: a picked folder is already removed
+      // by the caller when its drive resolves, and hiding one by name would
+      // match every folder that happens to share a basename.
+      const isVolume = volumes.some((v) => v.mountPoint === entry.mountPoint);
+      return isVolume && hiddenVolumeNames.includes(entry.name);
     }
 
     /**
@@ -4274,6 +4351,10 @@
       if (ffStatus.loggedIn) {
         ffStatus = await window.freeframe.freeframeLogout();
         ffProjects = [];
+        // §60b — main destroys the embedded view on logout, so leaving the
+        // FreeFrame page selected would show a blank window with an active
+        // tab. Fall back to Offload, which is the page that still works.
+        if (currentPage === "freeframe") await setPage("offload");
         updateAccountButton();
         render();
       } else {
@@ -4345,6 +4426,9 @@
           const saved = await window.freeframe.getSettings();
           const wanted = saved && saved.defaultChecksumAlgo;
           if (wanted && algorithms.some((a) => a.id === wanted)) algorithm = wanted;
+          hiddenVolumeNames = (saved && saved.hiddenVolumeNames) || [];
+          hiddenProjectIds = (saved && saved.hiddenProjectIds) || [];
+          render();
         } catch { /* no settings yet — the built-in default stands */ }
         const label = $("algo-label");
         if (label) label.textContent = algoLabel();
@@ -4377,6 +4461,8 @@
           select.value = (saved && saved.defaultChecksumAlgo) || algorithm;
         } catch { select.value = algorithm; }
 
+        renderHideLists();
+
         try {
           const info = await window.freeframe.appInfo();
           $("settings-about").textContent =
@@ -4385,6 +4471,104 @@
         } catch { /* about text is not load-bearing */ }
 
         backdrop().classList.add("open");
+      }
+
+      /**
+       * Both lists, from one place (§60a).
+       *
+       * The visible list is built from what the middle column would show
+       * WITHOUT the hide filter, not from what it currently shows —
+       * otherwise an item would vanish from Settings the moment it was
+       * hidden, and the toggle would have nowhere to live.
+       */
+      function renderHideLists() {
+        const visible = $("settings-visible");
+        const hidden = $("settings-hidden");
+        visible.replaceChildren();
+        hidden.replaceChildren();
+
+        const row = (label, kind, checked, onToggle) => {
+          const box = el("input", { });
+          box.type = "checkbox";
+          box.checked = checked;
+          box.addEventListener("change", onToggle);
+          return el("label", { class: "hide-row" }, [
+            box,
+            el("span", { class: "hide-name", text: label, title: label }),
+            el("span", { class: "hide-kind", text: kind }),
+          ]);
+        };
+
+        // Everything hideable, hidden or not — drives and projects only.
+        // A picked folder is not offered: it has no stable identity to
+        // remember and is already removed by the column's own filter.
+        const items = [
+          ...volumes.map((v) => ({
+            key: v.name,
+            kind: "drive",
+            // The label the tiles show, which may be a §22e display-name
+            // override — but the stored key is the REAL name, so renaming a
+            // drive in this app does not silently unhide it.
+            label: displayNames[v.mountPoint] || v.name,
+            hidden: hiddenVolumeNames.includes(v.name),
+          })),
+          ...ffProjects.map((p) => ({
+            key: p.id,
+            kind: "project",
+            label: p.name,
+            hidden: hiddenProjectIds.includes(p.id),
+          })),
+        ];
+
+        for (const it of items) {
+          visible.appendChild(row(it.label, it.kind, !it.hidden, (e) => {
+            void setHidden(it.kind, it.key, !e.target.checked);
+          }));
+        }
+        if (!items.length) {
+          visible.appendChild(el("div", { class: "hide-empty", text: "Nothing to show yet." }));
+        }
+
+        // Anything on the hidden lists that is NOT currently connected —
+        // an unplugged drive still has to be un-hideable, or unplugging it
+        // while hidden would strand the setting.
+        const orphans = [
+          ...hiddenVolumeNames
+            .filter((n) => !volumes.some((v) => v.name === n))
+            .map((n) => ({ key: n, kind: "drive", label: n })),
+          ...hiddenProjectIds
+            .filter((id) => !ffProjects.some((p) => p.id === id))
+            .map((id) => ({ key: id, kind: "project", label: id })),
+        ];
+        const allHidden = [
+          ...items.filter((i) => i.hidden),
+          ...orphans.map((o) => ({ ...o, hidden: true })),
+        ];
+        for (const it of allHidden) {
+          hidden.appendChild(row(it.label, `${it.kind} · hidden`, false, () => {
+            void setHidden(it.kind, it.key, false);
+          }));
+        }
+        if (!allHidden.length) {
+          hidden.appendChild(el("div", { class: "hide-empty", text: "Nothing hidden." }));
+        }
+      }
+
+      async function setHidden(kind, key, hide) {
+        const list = kind === "project" ? hiddenProjectIds : hiddenVolumeNames;
+        const next = hide
+          ? Array.from(new Set([...list, key]))
+          : list.filter((x) => x !== key);
+        if (kind === "project") hiddenProjectIds = next;
+        else hiddenVolumeNames = next;
+        // Rendered immediately from local state rather than waiting on the
+        // write: the middle column should react to the click, not to a
+        // filesystem round trip.
+        render();
+        renderHideLists();
+        await window.freeframe.setSettings(
+          kind === "project" ? { hiddenProjectIds: next } : { hiddenVolumeNames: next },
+        );
       }
 
       on("settings-btn", "click", () => { void openSettings(); });
@@ -4578,6 +4762,58 @@
     // Last, and deliberately outside any conditional: if this doesn't run,
     // the app shows an empty window, which is the symptom that started
     // this whole pass.
+    // §60b — page switcher for the embedded FreeFrame web view.
+    //
+    // The view is a native child of the window rendered by the main
+    // process, so this side owns two things only: which tab looks active,
+    // and where the app's own header ends. The header WRAPS (§25b), so its
+    // height is measured rather than assumed — a hardcoded offset would
+    // slice the top off the embedded page the moment the header went to
+    // two rows.
+    let currentPage = "offload";
+
+    function headerBottom() {
+      const h = document.querySelector("header");
+      return h ? Math.round(h.getBoundingClientRect().height) : 0;
+    }
+
+    async function setPage(page) {
+      const next = page === "freeframe" ? "freeframe" : "offload";
+      currentPage = next;
+      const web = next === "freeframe";
+      document.body.classList.toggle("page-web", web);
+      const tabs = { offload: $("page-offload"), freeframe: $("page-freeframe") };
+      for (const [key, node] of Object.entries(tabs)) {
+        if (!node) continue;
+        node.classList.toggle("active", key === next);
+        node.setAttribute("aria-selected", key === next ? "true" : "false");
+      }
+      try {
+        if (web) await window.freeframe.showWebView(headerBottom());
+        else await window.freeframe.hideWebView();
+      } catch (err) {
+        console.error("[webview]", err);
+      }
+    }
+
+    initStep("page switcher", () => {
+      on("page-offload", "click", () => { void setPage("offload"); });
+      on("page-freeframe", "click", () => { void setPage("freeframe"); });
+
+      // A header that reflows (a longer preset name, a narrower window)
+      // moves the boundary the embedded view was positioned against.
+      const header = document.querySelector("header");
+      if (header && typeof ResizeObserver === "function") {
+        let last = 0;
+        new ResizeObserver(() => {
+          const h = headerBottom();
+          if (h === last || currentPage !== "freeframe") { last = h; return; }
+          last = h;
+          window.freeframe.setWebViewInset(h).catch(() => {});
+        }).observe(header);
+      }
+    });
+
     initStep("initial volume load", () => { refresh(); });
   </script>
 </body>

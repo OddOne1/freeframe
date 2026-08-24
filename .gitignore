@@ -232,6 +232,7 @@ skills-lock.json
 # Internal dev planning docs
 docs/superpowers/
 CLAUDE.md
+CLAUDE-ARCHIVE.md
 
 .DS_Store
 .worktrees/
