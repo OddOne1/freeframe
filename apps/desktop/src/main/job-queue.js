@@ -188,6 +188,39 @@ class JobQueue {
     for (const j of [...this.queued, ...this.running]) this.cancel(j.id);
   }
 
+  /** Finished means done, failed or cancelled — the states a row is
+   *  history rather than work. Kept as one predicate so removeFinished and
+   *  clearFinished can never disagree about what they are allowed to
+   *  touch. */
+  static isFinished(job) {
+    return job.status === "done" || job.status === "failed" || job.status === "cancelled";
+  }
+
+  /**
+   * Drop one finished row from the history (§59).
+   *
+   * Deliberately refuses a queued or running job rather than cancelling it:
+   * Clear and Cancel are different verbs, and a Clear that silently killed
+   * a running transfer would be the worst possible reading of a button
+   * labelled "remove this row".
+   */
+  removeFinished(id) {
+    const job = this.jobs.find((j) => j.id === id);
+    if (!job || !JobQueue.isFinished(job)) return false;
+    this.jobs = this.jobs.filter((j) => j.id !== id);
+    this.onChange();
+    return true;
+  }
+
+  /** The same rule over everything: in-flight work survives. */
+  clearFinished() {
+    const before = this.jobs.length;
+    this.jobs = this.jobs.filter((j) => !JobQueue.isFinished(j));
+    const removed = before - this.jobs.length;
+    if (removed) this.onChange();
+    return removed;
+  }
+
   /**
    * Live progress from a running job, forwarded to the panel.
    *

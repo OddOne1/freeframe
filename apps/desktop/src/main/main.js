@@ -854,6 +854,11 @@ ipcMain.handle("copy:cancel", async (_e, { id } = {}) => {
 });
 
 ipcMain.handle("jobs:list", async () => jobs.snapshot());
+// §59 — history housekeeping. Both refuse anything still queued or
+// running; the queue enforces that, not this handler, so the rule lives in
+// one place and the detached window cannot route around it.
+ipcMain.handle("jobs:remove", async (_e, { id } = {}) => jobs.removeFinished(id));
+ipcMain.handle("jobs:clear", async () => jobs.clearFinished());
 
 // Takes a job id, never a path. The renderer asking main to open an
 // arbitrary filesystem path it supplied would be a real hole; looking the

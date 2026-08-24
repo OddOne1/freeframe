@@ -392,18 +392,27 @@
       background: rgba(45, 212, 191, .05);
       box-shadow: 0 10px 15px -3px rgba(45,212,191,.10), 0 4px 6px -4px rgba(45,212,191,.10);
     }
-    /* Both roles on one drive — literally half and half.
-       Implemented with the two-layer background trick rather than
-       `border-image`, which the spec suggested: border-image works, but it
+    /* Both roles on one drive — barrier-tape diagonal stripes (§59), not
+       the half-and-half split this used to be: a two-colour split reads as
+       one border that changed its mind halfway, while a repeating stripe
+       reads as "both at once" at a glance.
+
+       Still the two-layer background trick, NOT `border-image` — which the
+       original spec suggested and which does work for stripes, but
        DISABLES border-radius outright, squaring off the corners of a tile
-       whose whole visual language is 8px rounded. Painting the gradient
-       into the border box and masking the interior with a padding-box
-       layer gets the same split and keeps the radius. */
+       whose whole visual language is 8px rounded. Painting into the border
+       box and masking the interior with a padding-box layer keeps the
+       radius, and swapping the gradient for a repeating one was the only
+       change needed. */
     .tile.role-both {
       border-color: transparent;
       background-image:
         linear-gradient(var(--bg-primary), var(--bg-primary)),
-        linear-gradient(135deg, var(--accent) 0 50%, var(--status-turquoise) 50% 100%);
+        repeating-linear-gradient(
+          135deg,
+          var(--accent) 0 8px,
+          var(--status-turquoise) 8px 16px
+        );
       background-origin: border-box;
       background-clip: padding-box, border-box;
       box-shadow: 0 10px 15px -3px rgba(91,141,239,.10), 0 4px 6px -4px rgba(45,212,191,.10);
@@ -472,18 +481,9 @@
       font-size: 9px; font-weight: 600; letter-spacing: .04em;
       text-transform: uppercase; color: rgba(255,255,255,.85);
     }
-    /* Stacked so a drive holding both roles says so twice over — badge
-       and border — rather than relying on colour alone. */
-    .tile-roles {
-      position: absolute; top: 8px; left: 8px;
-      display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
-    }
-    .tile-role {
-      border-radius: 4px; padding: 2px 6px;
-      font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
-    }
-    .tile-role.src { background: var(--accent); color: var(--accent-foreground); }
-    .tile-role.dst { background: var(--status-turquoise); color: var(--accent-foreground); }
+    /* .tile-roles / .tile-role are gone with §59 — the border is the whole
+       signal now. Kept out rather than left unused so a future reader does
+       not resurrect the badge by finding a class that still styles. */
 
     .tile-info { display: flex; flex-direction: column; gap: 4px; padding: 8px 8px 6px; }
     .tile-name {
@@ -1069,6 +1069,7 @@
       <span id="jobs-tab-label">Transfers</span>
     </button>
     <span class="spacer"></span>
+    <button id="jobs-clear" title="Remove finished transfers from this list">Clear</button>
     <button id="jobs-detach" title="Open in a separate window">Detach</button>
   </div>
 
@@ -2113,14 +2114,38 @@
 
     /** The device a path belongs to, for recent-folder lookup: the volume
      *  whose mountPoint is the longest prefix of it. */
+    /**
+     * The volume a path lives on.
+     *
+     * A prefix match against the mount points handles every external,
+     * removable and network volume. It does NOT handle the boot volume
+     * (§59): it mounts at /Volumes/Macintosh HD, but user folders resolve
+     * through APFS firmlinks to canonical /Users/... paths, which never
+     * carry that prefix. So ~/Downloads matched nothing, deviceFor returned
+     * null, volumesColumnEntries stopped filtering it out, and picking two
+     * folders on the boot drive produced two extra standalone tiles instead
+     * of outlining the one real drive.
+     *
+     * The fix is the fallback, not another prefix. Anything not under an
+     * external mount point IS internal storage by definition on macOS, so
+     * "externals need the match, internal is what's left" is the correct
+     * framing — and it keeps working for a boot volume named something
+     * other than "Macintosh HD", which a /Users special case would not.
+     */
     function deviceFor(p) {
       let best = null;
+      let internal = null;
       for (const v of volumes) {
+        // classify() in volumes.js marks the boot volume `internal`.
+        if (v.type === "internal" && !internal) internal = v.mountPoint;
         if (p === v.mountPoint || p.startsWith(v.mountPoint + "/")) {
           if (!best || v.mountPoint.length > best.length) best = v.mountPoint;
         }
       }
-      return best;
+      // Still null when no internal volume was enumerated at all — a folder
+      // with no resolvable parent keeps its own tile rather than vanishing,
+      // which volumesColumnEntries' own comment already relies on.
+      return best || internal;
     }
 
     // ── Item 5: dual-role conflict modal ──
@@ -2328,8 +2353,13 @@
       //
       // isProject() used to hard-disable "Set as Source". It no longer
       // does — copy-engine has a FreeFrame source provider.
-      if (!heldDest) add("Set as Source", () => setSource(path), heldSource);
-      if (!heldSource) add("Set as Destination", () => addDest(path, null), heldDest);
+      //
+      // §59: the tile's OWN role is now removed rather than shown disabled.
+      // A source-column tile is a source by definition, so "Set as Source"
+      // there was a permanently-greyed row explaining a fact the column
+      // already states.
+      if (!heldDest && !heldSource) add("Set as Source", () => setSource(path));
+      if (!heldSource && !heldDest) add("Set as Destination", () => addDest(path, null));
 
       /**
        * "Source Folder ▸" / "Destination Folder ▸" — one submenu per role,
@@ -2461,6 +2491,40 @@
         }
       }
 
+      // §59 — swap a tile's path in place, for the columns' own tiles.
+      //
+      // Only for plain folders/files/volumes: a FreeFrame project already
+      // has "Source Folder ▸"/"Destination Folder ▸" from §24a/§24c, and a
+      // second entry doing almost-the-same would be the ambiguity those
+      // submenus exist to remove.
+      //
+      // Replaces in place rather than clear-then-pick: the old path is
+      // dropped as part of taking the new one, so the column is never
+      // briefly empty and Remove is not a prerequisite — which is what
+      // makes removing Remove from destination tiles (#5) workable.
+      if ((role === "source" || role === "dest") && !isProject(path)) {
+        menu.appendChild(el("div", { class: "sep" }));
+        add("Choose a different folder/file…", async () => {
+          if (role === "source") {
+            // Source accepts individual files too, so it goes through the
+            // source picker rather than the folder one.
+            const res = await pickSource({ title: "Choose a source folder or files" });
+            // applySourceSelection has already set the new source; the old
+            // entry only lingers as a picked-folder tile.
+            if (res) { pruneExtraFolder(path); render(); }
+            return;
+          }
+          const f = await pickFolder({ title: "Choose a destination folder" });
+          if (!f) return;
+          // Order matters: add first, then drop the old one, so a failure
+          // between the two leaves the destination populated rather than
+          // empty.
+          addDest(f, null);
+          removeDest(path);
+          render();
+        });
+      }
+
       // "Cascade from…" — Hedge's own non-drag path, mirrored here for the
       // same accessibility reason the drag fallback exists at all.
       // Item 4 — never offered on the source card. Cascading is
@@ -2478,11 +2542,22 @@
         }
       }
 
-      // Item 8 — cosmetic rename. Wording matches the reference: the
-      // current label in quotes, so it's obvious what's being renamed.
-      menu.appendChild(el("div", { class: "sep" }));
-      add(`Rename “${entryFor(path).name}”…`, () => openRename(path));
+      // Item 8 — cosmetic rename.
+      //
+      // §59: the menu entry is gone for tiles already holding a role. The
+      // name on every tile is click-to-rename and has been since §22e, so
+      // on a Source/Dest tile this was a second route to a thing already
+      // one click away. It stays for Volumes-column tiles, where the menu
+      // is the main way in and losing it would be a real removal.
+      //
+      // "Reset to real name" has no click affordance anywhere, so it stays
+      // regardless — otherwise an override would become unremovable.
+      if (role !== "source" && role !== "dest") {
+        menu.appendChild(el("div", { class: "sep" }));
+        add(`Rename “${entryFor(path).name}”…`, () => openRename(path));
+      }
       if (displayNames[path]) {
+        if (role === "source" || role === "dest") menu.appendChild(el("div", { class: "sep" }));
         add("Reset to real name", () => setDisplayName(path, ""));
       }
 
@@ -2504,14 +2579,16 @@
         );
       }
 
-      if (role === "dest" || role === "source") {
+      // §59: source only. A destination is swapped via "Choose a different
+      // folder…" above rather than cleared to empty — the user's explicit
+      // ask, and it removes the state where the Destinations column is
+      // empty because someone reached for Remove meaning "change this".
+      if (role === "source") {
         menu.appendChild(el("div", { class: "sep" }));
         add("Remove", () => {
-          if (role === "source") {
-            sourcePath = null; sourceFiles = null;
-            pruneExtraFolder(path);
-            render();
-          } else removeDest(path);
+          sourcePath = null; sourceFiles = null;
+          pruneExtraFolder(path);
+          render();
         });
       }
 
@@ -2649,12 +2726,11 @@
         iconTile.appendChild(icon(typeIcon(entry.type)));
         media.appendChild(iconTile);
       }
-      // Stacked, not either/or: the badges have to say "both" before
-      // anyone has to interpret a split border colour.
-      const badges = el("div", { class: "tile-roles" });
-      if (isSource) badges.appendChild(el("span", { class: "tile-role src", text: "Source" }));
-      if (isDest) badges.appendChild(el("span", { class: "tile-role dst", text: "Dest" }));
-      if (isSource || isDest) media.appendChild(badges);
+      // No Source/Dest text badge (§59): the coloured border says the same
+      // thing, and the badge said it a second time on top of a poster.
+      // Removed in every column, not just Volumes — a tile sitting IN the
+      // Sources column labelled "Source" was the most redundant of the
+      // three. The border colours themselves are untouched.
       media.appendChild(el("span", { class: "tile-badge", text: typeLabel(entry) }));
 
       // Clicking the name renames the LABEL, in this app only — the volume
@@ -3997,6 +4073,7 @@
       window.JobPanel.renderJobs(host, jobSnapshot, {
         onCancel: (id) => window.freeframe.cancelCopy(id),
         onOpenLog: (id) => window.freeframe.openJobLog(id),
+        onRemove: (id) => window.freeframe.removeJob(id),
       });
 
       const running = jobSnapshot.filter((j) => j.status === "running").length;
@@ -4381,6 +4458,9 @@
       });
 
       on("jobs-detach", "click", () => window.freeframe.detachPanel());
+      // Finished rows only — the queue refuses anything still in flight, so
+      // this cannot become a way to kill a running transfer (§59).
+      on("jobs-clear", "click", () => window.freeframe.clearFinishedJobs());
       on("jobs-redock", "click", () => window.freeframe.dockPanel());
 
       window.freeframe.onJobsChanged((snapshot) => {

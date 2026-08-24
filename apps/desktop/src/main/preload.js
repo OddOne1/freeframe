@@ -63,6 +63,9 @@ contextBridge.exposeInMainWorld("freeframe", {
   /** The job queue (§18c). State lives in main and is broadcast, so the
    *  docked panel and the detached window can never disagree. */
   listJobs: () => ipcRenderer.invoke("jobs:list"),
+  /** History only — a queued or running job is refused (§59). */
+  removeJob: (id) => ipcRenderer.invoke("jobs:remove", { id }),
+  clearFinishedJobs: () => ipcRenderer.invoke("jobs:clear"),
   // By job id, not by path — main resolves the path from its own record,
   // so this can only ever open a log this app wrote.
   openJobLog: (id) => ipcRenderer.invoke("jobs:open-log", { id }),

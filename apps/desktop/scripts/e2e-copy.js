@@ -153,11 +153,12 @@ async function main() {
 
     const bridge = await cdp.eval("Object.keys(window.freeframe).sort().join(',')");
     check(
-      // appInfo/getSettings/setSettings/openLogsFolder added with §58.
+      // appInfo/getSettings/setSettings/openLogsFolder added with §58;
+      // removeJob/clearFinishedJobs with §59.
       // This list is an allowlist, not a snapshot: it is here so a new
       // channel has to be a deliberate act rather than something that
       // arrives unnoticed.
-      bridge === "appInfo,bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearRecentFolders,deletePreset,detachPanel,dockPanel,ejectVolume,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,getSettings,listJobs,listPresets,listVolumes,onCopyProgress,onJobsChanged,onPanelDockChanged,onVolumesChanged,openJobLog,openLogsFolder,pathForFile,previewNaming,rememberFolder,savePreset,setDisplayName,setSettings,setSourceCounter,startCopy",
+      bridge === "appInfo,bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearFinishedJobs,clearRecentFolders,deletePreset,detachPanel,dockPanel,ejectVolume,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,getSettings,listJobs,listPresets,listVolumes,onCopyProgress,onJobsChanged,onPanelDockChanged,onVolumesChanged,openJobLog,openLogsFolder,pathForFile,previewNaming,rememberFolder,removeJob,savePreset,setDisplayName,setSettings,setSourceCounter,startCopy",
       "contextBridge exposes exactly the intended API", bridge);
     check(await cdp.eval("typeof window.require") === "undefined", "no window.require");
     check(await cdp.eval("typeof window.process") === "undefined", "no window.process");
@@ -170,6 +171,19 @@ async function main() {
 
     // Inject the temp dirs the way "Choose folder…" would, so there are
     // known cards to drag.
+    //
+    // deviceFor is stubbed for this file (§59): a picked folder now
+    // collapses onto its containing drive's tile, and these temp dirs live
+    // under /var/folders — i.e. on the boot volume — so with the real
+    // implementation they correctly render as ONE "Macintosh HD" tile and
+    // there is nothing per-folder to drag. That collapsing is the fix, not
+    // a regression; this test is about drag/cascade mechanics, so it opts
+    // out of the enclosing-volume question rather than asserting the old
+    // behaviour. e2e-tile-dedup.js covers the collapsing itself.
+    //
+    // Stubbed rather than emptying `volumes`, because refresh() repopulates
+    // that from the real machine between steps and the stub has to survive.
+    await cdp.eval(`deviceFor = () => null; true`);
     await cdp.eval(`extraFolders = ${JSON.stringify([source, destA, destB])}; render(); true`);
     const cards = await cdp.eval("document.querySelectorAll('#zone-volumes .tile').length");
     check(cards >= 3, "all three folders listed in the center column", `${cards} cards`);
@@ -179,14 +193,25 @@ async function main() {
     console.log("\n3. Drag a volume into Sources");
     await cdp.drag(sel(source), "#zone-source");
     check(await cdp.eval("sourcePath") === source, "source assigned by dragging");
-    check(await cdp.eval("!!document.querySelector('#zone-source .tile-role.src')"), "SOURCE badge rendered in the Sources zone");
+    // §59 removed the text badge. Note what does NOT replace it here: the
+    // coloured outline is applied only to Volumes-column tiles (makeTile
+    // passes roleClass only when it is rendering without a role), so in the
+    // Sources column the badge was the sole marker and the column itself is
+    // now the whole signal — which is the argument for removing it there.
+    check(await cdp.eval("document.querySelectorAll('#zone-source .tile').length") === 1,
+      "the dragged folder appears in the Sources zone");
+    check(await cdp.eval("!document.querySelector('#zone-source .tile-role')"),
+      "and carries no redundant SOURCE badge — the column says it");
 
     console.log("\n4. Drag two volumes into Destinations");
     await cdp.drag(sel(destA), "#zone-dest");
     await cdp.drag(sel(destB), "#zone-dest");
     check(await cdp.eval("destNodes.length") === 2, "two destinations assigned by dragging");
     check(await cdp.eval("destNodes.every(n => n.parentId === null)"), "both are parallel (no parent) at this point");
-    check(await cdp.eval("document.querySelectorAll('#zone-dest .tile-role.dst').length") === 2, "both cards badged DEST");
+    check(await cdp.eval("document.querySelectorAll('#zone-dest .tile').length") === 2,
+      "both cards appear in the Destinations zone");
+    check(await cdp.eval("document.querySelectorAll('#zone-dest .tile-role').length") === 0,
+      "with no DEST badges (§59)");
 
     console.log("\n5. Drop one destination ONTO the other → cascade");
     const destSel = async (p) => {
@@ -269,7 +294,7 @@ async function main() {
     check(identical, "source == RAID_A == SHUTTLE_B (cascaded copy matches the ORIGINAL)");
 
     console.log("\n8. Right-click fallback exists for both assignment and cascading");
-    await cdp.eval(`clearAll(); extraFolders = ${JSON.stringify([source, destA, destB])}; render(); true`);
+    await cdp.eval(`deviceFor = () => null; clearAll(); extraFolders = ${JSON.stringify([source, destA, destB])}; render(); true`);
     const box = await cdp.centerOf(sel(destA));
     await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "right", buttons: 2, clickCount: 1 });
     await sleep(80);

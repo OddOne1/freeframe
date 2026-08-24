@@ -30,6 +30,7 @@
 // clears anything a previous failed run left behind.
 
 const { spawn } = require("node:child_process");
+const fs = require("node:fs");
 
 const children = new Set();
 let installed = false;
@@ -129,6 +130,16 @@ function trackChild(child) {
  * Drop-in for `spawn(...)`: same three arguments, same returned child.
  */
 function spawnElectron(command, args, options = {}) {
+  // Fail loudly on a missing binary. spawn()'s ENOENT arrives asynchronously
+  // as an 'error' event, so without this the harness carries on, finds no
+  // CDP target, and reports whatever its own timeout path reports — which
+  // is a confusing way to learn that node_modules/.bin lost a symlink.
+  if (!fs.existsSync(command)) {
+    throw new Error(
+      `Electron not found at ${command}. ` +
+      "Run `pnpm install` (the workspace .bin links live under apps/desktop/node_modules/.bin).",
+    );
+  }
   return trackChild(spawn(command, args, { ...options, detached: true }));
 }
 

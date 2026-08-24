@@ -101,8 +101,12 @@ const check = (ok, label, detail = "") => {
     check(layout.sourceTiles === 1, "the Sources column renders a tile", `${layout.sourceTiles}`);
     check(layout.destTiles >= 1, "so does Destinations", `${layout.destTiles}`);
     check(layout.volumeTiles >= 1, "and Volumes", `${layout.volumeTiles}`);
-    check(layout.sourceBadge, "the source tile still carries its Source badge");
-    check(layout.destBadge, "the destination tile still carries its Dest badge");
+    // §59 removed the badges everywhere: the Volumes column has the
+    // coloured outline, and in the Source/Dest columns the column itself is
+    // the label. Inverted rather than deleted — §22f's point was that these
+    // columns render TILES, which the two checks above still cover.
+    check(!layout.sourceBadge, "and no longer a redundant Source badge (§59)");
+    check(!layout.destBadge, "nor a Dest badge");
 
     // A destination tile has to keep what only the list view used to show.
     const destDetail = await ev(`(() => {

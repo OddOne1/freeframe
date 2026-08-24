@@ -35,6 +35,7 @@
     <h1>Transfers</h1>
     <span id="count" style="font-size:10px;color:var(--text-tertiary)"></span>
     <span class="spacer"></span>
+    <button id="clear" title="Remove finished transfers from this list">Clear</button>
     <button id="dock">Dock to main window</button>
   </header>
   <div id="jobs"></div>
@@ -52,6 +53,7 @@
       window.JobPanel.renderJobs(host, snapshot, {
         onCancel: (id) => window.freeframe.cancelCopy(id),
         onOpenLog: (id) => window.freeframe.openJobLog(id),
+        onRemove: (id) => window.freeframe.removeJob(id),
       });
       const running = snapshot.filter((j) => j.status === "running").length;
       const queued = snapshot.filter((j) => j.status === "queued").length;
@@ -62,6 +64,9 @@
     window.freeframe.onJobsChanged((s) => { snapshot = s; draw(); });
     window.freeframe.listJobs().then((s) => { snapshot = s; draw(); });
     document.getElementById("dock").addEventListener("click", () => window.freeframe.dockPanel());
+    // Finished rows only — the queue refuses anything still in flight, so
+    // this cannot become a way to kill a running transfer (§59).
+    document.getElementById("clear").addEventListener("click", () => window.freeframe.clearFinishedJobs());
   </script>
 </body>
 </html>

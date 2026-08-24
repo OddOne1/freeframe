@@ -75,7 +75,7 @@
    * hazard the click-toggle had: the verification verdict, the one thing
    * this app exists to report, was hidden behind a click.
    */
-  function renderJobs(host, snapshot, { onCancel, onOpenLog } = {}) {
+  function renderJobs(host, snapshot, { onCancel, onOpenLog, onRemove } = {}) {
     host.replaceChildren();
 
     if (!snapshot || snapshot.length === 0) {
@@ -130,6 +130,14 @@
         head.appendChild(el("button", {
           class: "job-cancel", text: "Cancel",
           onClick: (e) => { e.stopPropagation(); onCancel && onCancel(j.id); },
+        }));
+      } else if (onRemove) {
+        // Only on a finished row (§59). Cancel and Remove are different
+        // verbs, and a row that offered both would invite reading the ×
+        // as "stop this".
+        head.appendChild(el("button", {
+          class: "job-remove", text: "×", title: "Remove from history",
+          onClick: (e) => { e.stopPropagation(); onRemove(j.id); },
         }));
       }
 
