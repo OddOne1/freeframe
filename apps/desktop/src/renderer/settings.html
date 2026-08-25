@@ -89,6 +89,17 @@
       padding: 8px 10px 4px; line-height: 1.6;
     }
 
+    /* §65b — the hide list fills the pane instead of clipping at a fixed
+       ~4 rows. That needs the whole chain to be a flex column with
+       min-height: 0 — a percentage height would resolve against a parent
+       that has none, and the list would collapse instead. Scoped to this
+       tab: the others are ordinary flowing content that should scroll in
+       `main` as they always have. */
+    main:has(#tab-volumes.active) { display: flex; overflow: hidden; }
+    #tab-volumes.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    #tab-volumes .setting:last-child { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    #tab-volumes .hide-list { flex: 1; min-height: 120px; overflow-y: auto; }
+
     /* §62 — the list is grouped now. The header sits inside the bordered
        list so the two groups read as one control, not two lists. */
     .hide-group + .hide-group { border-top: 1px solid var(--border); }

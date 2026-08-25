@@ -147,22 +147,65 @@ const check = (ok, label, detail = "") => {
     check(split.grids === 2, "each section gets its own grid", `${split.grids}`);
     check(split.projectTile, "the project keeps its own tile treatment");
 
-    // ── §22e — click the name to rename ──────────────────────────────────
-    console.log("\n3. (22e) Clicking a name opens the label-only rename");
+    // ── §65b — §22e's click-to-rename is REMOVED ─────────────────────────
+    // Inverted rather than deleted, so the coverage survives the removal:
+    // the name must no longer read or behave as a control anywhere.
+    console.log("\n3. (65b) The tile name is not a rename control any more");
     const rename = await ev(`(() => {
       const target = volumes[0].mountPoint;
       const tile = document.querySelector('#zone-volumes .tile[data-path=' + JSON.stringify(target) + ']');
       const name = tile.querySelector(".tile-name");
       name.click();
-      const open = document.getElementById("rename-backdrop").classList.contains("open");
-      const sub = document.getElementById("rename-sub").textContent;
-      closeRename();
-      return { open, sub, cursor: getComputedStyle(name).cursor };
+      return {
+        backdrop: !!document.getElementById("rename-backdrop"),
+        cursor: getComputedStyle(name).cursor,
+        renamable: name.classList.contains("renamable"),
+        title: name.title,
+        openRename: typeof openRename,
+      };
     })()`);
-    check(rename.open, "one click on the name opens the dialog");
-    check(/keeps its real name on disk/.test(rename.sub),
-      "and it is explicitly the cosmetic, app-only rename", rename.sub);
-    check(rename.cursor === "text", "the name looks editable on hover", rename.cursor);
+    check(rename.backdrop === false, "the rename modal is gone from the DOM, not merely unopened");
+    check(rename.openRename === "undefined", "and so is the function that opened it", rename.openRename);
+    check(rename.cursor !== "text" && !rename.renamable,
+      "the name no longer looks editable on hover", `${rename.cursor} / renamable=${rename.renamable}`);
+    check(!/rename/i.test(rename.title || ""), "and its tooltip no longer offers one", rename.title);
+
+    // Setting a label is gone; CLEARING one is not, and the store is still
+    // READ. A label stored before the removal would otherwise be permanent
+    // with nothing left able to clear it.
+    const override = await ev(`(async () => {
+      const target = volumes[0].mountPoint;
+      const real = volumes[0].name;
+      displayNames = await window.freeframe.setDisplayName(target, "CARD A — DAY 1");
+      render();
+      const tile = document.querySelector('#zone-volumes .tile[data-path=' + JSON.stringify(target) + ']');
+      const shown = tile ? tile.querySelector(".tile-name").textContent : null;
+
+      closeMenu();
+      openMenu({ preventDefault(){}, clientX: 60, clientY: 60 }, target, undefined);
+      const items = [...document.querySelectorAll("#menu button")].map(b => b.textContent.trim());
+      const reset = [...document.querySelectorAll("#menu button")]
+        .find(b => b.textContent.trim() === "Reset to real name");
+      const hasReset = Boolean(reset);
+      if (reset) reset.click();
+      closeMenu();
+      await new Promise(r => setTimeout(r, 300));
+      const after = document.querySelector('#zone-volumes .tile[data-path=' + JSON.stringify(target) + ']');
+      return {
+        shown, hasReset, real,
+        restored: after ? after.querySelector(".tile-name").textContent : null,
+        offersRename: items.some(t => /Rename/.test(t)),
+        realUntouched: volumes[0].name === real,
+      };
+    })()`);
+    check(override.shown === "CARD A — DAY 1",
+      "a stored override is still shown on the tile — the store is read, only the writer went",
+      String(override.shown));
+    check(override.realUntouched, "and the real volume name was never touched", String(override.real));
+    check(override.offersRename === false, "the menu offers no Rename");
+    check(override.hasReset, "but it does still offer Reset to real name");
+    check(override.restored === override.real,
+      "and Reset clears the override, so it cannot become permanent", String(override.restored));
 
     // ── §22b — a running job pins only its own cards ─────────────────────
     console.log("\n4. (22b) A running job no longer freezes the whole UI");
@@ -176,11 +219,15 @@ const check = (ok, label, detail = "") => {
       jobSnapshot = [{ id: "j1", status: "running", sourcePath: busyVol, destPaths: ["/tmp/x"] }];
       const out = { busyVol, idleVol };
 
-      // The menu must open, and Rename must be usable.
+      // The menu must open, and must still offer real actions. §22b's
+      // reported symptom was Rename becoming unreachable during a job;
+      // §65b removed Rename entirely, so the thing to assert is that the
+      // menu is populated at all rather than opening empty.
       closeMenu();
       openMenu({ preventDefault(){}, clientX: 50, clientY: 50 }, busyVol, undefined);
       out.menuShown = document.getElementById("menu").style.display === "block";
-      out.renameOffered = [...document.querySelectorAll("#menu button")].some(b => /Rename/.test(b.textContent));
+      out.menuItems = [...document.querySelectorAll("#menu button")].map(b => b.textContent.trim());
+      out.renameOffered = out.menuItems.some(t => /Rename/.test(t));
       closeMenu();
 
       // The busy source is pinned…
@@ -204,7 +251,10 @@ const check = (ok, label, detail = "") => {
       return out;
     })()`);
     check(busy.menuShown, "the context menu opens during a job");
-    check(busy.renameOffered, "and Rename is reachable — the actual reported symptom");
+    check(busy.menuItems.length > 0,
+      "and it is populated, not opened empty — §22b's symptom was the menu going useless mid-job",
+      (busy.menuItems || []).join(" | "));
+    check(!busy.renameOffered, "Rename is no longer among them (\u00a765b)");
     check(busy.busyDragRefused, "the card the job is using still can't be dragged away");
     if (busy.idleVol) check(busy.idleAssignable === true, "an unrelated volume is still assignable");
     check(busy.startDisabled === false, "Start is not disabled by an unrelated running job");

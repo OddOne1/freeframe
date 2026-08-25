@@ -7,7 +7,11 @@
    copying the rules into settings.html would have been the same drift this
    project keeps hitting in its logic. */
 
-.hide-list { max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+/* §65b — .hide-list's own sizing moved to settings.html, which is the only
+   consumer left: the main window's copy went when Settings became a real
+   window (§61). Its fixed 180px max-height clipped after about four rows
+   no matter how much room the window had. */
+.hide-list { border: 1px solid var(--border); border-radius: 6px; }
 .hide-row {
   display: flex; align-items: center; gap: 8px;
   padding: 5px 8px; font-size: 12px; color: var(--text-primary);

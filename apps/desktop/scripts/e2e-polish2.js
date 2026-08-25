@@ -105,7 +105,9 @@ async function main() {
     console.log("1. Script executes to completion (the root cause)");
     check(pageExceptions.length === 0, "no uncaught exception during page load",
       pageExceptions[0] || "none");
-    check(await ev(`!!document.getElementById("account")`), "#account exists in the markup");
+    // §64 moved login into the Settings window and deleted #account, so
+    // the load-completed canary is a different always-present control.
+    check(await ev(`!!document.getElementById("refresh")`), "the header rendered");
     check(await ev(`typeof on === "function"`), "tolerant wiring helper present");
 
     // The decisive symptom: the bootstrap refresh() at the very END of the
@@ -115,9 +117,11 @@ async function main() {
     check(volCount > 0, "bootstrap refresh() ran — volumes populated on launch, no user action",
       `${volCount} volumes`);
     check(await ev("Array.isArray(algorithms) && algorithms.length === 4"),
-      "getAlgorithms() ran — picker is populated, not stuck on placeholder text");
-    check(await ev(`document.getElementById("algo-label").textContent.startsWith("SECURE")`),
-      "checksum pill labelled", await ev(`document.getElementById("algo-label").textContent`));
+      "getAlgorithms() ran — the algorithm list is populated");
+    // §61 removed the toolbar checksum pill; the algorithm is a Settings
+    // value now, so what matters here is that one was resolved at load.
+    check(await ev(`typeof algorithm === "string" && algorithm.length > 0`),
+      "and a default was chosen", await ev(`String(algorithm)`));
 
     // A missing element must now cost only that control.
     const isolated = await ev(`(() => {
@@ -133,33 +137,18 @@ async function main() {
       "a missing element no longer stops the wiring after it", JSON.stringify(isolated));
     check(isolated.logged, "the missing element is reported, not swallowed silently");
 
-    // ── 2. FreeFrame login entry point ───────────────────────────────────
-    console.log("\n2. FreeFrame login is reachable");
-    check(await ev(`document.getElementById("account").textContent.length > 0`),
-      "account button labelled", await ev(`document.getElementById("account").textContent`));
-
-    // The button toggles: it opens the modal when signed out, and SIGNS
-    // OUT when signed in. Clicking it unconditionally meant running the
-    // suite silently destroyed the developer's session — which is exactly
-    // what kept happening, and what made the live upload test refuse to
-    // run afterwards. When a session exists, open the modal directly
-    // instead; the click wiring is asserted by the signed-out path.
-    const signedIn = await ev(`(async () => (await window.freeframe.freeframeStatus()).loggedIn)()`);
-    if (signedIn) {
-      console.log("     (signed in — opening the modal directly so the session survives)");
-      await ev(`openLogin(); true`);
-    } else {
-      await ev(`document.getElementById("account").click(); true`);
-    }
-    await sleep(200);
-    check(await ev(`document.getElementById("login-backdrop").classList.contains("open")`),
-      "clicking it opens the existing login modal");
-    check(await ev(`!!document.getElementById("ff-submit") && !!document.getElementById("ff-cancel")`),
-      "modal has its Submit/Cancel controls");
-    await ev(`document.getElementById("ff-cancel").click(); true`);
-    await sleep(120);
-    check(await ev(`!document.getElementById("login-backdrop").classList.contains("open")`),
-      "Cancel is wired (it was one of the statements the crash killed)");
+    // ── 2. FreeFrame login moved out of this window (§64) ────────────────
+    console.log("\n2. Login is not in the main window any more");
+    // It lives in the Settings window's Account tab now. The positive case
+    // — the tab, the fields, signed-in/out states — is covered by
+    // e2e-header.js; what belongs here is that the old entry point and its
+    // modal are gone rather than merely hidden.
+    check(!(await ev(`!!document.getElementById("account")`)),
+      "the Sign in button is gone from the header");
+    check(!(await ev(`!!document.getElementById("login-backdrop")`)),
+      "and the login modal is gone from the DOM");
+    check(await ev(`typeof openLogin === "undefined"`),
+      "along with the function that opened it");
 
     // ── 3. Per-card menu trigger ─────────────────────────────────────────
     console.log("\n3. Visible per-card menu trigger");
@@ -265,30 +254,36 @@ async function main() {
     check(hoverRule, "a hover state exists");
 
     // ── 8. Cosmetic rename ───────────────────────────────────────────────
-    console.log("\n8. Cosmetic in-app rename");
+    // §65b — setting a label is REMOVED; clearing one is not.
+    //
+    // Inverted rather than deleted so the coverage survives the removal.
+    // The store is still read (tiles and the Settings hide-list both show
+    // an override), and an override written before the removal must still
+    // be clearable — otherwise it would be permanent.
+    console.log("\n8. Cosmetic rename is gone; Reset still clears an override");
     const target = await ev("volumes[0].mountPoint");
     const realName = await ev("volumes[0].name");
     await ev(`closeMenu(); openMenu({preventDefault(){},clientX:100,clientY:100}, ${JSON.stringify(target)}, undefined); true`);
     await sleep(80);
     const renameItem = await ev(`[...document.querySelectorAll("#menu button")].map(b=>b.textContent.trim()).find(t => t.startsWith("Rename"))`);
-    check(Boolean(renameItem) && renameItem.includes(realName),
-      "menu offers Rename with the current label quoted", String(renameItem));
-    await ev(`[...document.querySelectorAll("#menu button")].find(b => b.textContent.trim().startsWith("Rename")).click(); true`);
-    await sleep(150);
-    check(await ev(`document.getElementById("rename-backdrop").classList.contains("open")`), "rename dialog opens");
-    await ev(`document.getElementById("rename-input").value = "CARD A — DAY 1";
-      document.getElementById("rename-save").click(); true`);
+    check(!renameItem, "the menu no longer offers Rename", String(renameItem));
+    check(!(await ev(`!!document.getElementById("rename-backdrop")`)), "and the dialog is gone from the DOM");
+    await ev(`closeMenu(); true`);
+
+    // Written through the store directly — the UI can no longer set one,
+    // which is exactly why the clear path still has to work.
+    await ev(`(async () => { displayNames = await window.freeframe.setDisplayName(${JSON.stringify(target)}, "CARD A — DAY 1"); render(); })()`);
     await sleep(250);
     check(await ev(`volumes[0].name`) === realName, "the REAL volume name is untouched", await ev("volumes[0].name"));
     const shown = await ev(`document.querySelector('#zone-volumes .tile[data-path=${JSON.stringify(target)}] .tile-name').textContent`);
-    check(shown === "CARD A — DAY 1", "the card shows the override", shown);
+    check(shown === "CARD A — DAY 1", "a stored override is still shown on the tile", shown);
     const persisted = await ev(`window.freeframe.getDisplayNames()`);
     check(persisted[target] === "CARD A — DAY 1", "override persisted to userData");
-    // Reset must be offered and must restore the real name.
+
     await ev(`closeMenu(); openMenu({preventDefault(){},clientX:100,clientY:100}, ${JSON.stringify(target)}, undefined); true`);
     await sleep(80);
     const hasReset = await ev(`[...document.querySelectorAll("#menu button")].some(b => b.textContent.trim() === "Reset to real name")`);
-    check(hasReset, "Reset to real name offered once an override exists");
+    check(hasReset, "Reset to real name is still offered once an override exists");
     await ev(`[...document.querySelectorAll("#menu button")].find(b => b.textContent.trim() === "Reset to real name").click(); true`);
     await sleep(250);
     check(await ev(`document.querySelector('#zone-volumes .tile[data-path=${JSON.stringify(target)}] .tile-name').textContent`) === realName,

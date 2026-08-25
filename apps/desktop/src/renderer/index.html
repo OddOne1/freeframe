@@ -513,8 +513,6 @@
     .tile-meta { font-size: 10px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     /* §22e — the name is a control now, so it has to look like one on
        hover. Without this it reads as plain text and nobody clicks it. */
-    .tile-name.renamable { cursor: text; border-radius: 3px; }
-    .tile-name.renamable:hover { background: var(--bg-hover); box-shadow: 0 0 0 3px var(--bg-hover); }
     /* §22f — a destination tile carries what only the list view used to:
        its status, and the progress bar underneath. */
     .tile-status { display: flex; align-items: center; gap: 5px; }
@@ -562,13 +560,6 @@
     }
     .field input:focus { outline: none; border-color: var(--border-focus); }
     .ff-error { font-size: 11px; color: var(--status-error); min-height: 14px; margin-bottom: 8px; }
-
-    #rename-backdrop {
-      position: fixed; inset: 0; z-index: 1100; display: none;
-      background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
-      align-items: center; justify-content: center;
-    }
-    #rename-backdrop.open { display: flex; }
 
     /* ── Item 2: in-project folder picker ── */
     #ffdir-backdrop {
@@ -966,18 +957,6 @@
   <!-- §58. Same shape as every other modal in this file: an id-specific
        backdrop rule (the shared .ff-backdrop class carries no styles — see
        the note above), .open to show it. -->
-  <div id="rename-backdrop" class="ff-backdrop">
-    <div class="modal" role="dialog" aria-modal="true">
-      <div class="modal-head"><h3 id="rename-title">Rename</h3></div>
-      <p id="rename-sub"></p>
-      <div class="field"><input id="rename-input" type="text" maxlength="120" /></div>
-      <div class="modal-actions"><div class="row2">
-        <button id="rename-cancel">Cancel</button>
-        <button id="rename-save" class="primary">Save</button>
-      </div></div>
-    </div>
-  </div>
-
 
   <div id="modal-backdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -1123,7 +1102,6 @@
     /** Item 8 — cosmetic label overrides, keyed by mountPoint. Display
      *  only; the real name on disk is never touched. */
     let displayNames = {};
-    let renameTarget = null;
 
     /** Checksum algorithm for the next job. Defaults to xxHash64, so
      *  nothing changes for anyone who never opens the picker. */
@@ -2226,22 +2204,12 @@
         }
       }
 
-      // Item 8 — cosmetic rename.
-      //
-      // §59: the menu entry is gone for tiles already holding a role. The
-      // name on every tile is click-to-rename and has been since §22e, so
-      // on a Source/Dest tile this was a second route to a thing already
-      // one click away. It stays for Volumes-column tiles, where the menu
-      // is the main way in and losing it would be a real removal.
-      //
-      // "Reset to real name" has no click affordance anywhere, so it stays
-      // regardless — otherwise an override would become unremovable.
-      if (role !== "source" && role !== "dest") {
-        menu.appendChild(el("div", { class: "sep" }));
-        add(`Rename “${entryFor(path).name}”…`, () => openRename(path));
-      }
+      // §65b — the rename affordance is gone entirely: from the tile name,
+      // from this menu, and as a modal. "Reset to real name" deliberately
+      // stays, because a label set before that removal would otherwise be
+      // permanent with nothing left able to clear it.
       if (displayNames[path]) {
-        if (role === "source" || role === "dest") menu.appendChild(el("div", { class: "sep" }));
+        menu.appendChild(el("div", { class: "sep" }));
         add("Reset to real name", () => setDisplayName(path, ""));
       }
 
@@ -2282,27 +2250,18 @@
     }
     const closeMenu = () => { menu.style.display = "none"; };
 
-    // ── Item 8: cosmetic rename ──
+    /**
+     * §65b — the only remaining writer, and it only ever writes "".
+     *
+     * Setting a label is gone (see the tile name and the context menu);
+     * CLEARING one is not, because a label stored before that removal
+     * would otherwise be permanent. Reading stays too: the tiles and the
+     * Settings hide-list both still show a stored override.
+     */
     async function setDisplayName(mountPoint, name) {
       displayNames = await window.freeframe.setDisplayName(mountPoint, name);
       render();
     }
-
-    function openRename(mountPoint) {
-      const entry = entryFor(mountPoint);
-      renameTarget = mountPoint;
-      $("rename-title").textContent = `Rename “${entry.name}”`;
-      $("rename-sub").textContent =
-        `Changes the label in this app only — ${entry.realName || entry.name} keeps its real name on disk.`;
-      $("rename-input").value = entry.name;
-      $("rename-backdrop").classList.add("open");
-      $("rename-input").focus();
-      $("rename-input").select();
-    }
-    const closeRename = () => {
-      renameTarget = null;
-      $("rename-backdrop").classList.remove("open");
-    };
 
     /** Eject or disconnect, surfacing diskutil's own reason on failure —
      *  "volume in use" names the app to quit, which "eject failed" doesn't. */
@@ -2415,19 +2374,14 @@
       // three. The border colours themselves are untouched.
       media.appendChild(el("span", { class: "tile-badge", text: typeLabel(entry) }));
 
-      // Clicking the name renames the LABEL, in this app only — the volume
-      // keeps its real name on disk, which openRename's own subtitle says.
-      // Previously reachable only by right-click, which meant discovering a
-      // safe, cosmetic action required already knowing it existed (§22e).
-      const nameEl = el("div", { class: "tile-name", text: entry.name, title: "Click to rename (label only)" });
-      nameEl.classList.add("renamable");
-      nameEl.addEventListener("click", (e) => {
-        e.stopPropagation();
-        openRename(entry.mountPoint);
-      });
-      // Without this the pointer-drag system claims the press and the click
-      // never arrives — the same reason the kebab stops mousedown.
-      nameEl.addEventListener("mousedown", (e) => e.stopPropagation());
+
+      // §65b — plain text now. It was click-to-rename since §22e; the
+      // rename it opened only ever changed a label inside this app, and
+      // reading as though it renamed the drive was worse than the
+      // convenience was worth. The mousedown guard went with it, so the
+      // name is part of the tile's drag target again rather than a hole
+      // in the middle of it.
+      const nameEl = el("div", { class: "tile-name", text: entry.name, title: entry.name });
 
       const info = el("div", { class: "tile-info" }, [
         nameEl,
@@ -3888,21 +3842,6 @@
       });
 
       reloadPresets().catch(() => {});
-    });
-
-    initStep("rename", () => {
-      on("rename-cancel", "click", closeRename);
-      on("rename-save", "click", async () => {
-        if (!renameTarget) return;
-        const value = $("rename-input").value;
-        const target = renameTarget;
-        closeRename();
-        await setDisplayName(target, value);
-      });
-      on("rename-input", "keydown", (e) => {
-        if (e.key === "Enter") $("rename-save").click();
-        if (e.key === "Escape") closeRename();
-      });
     });
 
     initStep("display names", () => {

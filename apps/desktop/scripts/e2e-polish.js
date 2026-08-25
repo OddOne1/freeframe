@@ -457,6 +457,10 @@ async function main() {
       // now opens regardless; Eject alone disables itself, and only when
       // THIS volume is the one in use. The main process refuses
       // independently either way, which is the guarantee that matters.
+      //
+      // §65b removed Rename outright, so what is asserted below is that the
+      // menu opens POPULATED — the symptom was it going useless mid-job,
+      // and Rename was only ever the example of what went missing.
       const menuDuringCopy = await cdp.eval(`(() => {
         closeMenu();
         jobSnapshot = [{ status: "running", sourcePath: "/Volumes/FFTESTVOL", destPaths: [] }];
@@ -468,6 +472,7 @@ async function main() {
           shown: document.getElementById('menu').style.display,
           ejectDisabled: eject ? eject.disabled : null,
           renameReachable: Boolean(rename && !rename.disabled),
+          itemCount: buttons.length,
         };
         closeMenu();
         // An idle volume's Eject must stay enabled while that job runs.
@@ -481,8 +486,9 @@ async function main() {
         jobSnapshot = [];
         return out;
       })()`);
-      check(menuDuringCopy.shown === "block" && menuDuringCopy.renameReachable,
-        "the menu stays reachable during a job — Rename included (§22b)", JSON.stringify(menuDuringCopy));
+      check(menuDuringCopy.shown === "block" && menuDuringCopy.itemCount > 0,
+        "the menu stays reachable during a job, and populated (§22b)", JSON.stringify(menuDuringCopy));
+      check(menuDuringCopy.renameReachable === false, "Rename is no longer one of its entries (§65b)");
       check(menuDuringCopy.ejectDisabled === true,
         "but Eject is disabled for the volume the job is actually using");
       if (menuDuringCopy.otherEjectDisabled !== undefined && menuDuringCopy.otherEjectDisabled !== null) {

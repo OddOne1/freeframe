@@ -210,6 +210,30 @@ async function waitFor(ev, expr, tries = 40) {
     "the second 'Hidden items' list is gone — it duplicated every connected row");
   check(await sev(`document.querySelectorAll(".hide-list").length === 1`), "there is exactly one list");
 
+  // §65b — it clipped after about four rows however much room the window
+  // had. Measured against the pane rather than against a number, so this
+  // keeps meaning something if the window size changes.
+  const height = await sev(`
+    (() => {
+      const list = document.querySelector(".hide-list");
+      const main = document.querySelector("main");
+      const r = list.getBoundingClientRect();
+      return {
+        list: Math.round(r.height),
+        main: Math.round(main.getBoundingClientRect().height),
+        clipped: list.scrollHeight > list.clientHeight + 1,
+        rows: document.querySelectorAll(".hide-row").length,
+      };
+    })()
+  `);
+  check(height.list > 180,
+    "the list is no longer capped at the old fixed 180px", `${height.list}px`);
+  check(height.list > height.main * 0.5,
+    "it takes the pane's available height instead of a fixed few rows",
+    `${height.list}px of ${height.main}px`);
+  check(!height.clipped,
+    "and nothing scrolls prematurely at this row count", `${height.rows} rows`);
+
   // §62 — grouped rather than interleaved. The per-row "drive"/"project"
   // tag was carrying that distinction alone, in a list where the two
   // alternated.
