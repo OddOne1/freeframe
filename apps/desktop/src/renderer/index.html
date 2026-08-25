@@ -183,6 +183,22 @@
     }
     .fv-field.off input[type="text"] { opacity: .4; }
     .fv-field input.missing { border-color: var(--status-error); }
+    /* §65.3 — Choice fields render as a select, with an "Other…" input
+       revealed beside that field alone rather than in a shared area. */
+    .fv-control { display: flex; flex-direction: column; gap: 4px; }
+    .fv-select, .fv-other {
+      height: 28px; border-radius: 6px; padding: 0 8px; width: 100%;
+      box-sizing: border-box; font-size: 12px; font-family: inherit;
+      background: var(--bg-secondary); border: 1px solid var(--border);
+      color: var(--text-primary);
+    }
+    .fv-select.missing, .fv-other.missing { border-color: var(--status-error); }
+    .fv-control input[type="text"] {
+      height: 28px; border-radius: 6px; padding: 0 8px; width: 100%;
+      box-sizing: border-box; font-size: 12px; font-family: inherit;
+      background: var(--bg-secondary); border: 1px solid var(--border);
+      color: var(--text-primary);
+    }
     .fv-note { font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
     .fv-preview {
       margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
@@ -2815,7 +2831,9 @@
         openValuesDialog((ok) => { if (ok) startCopy(); });
         const err = $("values-error");
         err.textContent = `Fill in ${missingRequired().join(", ")} — used in the folder name.`;
-        for (const input of document.querySelectorAll("#values-grid input[data-key]")) {
+        // A Choice field's control is a <select>, not an <input> — matching
+        // on the data attribute rather than the tag keeps both marked.
+        for (const input of document.querySelectorAll("#values-grid [data-key]")) {
           const preset = activePreset();
           const field = preset && preset.fields.find((f) => f.key === input.dataset.key);
           if (field && field.required && !String(presetValues[field.key] ?? "").trim()) {
@@ -3102,30 +3120,12 @@
 
       for (const f of preset.fields) {
         grid.appendChild(el("label", { text: f.label + (f.required ? " *" : "") }));
-        const input = el("input", { dataset: { key: f.key } });
-        input.type = "text";
-        input.value = presetValues[f.key] ?? "";
-        // A "suggesting" field offers what has been typed into it before,
-        // via a datalist — it grows its own options rather than needing a
-        // fixed enum declared up front.
-        if (f.type === "select") {
-          const listId = `sugg-${f.key}`;
-          const dl = el("datalist");
-          dl.id = listId;
-          for (const v of (presetStore.history || {})[f.key] || []) {
-            const o = el("option");
-            o.value = v;
-            dl.appendChild(o);
-          }
-          grid.appendChild(dl);
-          input.setAttribute("list", listId);
-        }
-        input.addEventListener("input", () => {
-          presetValues[f.key] = input.value;
-          input.classList.remove("missing");
+        const control = buildFieldControl(f, presetValues[f.key] ?? "", (value, node) => {
+          presetValues[f.key] = value;
+          node.classList.remove("missing");
           updateValuesPreview();
-        });
-        grid.appendChild(input);
+        }, { dataset: { key: f.key } });
+        grid.appendChild(control.wrap);
       }
 
       updateValuesPreview();
@@ -3143,8 +3143,38 @@
         preset.folderTemplate, preset.fileTemplate, presetValues,
         sourcePath && !isProject(sourcePath) ? sourcePath : "",
       );
-      out.classList.toggle("bad", !res.ok);
-      out.textContent = res.ok ? `→ ${res.result}` : res.error;
+      renderScopedPreview(out, res);
+    }
+
+    /**
+     * §65.8/.9 — a preview scoped to what the templates actually produce.
+     *
+     * The source's own subtree (`DCIM/100MEDIA/`) sits between the folder
+     * and the file in the real path and is preserved by design, produced by
+     * neither template. Showing it invited reading it as something the
+     * pattern had made.
+     *
+     * An auto-appended `_0001` (§65.5) is marked amber, because it is text
+     * the user did not write. That treatment is the standing one for
+     * anything inferred or auto-corrected in a preview, not a one-off here.
+     */
+    function renderScopedPreview(box, res) {
+      box.classList.toggle("bad", !res.ok);
+      box.replaceChildren();
+      if (!res.ok) { box.textContent = res.error; return; }
+      if (res.folder) box.appendChild(el("div", { text: `${res.folder}/` }));
+      const line = el("div");
+      const auto = res.autoCounter ? String(res.file).match(/_(\d{4})(\.[^.]*)?$/) : null;
+      if (auto) {
+        const cut = res.file.length - auto[0].length;
+        line.appendChild(document.createTextNode(res.file.slice(0, cut)));
+        line.appendChild(el("span", { class: "auto-fix", text: `_${auto[1]}`,
+          title: "Added automatically: the pattern numbers nothing, so files would otherwise collide" }));
+        if (auto[2]) line.appendChild(document.createTextNode(auto[2]));
+      } else {
+        line.textContent = res.file;
+      }
+      box.appendChild(line);
     }
 
     /** The naming payload for a job, or null when no preset is active. */
@@ -3220,6 +3250,83 @@
      * drift from the source it claims to describe — the failure this is
      * most likely to have is showing card A's values above card B's name.
      */
+    /**
+     * §65.1/.3 — the control for one field's runtime value.
+     *
+     * Text is an <input>. Choice is a <select> of the authored options,
+     * substituting the picked option's Token (or its Label when the Token
+     * is blank) wherever that field's placeholder sits in the pattern —
+     * the same substitution every other token uses, so nothing in
+     * renderTemplate had to learn about it.
+     *
+     * "Other…" appears only when the field's own allowOther is set, and
+     * reveals an input beside THAT field alone. With it off, the list is
+     * closed on purpose: a client-approved roster has no escape hatch.
+     */
+    function buildFieldControl(f, current, onValue, opts = {}) {
+      const wrap = el("div", { class: "fv-control" });
+      if (f.type !== "choice") {
+        const input = el("input", { dataset: opts.dataset || {} });
+        input.type = "text";
+        input.value = current ?? "";
+        if (opts.disabled) input.disabled = true;
+        input.placeholder = opts.placeholder ?? `{${f.key}}`;
+        input.addEventListener("input", () => onValue(input.value, input));
+        wrap.appendChild(input);
+        return { wrap, focusable: input };
+      }
+
+      const options = Array.isArray(f.options) ? f.options : [];
+      const tokenOf = (o) => (o.token || o.label);
+      const known = options.map(tokenOf);
+      // A stored value that is not on the list can only have come from
+      // "Other…", so the control reopens in that state rather than
+      // silently snapping the value back to option one.
+      const isOther = Boolean(current) && !known.includes(current);
+
+      const select = el("select", { class: "fv-select", dataset: opts.dataset || {} });
+      if (opts.disabled) select.disabled = true;
+      const blank = el("option", { text: options.length ? "—" : "No options defined" });
+      blank.value = "";
+      select.appendChild(blank);
+      for (const o of options) {
+        const opt = el("option", { text: o.label });
+        opt.value = tokenOf(o);
+        if (!isOther && current === opt.value) opt.selected = true;
+        select.appendChild(opt);
+      }
+      const OTHER = "\u0000other";
+      if (f.allowOther) {
+        const opt = el("option", { text: "Other…" });
+        opt.value = OTHER;
+        if (isOther) opt.selected = true;
+        select.appendChild(opt);
+      }
+      wrap.appendChild(select);
+
+      const other = el("input", { class: "fv-other" });
+      other.type = "text";
+      other.placeholder = "One-off value";
+      other.value = isOther ? current : "";
+      other.hidden = !isOther;
+      if (opts.disabled) other.disabled = true;
+      other.addEventListener("input", () => onValue(other.value, other));
+      wrap.appendChild(other);
+
+      select.addEventListener("change", () => {
+        if (select.value === OTHER) {
+          other.hidden = false;
+          other.focus();
+          onValue(other.value, other);
+        } else {
+          other.hidden = true;
+          other.value = "";
+          onValue(select.value, select);
+        }
+      });
+      return { wrap, focusable: select };
+    }
+
     function renderFieldsPanel() {
       const host = $("fields-body");
       if (!host) return;
@@ -3265,34 +3372,19 @@
         labelRow.appendChild(toggle);
         wrap.appendChild(labelRow);
 
-        const input = el("input", { dataset: { fvKey: f.key } });
-        input.type = "text";
-        input.value = entry.values[f.key] ?? "";
-        input.disabled = off;
-        input.placeholder = off ? "not used for this transfer" : `{${f.key}}`;
-        // A "suggesting" field offers what has been typed into it before,
-        // the same datalist the values modal already builds.
-        if (f.type === "select") {
-          const listId = `fv-sugg-${f.key}`;
-          const dl = el("datalist");
-          dl.id = listId;
-          for (const v of (presetStore.history || {})[f.key] || []) {
-            const o = el("option");
-            o.value = v;
-            dl.appendChild(o);
-          }
-          wrap.appendChild(dl);
-          input.setAttribute("list", listId);
-        }
-        input.addEventListener("input", () => {
-          entry.values[f.key] = input.value;
-          input.classList.remove("missing");
+        const control = buildFieldControl(f, entry.values[f.key] ?? "", (value, node) => {
+          entry.values[f.key] = value;
+          node.classList.remove("missing");
           updateFieldsPreview();
           // Start may become available the moment a required field is filled.
           $("start").disabled = !(Boolean(sourcePath) && destNodes.length > 0
             && !currentJobPending() && missingRequired().length === 0);
+        }, {
+          dataset: { fvKey: f.key },
+          disabled: off,
+          placeholder: off ? "not used for this transfer" : `{${f.key}}`,
         });
-        wrap.appendChild(input);
+        wrap.appendChild(control.wrap);
 
         if (off) {
           wrap.appendChild(el("div", { class: "fv-note",
@@ -3315,9 +3407,9 @@
         sourcePath && !isProject(sourcePath) ? sourcePath : "",
         off,
       );
-      if (!$("fields-preview")) return;   // re-rendered while awaiting
-      $("fields-preview").classList.toggle("bad", !res.ok);
-      $("fields-preview").textContent = res.ok ? `→ ${res.result}` : res.error;
+      const box = $("fields-preview");
+      if (!box) return;   // re-rendered while awaiting
+      renderScopedPreview(box, res);
     }
 
     // ── Job panel + concurrency mode (§18c) ──────────────────────────────

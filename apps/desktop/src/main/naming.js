@@ -65,9 +65,27 @@ function builtinValues({ now = new Date(), sourceLabel = "", rel = "", index = 1
   const ext = path.extname(base);
   return {
     date: `${now.getFullYear()}${two(now.getMonth() + 1)}${two(now.getDate())}`,
+    // §65 — date and time components are now a CASE-SENSITIVE pair set:
+    // uppercase is the date half, lowercase is the time half. Lookup was
+    // already case-sensitive (a plain object property match); what did not
+    // exist was any uppercase key to look up.
+    //
+    // BREAKING, deliberately, and checked before doing it: lowercase `mm`
+    // meant MONTH and now means MINUTES. `{MM}` is month. No saved preset
+    // on this machine referenced `{mm}` (verified against the real store),
+    // so nothing changed meaning in practice — but a pattern written
+    // elsewhere and imported would.
+    YY: String(now.getFullYear()).slice(2),
+    YYYY: String(now.getFullYear()),
+    MM: two(now.getMonth() + 1),
+    DD: two(now.getDate()),
+    hh: two(now.getHours()),
+    mm: two(now.getMinutes()),
+    // Kept resolvable although their chips are gone (§65.6): a saved
+    // pattern that already uses one must keep rendering rather than
+    // writing a folder literally named "{date}".
     yy: String(now.getFullYear()).slice(2),
     yyyy: String(now.getFullYear()),
-    mm: two(now.getMonth() + 1),
     dd: two(now.getDate()),
     time: `${two(now.getHours())}${two(now.getMinutes())}`,
     datetime: `${now.getFullYear()}${two(now.getMonth() + 1)}${two(now.getDate())}_${two(now.getHours())}${two(now.getMinutes())}`,
@@ -260,6 +278,23 @@ function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, s
   let index = 0;
   const seen = new Map();
 
+  /**
+   * §65.5 — the "forgot {counter}" safety net.
+   *
+   * A file pattern that numbers nothing renders every file in a directory
+   * to one name. That used to be a hard refusal (see NAMING_COLLISION
+   * below); it is now an automatic `_0001` suffix, because the refusal
+   * arrived at the worst possible moment — the user has already chosen a
+   * card, a destination and pressed Start — to report something the
+   * pattern editor could have said.
+   *
+   * FILE PATTERN ONLY. A folder pattern containing {counter} deliberately
+   * creates a folder per file, and auto-adding one there would invent that
+   * behaviour for someone who never asked for it.
+   */
+  const autoCounter = Boolean(file)
+    && !tokensIn(file).some((t) => t === "counter" || t === "sourcecounter");
+
   // rel -> the rel whose rendered basename this file must adopt. Populated
   // only by prepare(); empty means every file is named independently, which
   // is exactly the pre-§23d behaviour.
@@ -327,7 +362,12 @@ function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, s
     if (renderedBase.has(rel)) return renderedBase.get(rel);
     index += 1;
     const ctx = { now, sourceLabel, rel, index: indexFor.get(rel) ?? index, sourceCounter };
-    const out = renderTemplate(file, values, ctx);
+    let out = renderTemplate(file, values, ctx);
+    // Appended after rendering, not spliced into the template: the template
+    // is what the user wrote, and a suffix on the rendered name is the
+    // smallest thing that makes it unique. An empty render is left alone —
+    // mapRel falls back to the original basename in that case.
+    if (autoCounter && out) out += `_${pad(ctx.index, 4)}`;
     renderedBase.set(rel, out);
     return out;
   }
@@ -369,11 +409,12 @@ function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, s
 
     const out = [prefix, keepDir, base].filter(Boolean).join("/");
 
-    // Two source files can render to one destination path — most obviously
-    // a filename template with no {counter}, or flatten collapsing two
-    // directories that each hold a C0001. Refused rather than resolved:
-    // silently overwriting loses footage, and silently suffixing hands
-    // back a name the user didn't ask for.
+    // Two source files can render to one destination path. §65.5 made the
+    // common cause — a filename template with no {counter} — impossible by
+    // auto-appending one, so this is now a BACKSTOP rather than the primary
+    // UX: flatten collapsing two directories that each hold a C0001 still
+    // reaches it, as would a template of pure literal text. Kept because
+    // silently overwriting loses footage.
     if (seen.has(out)) {
       const err = new Error(
         `Naming template maps two files to the same destination: "${seen.get(out)}" and "${rel}" both become "${out}". ` +
@@ -389,6 +430,9 @@ function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, s
   }
 
   mapRel.prepare = prepare;
+  // Surfaced so a preview can say the suffix was added rather than leaving
+  // the user to notice it on the drive afterwards (§65.9).
+  mapRel.autoCounter = autoCounter;
   return mapRel;
 }
 

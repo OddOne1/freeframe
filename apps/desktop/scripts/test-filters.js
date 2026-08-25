@@ -203,9 +203,17 @@ console.log("\n7. Pairing is scoped, and placement follows too");
   const files = ["C0001.MP4", "C0001.XML", "C0002.MP4"];
   const map = buildRelMapper({ folderTemplate: "TAKE_{counter}", fileTemplate: "{name}" });
   map.prepare(files);
-  eq(map("C0001.MP4"), "TAKE_0001/C0001.MP4", "clip lands in its own take folder");
-  eq(map("C0001.XML"), "TAKE_0001/C0001.XML", "its sidecar lands in the SAME folder");
-  eq(map("C0002.MP4"), "TAKE_0002/C0002.MP4", "the next clip gets the next folder");
+  // §65.5 CONSEQUENCE, and it is worth being explicit about: the file
+  // template here numbers nothing, so it gets an auto _0001 — even though
+  // the FOLDER template already guarantees uniqueness by putting every clip
+  // in its own take folder. The spec's condition is "does the file pattern
+  // reference {counter}/{sourcecounter}", not "could two files collide", so
+  // this suffix is redundant here rather than wrong. Narrowing the
+  // condition to also inspect the folder template would remove it; that was
+  // not what was asked for.
+  eq(map("C0001.MP4"), "TAKE_0001/C0001_0001.MP4", "clip lands in its own take folder");
+  eq(map("C0001.XML"), "TAKE_0001/C0001_0001.XML", "its sidecar lands in the SAME folder");
+  eq(map("C0002.MP4"), "TAKE_0002/C0002_0002.MP4", "the next clip gets the next folder");
 }
 
 console.log(fail === 0 ? "\nALL PASS" : `\n${fail} FAILED`);

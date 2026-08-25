@@ -367,6 +367,112 @@ async function waitFor(ev, expr, tries = 40) {
   check(await waitFor(ev, `document.getElementById("preset-label").textContent === "No naming preset"`),
     "and deleting it there clears the selection here");
 
+  // ── §65 — the editor half ───────────────────────────────────────────────
+  console.log("4c. (\u00a765) Choice fields, pruned chips, split previews");
+  await sev(`document.getElementById("preset-new").click(); true`);
+  await sleep(300);
+
+  const types = await sev(`[...document.querySelectorAll("#preset-pane button")]
+    .find(b => b.textContent.trim() === "Add field").click(),
+    [...document.querySelectorAll(".field-row select option")].map(o => o.textContent)`);
+  check(Array.isArray(types) && types.join(",") === "Text,Choice",
+    "the field type is Text or Choice — Suggesting is gone, not renamed", (types || []).join(","));
+
+  const choice = await sev(`
+    (() => {
+      const sel = document.querySelector(".field-row select");
+      sel.value = "choice";
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      const box = document.querySelector(".choice-options");
+      if (!box) return null;
+      box.querySelector(".choice-add").click();
+      const box2 = document.querySelector(".choice-options");
+      const row = box2.querySelector(".choice-row");
+      const [label, token] = row.querySelectorAll("input");
+      label.value = "Mathias"; label.dispatchEvent(new Event("input", { bubbles: true }));
+      return {
+        rows: box2.querySelectorAll(".choice-row").length,
+        inputsPerRow: row.querySelectorAll("input").length,
+        tokenPlaceholder: token.placeholder,
+        hasOther: /Other/.test(box2.textContent),
+        otherDefault: box2.querySelector(".choice-other input").checked,
+        controls: row.querySelectorAll(".choice-row-controls button").length,
+      };
+    })()
+  `);
+  check(Boolean(choice), "picking Choice reveals an option list to author");
+  check(choice && choice.rows === 1 && choice.inputsPerRow === 2,
+    "each option row carries a Label and a Token", JSON.stringify(choice));
+  check(choice && choice.tokenPlaceholder === "Mathias",
+    "and the Token's placeholder shows what a blank one will render as — the fallback is visible, not remembered",
+    choice?.tokenPlaceholder);
+  check(choice && choice.controls === 3, "with reorder and remove controls", String(choice?.controls));
+  check(choice && choice.hasOther && choice.otherDefault === false,
+    "an 'Other…' checkbox exists and is off by default — a closed list unless asked for");
+
+  // §65.6 — chips pruned, tokens NOT removed from the engine.
+  const chips = await sev(`
+    (() => {
+      const inputs = [...document.querySelectorAll(".tpl-input")];
+      const rowOf = (i) => i.nextElementSibling.nextElementSibling;
+      const texts = (tpl) => {
+        const inp = inputs.find(i => i.dataset.tpl === tpl);
+        return [...rowOf(inp).querySelectorAll("code")].map(c => c.textContent);
+      };
+      return { folder: texts("folderTemplate"), file: texts("fileTemplate") };
+    })()
+  `);
+  const all = [...(chips.folder || []), ...(chips.file || [])];
+  for (const gone of ["{ext}", "{cardname}", "{datetime}", "{date}", "{time}"]) {
+    check(!all.includes(gone), `${gone} is no longer offered as a chip`);
+  }
+  for (const kept of ["{YYYY}", "{YY}", "{MM}", "{DD}", "{hh}", "{mm}"]) {
+    check(all.includes(kept), `${kept} is offered`, all.join(" "));
+  }
+  check((chips.file || []).includes("{counter}") && (chips.file || []).includes("{name}"),
+    "the file field keeps {counter} and {name}", (chips.file || []).join(" "));
+  check((chips.folder || []).includes("{sourcecounter}") && !(chips.folder || []).includes("{counter}"),
+    "and the folder field keeps only the per-source counter", (chips.folder || []).join(" "));
+
+  // §65.8/.9 — two scoped previews, amber on what the user did not write.
+  const previews = await sev(`
+    (async () => {
+      const inputs = [...document.querySelectorAll(".tpl-input")];
+      const set = (tpl, v) => {
+        const i = inputs.find(x => x.dataset.tpl === tpl);
+        i.value = v; i.dispatchEvent(new Event("input", { bubbles: true }));
+      };
+      set("folderTemplate", "{YYYY}{MM}{DD}");
+      set("fileTemplate", "SHOT");
+      await new Promise(r => setTimeout(r, 500));
+      const fo = document.getElementById("tpl-preview-folder");
+      const fi = document.getElementById("tpl-preview-file");
+      const amber = fi && fi.querySelector(".auto-fix");
+      return {
+        two: !!fo && !!fi,
+        folderUnderFolderField: !!fo && fo.previousElementSibling.textContent.includes("Click to insert"),
+        folderText: fo ? fo.textContent : "",
+        fileText: fi ? fi.textContent : "",
+        amberText: amber ? amber.textContent : null,
+        amberColour: amber ? getComputedStyle(amber).color : null,
+      };
+    })()
+  `);
+  check(previews.two, "there are two previews, one per pattern field");
+  check(previews.folderUnderFolderField, "each sits under its own field");
+  check(!/DCIM|100MEDIA/.test(previews.folderText) && !/DCIM|100MEDIA/.test(previews.fileText),
+    "and neither shows the source's own subtree, which neither template produces",
+    `${previews.folderText} | ${previews.fileText}`);
+  check(!previews.folderText.includes("SHOT") && !previews.fileText.includes("/"),
+    "the folder preview shows only the folder and the file preview only the file",
+    `${previews.folderText} | ${previews.fileText}`);
+  // §65.5/.9 — "SHOT" numbers nothing, so a counter is added for the user.
+  check(previews.amberText === "_0001",
+    "the auto-appended counter is shown", String(previews.amberText));
+  check(previews.amberColour && previews.amberColour !== "rgb(255, 255, 255)",
+    "highlighted in the app's own warning colour, because it is text the user did not write",
+    previews.amberColour);
+
   console.log("5. The toolbar picker is gone");
   check(!(await ev(`!!document.getElementById("algo-btn")`)),
     "no checksum control anywhere in the main window");

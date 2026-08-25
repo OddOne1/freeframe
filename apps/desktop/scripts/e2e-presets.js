@@ -116,15 +116,26 @@ const check = (ok, label, detail = "") => {
   check(tiles >= 3, "the Volumes grid fits several tiles per row at the new width", `${tiles} columns`);
 
   // ── 2. Create a preset with both field types ──
-  console.log("\n2. Preset with a text field and a suggesting field");
+  console.log("\n2. Preset with a text field and a choice field");
   const saved = await ev(`(async () => {
+    // savePreset matches on id, and this fixture supplies none — so every
+    // run creates ANOTHER "Shoot Night" and find(by name) returns whichever
+    // one an earlier run left behind. That made this section assert against
+    // stale data rather than what it had just written.
+    const before = await window.freeframe.listPresets();
+    for (const p of before.presets.filter(p => p.name === "Shoot Night")) {
+      await window.freeframe.deletePreset(p.id);
+    }
     const store = await window.freeframe.savePreset({
       name: "Shoot Night",
       folderTemplate: "{date}_{operator}/{camera}",
       fileTemplate: "",
       fields: [
         { label: "Operator", type: "text", required: true },
-        { label: "Camera", type: "select", required: false },
+        // §65 — "select" (Suggesting) is gone; Choice replaces it, with an
+        // authored list instead of one grown from typed history.
+        { label: "Camera", type: "choice", required: false,
+          options: [{ label: "Alexa 35", token: "" }, { label: "Venice 2", token: "V2" }] },
       ],
     });
     // reloadPresets() is what the app's own save handler does — without
@@ -139,7 +150,10 @@ const check = (ok, label, detail = "") => {
     "tokens derived from the labels", saved.fields.map(f => f.key).join(","));
   check(saved.fields[0].required === true && saved.fields[1].required === false,
     "per-field required/optional kept");
-  check(saved.fields[1].type === "select", "suggesting field type kept");
+  check(saved.fields[1].type === "choice", "choice field type kept", saved.fields[1].type);
+  check((saved.fields[1].options || []).length === 2, "with its authored options",
+    JSON.stringify(saved.fields[1].options));
+  check(saved.fields[1].allowOther === false, "and allowOther defaults off — a closed list unless asked for");
 
   // ── 3. A required field left blank must BLOCK the job ──
   console.log("\n3. An unfilled required field blocks the job");
@@ -222,12 +236,27 @@ const check = (ok, label, detail = "") => {
   check(onDisk.includes(`${expectedRoot}/notes.txt`), "root-level file too");
   check(!onDisk.some((f) => /[{}]/.test(f)), "no literal {token} survived into a name");
 
-  // ── 6. Values are remembered for the suggesting field ──
-  console.log("\n6. Suggesting fields grow their own list");
-  const history = await ev(`(async () => (await window.freeframe.listPresets()).history)()`);
-  check((history.camera || []).includes("Alexa 35"),
-    "the value used is offered next time", JSON.stringify(history.camera || []));
-  check((history.operator || []).includes("Mathias"), "text fields are remembered too");
+  // ── 6. Suggesting is gone, and left nothing behind ──
+  console.log("\n6. Suggesting is removed (\u00a765.2)");
+  const store6 = await ev(`(async () => JSON.stringify(await window.freeframe.listPresets()))()`)
+    .then(JSON.parse);
+  check(store6.history === undefined,
+    "the typed-value history is not in the store any more — the type that read it is gone",
+    JSON.stringify(Object.keys(store6)));
+  // A saved "select" field must not become an empty dropdown: that would
+  // turn a working preset into one with no way to enter its value at all.
+  const migrated = await ev(`(async () => {
+    const store = await window.freeframe.savePreset({
+      name: "Legacy Suggesting",
+      folderTemplate: "{operator}", fileTemplate: "",
+      fields: [{ label: "Operator", type: "select", required: false }],
+    });
+    return store.presets.find(p => p.name === "Legacy Suggesting");
+  })()`);
+  check(migrated.fields[0].type === "text",
+    "an existing Suggesting field loads as plain Text, keeping the preset usable",
+    migrated.fields[0].type);
+  await ev(`window.freeframe.deletePreset(${'`'}${'$'}{${JSON.stringify(migrated.id)}}${'`'})`).catch(() => {});
 
   // ── 7. A file template renames, keeping the extension ──
   console.log("\n7. File-name template");

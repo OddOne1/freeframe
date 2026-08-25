@@ -44,8 +44,23 @@ eq(
   "20260813_Mathias",
   "builtin + custom field",
 );
-eq(renderTemplate("{yy}{mm}{dd}", {}, { now: NOW }), "260813", "date parts");
+eq(renderTemplate("{YY}{MM}{DD}", {}, { now: NOW }), "260813", "date parts");
 eq(renderTemplate("{time}", {}, { now: NOW }), "2105", "local time, not UTC");
+
+// §65.7 — {MM} and {mm} differ ONLY by case and must resolve differently.
+// This is the whole point of the change and the one thing that would look
+// fine while being silently wrong.
+eq(renderTemplate("{YYYY}_{MM}_{DD}_{hh}{mm}", {}, { now: NOW }), "2026_08_13_2105",
+   "case-sensitive pairs: uppercase is the date half, lowercase the time half");
+check(renderTemplate("{MM}", {}, { now: NOW }) !== renderTemplate("{mm}", {}, { now: NOW }),
+      "{MM} (month) and {mm} (minutes) are different tokens, not one case-insensitive one",
+      `${renderTemplate("{MM}", {}, { now: NOW })} vs ${renderTemplate("{mm}", {}, { now: NOW })}`);
+eq(renderTemplate("{hh}", {}, { now: NOW }), "21", "{hh} is the hour, 24-hour and padded");
+
+// The pruned-chip tokens still RESOLVE — only the chips went (§65.6). A
+// saved pattern using one must not start writing a folder called "{date}".
+eq(renderTemplate("{date}", {}, { now: NOW }), "20260813", "{date} still resolves, though its chip is gone");
+eq(renderTemplate("{yyyy}{dd}", {}, { now: NOW }), "202613", "and so do the old lowercase date parts");
 eq(
   renderTemplate("{cardname}", {}, { now: NOW, sourceLabel: "/Volumes/A001" }),
   "A001",
@@ -96,20 +111,53 @@ console.log("\n5. Mapper — file template");
   eq(map("a/CLIP2.MOV"), "a/Mathias_0002.MOV", "counter increments across files");
 }
 {
+  // §65.5 — a pattern that numbers nothing now gets _0001 appended.
   const map = buildRelMapper({ fileTemplate: "{name}_graded", values: {}, now: NOW });
-  eq(map("CLIP.MOV"), "CLIP_graded.MOV", "{name} is the original base name");
+  eq(map("CLIP.MOV"), "CLIP_graded_0001.MOV", "{name} is the original base name");
 }
 
-console.log("\n6. Collisions are refused, not resolved");
+console.log("\n6. A pattern that numbers nothing is numbered for you (\u00a765.5)");
 {
+  // This used to throw NAMING_COLLISION. It now auto-appends, because the
+  // refusal arrived at the worst moment — card chosen, destination chosen,
+  // Start pressed — to report something the editor could have said.
   const map = buildRelMapper({ fileTemplate: "{operator}", values: { operator: "M" }, now: NOW });
-  eq(map("a/one.MOV"), "a/M.MOV", "first file fine");
-  // Same directory, same rendered name -> would overwrite.
+  check(map.autoCounter === true, "the mapper says it is numbering on the user's behalf");
+  eq(map("a/one.MOV"), "a/M_0001.MOV", "first file numbered");
+  eq(map("a/two.MOV"), "a/M_0002.MOV", "second file numbered rather than refused");
+}
+{
+  // Already numbered: nothing is appended, or every name would carry two.
+  const map = buildRelMapper({ fileTemplate: "{operator}_{counter}", values: { operator: "M" }, now: NOW });
+  check(map.autoCounter === false, "a pattern that already numbers is left alone");
+  eq(map("a/one.MOV"), "a/M_0001.MOV", "and renders exactly what was written");
+}
+{
+  const map = buildRelMapper({ fileTemplate: "{operator}_{sourcecounter}", values: { operator: "M" },
+                               now: NOW, sourceCounter: 7 });
+  check(map.autoCounter === false, "{sourcecounter} counts as numbering too");
+  eq(map("a/one.MOV"), "a/M_007.MOV", "and is not doubled up");
+}
+{
+  // FILE PATTERN ONLY. A folder pattern with {counter} deliberately makes a
+  // folder per file; auto-adding one there would invent that behaviour for
+  // someone who never asked for it.
+  const map = buildRelMapper({ folderTemplate: "X_{counter}", values: {}, now: NOW });
+  check(map.autoCounter === false, "a folder-only template is never auto-numbered");
+  eq(map("a/one.MOV"), "X_0001/a/one.MOV", "folder-per-file is unchanged");
+  eq(map("a/two.MOV"), "X_0002/a/two.MOV", "still one folder per file");
+}
+{
+  // The throw survives as a BACKSTOP for shapes auto-numbering cannot fix.
+  // Flatten collapses two directories that each hold a CLIP1, and both
+  // already carry the same counter-free name.
+  const map = buildRelMapper({ folderTemplate: "X", values: {}, now: NOW, flatten: true });
+  eq(map("a/CLIP1.MOV"), "X/CLIP1.MOV", "first file fine");
   let threw = null;
-  try { map("a/two.MOV"); } catch (e) { threw = e; }
-  check(threw && threw.code === "NAMING_COLLISION", "second file raises rather than overwriting",
+  try { map("b/CLIP1.MOV"); } catch (e) { threw = e; }
+  check(threw && threw.code === "NAMING_COLLISION",
+        "a collision auto-numbering cannot reach is still refused, not overwritten",
         threw ? threw.code : "no throw");
-  check(threw && /Add \{counter\}/.test(threw.message), "the error says how to fix it");
 }
 {
   // Different directories keep them apart, so this must NOT collide.

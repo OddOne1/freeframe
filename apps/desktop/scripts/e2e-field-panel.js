@@ -109,13 +109,31 @@ async function walk(dir, base = "") {
 
     // A preset with two custom fields, one of them required.
     const made = await ev(`(async () => {
+      // savePreset matches on id and this fixture supplies none, so every
+      // run adds ANOTHER "Field Panel Test" and find(by name) returns
+      // whichever one an earlier run left behind — asserting against stale
+      // data rather than what was just written.
+      const before = await window.freeframe.listPresets();
+      for (const p of before.presets.filter(p => p.name === "Field Panel Test")) {
+        await window.freeframe.deletePreset(p.id);
+      }
       const store = await window.freeframe.savePreset({
         name: "Field Panel Test",
         folderTemplate: "{date}_{operator}_{talent}",
         fileTemplate: "",
         fields: [
           { key: "operator", label: "Operator", type: "text", required: true },
-          { key: "talent", label: "Talent", type: "select", required: false },
+          // §65 — was type "select" (Suggesting), which no longer exists.
+          // A Choice field with an authored list and "Other…" enabled, so
+          // this harness covers the new runtime control as well.
+          { key: "talent", label: "Talent", type: "choice", required: false,
+            allowOther: true,
+            options: [{ label: "Alex Rivera", token: "AR" }, { label: "Sam Okafor", token: "" }] },
+          // A CLOSED list, so "Other… is offered" cannot pass vacuously by
+          // only ever meeting a field that allows it.
+          { key: "camera", label: "Camera", type: "choice", required: false,
+            allowOther: false,
+            options: [{ label: "Alexa 35", token: "A35" }] },
         ],
       });
       const p = store.presets.find(x => x.name === "Field Panel Test");
@@ -130,7 +148,7 @@ async function walk(dir, base = "") {
     const empty = await ev(`(() => {
       clearAll(); render();
       return { text: document.getElementById("fields-body").textContent,
-               inputs: document.querySelectorAll("#fields-body input[data-fv-key]").length };
+               inputs: document.querySelectorAll("#fields-body [data-fv-key]").length };
     })()`);
     check(empty.inputs === 0, "no inputs before a source is assigned");
     check(/Assign a source/.test(empty.text), "and it says why", empty.text.slice(0, 60));
@@ -139,20 +157,40 @@ async function walk(dir, base = "") {
       extraFolders = ${JSON.stringify([cardA, cardB, dest])};
       setSource(${JSON.stringify(cardA)});
       render();
-      const keys = [...document.querySelectorAll("#fields-body input[data-fv-key]")].map(i => i.dataset.fvKey);
+      // A Choice field renders a <select>, so match on the attribute
+      // rather than the tag or it silently disappears from this count.
+      const keys = [...document.querySelectorAll("#fields-body [data-fv-key]")].map(i => i.dataset.fvKey);
       const toggles = document.querySelectorAll("#fields-body .fv-toggle").length;
       return {
         keys, toggles,
         source: document.querySelector("#fields-body .fv-source").textContent,
         required: !!document.querySelector("#fields-body .req"),
-        hasDatalist: !!document.querySelector("#fields-body datalist"),
+        // §65.3 — the Choice field is a dropdown of its authored options.
+        choiceTag: (document.querySelector('#fields-body [data-fv-key="talent"]') || {}).tagName,
+        choiceOptions: [...document.querySelectorAll('#fields-body [data-fv-key="talent"] option')]
+          .map(o => o.textContent + "=" + o.value),
+        noDatalist: !document.querySelector("#fields-body datalist"),
+        closedOptions: [...document.querySelectorAll('#fields-body [data-fv-key="camera"] option')]
+          .map(o => o.textContent),
       };
     })()`);
-    check(shown.keys.join(",") === "operator,talent", "one input per field, in preset order", shown.keys.join(","));
-    check(shown.toggles === 2, "each field has its own toggle", `${shown.toggles}`);
+    check(shown.keys.join(",") === "operator,talent,camera", "one input per field, in preset order", shown.keys.join(","));
+    check(shown.toggles === 3, "each field has its own toggle", `${shown.toggles}`);
     check(shown.source === "A001", "the panel names the source it describes", shown.source);
     check(shown.required, "the required field is marked");
-    check(shown.hasDatalist, "the suggesting field gets a datalist, like the preset modal");
+    check(shown.choiceTag === "SELECT", "a Choice field renders as a dropdown", String(shown.choiceTag));
+    check((shown.choiceOptions || []).includes("Alex Rivera=AR"),
+      "showing the Label but carrying the Token — a full name reads better in a list, a short code in a filename",
+      (shown.choiceOptions || []).join(" | "));
+    check((shown.choiceOptions || []).includes("Sam Okafor=Sam Okafor"),
+      "and a blank Token falls back to the Label rather than substituting nothing");
+    check((shown.choiceOptions || []).some((o) => o.startsWith("Other…")),
+      "with an Other… entry, because this field allows one");
+    check(shown.noDatalist,
+      "and no datalist anywhere — Suggesting is removed, not hidden");
+    check(!(shown.closedOptions || []).some((o) => o.startsWith("Other")),
+      "a field with allowOther off is a closed list with no escape hatch",
+      (shown.closedOptions || []).join(" | "));
 
     // Start must wait for a required field rather than ambushing at press time.
     const gate = await ev(`(() => {
@@ -166,11 +204,46 @@ async function walk(dir, base = "") {
     check(gate.before === true, "Start is disabled while a required field is empty");
     check(gate.after === false, "and enables as soon as it is filled");
 
+    // ── 1b. "Other…" reveals an input beside THAT field only ─────────────
+    console.log("\n1b. Other… is a per-field escape hatch (\u00a765.3)");
+    const other = await ev(`(() => {
+      const sel = document.querySelector('#fields-body select[data-fv-key="talent"]');
+      const wrap = sel.closest(".fv-control");
+      const before = wrap.querySelector(".fv-other").hidden;
+      sel.value = "\u0000other";
+      sel.dispatchEvent(new Event("change"));
+      const inp = wrap.querySelector(".fv-other");
+      inp.value = "Guest Star";
+      inp.dispatchEvent(new Event("input"));
+      return {
+        hiddenBefore: before,
+        shownAfter: !inp.hidden,
+        // Scoped to this field: the OTHER field must not sprout one.
+        othersElsewhere: document.querySelectorAll("#fields-body .fv-other:not([hidden])").length,
+        value: namingPayload().values.talent,
+      };
+    })()`);
+    check(other.hiddenBefore, "the Other… input is hidden until it is chosen");
+    check(other.shownAfter, "and revealed when it is");
+    check(other.othersElsewhere === 1, "beside that field alone, not in a shared area",
+      String(other.othersElsewhere));
+    check(other.value === "Guest Star", "the typed one-off becomes the substituted value", other.value);
+
+    // Back to a real option, so the rest of the run is unaffected.
+    await ev(`(() => {
+      const sel = document.querySelector('#fields-body select[data-fv-key="talent"]');
+      sel.value = ""; sel.dispatchEvent(new Event("change"));
+      return true;
+    })()`);
+
     // ── 2. Values reach a real job, and a disabled field is omitted ───────
     console.log("\n2. Values reach a REAL copy, and a disabled field is dropped");
     await ev(`(() => {
-      const t = document.querySelector('#fields-body input[data-fv-key="talent"]');
-      t.value = "Rey"; t.dispatchEvent(new Event("input"));
+      // §65.3 — talent is a Choice field now, so it is picked, not typed.
+      // Choosing "Alex Rivera" must carry its TOKEN ("AR") forward, not its
+      // label, which is the whole reason the two are separate.
+      const t = document.querySelector('#fields-body select[data-fv-key="talent"]');
+      t.value = "AR"; t.dispatchEvent(new Event("change"));
       // Switch the talent field OFF for this transfer.
       const toggles = [...document.querySelectorAll("#fields-body .fv-toggle")];
       toggles[1].checked = false; toggles[1].dispatchEvent(new Event("change"));
@@ -179,8 +252,9 @@ async function walk(dir, base = "") {
     const payload = await ev(`JSON.stringify(namingPayload())`).then(JSON.parse);
     check(payload.disabledFields.join(",") === "talent", "the disabled field is reported to main",
       JSON.stringify(payload.disabledFields));
-    check(payload.values.operator === "Mathias" && payload.values.talent === "Rey",
-      "the typed values are still carried — disabling is not erasing");
+    check(payload.values.operator === "Mathias" && payload.values.talent === "AR",
+      "the picked option's TOKEN is carried, not its label — disabling is not erasing",
+      JSON.stringify(payload.values));
 
     const summary = await ev(`(async () => await window.freeframe.startCopy(
       ${JSON.stringify(cardA)},
@@ -196,7 +270,7 @@ async function walk(dir, base = "") {
     check(onDisk.length === 1, "one file landed", `${onDisk.length}`);
     check(onDisk[0].startsWith(`${stamp}_Mathias/`),
       `the entered value is in the folder name (${stamp}_Mathias)`, onDisk[0]);
-    check(!onDisk[0].includes("Rey"), "the DISABLED field's value is absent", onDisk[0]);
+    check(!onDisk[0].includes("AR"), "the DISABLED field's value is absent", onDisk[0]);
     // The separator has to go with the token, or the folder is "..._Mathias_".
     check(!/_\//.test(onDisk[0]) && !onDisk[0].endsWith("_"),
       "and its separator went with it — no dangling underscore", onDisk[0]);
@@ -233,11 +307,15 @@ async function walk(dir, base = "") {
       const p = store.presets.find(x => x.id === ${JSON.stringify(presetId)});
       return { fields: p.fields, keys: Object.keys(p), raw: JSON.stringify(p) };
     })()`);
-    check(reread.fields.length === 2, "the preset still has both fields", `${reread.fields.length}`);
+    check(reread.fields.length === 3, "the preset still has all its fields", `${reread.fields.length}`);
     check(reread.fields.every((f) => !("disabled" in f) && !("value" in f)),
       "no per-transfer state was written onto a field", JSON.stringify(reread.fields));
-    check(!/disabledFields|"Mathias"|"Rey"|"Ana"/.test(reread.raw),
+    check(!/disabledFields|"Mathias"|"Ana"/.test(reread.raw),
       "and no entered value or toggle is anywhere in the saved preset");
+    // The authored options ARE part of the preset and must survive — they
+    // are the field's definition, unlike anything typed for one transfer.
+    check(/"Alex Rivera"/.test(reread.raw) && /"AR"/.test(reread.raw),
+      "…while the Choice field's authored options are still there");
     check(reread.fields[0].required === true, "Required is untouched — it is a different thing from the toggle");
 
     check(pageErrors.length === 0, "no uncaught exception across the whole run", pageErrors.join(" | "));

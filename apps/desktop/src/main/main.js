@@ -431,14 +431,46 @@ ipcMain.handle("presets:preview", async (_e, { folderTemplate, fileTemplate, val
     // §22g — the preview has to show what a disabled field actually does
     // to the name, or the panel would promise something the job won't do.
     const off = Array.isArray(disabled) ? disabled : [];
+    const folderTpl = omitTokens(folderTemplate, off);
+    const fileTpl = omitTokens(fileTemplate, off);
     const mapper = buildRelMapper({
-      folderTemplate: omitTokens(folderTemplate, off),
-      fileTemplate: omitTokens(fileTemplate, off),
+      folderTemplate: folderTpl,
+      fileTemplate: fileTpl,
       values: values || {},
       sourceLabel: sourceLabel || "/Volumes/A001",
     });
     const sample = "DCIM/100MEDIA/CLIP0001.MOV";
-    return { ok: true, sample, result: mapper ? mapper(sample) : sample };
+    const result = mapper ? mapper(sample) : sample;
+
+    // §65.8 — two scoped previews instead of one full path. The old preview
+    // showed `DCIM/100MEDIA/` in the middle, which is the source's own
+    // subtree: preserved by design, not produced by either template, and
+    // confirmed confusing to read as though the pattern had made it.
+    //
+    // Rendered by walking the same mapper's own output rather than
+    // re-implementing the templates here, so the preview cannot disagree
+    // with what the copy will do.
+    // Derived by stripping the preserved subtree off the mapper's own
+    // output, NOT by re-rendering the template here — a preview computed by
+    // a second implementation is worse than none, because it builds
+    // confidence in the wrong thing.
+    const fileOut = path.basename(result);
+    const keptDir = path.dirname(sample);            // "DCIM/100MEDIA"
+    let folderOut = path.dirname(result);
+    if (folderOut === ".") folderOut = "";
+    if (keptDir !== "." && folderOut.endsWith(keptDir)) {
+      folderOut = folderOut.slice(0, folderOut.length - keptDir.length).replace(/\/+$/, "");
+    }
+    return {
+      ok: true,
+      sample,
+      result,
+      folder: folderOut,
+      file: fileOut,
+      // Whether the file name carries a suffix the user did not write
+      // (§65.5/.9), so the preview can mark it rather than let it surprise.
+      autoCounter: Boolean(mapper && mapper.autoCounter),
+    };
   } catch (err) {
     return { ok: false, error: String(err.message || err) };
   }
@@ -869,10 +901,8 @@ ipcMain.handle("copy:start", async (event, payload) => {
       // when this source was assigned, and it ends up in a folder name.
       sourceCounter: presets.normalizeCounter(naming.sourceCounter),
     });
-
-    // Only remembered once a job actually starts, so half-typed names
-    // never end up in the suggestion list.
-    presets.recordValues(values).catch(() => {});
+    // §65 — nothing is remembered from a job's values any more. The
+    // Suggesting field type that consumed this history is gone.
   }
 
   // ── Queue it (§18c) ──

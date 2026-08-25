@@ -79,11 +79,20 @@ window.PresetEditor = (function () {
    * whatever it is given. This governs which one-click chips are offered,
    * so the footgun isn't handed over by default.
    */
-  const TOKENS_ANYWHERE = [
-    "date", "yyyy", "yy", "mm", "dd", "time", "datetime", "cardname",
-  ];
+  // §65.6 — the chip list is pruned, NOT the token set. {date}, {time},
+  // {datetime}, {cardname} and {ext} still resolve in naming.js, so a saved
+  // pattern using one keeps working; they are simply no longer offered.
+  // {ext} because the extension always comes from the source anyway,
+  // {cardname} for want of a filename use case, and {date}/{datetime}
+  // because the component tokens below cover them.
+  //
+  // §65.7 — uppercase is the date half, lowercase the time half. {MM} is
+  // month and {mm} is minutes: the same letters, different case, different
+  // value. That is deliberate and was accepted knowingly, on the grounds
+  // that patterns here are built by clicking chips rather than typing.
+  const TOKENS_ANYWHERE = ["YYYY", "YY", "MM", "DD", "hh", "mm"];
   const TOKENS_FOLDER_ONLY = ["sourcecounter"];
-  const TOKENS_FILE_ONLY = ["counter", "name", "ext"];
+  const TOKENS_FILE_ONLY = ["counter", "name"];
 
   function tokensFor(key) {
     return key === "fileTemplate"
@@ -137,20 +146,154 @@ window.PresetEditor = (function () {
   /** Live preview, rendered by main using the same code the copy runs —
    *  a preview computed by a lookalike would build confidence in the
    *  wrong thing. */
+  /**
+   * §65.8 — one preview per pattern field, each showing only its own output.
+   *
+   * The single full-path preview it replaces read as
+   * `DCIM/100MEDIA/CLIP0001.MOV → 20260825/DCIM/100MEDIA/CLIP0001.MOV`,
+   * and the `DCIM/100MEDIA/` in the middle is the source's own subtree —
+   * preserved by design, produced by neither template. Showing it invited
+   * the reading that the pattern had made it.
+   */
   async function refreshPresetPreview() {
-    const out = $("tpl-preview");
-    if (!out || !editingPreset) return;
+    const folderOut = $("tpl-preview-folder");
+    const fileOut = $("tpl-preview-file");
+    if ((!folderOut && !fileOut) || !editingPreset) return;
     const sample = {};
-    for (const f of editingPreset.fields) sample[f.key] = f.label || f.key;
+    for (const f of editingPreset.fields) {
+      // A Choice field previews as its first option's rendered token, since
+      // that is what a real job would actually substitute. Falling back to
+      // the field label would preview something the dropdown cannot produce.
+      if (f.type === "choice" && Array.isArray(f.options) && f.options.length) {
+        const o = f.options[0];
+        sample[f.key] = o.token || o.label;
+      } else {
+        sample[f.key] = f.label || f.key;
+      }
+    }
     const res = await window.freeframe.previewNaming(
       editingPreset.folderTemplate, editingPreset.fileTemplate, sample,
       sampleSource,
     );
-    out.classList.toggle("bad", !res.ok);
-    out.textContent = res.ok
-      ? `${res.sample}  →  ${res.result}`
-      : res.error;
+    // Re-rendered while awaiting.
+    const fo = $("tpl-preview-folder");
+    const fi = $("tpl-preview-file");
+
+    if (fo) {
+      fo.classList.toggle("bad", !res.ok);
+      fo.replaceChildren();
+      if (!res.ok) fo.textContent = res.error;
+      else if (!editingPreset.folderTemplate) {
+        fo.textContent = "Files land directly in the destination.";
+      } else fo.textContent = `${res.folder}/`;
+    }
+
+    if (fi) {
+      fi.classList.toggle("bad", !res.ok);
+      fi.replaceChildren();
+      if (!res.ok) { fi.textContent = res.error; return; }
+      if (!editingPreset.fileTemplate) {
+        fi.textContent = "Original file names are kept.";
+        return;
+      }
+      // §65.9 — the auto-appended counter is text the user did not write,
+      // so it is marked rather than blended in. Amber is this app's own
+      // warning colour (--status-warning), used here as the standing
+      // treatment for anything inferred or auto-corrected in a preview.
+      const auto = res.autoCounter ? String(res.file).match(/_(\d{4})(\.[^.]*)?$/) : null;
+      if (auto) {
+        const cut = res.file.length - auto[0].length;
+        fi.appendChild(document.createTextNode(res.file.slice(0, cut)));
+        fi.appendChild(el("span", { class: "auto-fix", text: `_${auto[1]}`,
+          title: "Added automatically: the pattern numbers nothing, so files would otherwise collide" }));
+        if (auto[2]) fi.appendChild(document.createTextNode(auto[2]));
+      } else {
+        fi.textContent = res.file;
+      }
+    }
   }
+  /**
+   * The option list for one Choice field (§65.1).
+   *
+   * Label and Token are separate because they read best differently: a full
+   * name belongs in a dropdown, a short code belongs in a filename. Token
+   * is optional and falls back to the label, so the common case where they
+   * are the same costs nothing to author.
+   */
+  function renderChoiceOptions(f) {
+    const box = el("div", { class: "choice-options" });
+    f.options = Array.isArray(f.options) ? f.options : [];
+
+    const head = el("div", { class: "choice-head" }, [
+      el("span", { text: "Options" }),
+      el("span", { class: "choice-col", text: "Label" }),
+      el("span", { class: "choice-col", text: "Token (optional)" }),
+    ]);
+    box.appendChild(head);
+
+    if (!f.options.length) {
+      box.appendChild(el("div", { class: "token-help", text: "No options yet." }));
+    }
+
+    f.options.forEach((opt, i) => {
+      const r = el("div", { class: "choice-row" });
+
+      const label = el("input");
+      label.type = "text";
+      label.placeholder = "Mathias";
+      label.value = opt.label || "";
+      label.addEventListener("input", () => {
+        opt.label = label.value;
+        tokenHint();
+      });
+      r.appendChild(label);
+
+      const token = el("input");
+      token.type = "text";
+      token.placeholder = opt.label ? opt.label : "MS";
+      token.value = opt.token || "";
+      token.addEventListener("input", () => { opt.token = token.value; });
+      r.appendChild(token);
+      // The placeholder shows what a blank Token will actually render as,
+      // so the fallback is visible rather than something to remember.
+      function tokenHint() { token.placeholder = opt.label || "MS"; }
+
+      const controls = el("div", { class: "choice-row-controls" });
+      const up = el("button", { class: "icon-btn", title: "Move up", disabled: i === 0,
+        onClick: () => { const [m] = f.options.splice(i, 1); f.options.splice(i - 1, 0, m); renderPresetPane(); } });
+      up.textContent = "\u2191";
+      controls.appendChild(up);
+      const down = el("button", { class: "icon-btn", title: "Move down", disabled: i === f.options.length - 1,
+        onClick: () => { const [m] = f.options.splice(i, 1); f.options.splice(i + 1, 0, m); renderPresetPane(); } });
+      down.textContent = "\u2193";
+      controls.appendChild(down);
+      const del = el("button", { class: "icon-btn", title: "Remove option",
+        onClick: () => { f.options.splice(i, 1); renderPresetPane(); } });
+      del.appendChild(icon("close"));
+      controls.appendChild(del);
+      r.appendChild(controls);
+
+      box.appendChild(r);
+    });
+
+    box.appendChild(el("button", {
+      class: "choice-add",
+      text: "Add option",
+      onClick: () => { f.options.push({ label: "", token: "" }); renderPresetPane(); },
+    }));
+
+    const otherWrap = el("label", { class: "req choice-other" });
+    const other = el("input");
+    other.type = "checkbox";
+    other.checked = Boolean(f.allowOther);
+    other.addEventListener("change", () => { f.allowOther = other.checked; });
+    otherWrap.appendChild(other);
+    otherWrap.appendChild(el("span", { text: "Offer \u201cOther\u2026\u201d for one-off values not on this list" }));
+    box.appendChild(otherWrap);
+
+    return box;
+  }
+
   function renderPresetPane() {
     onSelectionChange(Boolean(editingPreset && editingPreset.id));
     const host = $("preset-pane");
@@ -202,14 +345,18 @@ window.PresetEditor = (function () {
       const controls = el("div", { class: "field-row-controls" });
 
       const type = el("select");
-      for (const [v, t] of [["text", "Text"], ["select", "Suggesting"]]) {
+      for (const [v, t] of [["text", "Text"], ["choice", "Choice"]]) {
         const o = el("option", { text: t });
         o.value = v;
         if (f.type === v) o.selected = true;
         type.appendChild(o);
       }
-      type.title = "Suggesting fields offer what you've typed before";
-      type.addEventListener("change", () => { f.type = type.value; });
+      type.title = "Choice fields offer a list you write here";
+      type.addEventListener("change", () => {
+        f.type = type.value;
+        if (f.type === "choice" && !Array.isArray(f.options)) f.options = [];
+        renderPresetPane();
+      });
       controls.appendChild(type);
 
       const reqWrap = el("label", { class: "req" });
@@ -246,6 +393,7 @@ window.PresetEditor = (function () {
 
       row.appendChild(controls);
       fieldsBox.appendChild(row);
+      if (f.type === "choice") fieldsBox.appendChild(renderChoiceOptions(f));
     });
 
     const addField = el("button", {
@@ -302,9 +450,12 @@ window.PresetEditor = (function () {
         chips.appendChild(document.createTextNode(" "));
       }
       patternBox.appendChild(chips);
+      patternBox.appendChild(el("div", {
+        id: key === "fileTemplate" ? "tpl-preview-file" : "tpl-preview-folder",
+        class: "tpl-preview",
+      }));
     }
 
-    patternBox.appendChild(el("div", { id: "tpl-preview", class: "tpl-preview" }));
     host.appendChild(patternBox);
 
     // §22h — the source counter is shared across presets, not part of the

@@ -69,6 +69,10 @@
   margin-top: 4px; word-break: break-all;
 }
 .tpl-preview.bad { color: var(--status-error); }
+/* §65.9 — anything a preview shows that the user did not write. Amber is
+   this app's existing warning colour; this is the standing treatment for
+   auto-corrected or inferred text, not a one-off for the counter suffix. */
+.auto-fix { color: var(--status-warning); font-weight: 600; }
 .token-help { font-size: 10px; color: var(--text-tertiary); margin-top: 4px; line-height: 1.5; }
 .token-help code {
   font-family: ui-monospace, monospace; background: var(--bg-tertiary);

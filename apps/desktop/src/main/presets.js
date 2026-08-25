@@ -7,20 +7,32 @@
 // change. Server-side sync is a separately-scoped future addition per
 // §10 and is deliberately absent here.
 //
-// Field shape (flagged in §10 as a judgment call, not a user decision):
-//   { key, label, type: "text" | "select", required: bool }
-// A "select" field has no fixed option list. It grows its own suggestions
-// from what has actually been typed into it before, kept in `history`
-// below — the alternative, making the user declare every option up front,
-// is exactly the fixed-enum rigidity this feature exists to avoid.
+// Field shape:
+//   { key, label, type: "text" | "choice", required: bool,
+//     options: [{ label, token }], allowOther: bool }
+//
+// §65 REPLACED the old "select" (Suggesting) type with "choice", and that
+// is a real capability removal, not a rename. Suggesting grew its own
+// option list from whatever had been typed into it before, with zero
+// authoring. Choice requires someone to write the list up front.
+//
+// The reason it went: a frequency-based suggestion actively misleads on a
+// real shoot. The operator who drops the most cards — often just because
+// their local storage is smallest — dominates the list regardless of who
+// is actually dropping tonight, so the top suggestion is confidently
+// wrong exactly when nobody is looking closely.
+//
+// A saved "select" field loads as plain Text. Not as a Choice with an
+// empty option list: that would render an empty dropdown with no way to
+// enter the value the field has been collecting for months, turning a
+// working preset into a broken one. Text keeps every one of those presets
+// usable, and loses only the autocomplete that is being removed anyway.
 
 const fsp = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { app } = require("electron");
 const { normalizeFilters } = require("./filters");
-
-const MAX_SUGGESTIONS = 20;
 
 function presetsFile() {
   return path.join(app.getPath("userData"), "naming-presets.json");
@@ -35,15 +47,39 @@ function normalizeKey(raw) {
     .replace(/^_+|_+$/g, "");
 }
 
+/**
+ * One Choice option: what the dropdown shows, and what lands in the name.
+ *
+ * They are separate because they read best differently — "Mathias" in a
+ * dropdown, "MS" in a filename. Token falls back to the label rather than
+ * being required, so the common case (they are the same) costs nothing.
+ */
+function normalizeOption(o) {
+  const label = String(o?.label ?? "").trim();
+  const token = String(o?.token ?? "").trim();
+  return { label, token };
+}
+
 function normalizeField(f, i) {
   const label = String(f?.label ?? "").trim();
   const key = normalizeKey(f?.key || label) || `field_${i + 1}`;
-  return {
+  // "select" was Suggesting. It is gone; those fields become plain Text.
+  const type = f?.type === "choice" ? "choice" : "text";
+  const out = {
     key,
     label: label || key,
-    type: f?.type === "select" ? "select" : "text",
+    type,
     required: Boolean(f?.required),
   };
+  if (type === "choice") {
+    // An option with no label at all cannot be picked or displayed, so it
+    // is dropped rather than saved as a blank row someone has to find.
+    out.options = (Array.isArray(f?.options) ? f.options : [])
+      .map(normalizeOption)
+      .filter((o) => o.label);
+    out.allowOther = Boolean(f?.allowOther);
+  }
+  return out;
 }
 
 function normalizePreset(p) {
@@ -92,10 +128,10 @@ function normalizeStore(raw) {
     // display-names each have one — this is preset-adjacent state, and a
     // fourth JSON file to hold a single integer is not worth the read.
     sourceCounter: normalizeCounter(raw?.sourceCounter),
-    // { [fieldKey]: string[] } — most recent first. Shared across presets
-    // on purpose: an "operator" field means the same thing whichever
-    // preset declares it, so the names you've typed should follow.
-    history: raw && typeof raw.history === "object" && raw.history ? raw.history : {},
+    // §65 — `history` (the Suggesting type's typed-value memory) is
+    // deliberately NOT carried forward. Dropping it here means the next
+    // write of this file removes it from disk, rather than leaving dead
+    // data that nothing reads.
   };
 }
 
@@ -103,7 +139,7 @@ async function read() {
   try {
     return normalizeStore(JSON.parse(await fsp.readFile(presetsFile(), "utf8")));
   } catch {
-    return { presets: [], history: {}, sourceCounter: 1 };
+    return { presets: [], sourceCounter: 1 };
   }
 }
 
@@ -137,24 +173,6 @@ async function save(preset) {
 async function remove(id) {
   const store = await read();
   store.presets = store.presets.filter((p) => p.id !== id);
-  // History is intentionally kept: deleting a preset shouldn't forget
-  // every operator name ever typed, and another preset may use the field.
-  return write(store);
-}
-
-/**
- * Record the values used for a job, so "select" fields can suggest them
- * next time. Called when a copy actually starts — not on every keystroke,
- * which would fill the list with half-typed names.
- */
-async function recordValues(values) {
-  const store = await read();
-  for (const [key, value] of Object.entries(values || {})) {
-    const v = String(value ?? "").trim();
-    if (!v) continue;
-    const prev = Array.isArray(store.history[key]) ? store.history[key] : [];
-    store.history[key] = [v, ...prev.filter((x) => x !== v)].slice(0, MAX_SUGGESTIONS);
-  }
   return write(store);
 }
 
@@ -188,7 +206,6 @@ module.exports = {
   normalizeCounter,
   save,
   remove,
-  recordValues,
   normalizeKey,
   normalizePreset,
   presetsFile,
