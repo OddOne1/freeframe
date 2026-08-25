@@ -170,7 +170,83 @@ async function waitFor(ev, expr, tries = 40) {
   check(await waitFor(ev, `document.getElementById("preset-toggle").hidden === true`),
     "deleting it removes the switch rather than offering to restore something gone");
 
+  // §65.13 — "temporarily disable naming without losing the preset".
+  //
+  // The mechanism §25c part 3 specified (a `namingSuspended` flag, with the
+  // pill still naming the preset while naming is off) was NEVER BUILT — it
+  // was explicitly deferred. What exists is §62's switch, which deselects
+  // and remembers. The user-visible capability is there; the pill reads
+  // "No naming preset" while off, which the deferred design would not have.
+  // Re-checked here because §65 asks that it survive the card rebuild.
+  await ev(`window.freeframe.savePreset({ id: null, name: "Suspend Check",
+    folderTemplate: "{YYYY}", fileTemplate: "", fields: [] })`);
+  await waitFor(ev, `presetStore.presets.some(p => p.name === "Suspend Check")`);
+  const suspend = await ev(`
+    (() => {
+      const p = presetStore.presets.find(x => x.name === "Suspend Check");
+      setActivePreset(p.id);
+      const on1 = { active: activePresetId, payload: namingPayload() !== null };
+      document.getElementById("preset-toggle").click();
+      const off = { active: activePresetId, payload: namingPayload() !== null,
+                    label: document.getElementById("preset-label").textContent };
+      document.getElementById("preset-toggle").click();
+      const on2 = { active: activePresetId, payload: namingPayload() !== null };
+      return { on1, off, on2, id: p.id };
+    })()
+  `);
+  check(suspend.on1.payload === true, "with the preset on, a job would be named");
+  check(suspend.off.payload === false, "one click turns naming off for the next job");
+  check(suspend.on2.active === suspend.on1.active,
+    "and clicking back restores the SAME preset — the selection is not lost",
+    `${suspend.on1.active} → ${suspend.on2.active}`);
+  check(suspend.off.label === "No naming preset",
+    "NOTE: it deselects-and-remembers rather than suspending, so the pill reads empty while off",
+    suspend.off.label);
+  await ev(`window.freeframe.deletePreset(${'`'}${'$'}{${JSON.stringify("x")}}${'`'})`).catch(() => {});
+  await ev(`(async () => {
+    const s = await window.freeframe.listPresets();
+    for (const p of s.presets.filter(p => p.name === "Suspend Check")) await window.freeframe.deletePreset(p.id);
+  })()`);
+
   // ── §64 ────────────────────────────────────────────────────────────────
+  // ── §65.14 ─────────────────────────────────────────────────────────────
+  console.log("2b. (\u00a765.14) Transfers shows Progress and Log side by side");
+  const transfers = await ev(`
+    (() => {
+      const panel = document.getElementById("jobs-panel");
+      if (!panel.classList.contains("open")) document.getElementById("jobs-toggle").click();
+      const p = document.getElementById("jobs-progress-col").getBoundingClientRect();
+      const l = document.getElementById("jobs-log-col").getBoundingClientRect();
+      return {
+        inPanel: panel.contains(document.getElementById("progress"))
+              && panel.contains(document.getElementById("jobs-list")),
+        sameRow: Math.abs(p.top - l.top) < 2,
+        logRightOfProgress: l.left >= p.right - 1,
+        // The section it lives in must be the SAME collapsible one, with
+        // its own controls intact — not a new panel or a new tab.
+        stillCollapsible: !!document.getElementById("jobs-toggle"),
+        keepsClear: !!document.getElementById("jobs-clear"),
+        keepsDetach: !!document.getElementById("jobs-detach"),
+      };
+    })()
+  `);
+  check(transfers.inPanel, "both live inside the Transfers section");
+  check(transfers.sameRow && transfers.logRightOfProgress,
+    "as two columns rather than stacked", JSON.stringify(transfers));
+  check(transfers.stillCollapsible && transfers.keepsClear && transfers.keepsDetach,
+    "and it is still the same collapsible section, with Clear and Detach");
+
+  const collapsed = await ev(`
+    (() => {
+      document.getElementById("jobs-toggle").click();
+      const open = document.getElementById("jobs-panel").classList.contains("open");
+      document.getElementById("jobs-toggle").click();
+      return { open, reopened: document.getElementById("jobs-panel").classList.contains("open") };
+    })()
+  `);
+  check(collapsed.open === false && collapsed.reopened === true,
+    "collapse and expand still work", JSON.stringify(collapsed));
+
   console.log("3. (§64) The FreeFrame page scopes the header");
   check(!(await ev(`!!document.getElementById("account")`)),
     "the Sign in button is gone from the header — login lives in Settings now");
@@ -204,11 +280,14 @@ async function waitFor(ev, expr, tries = 40) {
   await ev(`setPage("freeframe")`);
   await sleep(900);
   const hiddenNow = await ev(`JSON.stringify(
-    ["settings-btn", "clear", "start", "refresh"].map(id =>
+    ["settings-btn", "start-bar", "fields-show", "refresh"].map(id =>
       [id, getComputedStyle(document.getElementById(id)).display === "none"]))`);
   const map = Object.fromEntries(JSON.parse(hiddenNow));
-  check(map["settings-btn"] && map.clear && map.start,
-    "Settings, Clear and Copy & Verify are hidden there — all three are about a copy job", hiddenNow);
+  // §65.12 relocated Copy & Verify into #start-bar and deleted Clear, so
+  // what has to disappear on this page is the bar rather than a header
+  // button — same rule, the controls simply moved.
+  check(map["settings-btn"] && map["start-bar"] && map["fields-show"],
+    "Settings, the Copy & Verify bar and the naming-card toggle are hidden there", hiddenNow);
   check(map.refresh === false, "Refresh stays");
 
   // And it must mean the thing on screen, rather than silently re-listing
@@ -238,9 +317,12 @@ async function waitFor(ev, expr, tries = 40) {
   await ev(`setPage("offload")`);
   await sleep(500);
   const backNow = await ev(`JSON.stringify(
-    ["settings-btn", "clear", "start"].map(id =>
+    ["settings-btn", "start-bar"].map(id =>
       getComputedStyle(document.getElementById(id)).display !== "none"))`);
-  check(JSON.parse(backNow).every(Boolean), "switching back restores all three", backNow);
+  // #fields-show is deliberately absent from this list: it has its own
+  // rule (shown only when a preset is active AND its card is hidden), so
+  // asserting it visible here would be asserting the wrong thing.
+  check(JSON.parse(backNow).every(Boolean), "switching back restores them", backNow);
   check(await ev(`refresh.toString().includes("listVolumes")`),
     "and Refresh goes back to listing volumes");
 

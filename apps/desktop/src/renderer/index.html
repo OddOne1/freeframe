@@ -80,8 +80,13 @@
        is. The cost is a logged-in user on the FreeFrame page having to
        switch back to open Settings. */
     body.page-web #settings-btn,
-    body.page-web #clear,
-    body.page-web #start { display: none !important; }
+    /* §65.12 moved Copy & Verify out of the header into #start-bar and
+       deleted Clear outright, so the rule follows them. #fields-show is
+       hidden too: it reveals the naming card, which belongs to the Offload
+       page, and leaving it would offer to open a panel that page cannot
+       show. */
+    body.page-web #fields-show,
+    body.page-web #start-bar { display: none !important; }
     header .spacer { flex: 1; }
     header .mode {
       -webkit-app-region: no-drag;
@@ -156,13 +161,48 @@
        have changed what §18a's ratio assertions measure. */
     .workspace { flex: 1; display: flex; min-height: 0; min-width: 0; }
     .workspace > .columns { flex: 1; }
+    /* §65.10 — a gutter holding a content-sized card, not a column.
+       It stays a flex sibling so it PUSHES the columns rather than
+       overlaying them: the mockup this replaces was absolutely positioned
+       and sat on top of the Destination drop zone, which is the one thing
+       the spec rules out. Scrolls itself if the card outgrows the window. */
     #fields-panel {
-      width: 250px; flex-shrink: 0; display: flex; flex-direction: column;
-      min-height: 0; background: var(--bg-primary);
-      border-left: 1px solid var(--border);
+      flex: 0 0 auto; display: flex; align-items: flex-start;
+      min-height: 0; overflow-y: auto; padding: 10px;
+      background: var(--bg-primary); border-left: 1px solid var(--border);
     }
     #fields-panel.hidden { display: none; }
-    #fields-body { padding: 10px 12px; }
+    .naming-card {
+      width: 246px; border: 1px solid var(--border); border-radius: 10px;
+      background: var(--bg-elevated); box-shadow: 0 8px 24px rgba(0,0,0,.28);
+      overflow: hidden;
+    }
+    .naming-card-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 10px; border-bottom: 1px solid var(--border);
+      background: var(--bg-secondary);
+    }
+    .naming-card-head h2 { margin: 0; font-size: 11px; font-weight: 600; }
+    .naming-card-head .spacer { flex: 1; }
+    #fields-body { padding: 10px; }
+
+    /* §65.12 — the start bar. The two zones mirror .workspace's own split,
+       so "centred under the card" and "centred under the columns" are the
+       same rule applied to whichever zone is showing. */
+    #start-bar {
+      display: flex; flex-shrink: 0; padding: 10px 0;
+      border-top: 1px solid var(--border); background: var(--bg-primary);
+    }
+    .start-zone { display: flex; align-items: center; justify-content: center; }
+    #start-zone-columns { flex: 1; }
+    /* Matches the gutter's own width so the button lands under the card,
+       not beside it. Hidden with the card, which puts the button back in
+       the columns zone. */
+    #start-zone-card { display: none; flex: 0 0 auto; width: 266px; }
+    body.has-naming-card #start-zone-card { display: flex; }
+    #start {
+      height: 34px; padding: 0 22px; font-size: 13px; font-weight: 600;
+    }
     .fv-empty { font-size: 11px; color: var(--text-tertiary); line-height: 1.6; }
     .fv-source {
       font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
@@ -206,6 +246,20 @@
       color: var(--text-tertiary); word-break: break-all; line-height: 1.5;
     }
     .fv-preview.bad { color: var(--status-error); }
+    /* §65.4/.11 — the card's own footer: the number this card renders as,
+       and the only Clear button left in the app. */
+    .fv-counter {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
+    }
+    .fv-counter label { font-size: 11px; color: var(--text-secondary); flex: 1; }
+    .fv-counter input {
+      width: 72px; height: 26px; border-radius: 6px; padding: 0 8px;
+      font-size: 12px; font-family: inherit; box-sizing: border-box;
+      background: var(--bg-secondary); border: 1px solid var(--border);
+      color: var(--text-primary);
+    }
+    .fv-clear-row { display: flex; justify-content: flex-end; margin-top: 8px; }
     /* Restores the panel once hidden — lives in the header so it is
        reachable when the panel itself is not. */
     #fields-show { display: none; }
@@ -680,6 +734,26 @@
       overflow-y: auto; height: 180px;
     }
     #jobs-panel.open { display: block; }
+    /* §65.14 — two columns, not stacked. The log gets the wider share
+       because its rows are the ones that wrap. */
+    #jobs-cols {
+      display: grid; grid-template-columns: minmax(0, 280px) minmax(0, 1fr);
+      align-items: start; min-height: 0;
+    }
+    #jobs-progress-col { border-right: 1px solid var(--border); min-width: 0; }
+    #jobs-log-col { min-width: 0; }
+    .jobs-col-title {
+      font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+      color: var(--text-tertiary); padding: 7px 12px 3px;
+    }
+    .jobs-col-empty { padding: 2px 12px 12px; font-size: 11px; color: var(--text-tertiary); }
+    /* At a narrow window two columns become two very thin ones; one above
+       the other is the better failure mode, and §25b already established
+       reflow-over-clip as this app's answer. */
+    @media (max-width: 780px) {
+      #jobs-cols { grid-template-columns: minmax(0, 1fr); }
+      #jobs-progress-col { border-right: none; border-bottom: 1px solid var(--border); }
+    }
     /* The handle replaces the panel's own top border when it's showing. */
     #jobs-resize.open + #jobs-panel { border-top: none; }
     #jobs-detached-note {
@@ -809,8 +883,6 @@
     <button id="refresh"><span class="icon" data-icon="refresh"></span> Refresh</button>
     <button id="settings-btn" title="Settings">Settings</button>
     <button id="fields-show">Naming Fields</button>
-    <button id="clear">Clear</button>
-    <button id="start" class="primary" disabled>Copy &amp; Verify</button>
   </header>
 
   <div class="workspace">
@@ -847,23 +919,64 @@
        front of you, and they are edited while looking at it. Separate from
        the job panel below, which is about work already submitted. -->
   <aside id="fields-panel">
-    <div class="col-head">
-      <h2>Naming Fields</h2>
-      <span class="spacer"></span>
-      <button id="fields-collapse" title="Hide the naming fields panel">Hide</button>
+    <!-- §65.10 — a content-sized card in a gutter, not a full-height
+         column. Still a flex SIBLING of .columns rather than an absolutely
+         positioned overlay: pushing is what guarantees it can never cover
+         the Destination drop zone, which is the one thing the spec pins. -->
+    <div class="naming-card">
+      <div class="naming-card-head">
+        <h2>Naming Fields</h2>
+        <span class="spacer"></span>
+        <button id="fields-collapse" title="Hide the naming fields panel">Hide</button>
+      </div>
+      <div id="fields-body"></div>
     </div>
-    <div class="col-body"><div id="fields-body"></div></div>
   </aside>
+  </div>
+
+  <!-- §65.12 — Copy &amp; Verify lives below the work, not in the header.
+       Two zones mirroring the workspace above: the button moves into
+       whichever one is showing, so it is centred under the card when the
+       card is open and under the three columns when it is not. -->
+  <div id="start-bar">
+    <div class="start-zone" id="start-zone-columns"></div>
+    <div class="start-zone" id="start-zone-card"></div>
   </div>
 
   <!-- Job panel (§18c): a docked tab, not a modal. Rows come from main's
        queue snapshot, so this and the detached window always agree. -->
   <div id="jobs-resize" title="Drag to resize"></div>
+  <!-- §65.14 — Progress and Log side by side inside the SAME collapsible
+       Transfers section, rather than the progress readout stacked beneath
+       it in the footer. The panel already opens itself whenever a job is
+       running or queued, so moving progress in here does not hide it at
+       the moment it matters. -->
   <div id="jobs-panel">
-    <div id="jobs-list"></div>
-    <div id="jobs-detached-note">
-      Transfers are showing in their own window.
-      <button id="jobs-redock" style="text-decoration:underline">Bring them back here</button>
+    <div id="jobs-cols">
+      <div id="jobs-progress-col">
+        <div class="jobs-col-title">Progress</div>
+        <div class="progress" id="progress">
+          <div class="progress-line">
+            <strong id="p-phase">Preparing…</strong>
+            <span id="p-counts"></span>
+          </div>
+          <div class="bar"><div id="p-bar"></div></div>
+          <div class="progress-file" id="p-file"></div>
+          <!-- §58. Its own line rather than appended to p-counts, which
+               shows the job's totals and should not flicker every tick. -->
+          <div class="progress-rate" id="p-rate"></div>
+          <div class="released" id="p-released"></div>
+        </div>
+        <div class="jobs-col-empty" id="progress-idle">Nothing running.</div>
+      </div>
+      <div id="jobs-log-col">
+        <div class="jobs-col-title">Log</div>
+        <div id="jobs-list"></div>
+        <div id="jobs-detached-note">
+          Transfers are showing in their own window.
+          <button id="jobs-redock" style="text-decoration:underline">Bring them back here</button>
+        </div>
+      </div>
     </div>
   </div>
   <div id="jobs-tab">
@@ -876,19 +989,10 @@
     <button id="jobs-detach" title="Open in a separate window">Detach</button>
   </div>
 
+  <!-- The summary stays here: it is a job's verdict, read after the fact,
+       and belongs with the window rather than inside a panel that can be
+       collapsed. Progress moved up into Transfers (§65.14). -->
   <footer>
-    <div class="progress" id="progress">
-      <div class="progress-line">
-        <strong id="p-phase">Preparing…</strong>
-        <span id="p-counts"></span>
-      </div>
-      <div class="bar"><div id="p-bar"></div></div>
-      <div class="progress-file" id="p-file"></div>
-      <!-- §58. Its own line rather than appended to p-counts, which shows
-           the job's totals and should not flicker with every tick. -->
-      <div class="progress-rate" id="p-rate"></div>
-      <div class="released" id="p-released"></div>
-    </div>
     <div class="summary" id="summary"></div>
   </footer>
 
@@ -1216,6 +1320,13 @@
     function el(tag, opts = {}, children = []) {
       const n = document.createElement(tag);
       if (opts.class) n.className = opts.class;
+      // §65 — `id` was silently ignored here, so every el(..., { id })
+      // produced an element $() could never find again. #fields-preview is
+      // built that way, which means the naming panel's preview has never
+      // rendered: updateFieldsPreview() looked it up, got null, and
+      // returned early without a sound. preset-editor.js's own el() already
+      // supports this; index.html's did not.
+      if (opts.id) n.id = opts.id;
       if (opts.text != null) n.textContent = opts.text;
       if (opts.title) n.title = opts.title;
       if (opts.dataset) for (const [k, v] of Object.entries(opts.dataset)) n.dataset[k] = v;
@@ -2549,7 +2660,6 @@
         : destNodes.length > 1
           ? `Copy & Verify → ${destNodes.length}`
           : "Copy & Verify";
-      $("clear").disabled = !sourcePath && !destNodes.length;
       // Refresh only re-lists volumes; it never touches a job, so there is
       // no reason for a running copy to disable it.
       $("refresh").disabled = false;
@@ -2606,13 +2716,21 @@
       $("p-rate").textContent = bits.join(" · ");
     }
 
+    /** §65.14 — the Progress column always says something. Without this the
+     *  column is a bare heading over empty space whenever nothing runs. */
+    function showProgress(on) {
+      $("progress").style.display = on ? "block" : "none";
+      const idle = $("progress-idle");
+      if (idle) idle.style.display = on ? "none" : "block";
+    }
+
     function onProgress(p) {
       if (p.phase === "start") {
-        $("progress").style.display = "block";
+        showProgress(true);
         $("p-phase").textContent = p.legCount > 1 ? `Copying · ${p.legCount} legs` : "Copying";
         $("p-counts").textContent = `${p.totalFiles} files · ${formatBytes(p.totalBytes)}`;
       } else if (p.phase === "scanning") {
-        $("progress").style.display = "block";
+        showProgress(true);
         $("p-phase").textContent = "Scanning source…";
       } else if (p.phase === "node-status") {
         const prev = nodeStatus.get(p.node.id) || {};
@@ -2865,7 +2983,7 @@
         box.style.display = "block";
       } finally {
         copying = false;
-        $("progress").style.display = "none";
+        showProgress(false);
         render();
       }
 
@@ -2880,11 +2998,35 @@
     // ── Wiring ──
     paintStaticIcons();
 
+    /**
+     * §65.12 — Copy & Verify left the header.
+     *
+     * Created once here and MOVED between the two zones rather than
+     * rendered twice: every existing caller reaches it as $("start"), and
+     * two elements sharing that id would hand half of them a stale one.
+     */
+    (() => {
+      const btn = el("button", { class: "primary", text: "Copy & Verify" });
+      btn.id = "start";
+      btn.disabled = true;
+      $("start-zone-columns").appendChild(btn);
+    })();
+
+    /** Put it under the card when the card is showing, under the columns
+     *  when it is not. */
+    function placeStartButton() {
+      const btn = $("start");
+      if (!btn) return;
+      const showingCard = !$("fields-panel").classList.contains("hidden");
+      document.body.classList.toggle("has-naming-card", showingCard);
+      const zone = $(showingCard ? "start-zone-card" : "start-zone-columns");
+      if (btn.parentElement !== zone) zone.appendChild(btn);
+    }
+
     window.freeframe.onCopyProgress(onProgress);
     on("fields-collapse", "click", () => setFieldsPanel(true));
     on("fields-show", "click", () => setFieldsPanel(false));
     on("refresh", "click", refresh);
-    on("clear", "click", clearAll);
     // Wrapped, not passed directly: a click handler receives the MouseEvent
     // as its first argument, which would land in startCopy's
     // allowFragileRename parameter and quietly waive the §23d guard.
@@ -3189,6 +3331,9 @@
       const hasPreset = Boolean(activePreset());
       $("fields-panel").classList.toggle("hidden", !hasPreset || fieldsPanelHidden);
       $("fields-show").classList.toggle("on", hasPreset && fieldsPanelHidden);
+      // §65.12 — Copy & Verify follows the card, so it moves on the same
+      // signal rather than needing every caller to remember to move it.
+      placeStartButton();
     }
 
     function setFieldsPanel(hidden) {
@@ -3348,7 +3493,75 @@
       }
 
       host.appendChild(el("div", { id: "fields-preview", class: "fv-preview" }));
+      host.appendChild(renderCardNumber());
+      host.appendChild(renderCardClear());
       updateFieldsPreview();
+    }
+
+    /**
+     * §65.4 — {sourcecounter}, editable where the job is actually started.
+     *
+     * Backend already existed (presets.js's setSourceCounter, and
+     * claimSourceCounter here); nothing surfaced it outside Settings.
+     *
+     * It shows THIS card's number once a source is assigned, because that
+     * is the number about to be rendered — showing the store's "next" one
+     * beside a card it does not describe would be worse than not showing
+     * it. Typing a value therefore sets this card's number AND pushes the
+     * store one past it, so the next card follows on rather than repeating.
+     */
+    function renderCardNumber() {
+      const wrap = el("div", { class: "fv-counter" });
+      wrap.appendChild(el("label", { text: sourcePath ? "Card #" : "Next card #",
+        title: "What {sourcecounter} renders as" }));
+      const input = el("input", { id: "fv-counter-input" });
+      input.type = "number";
+      input.min = "1";
+      input.value = String(sourcePath ? sourceCounter : nextSourceCounter);
+      input.addEventListener("change", async () => {
+        const n = Math.max(1, Math.floor(Number(input.value) || 1));
+        if (sourcePath) {
+          sourceCounter = n;
+          // Remembered per path, exactly as a claimed number is, so
+          // switching cards and back does not undo the correction.
+          sourceCounters.set(sourcePath, n);
+          nextSourceCounter = await window.freeframe.setSourceCounter(n + 1);
+        } else {
+          nextSourceCounter = await window.freeframe.setSourceCounter(n);
+        }
+        input.value = String(sourcePath ? sourceCounter : nextSourceCounter);
+        updateFieldsPreview();
+      });
+      wrap.appendChild(input);
+      return wrap;
+    }
+
+    /**
+     * §65.11 — Clear, in its new and only home.
+     *
+     * It resets the values typed for THIS source and nothing else. It must
+     * not touch the numbering, which keeps advancing per card regardless —
+     * a card's number is a fact about which card it is, not a value someone
+     * entered. It also no longer clears the source/destination selection:
+     * that was the header button's job, and drag-and-drop does not need an
+     * undo affordance (§65.11).
+     */
+    function renderCardClear() {
+      const row = el("div", { class: "fv-clear-row" });
+      row.appendChild(el("button", {
+        id: "fields-clear",
+        text: "Clear",
+        title: "Reset the values entered for this card. The card number is unaffected.",
+        onClick: () => {
+          const entry = valuesEntry();
+          for (const k of Object.keys(entry.values)) delete entry.values[k];
+          entry.disabled.clear();
+          renderFieldsPanel();
+          updateFieldsPreview();
+          render();
+        },
+      }));
+      return row;
     }
 
     async function updateFieldsPreview() {

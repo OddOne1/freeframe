@@ -204,6 +204,137 @@ async function walk(dir, base = "") {
     check(gate.before === true, "Start is disabled while a required field is empty");
     check(gate.after === false, "and enables as soon as it is filled");
 
+    // ── 1c. The card, and where Copy & Verify sits (§65.10-.12) ──────────
+    console.log("\n1c. (\u00a765.10-.12) A compact card, and a relocated Copy & Verify");
+    const layout = await ev(`(() => {
+      const card = document.querySelector(".naming-card").getBoundingClientRect();
+      const dest = document.getElementById("zone-dest").getBoundingClientRect();
+      const panel = document.getElementById("fields-panel").getBoundingClientRect();
+      return {
+        // The one thing the spec pins: it must never sit on top of the
+        // Destination drop zone. A flex sibling pushes; the sketch this
+        // replaces was absolutely positioned and covered it.
+        overlapsDest: card.left < dest.right && card.right > dest.left,
+        cardH: Math.round(card.height),
+        panelH: Math.round(panel.height),
+        winH: window.innerHeight,
+        startParent: document.getElementById("start").parentElement.id,
+        headerHasStart: !!document.querySelector("header #start"),
+        headerHasClear: !!document.querySelector("header #clear"),
+        clearExists: !!document.getElementById("clear"),
+      };
+    })()`);
+    check(!layout.overlapsDest, "the card does not overlap the Destination zone");
+    check(layout.cardH < layout.winH * 0.75,
+      "and is content-sized rather than a full-height column",
+      `${layout.cardH}px of ${layout.winH}px`);
+    check(layout.startParent === "start-zone-card",
+      "Copy & Verify sits under the card while the card is open", layout.startParent);
+    check(!layout.headerHasStart && !layout.headerHasClear,
+      "neither button is in the header any more");
+    check(!layout.clearExists, "the old header Clear is gone entirely, not merely moved");
+
+    // At several widths, because "does not overlap" is a layout claim.
+    const widths = await ev(`(() => {
+      const out = [];
+      const ws = document.querySelector(".workspace");
+      for (const w of [1400, 1100, 960]) {
+        ws.style.width = w + "px";
+        const card = document.querySelector(".naming-card").getBoundingClientRect();
+        const dest = document.getElementById("zone-dest").getBoundingClientRect();
+        out.push([w, card.left >= dest.right - 1]);
+      }
+      ws.style.width = "";
+      return out;
+    })()`);
+    check(widths.every(([, ok]) => ok),
+      "and stays clear of it at narrower widths too", JSON.stringify(widths));
+
+    // ── 1d. Card # and Clear (§65.4/.11) ─────────────────────────────────
+    console.log("\n1d. (\u00a765.4/.11) Card number and Clear live in the card");
+    const card = await ev(`(async () => {
+      const counter = document.getElementById("fv-counter-input");
+      const before = counter.value;
+      counter.value = String(Number(before) + 5);
+      counter.dispatchEvent(new Event("change"));
+      await new Promise(r => setTimeout(r, 500));
+      return {
+        before,
+        counterNow: document.getElementById("fv-counter-input").value,
+        payloadCounter: namingPayload().sourceCounter,
+        hasClear: !!document.getElementById("fields-clear"),
+      };
+    })()`);
+    check(card.hasClear, "Clear is inside the card");
+    check(String(card.counterNow) === String(Number(card.before) + 5),
+      "the Card # is editable in place", `${card.before} → ${card.counterNow}`);
+    check(String(card.payloadCounter) === String(card.counterNow),
+      "and it is what the job will render as {sourcecounter}", String(card.payloadCounter));
+
+    const cleared = await ev(`(() => {
+      const inp = document.querySelector('#fields-body input[data-fv-key="operator"]');
+      inp.value = "Mathias"; inp.dispatchEvent(new Event("input"));
+      const beforeCounter = document.getElementById("fv-counter-input").value;
+      document.getElementById("fields-clear").click();
+      return {
+        beforeCounter,
+        values: JSON.stringify(namingPayload().values),
+        afterCounter: document.getElementById("fv-counter-input").value,
+        counterInPayload: namingPayload().sourceCounter,
+      };
+    })()`);
+    check(cleared.values === "{}", "Clear resets the entered values", cleared.values);
+    check(cleared.afterCounter === cleared.beforeCounter,
+      "and leaves the Card # alone — a card's number is not a value someone typed",
+      `${cleared.beforeCounter} → ${cleared.afterCounter}`);
+
+    // Clear really did clear, so the state the later sections expect has to
+    // be put back — this section is a detour through it, not a replacement.
+    await ev(`(() => {
+      const inp = document.querySelector('#fields-body input[data-fv-key="operator"]');
+      inp.value = "Mathias"; inp.dispatchEvent(new Event("input"));
+      return true;
+    })()`);
+
+    // ── 1e. The card can be dismissed, and Copy & Verify follows ─────────
+    console.log("\n1e. (\u00a765.12) The button follows the card");
+    const followed = await ev(`(() => {
+      setFieldsPanel(true);
+      const c = document.getElementById("fields-clear");
+      const hidden = {
+        cardHidden: document.getElementById("fields-panel").classList.contains("hidden"),
+        startParent: document.getElementById("start").parentElement.id,
+        // Dismissed, not deselected: the button is still built, but nothing
+        // of it is on screen.
+        clearVisible: Boolean(c && c.offsetParent),
+      };
+      setFieldsPanel(false);
+      return { hidden, backParent: document.getElementById("start").parentElement.id };
+    })()`);
+    check(followed.hidden.startParent === "start-zone-columns",
+      "with no card showing it centres under the three columns", followed.hidden.startParent);
+    check(!followed.hidden.clearVisible, "and no Clear button is on screen");
+    check(followed.backParent === "start-zone-card", "it returns under the card when that reopens");
+
+    // The spec's actual rule: with NO preset active there is no Clear at
+    // all — not hidden, not built. Dismissing the card above is a
+    // different state and is checked as such.
+    const noPreset = await ev(`(() => {
+      const was = activePresetId;
+      setActivePreset(null);
+      const out = {
+        clearExists: !!document.getElementById("fields-clear"),
+        counterExists: !!document.getElementById("fv-counter-input"),
+        startParent: document.getElementById("start").parentElement.id,
+      };
+      setActivePreset(was);
+      return out;
+    })()`);
+    check(!noPreset.clearExists && !noPreset.counterExists,
+      "with no preset active, neither Clear nor the Card # exists anywhere");
+    check(noPreset.startParent === "start-zone-columns",
+      "and Copy & Verify centres under the three columns", noPreset.startParent);
+
     // ── 1b. "Other…" reveals an input beside THAT field only ─────────────
     console.log("\n1b. Other… is a per-field escape hatch (\u00a765.3)");
     const other = await ev(`(() => {
