@@ -20,6 +20,14 @@
 //   free        — tolerates any other job
 //   source      — tolerates only jobs sharing its SOURCE volume
 //   destination — tolerates only jobs sharing a DESTINATION volume
+//   exclusive   — tolerates nothing ("Single Transfer", §63)
+//
+// `exclusive` needs no special case anywhere else BECAUSE of the symmetry
+// below: a job that tolerates nothing can never coexist, and — since
+// canCoexist ANDs both directions — nothing else can coexist with it
+// either, whatever its own mode says. That is what makes "Single
+// Transfer" mean one job at a time rather than one job at a time among
+// jobs that happen to agree.
 //
 // Two jobs may run at the same time only if **each tolerates the other**:
 //
@@ -51,7 +59,7 @@
 
 const { RateTracker } = require("./rate");
 
-const MODES = new Set(["free", "source", "destination"]);
+const MODES = new Set(["free", "source", "destination", "exclusive"]);
 
 /** Does `a` tolerate running alongside `b`? */
 function tolerates(a, b) {
@@ -62,6 +70,8 @@ function tolerates(a, b) {
       return Boolean(a.sourceKey) && a.sourceKey === b.sourceKey;
     case "destination":
       return (a.destKeys || []).some((k) => (b.destKeys || []).includes(k));
+    case "exclusive":
+      return false;
     default:
       // An unknown mode is treated as the most restrictive option rather
       // than the most permissive: a typo should queue a job, not grant it

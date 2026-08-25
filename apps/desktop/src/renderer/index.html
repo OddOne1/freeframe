@@ -70,7 +70,18 @@
        out underneath would keep it doing layout work forever. */
     body.page-web .workspace,
     body.page-web #jobs-panel,
-    body.page-web #progress { display: none !important; }
+    body.page-web #progress,
+    /* §64 — these three are about a copy job, which the FreeFrame page has
+       nothing to do with. Refresh stays, and reloads the embedded app
+       instead. WORKFLOW CONSEQUENCE, stated rather than discovered: login
+       lives in Settings now, so it is only reachable from the Offload page.
+       That stays coherent because the FreeFrame tab is itself hidden while
+       logged out — a logged-out user is always on Offload, where Settings
+       is. The cost is a logged-in user on the FreeFrame page having to
+       switch back to open Settings. */
+    body.page-web #settings-btn,
+    body.page-web #clear,
+    body.page-web #start { display: none !important; }
     header .spacer { flex: 1; }
     header .mode {
       -webkit-app-region: no-drag;
@@ -92,6 +103,34 @@
     header .mode .caret { display: inline-flex; opacity: .7; transition: transform 120ms; }
     header .mode:hover .caret { opacity: 1; }
     header .mode.open .caret { transform: rotate(180deg); }
+    /* §62 — a one-click on/off for the active preset, so turning naming
+       off for one card does not mean reopening the menu twice. Shares the
+       pill's border with the button beside it rather than sitting as a
+       second control with its own outline. */
+    .mode-group {
+      display: inline-flex; align-items: stretch;
+      -webkit-app-region: no-drag;
+    }
+    .mode-group > .mode { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: none; }
+    .mode-switch {
+      display: inline-flex; align-items: center;
+      padding: 0 6px; border: 1px solid var(--border);
+      border-top-left-radius: 999px; border-bottom-left-radius: 999px;
+      background: var(--bg-elevated); cursor: pointer;
+    }
+    .mode-switch:hover { background: var(--bg-hover); }
+    .mode-switch .knob {
+      width: 22px; height: 12px; border-radius: 999px;
+      background: var(--bg-tertiary); border: 1px solid var(--border);
+      position: relative; transition: background 120ms;
+    }
+    .mode-switch .knob::after {
+      content: ""; position: absolute; top: 1px; left: 1px;
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--text-tertiary); transition: transform 120ms, background 120ms;
+    }
+    .mode-switch[aria-pressed="true"] .knob { background: var(--accent); border-color: var(--accent); }
+    .mode-switch[aria-pressed="true"] .knob::after { transform: translateX(10px); background: #fff; }
     button {
       -webkit-app-region: no-drag;
       background: var(--bg-elevated); color: var(--text-primary);
@@ -552,135 +591,6 @@
     .ffdir-chosen { font-size: 11px; color: var(--text-secondary); margin-bottom: 10px; }
     .ffdir-chosen span { color: var(--text-primary); }
 
-    /* ── Sign-in ──────────────────────────────────────────────────────
-       Rebuilt against apps/web/app/(auth)/layout.tsx and the classic branch
-       of components/auth/login-form.tsx, not from memory of them. The
-       measurements below are those files' Tailwind classes resolved to
-       values: max-w-sm = 384px, rounded-xl = 12px, p-6 = 24px, h-10 = 40px
-       inputs, h-11 = 44px button, gap-4 = 16px, gap-1.5 = 6px.
-
-       Scoped under #login-backdrop rather than extending the shared .field
-       / .modal rules, which the rename and dual-role modals also use — those
-       are compact utility dialogs and shouldn't inherit a sign-in screen's
-       proportions. */
-    #login-backdrop {
-      position: fixed; inset: 0; z-index: 1100; display: none;
-      /* Denser than the utility modals' 55%: this covers the whole app and
-         reads as its own screen, which is what the web login is. */
-      background: rgba(0,0,0,.72); backdrop-filter: blur(3px);
-      align-items: center; justify-content: center;
-      /* The web login lives in a full browser window; this one has to fit
-         whatever the app window happens to be. At the default 612px-tall
-         window the stack overflowed — logo against the top edge, tagline
-         against the bottom — so it scrolls rather than clipping, and
-         `margin:auto` keeps it centred while it still fits. */
-      overflow-y: auto; padding: 24px 0;
-    }
-    #login-backdrop.open { display: flex; }
-
-    /* The accent bloom behind the card — layout.tsx's
-       `h-[600px] w-[600px] rounded-full bg-accent/[0.04] blur-[120px]`. */
-    .login-glow {
-      position: absolute; left: 50%; top: 33%;
-      transform: translate(-50%, -50%);
-      height: 600px; width: 600px; border-radius: 50%;
-      background: rgba(91,141,239,.10);
-      filter: blur(120px); pointer-events: none;
-    }
-    .login-stack {
-      position: relative; display: flex; flex-direction: column;
-      align-items: center; width: 100%; max-width: 384px; padding: 0 16px;
-      margin: auto; flex-shrink: 0;
-    }
-    /* The web login's mb-10 / h-12, scaled down: this card carries a Server
-       field the web one doesn't, and the app window is shorter than a
-       browser window. */
-    .login-logo { margin-bottom: 24px; }
-    .login-logo img { height: 34px; width: auto; max-width: 200px; object-fit: contain; display: block; }
-    /* Shown instead when logo.svg is missing (see sync-tokens.js). */
-    .login-logo.text-fallback {
-      font-size: 26px; font-weight: 700; letter-spacing: -.02em;
-      color: var(--text-primary);
-    }
-
-    .login-card {
-      width: 100%; box-sizing: border-box;
-      border-radius: 12px;
-      border: 1px solid var(--border);
-      /* bg-bg-secondary/50 + backdrop-blur-sm */
-      background: color-mix(in srgb, var(--bg-secondary) 60%, transparent);
-      backdrop-filter: blur(6px);
-      padding: 24px;
-      box-shadow: 0 20px 25px -5px rgba(0,0,0,.35), 0 8px 10px -6px rgba(0,0,0,.35);
-      display: flex; flex-direction: column; gap: 16px;
-    }
-    /* mb-8 under the heading block, then gap-4 between fields. */
-    .login-head { margin-bottom: 8px; }
-    .login-head h3 {
-      margin: 0 0 4px; font-size: 20px; font-weight: 600;
-      color: var(--text-primary); letter-spacing: -.01em;
-    }
-    .login-head p { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text-secondary); }
-
-    .login-field { display: flex; flex-direction: column; gap: 6px; }
-    .login-field label { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
-    .login-field input {
-      height: 40px; width: 100%; box-sizing: border-box;
-      border-radius: 6px; border: 1px solid var(--border);
-      background: var(--bg-secondary);
-      padding: 0 12px; font-size: 14px; font-family: inherit;
-      color: var(--text-primary);
-      transition: border-color 150ms, box-shadow 150ms;
-    }
-    .login-field input::placeholder { color: var(--text-tertiary); }
-    /* focus:border-accent focus:ring-2 focus:ring-accent/20 */
-    .login-field input:focus {
-      outline: none; border-color: var(--accent);
-      box-shadow: 0 0 0 2px rgba(91,141,239,.20);
-    }
-    .login-hint { font-size: 11px; color: var(--text-tertiary); }
-
-    /* Hidden until there's something to say — an always-present empty box
-       (what .ff-error's min-height did) leaves a permanent dead gap. */
-    .login-error {
-      display: none;
-      border-radius: 6px;
-      border: 1px solid color-mix(in srgb, var(--status-error) 30%, transparent);
-      background: color-mix(in srgb, var(--status-error) 10%, transparent);
-      padding: 10px 12px; font-size: 13px; line-height: 1.4;
-      color: var(--status-error);
-    }
-    .login-error.show { display: block; }
-
-    /* Button size="lg": h-11, text-base, full width. */
-    .login-submit {
-      height: 44px; width: 100%; margin-top: 8px;
-      border: none; border-radius: 6px;
-      background: var(--accent); color: var(--accent-foreground);
-      font-size: 15px; font-weight: 500; font-family: inherit;
-      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-      transition: background 150ms, box-shadow 150ms, transform 150ms;
-      box-shadow: 0 1px 2px rgba(91,141,239,.20);
-    }
-    .login-submit:hover:not(:disabled) {
-      background: var(--accent-hover, var(--accent));
-      box-shadow: 0 4px 6px -1px rgba(91,141,239,.25);
-    }
-    .login-submit:active:not(:disabled) { transform: scale(.98); }
-    .login-submit:disabled { opacity: .5; }
-
-    /* The web login's tertiary text link ("Sign in with password instead"),
-       in the same position and weight — Cancel is this app's equivalent
-       secondary action. */
-    .login-cancel {
-      border: none; background: transparent; font-family: inherit;
-      font-size: 13px; color: var(--text-tertiary);
-      padding: 4px; transition: color 150ms;
-    }
-    .login-cancel:hover { color: var(--text-secondary); }
-
-    .login-tagline { margin: 20px 0 0; font-size: 11px; color: var(--text-tertiary); }
-
     /* ── Naming presets (§10 / §18b) ── */
 
     /* Item 3 — persistent per-card menu trigger. Right-click still works;
@@ -867,23 +777,28 @@
          switcher anywhere else would be underneath it and unreachable. -->
     <div class="pages" id="pages" role="tablist" aria-label="Page">
       <button class="page-tab active" id="page-offload" role="tab" aria-selected="true">Offload</button>
-      <button class="page-tab" id="page-freeframe" role="tab" aria-selected="false">FreeFrame</button>
+      <button class="page-tab" id="page-freeframe" role="tab" aria-selected="false" hidden>FreeFrame</button>
     </div>
     <!-- Naming preset (§10 / §18b). Sits beside the checksum pill because
          both are "how this job runs" settings chosen before starting. -->
     <!-- §18c: which other jobs this one will run alongside. Deliberately
          next to the checksum and naming pills — all three are "how this
          job runs" choices made before starting. -->
-    <button class="mode" id="conc-btn" title="Which jobs this one may run alongside">
-      <span id="conc-label">Runs alone</span>
+    <button class="mode" id="conc-btn" title="Queueing — which jobs this one may run alongside">
+      <span id="conc-label">Single Source</span>
       <span class="icon caret" data-icon="chevronDown"></span>
     </button>
-    <button class="mode" id="preset-btn" title="Folder and file naming">
-      <span id="preset-label">No naming preset</span>
-      <span class="icon caret" data-icon="chevronDown"></span>
-    </button>
+    <!-- §62 — the pill gained a switch. A <button> cannot nest a <button>,
+         so the two are siblings sharing one pill-shaped shell. -->
+    <span class="mode-group" id="preset-group">
+      <button class="mode-switch" id="preset-toggle" aria-pressed="false" hidden
+              title="Turn naming off"><span class="knob"></span></button>
+      <button class="mode" id="preset-btn" title="Folder and file naming">
+        <span id="preset-label">No naming preset</span>
+        <span class="icon caret" data-icon="chevronDown"></span>
+      </button>
+    </span>
     <span class="spacer"></span>
-    <button id="account">Sign in to FreeFrame</button>
     <button id="refresh"><span class="icon" data-icon="refresh"></span> Refresh</button>
     <button id="settings-btn" title="Settings">Settings</button>
     <button id="fields-show">Naming Fields</button>
@@ -977,45 +892,6 @@
        tagline underneath. Password rather than magic-code because a desktop
        app can't receive the emailed code — that's login-form's own classic
        branch, not an invented flow. -->
-  <div id="login-backdrop" class="modal-backdrop-shared">
-    <div class="login-glow" aria-hidden="true"></div>
-    <div class="login-stack">
-      <div class="login-logo"><img id="ff-logo" src="logo.svg" alt="FreeFrame" /></div>
-
-      <div class="login-card" role="dialog" aria-modal="true" aria-labelledby="ff-title">
-        <div class="login-head">
-          <h3 id="ff-title">Sign in to FreeFrame</h3>
-          <p>Projects you can offload to — and pull from — appear alongside your drives.</p>
-        </div>
-
-        <div id="ff-error" class="login-error" role="alert"></div>
-
-        <div class="login-field">
-          <label for="ff-email">Email address</label>
-          <input id="ff-email" type="email" placeholder="you@example.com"
-                 autocomplete="username" spellcheck="false" />
-        </div>
-        <div class="login-field">
-          <label for="ff-pass">Password</label>
-          <input id="ff-pass" type="password" placeholder="Your password"
-                 autocomplete="current-password" />
-        </div>
-        <div class="login-field">
-          <label for="ff-url">Server</label>
-          <input id="ff-url" type="text" spellcheck="false" />
-          <!-- No equivalent on the web login, where the server is wherever
-               the page came from. A desktop app has to be told. -->
-          <span class="login-hint">The FreeFrame instance to sign in to.</span>
-        </div>
-
-        <button id="ff-submit" class="login-submit">Sign in</button>
-        <button id="ff-cancel" class="login-cancel">Cancel</button>
-      </div>
-
-      <p class="login-tagline">Collaborative media review &amp; approval</p>
-    </div>
-  </div>
-
   <!-- Item 2: which folder inside a project this job reads from / writes
        into. The project equivalent of the per-device "Choose folder here
        as Destination…" entry. -->
@@ -2713,7 +2589,20 @@
       renderFieldsPanel();
     }
 
+    // Which page the switcher is on (§60b). Declared here rather than beside
+    // setPage() because refresh() reads it, and refresh() runs a long way
+    // above that — a `let` further down is a temporal-dead-zone throw
+    // waiting for the first volumes:changed event that arrives early.
+    let currentPage = "offload";
+
     async function refresh() {
+      // §64 — on the FreeFrame page, "Refresh" means the thing on screen.
+      // Re-listing drives the page is not showing would look like a button
+      // that does nothing.
+      if (currentPage === "freeframe") {
+        await window.freeframe.reloadWebView();
+        return;
+      }
       try {
         volumes = await window.freeframe.listVolumes();
       } catch (err) {
@@ -3113,17 +3002,51 @@
 
     const activePreset = () => presetStore.presets.find((p) => p.id === activePresetId) || null;
 
+    /**
+     * §62 — which preset the quick switch turns back ON.
+     *
+     * Naming "off" is the absence of a selection, not a flag on the preset,
+     * so switching off has to remember what it switched off FROM or the
+     * switch would be a one-way trip back into the menu — which is the
+     * detour it exists to remove.
+     */
+    let lastPresetId = null;
+
     function updatePresetLabel() {
       const label = $("preset-label");
       if (!label) return;
       const p = activePreset();
       label.textContent = p ? p.name : "No naming preset";
+
+      const sw = $("preset-toggle");
+      if (sw) {
+        // A preset that no longer exists is not something to offer turning
+        // back on — reloadPresets() drops the active id in that case, and
+        // the remembered one has to follow.
+        if (lastPresetId && !presetStore.presets.some((x) => x.id === lastPresetId)) lastPresetId = null;
+        const target = activePresetId || lastPresetId;
+        // Nothing to switch between until a preset has been chosen once.
+        sw.hidden = !target;
+        sw.setAttribute("aria-pressed", activePresetId ? "true" : "false");
+        sw.title = activePresetId
+          ? "Turn naming off — keeps this preset selected"
+          : `Turn naming back on (${(presetStore.presets.find((x) => x.id === lastPresetId) || {}).name || ""})`;
+      }
       // §22g — the panel lists the ACTIVE preset's fields, so it has to
       // follow every path that changes which preset that is: picking one,
       // saving an edit, and deleting the active one.
       renderFieldsPanel();
       $("start").disabled = !(Boolean(sourcePath) && destNodes.length > 0
         && !currentJobPending() && missingRequired().length === 0);
+    }
+
+    /** The one place activePresetId changes, so the quick switch and the
+     *  menu cannot drift on what "the last preset" was. */
+    function setActivePreset(id) {
+      if (id) lastPresetId = id;
+      activePresetId = id;
+      updatePresetLabel();
+      render();
     }
 
     async function reloadPresets() {
@@ -3437,17 +3360,24 @@
     // The conservative default of the three, since it's the one where
     // concurrent access is provably the same device already being read.
     let concurrencyMode = "source";
+    // §63 — OffShoot's own names, verbatim. The old labels described the
+    // rule from the running job's point of view ("Runs alone"), which read
+    // backwards next to a queueing setting: what the user is choosing is
+    // what the app is allowed to do at once, not what one job does.
     const CONC_LABELS = {
-      free: "Runs with anything",
-      source: "Runs alone",
-      destination: "Shares destination",
+      free: "Off",
+      source: "Single Source",
+      destination: "Single Destination",
+      exclusive: "Single Transfer",
     };
     const CONC_OPTIONS = [
-      ["source", "Only alongside jobs from the same source",
+      ["source", "Single Source",
         "Another offload of this same card can run at the same time. Anything else waits."],
-      ["destination", "Only alongside jobs to the same destination",
+      ["destination", "Single Destination",
         "Another job writing to this same drive can run at the same time. Anything else waits."],
-      ["free", "Alongside anything",
+      ["exclusive", "Single Transfer",
+        "One job at a time, whatever it is reading or writing. Everything else queues."],
+      ["free", "Off",
         "No restriction. Two jobs may end up contending for one disk — that is allowed on purpose."],
     ];
 
@@ -3613,12 +3543,16 @@
     window.freeframe.onVolumesChanged(() => { refresh(); });
 
     // ── FreeFrame account ──
-    function updateAccountButton() {
-      const btn = $("account");
-      btn.textContent = ffStatus.loggedIn
-        ? (ffStatus.user?.name || ffStatus.user?.email || "Signed in")
-        : "Sign in to FreeFrame";
-      btn.title = ffStatus.loggedIn ? "Click to sign out" : "Sign in to upload to a FreeFrame project";
+    /**
+     * §64 — the account button is gone from the header; login lives in the
+     * Settings window. What is left here is the consequence of a sign-in
+     * state, not a control for it: the FreeFrame page tab exists only while
+     * signed in, because the embedded app has nothing to show otherwise and
+     * landing on its own login page is exactly what the gating prevents.
+     */
+    function updateAccountUi() {
+      const tab = $("page-freeframe");
+      if (tab) tab.hidden = !ffStatus.loggedIn;
     }
 
     async function loadProjects() {
@@ -3630,89 +3564,9 @@
 
     async function refreshAccount() {
       ffStatus = await window.freeframe.freeframeStatus();
-      updateAccountButton();
+      updateAccountUi();
       await loadProjects();
     }
-
-    /** The error box is hidden when empty rather than holding a reserved
-     *  blank line, so the card doesn't carry a dead gap in its normal state. */
-    function setLoginError(msg) {
-      const box = $("ff-error");
-      if (!box) return;
-      box.textContent = msg || "";
-      box.classList.toggle("show", Boolean(msg));
-    }
-
-    const openLogin = () => {
-      setLoginError("");
-      $("ff-url").value = ffStatus.baseUrl || "https://frame.yon.studio/api";
-      $("ff-pass").value = "";
-      $("login-backdrop").classList.add("open");
-      $("ff-email").focus();
-    };
-    const closeLogin = () => {
-      // Never leave the password sitting in a detached DOM node.
-      $("ff-pass").value = "";
-      $("login-backdrop").classList.remove("open");
-    };
-
-    on("account", "click", async () => {
-      // Signing out mid-upload would invalidate the token an in-flight
-      // FreeFrame job is using, so only a job touching a project blocks it.
-      if ([...busyPaths()].some((p) => p.startsWith("freeframe://"))) return;
-      if (ffStatus.loggedIn) {
-        ffStatus = await window.freeframe.freeframeLogout();
-        ffProjects = [];
-        // §60b — main destroys the embedded view on logout, so leaving the
-        // FreeFrame page selected would show a blank window with an active
-        // tab. Fall back to Offload, which is the page that still works.
-        if (currentPage === "freeframe") await setPage("offload");
-        updateAccountButton();
-        render();
-      } else {
-        openLogin();
-      }
-    });
-    on("ff-cancel", "click", closeLogin);
-    on("ff-submit", "click", async () => {
-      const email = $("ff-email").value.trim();
-      const password = $("ff-pass").value;
-      const baseUrl = $("ff-url").value.trim();
-      if (!email || !password) { setLoginError("Email and password are required."); return; }
-      $("ff-submit").disabled = true;
-      $("ff-submit").textContent = "Signing in…";
-      setLoginError("");
-      try {
-        const res = await window.freeframe.freeframeLogin(email, password, baseUrl);
-        if (!res || !res.ok) {
-          setLoginError((res && res.error) || "Sign-in failed.");
-          return;
-        }
-        closeLogin();
-        await refreshAccount();
-      } finally {
-        $("ff-submit").disabled = false;
-        $("ff-submit").textContent = "Sign in";
-      }
-    });
-    on("ff-pass", "keydown", (e) => { if (e.key === "Enter") $("ff-submit").click(); });
-    on("ff-email", "keydown", (e) => { if (e.key === "Enter") $("ff-pass").focus(); });
-    // Escape closes, matching every other modal here.
-    on("login-backdrop", "keydown", (e) => { if (e.key === "Escape") closeLogin(); });
-
-    // logo.svg is copied in by sync-tokens.js and gitignored. If it's absent
-    // (a checkout where the sync hasn't run), fall back to a text wordmark
-    // rather than a broken-image icon on the sign-in screen.
-    initStep("login logo", () => {
-      const img = $("ff-logo");
-      if (!img) return;
-      img.addEventListener("error", () => {
-        const holder = img.parentElement;
-        if (!holder) return;
-        holder.classList.add("text-fallback");
-        holder.textContent = "FreeFrame";
-      });
-    });
 
     // ── Bootstrap ──
     // Each step is independent and isolated. Previously these ran as bare
@@ -3720,7 +3574,25 @@
     // every step after it — including the refresh() that populates the
     // whole window. Ordering here is presentation only; nothing below
     // depends on anything above completing.
-    initStep("account", () => { refreshAccount().catch(() => {}); });
+    initStep("account", () => {
+      refreshAccount().catch(() => {});
+      // §64 — login moved to the Settings window, so this window hears about
+      // it from main rather than from a form it ran itself.
+      window.freeframe.onAccountChanged(async (st) => {
+        ffStatus = st || { loggedIn: false };
+        updateAccountUi();
+        if (!ffStatus.loggedIn) {
+          ffProjects = [];
+          // Main destroys the embedded view on logout, so leaving the
+          // FreeFrame page selected would show a blank window under a tab
+          // that is about to disappear.
+          if (currentPage === "freeframe") await setPage("offload");
+          render();
+        } else {
+          await loadProjects();
+        }
+      });
+    });
 
     // §61 — the toolbar picker is gone; the algorithm is a Settings value
     // now, read here at load and whenever Settings writes it. There is no
@@ -3842,7 +3714,7 @@
       on("conc-btn", "click", (e) => {
         e.stopPropagation();
         menu.replaceChildren();
-        menu.appendChild(el("div", { class: "label", text: "Run this job…" }));
+        menu.appendChild(el("div", { class: "label", text: "Queueing" }));
         for (const [value, title, desc] of CONC_OPTIONS) {
           const b = el("button", {
             onClick: () => { concurrencyMode = value; updateConcLabel(); closeMenu(); },
@@ -3868,13 +3740,19 @@
       // trigger without replacing it would have left the app with no way
       // to pick a preset at all. So the pill now does what its caret has
       // always promised — it selects — and hands editing to Settings.
+      // One click, no menu: off keeps the selection so on can restore it.
+      on("preset-toggle", "click", (e) => {
+        e.stopPropagation();
+        setActivePreset(activePresetId ? null : lastPresetId);
+      });
+
       on("preset-btn", "click", async (e) => {
         e.stopPropagation();
         await reloadPresets();
         menu.replaceChildren();
         menu.appendChild(el("div", { class: "label", text: "Naming preset" }));
 
-        const pick = (id) => { activePresetId = id; updatePresetLabel(); closeMenu(); render(); };
+        const pick = (id) => { setActivePreset(id); closeMenu(); };
         menu.appendChild(el("button", {
           text: (activePresetId ? "" : "✓ ") + "No naming preset",
           onClick: () => pick(null),
@@ -3950,7 +3828,6 @@
     // height is measured rather than assumed — a hardcoded offset would
     // slice the top off the embedded page the moment the header went to
     // two rows.
-    let currentPage = "offload";
 
     function headerBottom() {
       const h = document.querySelector("header");

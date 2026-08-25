@@ -388,6 +388,9 @@ ipcMain.handle("webview:show", async (_e, { top } = {}) => {
 
 ipcMain.handle("webview:hide", async () => webview.hide());
 ipcMain.handle("webview:inset", async (_e, { top } = {}) => webview.setInset(top));
+// §64 — Refresh on the FreeFrame page reloads the embedded app rather than
+// re-listing drives the page is not showing.
+ipcMain.handle("webview:reload", async () => webview.reload());
 ipcMain.handle("app:info", async () => ({
   version: app.getVersion(),
   electron: process.versions.electron,
@@ -456,7 +459,11 @@ ipcMain.handle("freeframe:login", async (_e, { email, password, baseUrl } = {}) 
     return { ok: false, error: "Email and password are required" };
   }
   try {
-    return await freeframe.login({ email, password, baseUrl });
+    const res = await freeframe.login({ email, password, baseUrl });
+    // §64 — login moved into the Settings window, so the main window can no
+    // longer learn about it by having run the form itself.
+    if (res && res.ok) broadcast("account:changed", freeframe.status());
+    return res;
   } catch (err) {
     return { ok: false, error: String(err.message || err) };
   }
@@ -468,7 +475,9 @@ ipcMain.handle("freeframe:login", async (_e, { email, password, baseUrl } = {}) 
 ipcMain.handle("freeframe:logout", async () => {
   webview.destroy();
   await freeframe.clearSession();
-  return freeframe.status();
+  const st = freeframe.status();
+  broadcast("account:changed", st);
+  return st;
 });
 ipcMain.handle("freeframe:status", async () => freeframe.status());
 

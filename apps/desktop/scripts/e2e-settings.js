@@ -210,6 +210,17 @@ async function waitFor(ev, expr, tries = 40) {
     "the second 'Hidden items' list is gone — it duplicated every connected row");
   check(await sev(`document.querySelectorAll(".hide-list").length === 1`), "there is exactly one list");
 
+  // §62 — grouped rather than interleaved. The per-row "drive"/"project"
+  // tag was carrying that distinction alone, in a list where the two
+  // alternated.
+  const groups = await sev(`[...document.querySelectorAll(".hide-group-title")].map(n => n.textContent.trim())`);
+  check(Array.isArray(groups) && groups.join(",") === "Drives,Projects",
+    "split into a Drives group and a Projects group", (groups || []).join(" | "));
+  check(await sev(`[...document.querySelectorAll(".hide-row")].every(r => r.closest(".hide-group"))`),
+    "and every row lives inside one of them, none left loose");
+  check(!(await sev(`[...document.querySelectorAll(".hide-kind")].length`)),
+    "the per-row kind tag is gone — the group heading says it now");
+
   // A hidden drive that is not plugged in was the only content unique to
   // the old second list. It has to survive the merge, or hiding an item
   // and unplugging it would strand the setting with no way back.
@@ -235,6 +246,14 @@ async function waitFor(ev, expr, tries = 40) {
   check(orphanRow && orphanRow.tagged && /not connected/i.test(orphanRow.text),
     "tagged in place rather than exiled to a second list", orphanRow?.text);
   check(orphanRow && orphanRow.checked === false, "and shown as hidden");
+  check(await sev(`
+    (() => {
+      const row = [...document.querySelectorAll(".hide-row")]
+        .find(r => r.querySelector(".hide-name").textContent.trim() === "GoneForever");
+      const g = row.closest(".hide-group");
+      return g && g.querySelector(".hide-group-title").textContent.trim() === "Drives";
+    })()
+  `), "filed under Drives, not a third pile for disconnected things");
   await ev(`window.freeframe.setSettings({ hiddenVolumeNames: [] })`);
 
   console.log("4. Naming Presets — relocated and grouped");
@@ -255,6 +274,28 @@ async function waitFor(ev, expr, tries = 40) {
   // left as the odd one out now that everything else is a card.
   check(await sev(`!!document.querySelector("#preset-pane .pe-section .filter-block")`),
     "with the existing filtering block folded into the same language");
+
+  // §62 — folder structure moved OUT of the collapsed Filtering block. It
+  // decides where every file lands, which is not a question about which
+  // files are skipped.
+  const folder = await sev(`
+    (() => {
+      const opt = [...document.querySelectorAll("#preset-pane option")]
+        .find(o => o.textContent.includes("Keep the source's folder structure"));
+      if (!opt) return null;
+      return {
+        insideFiltering: !!opt.closest(".filter-block"),
+        section: (opt.closest(".pe-section")?.querySelector(".pe-section-title") || {}).textContent || "",
+        // offsetParent is null for anything inside a closed <details>.
+        visible: !!opt.closest("select").offsetParent,
+      };
+    })()
+  `);
+  check(Boolean(folder), "the folder-structure control is in the editor");
+  check(folder && !folder.insideFiltering, "no longer nested inside the Filtering block");
+  check(folder && folder.visible,
+    "and visible without expanding anything — it was behind a collapsed section before");
+  check(folder && /folder/i.test(folder.section), "under its own heading", folder?.section);
 
   // The pill in the main window was the ONLY way to choose an active
   // preset — there is no other selector, and saving in the editor is what
@@ -296,17 +337,33 @@ async function waitFor(ev, expr, tries = 40) {
 
   // Deleting the active preset in the other window has to clear it here,
   // or the main window would go on naming a preset that no longer exists.
-  const delResult = await sev(`
+  // §62 — Delete moved out of the scrolling pane to sit beside Save. A
+  // destructive action at the far bottom of a pane is both hard to find and
+  // easy to hit on the way past.
+  const delPlacement = await sev(`
     (() => {
-      const del = [...document.querySelectorAll("#preset-pane button")]
-        .find(b => b.textContent.trim() === "Delete preset");
-      if (!del) return [...document.querySelectorAll("#preset-pane button")].map(b => b.textContent.trim());
-      del.click();
-      return true;
+      const del = document.getElementById("preset-delete");
+      const save = document.getElementById("preset-save");
+      if (!del || del.hidden) return { present: false };
+      const c = getComputedStyle(del);
+      return {
+        present: true,
+        leftOfSave: del.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING ? true : false,
+        adjacent: del.nextElementSibling === save,
+        danger: del.classList.contains("danger"),
+        colour: c.color,
+        inPane: !!document.getElementById("preset-pane").contains(del),
+      };
     })()
   `);
-  check(delResult === true, "the editor offers Delete for a saved preset",
-    Array.isArray(delResult) ? delResult.join(" | ") : String(delResult));
+  check(delPlacement && delPlacement.present, "Delete is offered for a saved preset");
+  check(delPlacement && delPlacement.adjacent && delPlacement.leftOfSave,
+    "sitting immediately left of Save, not at the bottom of the editor pane");
+  check(delPlacement && !delPlacement.inPane, "and out of the scrolling pane entirely");
+  check(delPlacement && delPlacement.danger && delPlacement.colour !== "rgb(255, 255, 255)",
+    "styled as destructive using the app's own status-error colour", delPlacement?.colour);
+
+  const delResult = await sev(`(() => { document.getElementById("preset-delete").click(); return true; })()`);
   check(await waitFor(ev, `document.getElementById("preset-label").textContent === "No naming preset"`),
     "and deleting it there clears the selection here");
 

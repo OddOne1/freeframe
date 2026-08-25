@@ -8,7 +8,7 @@
 // Run: node scripts/test-job-queue.js
 const assert = require("node:assert");
 const path = require("node:path");
-const { JobQueue, canCoexist, tolerates } = require(
+const { JobQueue, canCoexist, tolerates, normalizeMode } = require(
   path.join(__dirname, "..", "src", "main", "job-queue.js"),
 );
 
@@ -42,6 +42,13 @@ check(tolerates(J("free", "A", ["X"]), J("source", "B", ["Y"])) === true,
   "tolerates() alone is one-directional");
 check(tolerates(J("source", "B", ["Y"]), J("free", "A", ["X"])) === false,
   "…and the other direction is what blocks it");
+
+console.log("\n2b. Single Transfer tolerates nothing, in both directions");
+check(!canCoexist({ mode: "exclusive", sourceKey: "a", destKeys: ["x"] },
+                  { mode: "exclusive", sourceKey: "a", destKeys: ["x"] }),
+  "not even another Single Transfer job with an identical source and destination");
+check(normalizeMode("exclusive") === "exclusive",
+  "and the mode survives normalisation rather than falling back to free");
 
 console.log("\n3. An unknown mode is treated as the most restrictive");
 check(!canCoexist(J("banana", "A", ["X"]), J("free", "A", ["X"])),
@@ -104,6 +111,62 @@ function makeQueue() {
     check(q.running.length === 1 && q.running[0].label === "B",
       "the queued job starts as soon as the blocker finishes");
     finish("B");
+    await sleep(10);
+  }
+
+  console.log("\n6b. Single Transfer runs exactly one job, whatever the others are (\u00a763)");
+  {
+    // The three cases the spec names, in one queue: a job sharing its
+    // source, a job sharing its destination, and a wholly unrelated one.
+    // Each of those three coexists happily with SOMETHING today; none of
+    // them may coexist with this.
+    const { q, finish } = makeQueue();
+    q.add({ id: "1", label: "X", mode: "exclusive", sourceKey: "cardA", destKeys: ["raid1"] });
+    q.add({ id: "2", label: "sameSource", mode: "source", sourceKey: "cardA", destKeys: ["raid1"] });
+    q.add({ id: "3", label: "sameDest", mode: "destination", sourceKey: "cardB", destKeys: ["raid1"] });
+    q.add({ id: "4", label: "unrelated", mode: "free", sourceKey: "cardZ", destKeys: ["raid9"] });
+    await sleep(10);
+    check(q.running.length === 1 && q.running[0].label === "X",
+      "only the exclusive job runs", q.running.map((j) => j.label).join(",") || "(none)");
+    check(q.queued.length === 3, "all three others wait", `${q.queued.length} queued`);
+    // The asymmetric half: a `free` job tolerates anything, so it would run
+    // unless canCoexist's AND of both directions is doing its job.
+    check(q.snapshot().find((j) => j.id === "4").blockedBy.join(",") === "X",
+      "including a 'free' job, which tolerates everything and is refused by the other side");
+    finish("X");
+    await sleep(10);
+    // Deliberately NOT "all three now run": they do not all coexist with
+    // each OTHER either (sameSource wants cardA, sameDest is on cardB), so
+    // asserting three would be asserting a rule this queue has never had.
+    // What matters is that X has stopped being the reason anything waits.
+    check(q.running.length >= 1, "something starts once it finishes", `${q.running.length} running`);
+    check(q.snapshot().filter((j) => j.blockedBy.includes("X")).length === 0,
+      "and nothing is blocked by it any more");
+    // They start in waves, since they do not all coexist with each other.
+    for (let i = 0; i < 5 && (q.running.length || q.queued.length); i++) {
+      for (const l of ["sameSource", "sameDest", "unrelated"]) finish(l);
+      await sleep(20);
+    }
+    check(q.queued.length === 0 && q.running.length === 0, "and the queue drains",
+      `${q.running.length} running / ${q.queued.length} queued`);
+  }
+
+  console.log("\n6c. And an exclusive job queued BEHIND others waits for all of them");
+  {
+    const { q, finish } = makeQueue();
+    q.add({ id: "1", label: "A", mode: "free", sourceKey: "cardA", destKeys: ["raid1"] });
+    q.add({ id: "2", label: "B", mode: "free", sourceKey: "cardB", destKeys: ["raid2"] });
+    q.add({ id: "3", label: "X", mode: "exclusive", sourceKey: "cardC", destKeys: ["raid3"] });
+    await sleep(10);
+    check(q.running.length === 2 && q.queued.length === 1, "the two free jobs run, the exclusive waits");
+    finish("A");
+    await sleep(10);
+    check(q.running.length === 1 && q.running[0].label === "B",
+      "one blocker leaving is not enough — it needs an empty queue");
+    finish("B");
+    await sleep(10);
+    check(q.running.length === 1 && q.running[0].label === "X", "then it starts");
+    finish("X");
     await sleep(10);
   }
 

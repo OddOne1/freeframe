@@ -89,6 +89,26 @@
       padding: 8px 10px 4px; line-height: 1.6;
     }
 
+    /* §62 — the list is grouped now. The header sits inside the bordered
+       list so the two groups read as one control, not two lists. */
+    .hide-group + .hide-group { border-top: 1px solid var(--border); }
+    .hide-group-title {
+      font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+      color: var(--text-tertiary); padding: 6px 8px 3px;
+      background: var(--bg-secondary);
+      position: sticky; top: 0;
+    }
+
+    /* Destructive actions use --status-error, matching panel.css's own
+       .job-cancel:hover — outlined at rest so it does not shout from a
+       settings pane, filled on hover once the pointer is committed. */
+    button.danger {
+      border: 1px solid var(--status-error); background: transparent;
+      color: var(--status-error); font-family: inherit; font-size: 11px;
+      height: 26px; padding: 0 12px; border-radius: 6px; cursor: pointer;
+    }
+    button.danger:hover { background: var(--status-error); color: #fff; }
+
     /* A hidden item that is no longer connected. It is listed in the SAME
        list rather than a second one — the old two-list version rendered
        every hidden-but-connected item twice, and the only unique content
@@ -138,6 +158,23 @@
       color: var(--text-primary); font-size: 12px; font-family: inherit;
     }
     .pe-section .filter-block { margin-top: 0; padding-top: 0; border-top: none; }
+    /* ── Account tab ── */
+    .login-field { margin-bottom: 10px; }
+    .login-field label {
+      display: block; font-size: 10px; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--text-tertiary); margin-bottom: 4px;
+    }
+    .login-field input {
+      width: 100%; max-width: 320px; height: 30px; border-radius: 6px; padding: 0 9px;
+      background: var(--bg-secondary); border: 1px solid var(--border);
+      color: var(--text-primary); font-size: 12px; font-family: inherit;
+    }
+    .login-error {
+      display: none; font-size: 11px; color: var(--status-error);
+      margin-bottom: 10px;
+    }
+    .login-error.show { display: block; }
+
     .preset-actions { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
     .preset-actions .spacer { flex: 1; }
     .saved-note { font-size: 11px; color: var(--status-success); }
@@ -148,6 +185,7 @@
     <button class="active" data-tab="general" role="tab" aria-selected="true">General</button>
     <button data-tab="volumes" role="tab" aria-selected="false">Volumes</button>
     <button data-tab="presets" role="tab" aria-selected="false">Naming Presets</button>
+    <button data-tab="account" role="tab" aria-selected="false">Account</button>
     <button data-tab="about" role="tab" aria-selected="false">About</button>
   </nav>
 
@@ -193,9 +231,50 @@
           <div class="preset-actions">
             <span id="preset-saved" class="saved-note"></span>
             <span class="spacer"></span>
+            <button id="preset-delete" class="danger" hidden>Delete preset</button>
             <button id="preset-save" class="primary">Save preset</button>
           </div>
           <div id="preset-pane" class="preset-pane"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-account" role="tabpanel">
+      <h2>FreeFrame account</h2>
+      <div class="setting-sub">
+        One sign-in serves both surfaces: the projects you can offload to and
+        pull from, and the FreeFrame page inside this app.
+      </div>
+
+      <div class="setting" id="account-signed-out">
+        <div id="ff-error" class="login-error" role="alert"></div>
+        <div class="login-field">
+          <label for="ff-email">Email address</label>
+          <input id="ff-email" type="email" placeholder="you@example.com"
+                 autocomplete="username" spellcheck="false" />
+        </div>
+        <div class="login-field">
+          <label for="ff-pass">Password</label>
+          <input id="ff-pass" type="password" placeholder="Your password"
+                 autocomplete="current-password" />
+        </div>
+        <div class="login-field">
+          <label for="ff-url">Server</label>
+          <input id="ff-url" type="text" spellcheck="false" />
+          <!-- No equivalent on the web login, where the server is wherever
+               the page came from. A desktop app has to be told. -->
+          <span class="setting-sub">The FreeFrame instance to sign in to.</span>
+        </div>
+        <button id="ff-submit" class="primary">Sign in</button>
+      </div>
+
+      <div class="setting" id="account-signed-in" hidden>
+        <div class="setting-label" id="account-who"></div>
+        <div class="setting-sub" id="account-where"></div>
+        <button id="ff-logout" class="danger">Sign out</button>
+        <div class="setting-sub" id="account-busy" hidden>
+          A transfer is using this account right now — signing out would
+          invalidate the token it is uploading with.
         </div>
       </div>
     </section>

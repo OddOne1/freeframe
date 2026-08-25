@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld("freeframe", {
   showWebView: (top) => ipcRenderer.invoke("webview:show", { top }),
   hideWebView: () => ipcRenderer.invoke("webview:hide"),
   setWebViewInset: (top) => ipcRenderer.invoke("webview:inset", { top }),
+  reloadWebView: () => ipcRenderer.invoke("webview:reload"),
   appInfo: () => ipcRenderer.invoke("app:info"),
 
   /** Naming presets (§10 / §18b) — local JSON in userData, no login. */
@@ -143,6 +144,9 @@ contextBridge.exposeInMainWorld("freeframe", {
   freeframeLogin: (email, password, baseUrl) =>
     ipcRenderer.invoke("freeframe:login", { email, password, baseUrl }),
   freeframeLogout: () => ipcRenderer.invoke("freeframe:logout"),
+  /** §64 — login lives in the Settings window now, so every window learns
+   *  about a sign-in or sign-out from main rather than from the form. */
+  onAccountChanged: (cb) => ipcRenderer.on("account:changed", (_e, st) => cb(st)),
   freeframeStatus: () => ipcRenderer.invoke("freeframe:status"),
   freeframeProjects: () => ipcRenderer.invoke("freeframe:projects"),
   freeframeFolderTree: (projectId) => ipcRenderer.invoke("freeframe:folder-tree", { projectId }),

@@ -105,47 +105,58 @@ function renderHideList() {
   // Built from everything hideable, hidden or not, so an item does not
   // vanish from Settings the moment it is hidden and take its own undo
   // with it.
-  const items = [
-    ...volumes.map((v) => ({
-      key: v.name, kind: "drive",
-      // The label may be a §22e display-name override; the STORED key is
-      // the real name, so renaming a drive here does not silently unhide it.
-      label: displayNames[v.mountPoint] || v.name,
-      hidden: hiddenVolumeNames.includes(v.name),
-      orphan: false,
-    })),
-    ...projects.map((p) => ({
-      key: p.id, kind: "project", label: p.name,
-      hidden: hiddenProjectIds.includes(p.id), orphan: false,
-    })),
-    // Hidden entries that are not currently connected. They used to be a
-    // whole second list; every hidden-but-connected item appeared in both,
-    // and this was the only content unique to it. One list, tagged.
-    ...hiddenVolumeNames
-      .filter((n) => !volumes.some((v) => v.name === n))
-      .map((n) => ({ key: n, kind: "drive", label: n, hidden: true, orphan: true })),
-    ...hiddenProjectIds
-      .filter((id) => !projects.some((p) => p.id === id))
-      .map((id) => ({ key: id, kind: "project", label: id, hidden: true, orphan: true })),
-  ];
+  const drives = volumes.map((v) => ({
+    key: v.name, kind: "drive",
+    // The label may be a §22e display-name override; the STORED key is
+    // the real name, so renaming a drive here does not silently unhide it.
+    label: displayNames[v.mountPoint] || v.name,
+    hidden: hiddenVolumeNames.includes(v.name),
+    orphan: false,
+  }));
+  const projs = projects.map((p) => ({
+    key: p.id, kind: "project", label: p.name,
+    hidden: hiddenProjectIds.includes(p.id), orphan: false,
+  }));
+  // Hidden entries that are not currently connected. They used to be a
+  // whole second list; every hidden-but-connected item appeared in both,
+  // and this was the only content unique to it. Tagged in place instead —
+  // and filed under the group they belong to, not a third pile.
+  drives.push(...hiddenVolumeNames
+    .filter((n) => !volumes.some((v) => v.name === n))
+    .map((n) => ({ key: n, kind: "drive", label: n, hidden: true, orphan: true })));
+  projs.push(...hiddenProjectIds
+    .filter((id) => !projects.some((p) => p.id === id))
+    .map((id) => ({ key: id, kind: "project", label: id, hidden: true, orphan: true })));
 
-  if (!items.length) {
+  if (!drives.length && !projs.length) {
     host.appendChild(el("div", { class: "hide-empty", text: "Nothing to show yet." }));
     return;
   }
 
-  for (const it of items) {
+  // §62 — grouped rather than interleaved. A drive and a FreeFrame project
+  // are different kinds of thing and the per-row "drive"/"project" tag was
+  // carrying that distinction alone, in a list where the two alternated.
+  const row = (it) => {
     const box = document.createElement("input");
     box.type = "checkbox";
     box.checked = !it.hidden;
     box.addEventListener("change", () => setHidden(it.kind, it.key, !box.checked));
-    const row = el("label", { class: "hide-row" }, [
+    return el("label", { class: "hide-row" }, [
       box,
       el("span", { class: "hide-name", text: it.label, title: it.label }),
       it.orphan ? el("span", { class: "hide-orphan", text: "not connected" }) : null,
-      el("span", { class: "hide-kind", text: it.kind }),
     ]);
-    host.appendChild(row);
+  };
+
+  for (const [title, items, empty] of [
+    ["Drives", drives, "No drives connected."],
+    ["Projects", projs, "No FreeFrame projects."],
+  ]) {
+    const group = el("div", { class: "hide-group" });
+    group.appendChild(el("div", { class: "hide-group-title", text: title }));
+    if (items.length) for (const it of items) group.appendChild(row(it));
+    else group.appendChild(el("div", { class: "hide-empty", text: empty }));
+    host.appendChild(group);
   }
 }
 
@@ -162,9 +173,102 @@ async function setHidden(kind, key, hide) {
   );
 }
 
+// ── Account tab (§64) ────────────────────────────────────────────────────
+//
+// The login form moved here from the main window's header. No auth plumbing
+// changed: `freeframe.js` already holds one session that serves both
+// Offload's project browsing and the embedded FreeFrame page's SSO. What
+// moved is the UI, and main now broadcasts the result so the main window
+// learns about a sign-in it did not run.
+
+let ffStatus = { loggedIn: false };
+let busyWithProjects = false;
+
+function setLoginError(msg) {
+  const box = $("ff-error");
+  box.textContent = msg || "";
+  box.classList.toggle("show", Boolean(msg));
+}
+
+function renderAccount() {
+  const inn = ffStatus.loggedIn;
+  $("account-signed-out").hidden = inn;
+  $("account-signed-in").hidden = !inn;
+  if (inn) {
+    $("account-who").textContent =
+      ffStatus.user?.name || ffStatus.user?.email || "Signed in";
+    $("account-where").textContent = ffStatus.baseUrl || "";
+    // Signing out mid-upload would invalidate the token an in-flight
+    // FreeFrame job is using. Same rule the header button enforced.
+    $("ff-logout").disabled = busyWithProjects;
+    $("account-busy").hidden = !busyWithProjects;
+  } else {
+    $("ff-url").value = ffStatus.baseUrl || "https://frame.yon.studio/api";
+  }
+}
+
+async function refreshBusy() {
+  try {
+    const jobs = (await window.freeframe.listJobs()) || [];
+    busyWithProjects = jobs.some((j) =>
+      (j.status === "running" || j.status === "queued")
+      && [j.sourcePath, ...(j.destPaths || [])].some((p) => p && p.startsWith("freeframe://")));
+  } catch { busyWithProjects = false; }
+}
+
+$("ff-submit").addEventListener("click", async () => {
+  const email = $("ff-email").value.trim();
+  const password = $("ff-pass").value;
+  const baseUrl = $("ff-url").value.trim();
+  if (!email || !password) { setLoginError("Email and password are required."); return; }
+  const btn = $("ff-submit");
+  btn.disabled = true; btn.textContent = "Signing in…";
+  setLoginError("");
+  try {
+    const res = await window.freeframe.freeframeLogin(email, password, baseUrl);
+    if (!res || !res.ok) { setLoginError((res && res.error) || "Sign-in failed."); return; }
+    // Never leave the password sitting in a live DOM node.
+    $("ff-pass").value = "";
+    ffStatus = await window.freeframe.freeframeStatus();
+    renderAccount();
+    await loadProjectsForHideList();
+  } finally {
+    btn.disabled = false; btn.textContent = "Sign in";
+  }
+});
+$("ff-pass").addEventListener("keydown", (e) => { if (e.key === "Enter") $("ff-submit").click(); });
+$("ff-email").addEventListener("keydown", (e) => { if (e.key === "Enter") $("ff-pass").focus(); });
+
+$("ff-logout").addEventListener("click", async () => {
+  await refreshBusy();
+  if (busyWithProjects) { renderAccount(); return; }
+  ffStatus = await window.freeframe.freeframeLogout();
+  projects = [];
+  renderAccount();
+  renderHideList();
+});
+
+async function loadProjectsForHideList() {
+  try {
+    if (ffStatus.loggedIn) {
+      // Returns { ok, projects }, not a bare array.
+      const res = await window.freeframe.freeframeProjects();
+      projects = res && res.ok ? (res.projects || []) : [];
+    } else {
+      projects = [];
+    }
+  } catch { projects = []; }
+  renderHideList();
+}
+
 // ── Presets tab wiring ───────────────────────────────────────────────────
 
 $("preset-new").addEventListener("click", () => window.PresetEditor.startNew());
+// §62 — Delete lives beside Save now, and only exists for a preset that
+// has actually been saved: there is nothing to delete about a draft.
+$("preset-delete").addEventListener("click", async () => {
+  await window.PresetEditor.deleteCurrent();
+});
 $("preset-save").addEventListener("click", async () => {
   const res = await window.PresetEditor.save();
   const note = $("preset-saved");
@@ -197,16 +301,16 @@ async function loadSettings() {
   volumes = (await window.freeframe.listVolumes()) || [];
   displayNames = (await window.freeframe.getDisplayNames()) || {};
   try {
-    const status = await window.freeframe.freeframeStatus();
-    if (status && status.loggedIn) {
-      // Returns { ok, projects }, not a bare array.
-      const res = await window.freeframe.freeframeProjects();
-      projects = res && res.ok ? (res.projects || []) : [];
-    }
-  } catch { /* logged out, or offline — drives alone are still hideable */ }
+    ffStatus = (await window.freeframe.freeframeStatus()) || { loggedIn: false };
+  } catch { ffStatus = { loggedIn: false }; }
+  await refreshBusy();
+  renderAccount();
 
   await loadSettings();
-  await window.PresetEditor.init();
+  await loadProjectsForHideList();
+  await window.PresetEditor.init({
+    onSelectionChange: (savedPresetOpen) => { $("preset-delete").hidden = !savedPresetOpen; },
+  });
 
   const info = await window.freeframe.appInfo();
   $("settings-logs-path").textContent = info.logsPath;

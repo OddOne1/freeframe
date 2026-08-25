@@ -190,7 +190,11 @@ async function launch() {
   check(await ev(`!!document.querySelector("header #pages")`),
     "the switcher lives in the header, the one strip the embedded view does not cover");
 
-  await ev(`document.getElementById("page-freeframe").click(); true`);
+  // §64 login-gated the tab, so it may be hidden. .click() would still fire
+  // on a hidden button and quietly prove nothing about reachability — this
+  // file is about the page, not the gating (e2e-header.js covers that), so
+  // it drives setPage() directly and says so.
+  await ev(`setPage("freeframe")`);
   await sleep(900);
   check(await ev(`document.body.classList.contains("page-web")`), "switching marks the body");
 
@@ -274,26 +278,26 @@ async function launch() {
     check(false, "could not attach to the embedded view to verify token injection");
   }
 
-  await ev(`document.getElementById("page-offload").click(); true`);
+  await ev(`setPage("offload")`);
   await sleep(600);
   check(!(await ev(`document.body.classList.contains("page-web")`)), "switching back restores Offload");
   check(await ev(`getComputedStyle(document.querySelector(".workspace")).display !== "none"`),
     "and its columns return");
 
-  await ev(`document.getElementById("page-freeframe").click(); true`);
+  await ev(`setPage("freeframe")`);
   await sleep(700);
   const again = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
   const same = again.find((t) => t.type === "page" && !t.url.includes("index.html"));
   check(Boolean(same) && embedded && same.id === embedded.id,
     "and switching away and back reuses the SAME view rather than reloading it — "
     + "an in-flight upload on that page must survive a look at the Offload columns");
-  await ev(`document.getElementById("page-offload").click(); true`);
+  await ev(`setPage("offload")`);
   await sleep(400);
 
   console.log("8. The renderer never gets a handle on the view");
   const keys = await ev(`Object.keys(window.freeframe).filter(k => /webview|WebView/i.test(k)).sort().join(",")`);
-  check(keys === "hideWebView,setWebViewInset,showWebView",
-    "only show/hide/inset cross the bridge — the view itself stays in main", keys);
+  check(keys === "hideWebView,reloadWebView,setWebViewInset,showWebView",
+    "only show/hide/position/reload cross the bridge — the view itself stays in main", keys);
 
   try { ws.close(); } catch {}
   try { child.kill(); } catch {}

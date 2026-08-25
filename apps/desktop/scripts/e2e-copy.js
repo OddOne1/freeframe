@@ -159,11 +159,13 @@ async function main() {
       // NO handle on the embedded view itself. openSettingsWindow /
       // onSettingsTab / onSettingsChanged / onPresetsChanged with §61,
       // when Settings became a real window and two windows had to stay in
-      // step with one store.
+      // step with one store. onAccountChanged / reloadWebView with §64,
+      // when login moved into Settings and Refresh started meaning "reload
+      // the page you are looking at".
       // This list is an allowlist, not a snapshot: it is here so a new
       // channel has to be a deliberate act rather than something that
       // arrives unnoticed.
-      bridge === "appInfo,bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearFinishedJobs,clearRecentFolders,deletePreset,detachPanel,dockPanel,ejectVolume,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,getSettings,hideWebView,listJobs,listPresets,listVolumes,onCopyProgress,onJobsChanged,onPanelDockChanged,onPresetsChanged,onSettingsChanged,onSettingsTab,onVolumesChanged,openJobLog,openLogsFolder,openSettingsWindow,pathForFile,previewNaming,rememberFolder,removeJob,savePreset,setDisplayName,setSettings,setSourceCounter,setWebViewInset,showWebView,startCopy",
+      bridge === "appInfo,bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearFinishedJobs,clearRecentFolders,deletePreset,detachPanel,dockPanel,ejectVolume,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,getSettings,hideWebView,listJobs,listPresets,listVolumes,onAccountChanged,onCopyProgress,onJobsChanged,onPanelDockChanged,onPresetsChanged,onSettingsChanged,onSettingsTab,onVolumesChanged,openJobLog,openLogsFolder,openSettingsWindow,pathForFile,previewNaming,reloadWebView,rememberFolder,removeJob,savePreset,setDisplayName,setSettings,setSourceCounter,setWebViewInset,showWebView,startCopy",
       "contextBridge exposes exactly the intended API", bridge);
     check(await cdp.eval("typeof window.require") === "undefined", "no window.require");
     check(await cdp.eval("typeof window.process") === "undefined", "no window.process");

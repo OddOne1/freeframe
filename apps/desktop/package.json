@@ -16,7 +16,7 @@
     "pretest": "npm run kill-strays && node scripts/sync-tokens.js && node scripts/sync-icons.js",
     "posttest": "npm run kill-strays",
     "sync": "node scripts/sync-tokens.js && node scripts/sync-icons.js",
-    "test": "node scripts/test-copy.js && node scripts/test-naming.js && node scripts/test-filters.js && node scripts/test-job-queue.js && node scripts/test-rate-settings.js && node scripts/test-webview.js && node scripts/test-history-cleanup.js && node scripts/test-auth-refresh.js && node scripts/e2e-filters.js && node scripts/e2e-copy.js && node scripts/e2e-bugs22.js && node scripts/e2e-field-panel.js && node scripts/e2e-settings.js && node scripts/e2e-tile-dedup.js && node scripts/e2e-hide-pages.js",
+    "test": "node scripts/test-copy.js && node scripts/test-naming.js && node scripts/test-filters.js && node scripts/test-job-queue.js && node scripts/test-rate-settings.js && node scripts/test-webview.js && node scripts/test-history-cleanup.js && node scripts/test-auth-refresh.js && node scripts/e2e-filters.js && node scripts/e2e-copy.js && node scripts/e2e-bugs22.js && node scripts/e2e-field-panel.js && node scripts/e2e-settings.js && node scripts/e2e-tile-dedup.js && node scripts/e2e-hide-pages.js && node scripts/e2e-header.js",
     "test:auth": "node scripts/test-auth-refresh.js",
     "test:e2e": "node scripts/e2e-copy.js",
     "test:engine": "node scripts/test-copy.js",
@@ -36,7 +36,8 @@
     "test:queue": "node scripts/test-job-queue.js",
     "test:subfolder": "node scripts/e2e-subfolder.js",
     "test:upload": "node scripts/e2e-upload.js",
-    "test:webview": "node scripts/test-webview.js && node scripts/e2e-hide-pages.js"
+    "test:webview": "node scripts/test-webview.js && node scripts/e2e-hide-pages.js",
+    "test:header": "node scripts/e2e-header.js"
   },
   "devDependencies": {
     "@electron/notarize": "^2.5.0",

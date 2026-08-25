@@ -211,14 +211,67 @@ const check = (ok, label, detail = "") => {
     check(busy.refreshDisabled === false, "neither is Refresh");
     check(busy.duplicateRefused === true, "but re-submitting the identical job is refused");
 
+    // §61/§62 — the preset editor lives in the Settings window now, and its
+    // draft is private to the module. These two sections drive it through
+    // the real UI instead of poking at a variable that no longer exists —
+    // which is the better test anyway, since the chips ARE a UI behaviour.
+    async function attachSettings(tries = 40) {
+      for (let i = 0; i < tries; i++) {
+        try {
+          const t = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
+          const pg = t.find((x) => x.type === "page" && x.url.includes("settings.html"));
+          if (pg?.webSocketDebuggerUrl) {
+            const w = new WebSocket(pg.webSocketDebuggerUrl);
+            await new Promise((r) => w.addEventListener("open", r));
+            let n = 0; const q = new Map();
+            w.addEventListener("message", (e) => {
+              const m = JSON.parse(e.data);
+              if (m.id && q.has(m.id)) { const f = q.get(m.id); q.delete(m.id); f(m.result); }
+            });
+            const call = (me, pa = {}) => new Promise((res) => {
+              const i = ++n; q.set(i, res); w.send(JSON.stringify({ id: i, method: me, params: pa }));
+            });
+            await call("Runtime.enable");
+            return { ws: w, ev: async (x) => (await call("Runtime.evaluate",
+              { expression: x, awaitPromise: true, returnByValue: true, timeout: 30000 })).result?.value };
+          }
+        } catch {}
+        await sleep(250);
+      }
+      return null;
+    }
+
     // ── §22c — token chips ───────────────────────────────────────────────
     console.log("\n5. (22c) A token chip lands in the field the cursor is in");
-    await ev(`(() => { editingPreset = { id: null, name: "t", folderTemplate: "{date}",
-      fileTemplate: "CLIP", fields: [], filters: null }; renderPresetPane(); return true; })()`);
-    const chips = await ev(`(() => {
+    await ev(`document.getElementById("settings-btn").click(); true`);
+    const st = await attachSettings();
+    check(Boolean(st), "the Settings window opened");
+    if (!st) { console.log("cannot continue"); process.exit(1); }
+    // Wait for the window's own DOM before touching it: attach succeeds as
+    // soon as the target exists, which can be before settings.html has
+    // loaded — and a throw there is invisible, since this minimal helper
+    // does not read exceptionDetails.
+    for (let i = 0; i < 40; i++) {
+      if (await st.ev(`!!document.querySelector('nav button[data-tab="presets"]')`)) break;
+      await sleep(200);
+    }
+    await st.ev(`document.querySelector('nav button[data-tab="presets"]').click(); true`);
+    check(await st.ev(`document.getElementById("tab-presets").classList.contains("active")`),
+      "the Naming Presets tab is showing — the rects below are meaningless otherwise");
+    for (let i = 0; i < 40 && !(await st.ev(`!!document.getElementById("preset-new")`)); i++) await sleep(200);
+    await st.ev(`document.getElementById("preset-new").click(); true`);
+    await sleep(400);
+
+    const chips = await st.ev(`(() => {
       const inputs = [...document.querySelectorAll(".tpl-input")];
       const folder = inputs.find(i => i.dataset.tpl === "folderTemplate");
       const file = inputs.find(i => i.dataset.tpl === "fileTemplate");
+      const set = (input, v) => {
+        input.value = v;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      };
+      set(folder, "{date}");
+      set(file, "CLIP");
       const rowOf = (input) => input.nextElementSibling.nextElementSibling;
       const chipTexts = (input) => [...rowOf(input).querySelectorAll("code")].map(c => c.textContent);
       const clickChip = (input, text) => {
@@ -235,9 +288,13 @@ const check = (ok, label, detail = "") => {
       out.clicked = clickChip(file, "{counter}");
       out.fileAfter = file.value;
       out.folderAfter = folder.value;
-      out.draftFile = editingPreset.fileTemplate;
-      out.draftFolder = editingPreset.folderTemplate;
       out.caret = file.selectionStart;
+
+      // The draft is private now, so it is proved by saving and reading it
+      // back rather than by inspecting a variable.
+      const name = document.querySelector('#preset-pane input[data-role="preset-name"]');
+      name.value = "Chip Test";
+      name.dispatchEvent(new Event("input", { bubbles: true }));
       return out;
     })()`);
     check(chips.folderChips.includes("{sourcecounter}"),
@@ -251,37 +308,42 @@ const check = (ok, label, detail = "") => {
       "inserted at the CARET of the focused field, not appended", chips.fileAfter);
     check(chips.folderAfter === "{date}",
       "and the folder pattern was left completely alone", chips.folderAfter);
-    check(chips.draftFile === chips.fileAfter, "the draft preset was updated too");
     check(chips.caret === "CL{counter}".length, "the caret sits after the inserted token", `${chips.caret}`);
 
+    await st.ev(`document.getElementById("preset-save").click(); true`);
+    await sleep(800);
+    const saved = await ev(`window.freeframe.listPresets().then(s =>
+      JSON.stringify((s.presets.find(p => p.name === "Chip Test") || {})))`);
+    const savedObj = JSON.parse(saved || "{}");
+    check(savedObj.fileTemplate === "CL{counter}IP" && savedObj.folderTemplate === "{date}",
+      "and the draft behind the inputs matched — proved by saving and reading it back",
+      `${savedObj.folderTemplate} / ${savedObj.fileTemplate}`);
+
     // ── §22d — the Fields row fits ───────────────────────────────────────
-    console.log("\n6. (22d) Field rows stay inside the modal");
-    const overflow = await ev(`(() => {
-      // The modal must actually be OPEN, or every rect is 0 wide and the
-      // overflow assertions below pass without measuring anything.
-      document.getElementById("preset-backdrop").classList.add("open");
-      editingPreset = { id: null, name: "t", folderTemplate: "", fileTemplate: "", filters: null,
-        fields: [{ key: "operator", label: "Operator name that is long", type: "select", required: true }] };
-      renderPresetPane();
+    console.log("\n6. (22d) Field rows stay inside the pane");
+    const overflow = await st.ev(`(() => {
+      const add = [...document.querySelectorAll("#preset-pane button")]
+        .find(b => b.textContent.trim() === "Add field");
+      add.click();
+      const label = document.querySelector(".field-row input[type=text]");
+      label.value = "Operator name that is long";
+      label.dispatchEvent(new Event("input", { bubbles: true }));
       const pane = document.getElementById("preset-pane");
       const row = document.querySelector(".field-row");
-      const modal = document.querySelector(".preset-modal");
       return {
         rowRight: Math.round(row.getBoundingClientRect().right),
         paneRight: Math.round(pane.getBoundingClientRect().right),
-        modalRight: Math.round(modal.getBoundingClientRect().right),
         paneScroll: pane.scrollWidth - pane.clientWidth,
         grouped: !!row.querySelector(".field-row-controls"),
         paneWidth: Math.round(pane.getBoundingClientRect().width),
       };
     })()`);
-    await ev(`document.getElementById("preset-backdrop").classList.remove("open"); true`);
+    // The pane must really be laid out, or every rect is 0 wide and the
+    // assertions below pass without measuring anything.
     check(overflow.paneWidth > 100,
-      "the modal is really open, so these rects mean something", `pane ${overflow.paneWidth}px`);
+      "the pane is really laid out, so these rects mean something", `pane ${overflow.paneWidth}px`);
     check(overflow.rowRight <= overflow.paneRight + 1,
       "the row ends inside its pane", `row ${overflow.rowRight} vs pane ${overflow.paneRight}`);
-    check(overflow.rowRight <= overflow.modalRight + 1,
-      "and inside the modal", `row ${overflow.rowRight} vs modal ${overflow.modalRight}`);
     check(overflow.paneScroll <= 0, "nothing overflows horizontally", `${overflow.paneScroll}px`);
     check(overflow.grouped, "the trailing controls travel as one group");
 

@@ -61,6 +61,9 @@ window.PresetEditor = (function () {
   let nextSourceCounter = 1;
   let editingPreset = null;
   let sampleSource = "/Volumes/A001";
+  // Fired whenever which preset is open changes, so the host can show or
+  // hide a Delete that only applies to a SAVED one.
+  let onSelectionChange = () => {};
 
   /**
    * Which built-in tokens each template may use (§22c/§22h).
@@ -149,6 +152,7 @@ window.PresetEditor = (function () {
       : res.error;
   }
   function renderPresetPane() {
+    onSelectionChange(Boolean(editingPreset && editingPreset.id));
     const host = $("preset-pane");
     if (!host) return;
     host.replaceChildren();
@@ -330,37 +334,29 @@ window.PresetEditor = (function () {
     }));
     host.appendChild(counterBox);
 
+    host.appendChild(renderFolderStructure());
+
     const filterBox = section("Filtering");
     filterBox.appendChild(renderFilterBlock());
     host.appendChild(filterBox);
 
-    if (editingPreset.id) {
-      const del = el("button", {
-        style: "margin-top:10px",
-        text: "Delete preset",
-        onClick: async () => {
-          // The main window clears its own active-preset selection when the
-          // presets:changed broadcast arrives — it owns that state, this
-          // window does not, and reaching across would be the drift this
-          // extraction exists to avoid.
-          await window.freeframe.deletePreset(editingPreset.id);
-          editingPreset = null;
-          await reloadPresets();
-        },
-      });
-      host.appendChild(del);
-    }
-
+    // §62 — Delete is no longer rendered here. It sits beside Save in the
+    // window's own toolbar, because a destructive action at the far bottom
+    // of a scrolling pane is both hard to find and easy to hit by accident
+    // on the way past.
     refreshPresetPreview();
   }
 
   function renderFilterBlock() {
     const f = editingPreset.filters || {};
+    // ignoreFolders deliberately no longer counts here (§62): its control
+    // moved out to its own section, so a preset that only flattens would
+    // otherwise open — and shout "ON" about — a section that no longer
+    // contains the thing that is on.
     const active =
       (f.doNotCopyExtensions || []).length ||
       (f.doNotCopyNames || []).length ||
-      (f.ignoreBundles?.extensions || []).length ||
-      (f.ignoreFolders?.mode && f.ignoreFolders.mode !== "off");
+      (f.ignoreBundles?.extensions || []).length;
 
     const block = el("details", { class: "filter-block" });
     if (active) block.open = true;
@@ -441,8 +437,27 @@ window.PresetEditor = (function () {
           + "matching bundle is dropped regardless of what's inside.",
     }));
 
-    const folderRow = el("div", { class: "filter-row" });
-    folderRow.appendChild(el("label", { text: "Folders" }));
+    return block;
+  }
+
+  /**
+   * §62 — folder structure, lifted out of the Filtering block.
+   *
+   * It was nested under "File filtering", collapsed by default, which put
+   * a decision about where every file lands behind a section about which
+   * files are skipped. Only one of its three values has anything to do
+   * with filtering ("Skip folders left empty by filtering"), and that one
+   * is the exception, not the reason it lived there.
+   *
+   * Still writes into `filters.ignoreFolders`, because that is where the
+   * engine reads it — moving the STORAGE would be a data change, and this
+   * is a placement fix.
+   */
+  function renderFolderStructure() {
+    const box = section("Folder structure");
+    const f = editingPreset.filters || {};
+    const row = el("div", { class: "filter-row" });
+    row.appendChild(el("label", { text: "Folders" }));
     const select = el("select");
     for (const [value, label] of [
       ["off", "Keep the source's folder structure"],
@@ -454,17 +469,19 @@ window.PresetEditor = (function () {
       if ((f.ignoreFolders?.mode || "off") === value) opt.selected = true;
       select.appendChild(opt);
     }
-    select.addEventListener("change", () => set((x) => { x.ignoreFolders = { mode: select.value }; }));
-    folderRow.appendChild(select);
-    block.appendChild(folderRow);
-    block.appendChild(el("div", {
+    select.addEventListener("change", () => {
+      editingPreset.filters = editingPreset.filters || {};
+      editingPreset.filters.ignoreFolders = { mode: select.value };
+    });
+    row.appendChild(select);
+    box.appendChild(row);
+    box.appendChild(el("div", {
       class: "token-help",
       text: "Flattening discards the card's own DCIM/CLIP folders. Two files with the same name "
           + "in different folders would collide, and the job is refused rather than one of them "
           + "being overwritten.",
     }));
-
-    return block;
+    return box;
   }
 
 
@@ -494,6 +511,18 @@ window.PresetEditor = (function () {
     return { ok: true };
   }
 
+  /** Delete the preset currently open. The main window clears its own
+   *  active selection off the presets:changed broadcast — it owns that
+   *  state, this window does not, and reaching across would be the drift
+   *  this extraction exists to avoid. */
+  async function deleteCurrent() {
+    if (!editingPreset || !editingPreset.id) return { ok: false };
+    await window.freeframe.deletePreset(editingPreset.id);
+    editingPreset = null;
+    await reloadPresets();
+    return { ok: true };
+  }
+
   function startNew() {
     editingPreset = newPresetDraft();
     renderPresetList();
@@ -501,12 +530,14 @@ window.PresetEditor = (function () {
   }
 
   return {
-    init({ sampleSourcePath } = {}) {
+    init({ sampleSourcePath, onSelectionChange: cb } = {}) {
       if (sampleSourcePath) sampleSource = sampleSourcePath;
+      if (cb) onSelectionChange = cb;
       return reloadPresets();
     },
     reload: reloadPresets,
     save,
+    deleteCurrent,
     startNew,
     hasDraft: () => Boolean(editingPreset),
   };

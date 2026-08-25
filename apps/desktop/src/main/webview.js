@@ -111,6 +111,14 @@ function show(win, session, top = 0) {
   return { ok: true, url: loadedUrl };
 }
 
+/** Reload the embedded app in place (§64). No-op when the view has never
+ *  been created — Refresh on the Offload page must not build one. */
+function reload() {
+  if (!view) return { ok: false, reason: "not-created" };
+  view.webContents.reload();
+  return { ok: true };
+}
+
 /** Hide it without destroying it — see LIFETIME above. */
 function hide() {
   if (view && attached && ownerWindow && !ownerWindow.isDestroyed()) {
@@ -153,4 +161,4 @@ function destroy() {
 const isAttached = () => attached;
 const exists = () => Boolean(view);
 
-module.exports = { show, hide, destroy, setInset, syncBounds, sameOrigin, isAttached, exists };
+module.exports = { show, hide, destroy, reload, setInset, syncBounds, sameOrigin, isAttached, exists };
