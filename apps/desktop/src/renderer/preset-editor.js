@@ -175,14 +175,23 @@ window.PresetEditor = (function () {
       editingPreset.folderTemplate, editingPreset.fileTemplate, sample,
       sampleSource,
     );
-    // Re-rendered while awaiting.
+    // Asked as the pattern is typed, not only at save: a refusal that
+    // arrives when you press Save is a refusal about something you wrote
+    // several edits ago.
+    const { error: folderError } = await window.freeframe
+      .validateFolderPattern(editingPreset.folderTemplate)
+      .catch(() => ({ error: null }));
+
+    // Looked up after BOTH awaits: the pane may have re-rendered during
+    // either one, and writing into a detached node fails silently.
     const fo = $("tpl-preview-folder");
     const fi = $("tpl-preview-file");
 
     if (fo) {
-      fo.classList.toggle("bad", !res.ok);
+      fo.classList.toggle("bad", !res.ok || Boolean(folderError));
       fo.replaceChildren();
-      if (!res.ok) fo.textContent = res.error;
+      if (folderError) fo.textContent = folderError;
+      else if (!res.ok) fo.textContent = res.error;
       else if (!editingPreset.folderTemplate) {
         fo.textContent = "Files land directly in the destination.";
       } else fo.textContent = `${res.folder}/`;
@@ -651,6 +660,11 @@ window.PresetEditor = (function () {
   async function save() {
     if (!editingPreset) return { ok: false, error: "Nothing to save" };
     if (!editingPreset.name.trim()) return { ok: false, error: "Give the preset a name" };
+    // §65c — refused before it can ever be attached to a job. Decided by
+    // main, so the editor and the engine cannot disagree about what is
+    // allowed.
+    const { error } = await window.freeframe.validateFolderPattern(editingPreset.folderTemplate);
+    if (error) return { ok: false, error };
     // savePreset returns the whole STORE, not the saved preset — the name
     // is how the caller finds what it just wrote, and main falls back to
     // "Untitled preset" for a blank one.

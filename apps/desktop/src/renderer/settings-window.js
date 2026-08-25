@@ -269,12 +269,18 @@ $("preset-new").addEventListener("click", () => window.PresetEditor.startNew());
 $("preset-delete").addEventListener("click", async () => {
   await window.PresetEditor.deleteCurrent();
 });
+// One timer, cancelled and restarted per save. Without this an earlier
+// save's pending clear wipes a LATER message — so a refusal shown within
+// 2.5s of a successful save vanished almost immediately, which is exactly
+// the moment someone is most likely to be iterating on a pattern.
+let saveNoteTimer = null;
 $("preset-save").addEventListener("click", async () => {
   const res = await window.PresetEditor.save();
   const note = $("preset-saved");
   note.textContent = res.ok ? "Saved" : res.error;
   note.style.color = res.ok ? "var(--status-success)" : "var(--status-error)";
-  setTimeout(() => { note.textContent = ""; }, 2500);
+  clearTimeout(saveNoteTimer);
+  saveNoteTimer = setTimeout(() => { note.textContent = ""; }, 2500);
 });
 
 // ── Load ─────────────────────────────────────────────────────────────────

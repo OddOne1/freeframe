@@ -61,6 +61,10 @@ contextBridge.exposeInMainWorld("freeframe", {
   /** Naming presets (§10 / §18b) — local JSON in userData, no login. */
   listPresets: () => ipcRenderer.invoke("presets:list"),
   savePreset: (preset) => ipcRenderer.invoke("presets:save", { preset }),
+  /** §65c — whether a folder pattern is allowed, decided by the same
+   *  function the engine checks with at job start. */
+  validateFolderPattern: (folderTemplate) =>
+    ipcRenderer.invoke("presets:validate-folder", { folderTemplate }),
   deletePreset: (id) => ipcRenderer.invoke("presets:delete", { id }),
   /** Same reason as onSettingsChanged: the editor lives in the Settings
    *  window, the active-preset label and Fields panel live in the main one. */

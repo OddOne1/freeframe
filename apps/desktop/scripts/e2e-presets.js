@@ -258,6 +258,42 @@ const check = (ok, label, detail = "") => {
     migrated.fields[0].type);
   await ev(`window.freeframe.deletePreset(${'`'}${'$'}{${JSON.stringify(migrated.id)}}${'`'})`).catch(() => {});
 
+  // ── 6b. {counter} in a folder pattern is refused at job start (§65c) ──
+  console.log("\n6b. A hand-edited folder pattern is refused, not honoured");
+  {
+    // Bypasses the editor entirely — this is the shape that reaches the
+    // engine from a preset imported or edited on disk.
+    const refusedFolder = await ev(`(async () => {
+      try {
+        await window.freeframe.startCopy(${JSON.stringify(source)},
+          [{ id: "n1", path: ${JSON.stringify(dest)}, parentId: null }],
+          "xxhash64", null, null,
+          { folderTemplate: "TAKE_{counter}", fileTemplate: "",
+            values: {}, fields: [], sourceCounter: 1 }, "free");
+        return "NO ERROR";
+      } catch (e) { return String(e.message || e); }
+    })()`);
+    check(/numbers files/.test(refusedFolder) && /one folder per file/.test(refusedFolder),
+      "the job is refused with the same wording the editor shows", refusedFolder);
+    check(/\{sourcecounter\}/.test(refusedFolder), "and points at the right token");
+
+    // The distinction the guard exists to preserve: one folder per CARD.
+    const destCard = path.join(tmp, "RAID_CARD");
+    await fsp.mkdir(destCard, { recursive: true });
+    const okCard = await ev(`(async () => await window.freeframe.startCopy(
+      ${JSON.stringify(source)},
+      [{ id: "n1", path: ${JSON.stringify(destCard)}, parentId: null }],
+      "xxhash64", null, null,
+      { folderTemplate: "Card_{sourcecounter}", fileTemplate: "",
+        values: {}, fields: [], sourceCounter: 4 }, "free"))()`);
+    check(okCard.allVerified === true, "{sourcecounter} in a folder pattern still runs",
+      JSON.stringify(okCard.errors || []));
+    const cardDirs = await fsp.readdir(destCard);
+    check(cardDirs.filter((d) => d !== "FreeFrame Logs").join(",") === "Card_004",
+      "producing exactly ONE folder for the card, not one per file",
+      cardDirs.join(","));
+  }
+
   // ── 7. A file template renames, keeping the extension ──
   console.log("\n7. File-name template");
   const dest2 = path.join(tmp, "RAID2");

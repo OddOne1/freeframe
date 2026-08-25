@@ -473,6 +473,64 @@ async function waitFor(ev, expr, tries = 40) {
     "highlighted in the app's own warning colour, because it is text the user did not write",
     previews.amberColour);
 
+  // §65c — the editor half of the same refusal.
+  console.log("4d. (\u00a765c) {counter} cannot be saved into a folder pattern");
+  const rejected = await sev(`
+    (async () => {
+      const inputs = [...document.querySelectorAll(".tpl-input")];
+      const folder = inputs.find(x => x.dataset.tpl === "folderTemplate");
+      folder.value = "TAKE_{counter}";
+      folder.dispatchEvent(new Event("input", { bubbles: true }));
+      const name = document.querySelector('#preset-pane input[data-role="preset-name"]');
+      name.value = "Counter In Folder";
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise(r => setTimeout(r, 600));
+      const fo = document.getElementById("tpl-preview-folder");
+      const live = { text: fo.textContent, bad: fo.classList.contains("bad") };
+
+      // Cleared first: an earlier section's "Saved" is still on screen,
+      // and polling for "any non-empty note" would read that one.
+      document.getElementById("preset-saved").textContent = "";
+      document.getElementById("preset-save").click();
+      // Polled rather than slept: the note clears itself after 2.5s, so a
+      // fixed wait races its own deadline.
+      let note = "";
+      for (let i = 0; i < 20; i++) {
+        note = document.getElementById("preset-saved").textContent;
+        if (note) break;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      const store = await window.freeframe.listPresets();
+      return { live, note, saved: store.presets.some(p => p.name === "Counter In Folder") };
+    })()
+  `);
+  check(rejected && /numbers files/.test(rejected.live.text),
+    "it is flagged as the pattern is typed, not held back until Save", rejected?.live?.text);
+  check(rejected && rejected.live.bad, "shown as an error, not as a preview");
+  check(rejected && /numbers files/.test(rejected.note) && /one folder per file/.test(rejected.note),
+    "pressing Save reports the same reason", JSON.stringify(rejected?.note));
+  check(rejected && rejected.saved === false,
+    "and NOTHING was written — the refusal is not merely cosmetic");
+
+  // The token this is not about must still save.
+  const allowed = await sev(`
+    (async () => {
+      const inputs = [...document.querySelectorAll(".tpl-input")];
+      const folder = inputs.find(x => x.dataset.tpl === "folderTemplate");
+      folder.value = "Card_{sourcecounter}";
+      folder.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise(r => setTimeout(r, 600));
+      document.getElementById("preset-save").click();
+      await new Promise(r => setTimeout(r, 800));
+      const store = await window.freeframe.listPresets();
+      const p = store.presets.find(p => p.name === "Counter In Folder");
+      if (p) await window.freeframe.deletePreset(p.id);
+      return { saved: Boolean(p), folder: p ? p.folderTemplate : null };
+    })()
+  `);
+  check(allowed && allowed.saved && allowed.folder === "Card_{sourcecounter}",
+    "{sourcecounter} in a folder pattern saves exactly as before", JSON.stringify(allowed));
+
   console.log("5. The toolbar picker is gone");
   check(!(await ev(`!!document.getElementById("algo-btn")`)),
     "no checksum control anywhere in the main window");

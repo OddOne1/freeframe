@@ -10,7 +10,7 @@ const { runCopyJob } = require("./copy-engine");
 const presets = require("./presets");
 const settings = require("./settings");
 const webview = require("./webview");
-const { buildRelMapper, unknownTokens, omitTokens } = require("./naming");
+const { buildRelMapper, unknownTokens, folderPatternError, omitTokens } = require("./naming");
 const { normalizeFilters, wantsFlatten } = require("./filters");
 const { JobQueue } = require("./job-queue");
 const { listAlgorithms, isSupported, DEFAULT_ALGORITHM } = require("./hashers");
@@ -398,6 +398,15 @@ ipcMain.handle("app:info", async () => ({
 }));
 
 ipcMain.handle("presets:list", async () => presets.list());
+/**
+ * §65c — is this folder pattern allowed? Exposed rather than reimplemented
+ * in the renderer: the editor and the engine must refuse the same patterns
+ * for the same reason, and two copies of one rule is the drift this project
+ * keeps paying for (§30, §32, §61).
+ */
+ipcMain.handle("presets:validate-folder", async (_e, { folderTemplate } = {}) =>
+  ({ error: folderPatternError(folderTemplate) }));
+
 ipcMain.handle("presets:save", async (_e, { preset } = {}) => {
   const out = await presets.save(preset || {});
   broadcast("presets:changed");
@@ -872,6 +881,13 @@ ipcMain.handle("copy:start", async (event, payload) => {
         `Fill in ${missing.join(", ")} before starting — ${missing.length === 1 ? "it is" : "they are"} used in the folder name.`,
       );
     }
+
+    // §65c — a folder pattern that would create one folder per file is
+    // refused here as well as in the editor. This is the defensive half:
+    // a preset hand-edited on disk, or imported, never passed through the
+    // editor's own check.
+    const folderErr = folderPatternError(folderTemplate);
+    if (folderErr) throw new Error(folderErr);
 
     // A token nothing can fill would otherwise render literally.
     for (const [label, tpl] of [["Folder name", folderTemplate], ["File name", fileTemplate]]) {

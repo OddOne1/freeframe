@@ -12,6 +12,7 @@ const assert = require("node:assert");
 const path = require("node:path");
 const {
   buildRelMapper, renderTemplate, sanitizeSegment, tokensIn, unknownTokens, builtinValues, omitTokens,
+  folderPatternError,
 } = require(path.join(__dirname, "..", "src", "main", "naming.js"));
 
 let fail = 0;
@@ -166,6 +167,37 @@ console.log("\n6. A pattern that numbers nothing is numbered for you (\u00a765.5
   let threw = null;
   try { map("b/two.MOV"); } catch (e) { threw = e; }
   check(!threw, "same name in different folders is not a collision");
+}
+
+console.log("\n6b. {counter} is refused in a folder pattern (\u00a765c)");
+{
+  const err = folderPatternError("TAKE_{counter}");
+  check(Boolean(err), "a folder pattern using {counter} is refused");
+  check(/numbers files/.test(err) && /one folder per file/.test(err),
+        "the message says what it would actually do", err);
+  check(/\{sourcecounter\}/.test(err), "and names the token to use instead");
+
+  check(Boolean(folderPatternError("{YYYY}/{operator}_{counter}")),
+        "found anywhere in the pattern, including a nested segment");
+
+  // The distinction the two tokens exist for. One folder per CARD is the
+  // point of {sourcecounter}; one folder per FILE is the bug.
+  check(folderPatternError("Card_{sourcecounter}") === null,
+        "{sourcecounter} is untouched — numbering by card is what a folder pattern is for");
+  check(folderPatternError("{YYYY}{MM}{DD}_{operator}") === null, "an ordinary pattern is fine");
+  check(folderPatternError("") === null && folderPatternError(null) === null,
+        "and an empty or absent pattern is not an error");
+
+  // A near-miss that must NOT be caught: a user field happening to be
+  // called something counter-ish is not the built-in token.
+  check(folderPatternError("{shotcounter}") === null,
+        "a custom field whose name merely contains 'counter' is not refused");
+
+  // The engine still DOES this if asked directly — the guard is a
+  // validation layer, not a change to rendering. Worth pinning so nobody
+  // later assumes buildRelMapper refuses it and drops the check.
+  const map = buildRelMapper({ folderTemplate: "X_{counter}", values: {}, now: NOW });
+  eq(map("a/one.MOV"), "X_0001/a/one.MOV", "buildRelMapper itself is unchanged — the refusal is upstream");
 }
 
 console.log("\n7. No template = no mapper");

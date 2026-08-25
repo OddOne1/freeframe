@@ -223,6 +223,40 @@ function unknownTokens(template, valueKeys) {
 }
 
 /**
+ * Why a folder pattern must be refused, or null if it is fine (§65c).
+ *
+ * `{counter}` numbers files WITHIN a copy. Put it in a folder pattern and
+ * every file renders a different folder name, so a card arrives as a
+ * hundred folders holding one file each. That has always been what the
+ * code does — it is not new behaviour being guarded, it is an edge case
+ * that was only ever unreachable through the chip UI, which never offers
+ * `{counter}` on the folder field (§22c). Hand-typing it worked.
+ *
+ * `{sourcecounter}` is deliberately untouched: it numbers CARDS, not
+ * files, so one folder per card is exactly what it is for and
+ * `Card_{sourcecounter}` must keep working unchanged. The two are
+ * separate tokens precisely so this distinction can be enforced.
+ *
+ * Returns a message rather than throwing, so both callers — the editor
+ * saving a preset and the engine starting a job — can present it their
+ * own way from one wording.
+ */
+const FOLDER_ONLY_REFUSALS = {
+  counter:
+    "{counter} numbers files within a copy, not folders — using it in a folder pattern "
+    + "creates one folder per file. Use {sourcecounter} to number by card instead.",
+};
+
+function folderPatternError(template) {
+  for (const t of tokensIn(template)) {
+    if (Object.prototype.hasOwnProperty.call(FOLDER_ONLY_REFUSALS, t)) {
+      return FOLDER_ONLY_REFUSALS[t];
+    }
+  }
+  return null;
+}
+
+/**
  * Render a template into a relative path.
  *
  * `/` in the template is honoured as a separator, so
@@ -442,6 +476,7 @@ module.exports = {
   sanitizeSegment,
   tokensIn,
   unknownTokens,
+  folderPatternError,
   builtinValues,
   fragileRenameExtensions,
   omitTokens,
