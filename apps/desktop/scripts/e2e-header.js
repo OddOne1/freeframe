@@ -91,6 +91,10 @@ async function waitFor(ev, expr, tries = 40) {
 
   await ev(`document.getElementById("conc-btn").click(); true`);
   await sleep(300);
+  // Same trap the preset pill fell into: reading #menu's buttons passes
+  // whether or not the menu was ever shown.
+  check(await ev(`getComputedStyle(document.getElementById("menu")).display === "block"`),
+    "the pill actually opens the menu on screen");
   // The current mode carries a ✓ prefix; strip it before comparing names.
   const modes = await ev(`[...document.querySelectorAll("#menu button")].map(b => b.firstChild.textContent.replace(/^\u2713\s*/, "").trim())`);
   const want = ["Single Source", "Single Destination", "Single Transfer", "Off"];

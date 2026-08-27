@@ -4007,6 +4007,14 @@
 
       on("preset-btn", "click", async (e) => {
         e.stopPropagation();
+        // Captured BEFORE the await. `currentTarget` is only valid during
+        // synchronous dispatch — the browser nulls it once the handler
+        // yields, so reading it after `await reloadPresets()` threw a
+        // TypeError on every click. The menu's contents were appended
+        // first, so the buttons existed in the DOM and only the line that
+        // makes the menu visible never ran: the pill looked inert while
+        // anything inspecting the DOM saw a fully-built menu.
+        const btn = e.currentTarget;
         await reloadPresets();
         menu.replaceChildren();
         menu.appendChild(el("div", { class: "label", text: "Naming preset" }));
@@ -4028,7 +4036,7 @@
           onClick: () => { closeMenu(); void window.freeframe.openSettingsWindow("presets"); },
         }));
 
-        const r = e.currentTarget.getBoundingClientRect();
+        const r = btn.getBoundingClientRect();
         menu.style.display = "block";
         menu.style.left = `${Math.min(r.left, window.innerWidth - 300)}px`;
         menu.style.top = `${r.bottom + 4}px`;

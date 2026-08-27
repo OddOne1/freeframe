@@ -342,6 +342,18 @@ async function waitFor(ev, expr, tries = 40) {
   // fills a tick after the click rather than during it.
   await ev(`document.getElementById("preset-btn").click(); true`);
   await sleep(600);
+  // Visibility is asserted, not just contents. This check used to read
+  // #menu's buttons alone and passed for weeks against a menu that never
+  // became visible: the handler appended every item and THEN threw on a
+  // null currentTarget, so the DOM looked right while the pill did nothing.
+  const menuOpen = await ev(`(() => {
+    const m = document.getElementById("menu");
+    const r = m.getBoundingClientRect();
+    return JSON.stringify({ display: getComputedStyle(m).display, w: r.width, h: r.height });
+  })()`);
+  const openState = JSON.parse(menuOpen);
+  check(openState.display === "block" && openState.w > 0 && openState.h > 0,
+    "the pill actually opens the menu on screen", menuOpen);
   const menuItems = await ev(`[...document.querySelectorAll("#menu button")].map(b => b.textContent.trim())`);
   check(Array.isArray(menuItems) && menuItems.some((t) => t.includes(PRESET_NAME)),
     "the pill opens a selector listing it", (menuItems || []).join(" | "));
