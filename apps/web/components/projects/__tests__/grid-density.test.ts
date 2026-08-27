@@ -45,15 +45,11 @@ function overviewLadders(): Record<string, number[]> {
 }
 
 /**
- * §67 doubled S/M/L in both grids and deliberately left XS alone. In the
- * OVERVIEW that keeps the ladder ordered (XS 3/5/7/9 still leads S 2/4/6/8).
- * In the ASSET GRID it does not: S is now denser than XS at every
- * breakpoint and M at most of them, so "XS" is no longer the smallest card
- * there. That inversion is a consequence of the instruction, not a mistake
- * in carrying it out — so the ordering invariant is asserted only where it
- * still holds, and the asset grid's exact table is pinned instead. Deleting
- * the check outright would have lost the one thing still worth catching:
- * that these numbers are the numbers that were asked for.
+ * §67's first cut (1b7f16e) doubled S/M/L while leaving XS alone, which
+ * inverted the asset grid's ladder — S ended up denser than XS, so the
+ * "extra small" card was the larger one. The §67 correction restored strict
+ * XS > S > M > L at every breakpoint, so the ordering invariant below
+ * applies to ALL FOUR sizes again, XS included.
  */
 describe.each([
   ['in-project asset grid', assetGridLadders],
@@ -66,16 +62,26 @@ describe.each([
     expect(lengths[0]).toBeGreaterThan(1)
   })
 
-  it('never puts a larger card in more columns than a smaller one, from S down', () => {
+  it('never puts a larger card in more columns than a smaller one', () => {
     const ladders = read()
     const steps = ladders.XS.length
-    // XS is excluded: §67 left it untouched while doubling everything else,
-    // which puts it below S (and mostly below M) in the asset grid. Among
-    // S/M/L the ordering still has to hold.
-    const ordered = ['S', 'M', 'L'] as const
     for (let i = 0; i < steps; i++) {
-      for (let j = 1; j < ordered.length; j++) {
-        expect(ladders[ordered[j - 1]][i]).toBeGreaterThanOrEqual(ladders[ordered[j]][i])
+      for (let j = 1; j < SIZES.length; j++) {
+        expect(ladders[SIZES[j - 1]][i]).toBeGreaterThanOrEqual(ladders[SIZES[j]][i])
+      }
+    }
+  })
+
+  it('and in the asset grid the decrease is STRICT, which was the whole correction', () => {
+    const ladders = read()
+    // Separate from the >= check above because the overview legitimately
+    // ties (M and L both start at 2 columns at base). Only the asset grid
+    // was inverted, and only it has to step strictly down.
+    if (ladders.XS.join() !== [4, 5, 7, 9].join()) return
+    const steps = ladders.XS.length
+    for (let i = 0; i < steps; i++) {
+      for (let j = 1; j < SIZES.length; j++) {
+        expect(ladders[SIZES[j - 1]][i]).toBeGreaterThan(ladders[SIZES[j]][i])
       }
     }
   })
@@ -108,12 +114,15 @@ describe.each([
  * left — without it, nothing at all would catch the asset grid drifting.
  */
 describe('§67 target tables', () => {
-  it('asset grid matches the doubled S/M/L, with XS untouched', () => {
+  it('asset grid matches the CORRECTED table, with XS untouched', () => {
+    // XS's own density is a hard ceiling on S: at base and 640 it is
+    // already 4 and 5, leaving S no room to go denser than its original
+    // 3 and 4 without catching XS. So the halving only lands at 1024/1280.
     expect(assetGridLadders()).toEqual({
       XS: [4, 5, 7, 9],
-      S: [6, 8, 10, 12],
-      M: [4, 6, 8, 8],
-      L: [2, 4, 4, 6],
+      S: [3, 4, 6, 8],
+      M: [2, 3, 5, 7],
+      L: [1, 2, 4, 6],
     })
   })
 
@@ -126,10 +135,8 @@ describe('§67 target tables', () => {
     })
   })
 
-  it('and the asset grid is now inverted at XS, which the ordering test excludes', () => {
+  it('and XS leads S everywhere again — 1b7f16e\'s inversion is gone', () => {
     const a = assetGridLadders()
-    // Stated as an assertion rather than a comment so it cannot quietly
-    // stop being true without someone noticing.
-    expect(a.S.every((n, i) => n > a.XS[i])).toBe(true)
+    expect(a.XS.every((n, i) => n > a.S[i])).toBe(true)
   })
 })

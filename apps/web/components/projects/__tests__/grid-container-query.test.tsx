@@ -70,10 +70,10 @@ describe('the grid', () => {
       .map((m) => Number(m[1]))
     expect(counts.length).toBeGreaterThan(0)
     // Was `toBe(1)`, which asserted the tightest bound in the file rather
-    // than the invariant it is named for. §67 doubled L's base from 1 to 2,
-    // so no rule uses a single column any more — worth knowing, since it
-    // means the narrowest container now always shows two cards side by
-    // side, but it does not violate "never below one".
+    // than the invariant it is named for. L's base is back to 1 after the
+    // §67 correction, so that would pass again — left as `>=` because the
+    // bound is the point, and a future re-tune should not have to edit
+    // this line to stay honest.
     expect(Math.min(...counts)).toBeGreaterThanOrEqual(1)
   })
 
