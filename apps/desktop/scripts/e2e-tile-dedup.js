@@ -260,6 +260,139 @@ const check = (ok, label, detail = "") => {
     check(meta.project && meta.project.text === "7 assets",
       "and a FreeFrame project is untouched", meta.project && meta.project.text);
 
+    // ── §69 — Destination "Choose folder…" narrows, it does not duplicate ─
+    console.log("6c. (\u00a769) Choose folder narrows a same-drive destination");
+    const narrow = await ev(`(async () => {
+      volumes = [
+        { name: "S69_Main", mountPoint: "/Volumes/S69_Main", type: "internal",
+          totalBytes: 1e12, freeBytes: 5e11 },
+        { name: "S69_Shuttle", mountPoint: "/Volumes/S69_Shuttle", type: "external",
+          totalBytes: 2e12, freeBytes: 1e12 },
+      ];
+      // Stubbed so the scenario does not depend on what is plugged in; the
+      // real deviceFor resolves a path to its volume the same way.
+      deviceFor = (p) => p.startsWith("/Volumes/S69_Shuttle") ? "/Volumes/S69_Shuttle"
+                       : p.startsWith("/Volumes/S69_Main") ? "/Volumes/S69_Main" : null;
+      const pick = (f) => { pickFolder = async () => {
+        if (!extraFolders.includes(f)) extraFolders.push(f);
+        return f;
+      }; };
+      const press = () => document.querySelector('[data-choose="dest"]').click();
+      const snap = () => ({
+        tops: destNodes.filter(n => n.parentId === null).map(n => n.path),
+        total: destNodes.length,
+        label: document.getElementById("start").textContent,
+      });
+      const out = {};
+
+      // The recorded repro: whole drive, then a folder ON that drive.
+      clearAll(); render();
+      addDest("/Volumes/S69_Main", null); render();
+      out.before = snap();
+      pick("/Volumes/S69_Main/Desktop"); press();
+      await new Promise(r => setTimeout(r, 350));
+      out.same = snap();
+
+      // A folder on a DIFFERENT drive is still a new parallel destination.
+      clearAll(); render();
+      addDest("/Volumes/S69_Main", null); render();
+      pick("/Volumes/S69_Shuttle/Dailies"); press();
+      await new Promise(r => setTimeout(r, 350));
+      out.different = snap();
+
+      // Picking a second folder on the SAME drive narrows again rather than
+      // stacking up — the bug was cumulative, not a one-off.
+      pick("/Volumes/S69_Shuttle/Other"); press();
+      await new Promise(r => setTimeout(r, 350));
+      out.twice = snap();
+
+      // Re-picking the folder that is ALREADY the destination. addDest
+      // returns early for a path it already holds, so without a guard the
+      // follow-up removeDest would delete it and leave Destination empty.
+      clearAll(); render();
+      addDest("/Volumes/S69_Main/Desktop", null); render();
+      pick("/Volumes/S69_Main/Desktop"); press();
+      await new Promise(r => setTimeout(r, 350));
+      out.samePath = snap();
+
+      // A CASCADED node is not a narrowing candidate: it copies FROM
+      // another destination rather than from the source, so replacing it
+      // would silently restructure the chain.
+      clearAll(); render();
+      addDest("/Volumes/S69_Main", null);
+      addDest("/Volumes/S69_Shuttle", null);
+      cascadeFrom("/Volumes/S69_Shuttle", destNodes[0].id); render();
+      pick("/Volumes/S69_Shuttle/Leg"); press();
+      await new Promise(r => setTimeout(r, 350));
+      out.cascadeKept = {
+        nodes: destNodes.map(n => ({ p: n.path, hasParent: n.parentId !== null })),
+        total: destNodes.length,
+      };
+
+      // And narrowing a node that IS a cascade parent promotes its
+      // children, because removeDest re-parents rather than dropping them.
+      clearAll(); render();
+      addDest("/Volumes/S69_Main", null);
+      addDest("/Volumes/S69_Shuttle", null);
+      cascadeFrom("/Volumes/S69_Shuttle", destNodes[0].id); render();
+      pick("/Volumes/S69_Main/Desktop"); press();
+      await new Promise(r => setTimeout(r, 350));
+      out.parentNarrowed = destNodes.map(n => ({ p: n.path, hasParent: n.parentId !== null }));
+      return out;
+    })()`);
+
+    check(narrow.before.tops.length === 1, "one destination after the drag", JSON.stringify(narrow.before.tops));
+    check(narrow.same.tops.length === 1 && narrow.same.tops[0] === "/Volumes/S69_Main/Desktop",
+      "picking a folder on that same drive NARROWS it — one tile, not two",
+      JSON.stringify(narrow.same.tops));
+    // The recording's own tell: the button read "Copy & Verify -> 2".
+    check(!/→\s*2/.test(narrow.same.label),
+      "and Copy & Verify does not report a second leg", narrow.same.label);
+    check(narrow.different.tops.length === 2,
+      "a folder on a DIFFERENT drive still adds a parallel destination",
+      JSON.stringify(narrow.different.tops));
+    check(/→\s*2/.test(narrow.different.label),
+      "and that one does report two legs", narrow.different.label);
+    check(narrow.twice.tops.length === 2
+      && narrow.twice.tops.includes("/Volumes/S69_Shuttle/Other")
+      && !narrow.twice.tops.includes("/Volumes/S69_Shuttle/Dailies"),
+      "narrowing is repeatable — the second pick replaces the first, it does not stack",
+      JSON.stringify(narrow.twice.tops));
+
+    check(narrow.samePath.tops.length === 1
+      && narrow.samePath.tops[0] === "/Volumes/S69_Main/Desktop",
+      "re-picking the folder already set keeps it — it does not empty the Destination column",
+      JSON.stringify(narrow.samePath.tops));
+
+    const cascaded = narrow.cascadeKept.nodes.find((n) => n.p === "/Volumes/S69_Shuttle");
+    check(Boolean(cascaded) && cascaded.hasParent,
+      "a cascaded node is never narrowed away — it copies from another destination, not the source",
+      JSON.stringify(narrow.cascadeKept.nodes));
+    check(narrow.cascadeKept.total === 3,
+      "so picking a folder on its drive adds a new destination instead",
+      String(narrow.cascadeKept.total));
+
+    // Recorded rather than discovered later: narrowing a node that IS a
+    // cascade parent promotes its children to top level, because
+    // removeDest re-parents them. Identical to what the context-menu
+    // "Choose a different folder/file…" path has always done — verified
+    // against that path directly — so it is inherited, not introduced.
+    check(narrow.parentNarrowed.every((n) => !n.hasParent),
+      "narrowing a cascade PARENT promotes its children, matching the context-menu path",
+      JSON.stringify(narrow.parentNarrowed));
+
+    // Asserted at the SOURCE, and labelled as such: add-before-remove only
+    // differs from remove-before-add if something throws between the two,
+    // so the final state is identical either way and no runtime probe can
+    // tell them apart. The spec asks for this order so a failure leaves the
+    // destination populated rather than empty.
+    const src = require("node:fs").readFileSync(
+      path.join(APP, "src", "renderer", "index.html"), "utf8");
+    const block = src.slice(src.indexOf("\u00a769 — picking a folder on a drive"),
+                            src.indexOf("\u00a769 — picking a folder on a drive") + 1400);
+    check(block.indexOf("addDest(folder, null);") < block.indexOf("removeDest(existing.path)"),
+      "the new destination is added BEFORE the old one is dropped (source-level check)");
+
     console.log("6. The panel's Clear controls exist in both windows");
     check(await ev(`!!document.getElementById("jobs-clear")`), "docked panel has Clear");
     const panelSrc = require("node:fs").readFileSync(

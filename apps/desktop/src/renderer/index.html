@@ -3083,8 +3083,29 @@
         // which button was pressed, so it files under the right heading.
         const dev = deviceFor(folder);
         if (dev) rememberRecent(dev, which === "source" ? "source" : "destination", folder);
-        if (which === "source") setSource(folder);
-        else addDest(folder, null);
+        if (which === "source") { setSource(folder); return; }
+
+        // §69 — picking a folder on a drive that is ALREADY a destination
+        // narrows that destination; it does not add a second leg beside it.
+        //
+        // Source has no equivalent bug because `sourcePath` is one scalar,
+        // so picking always replaces. Destinations are a list on purpose
+        // (parallel copies are a real feature), which is why this narrows
+        // per DEVICE rather than always replacing: a folder on a genuinely
+        // different drive is still a new destination, unchanged.
+        //
+        // Only top-level nodes are considered. A cascaded node copies FROM
+        // another destination rather than from the source, so replacing one
+        // with a picked folder would silently restructure the chain.
+        const existing = dev
+          ? destNodes.find((n) => n.parentId === null && deviceFor(n.path) === dev)
+          : null;
+        // Order matters, and matches the context-menu path this mirrors
+        // (see "Choose a different folder/file…"): add first, then drop the
+        // old one, so a failure between the two leaves the destination
+        // populated rather than empty.
+        addDest(folder, null);
+        if (existing && existing.path !== folder) removeDest(existing.path);
       });
     }
 
