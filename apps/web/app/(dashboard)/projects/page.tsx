@@ -302,9 +302,12 @@ function InviteUserDialog() {
  *  again by the back door. */
 const projectGridColsMap: Record<CardSize, string> = {
   XS: "grid-cols-3 sm:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9",
-  S: "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
-  M: "grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3",
-  L: "grid-cols-1 sm:grid-cols-1 lg:grid-cols-1 xl:grid-cols-2",
+  // §67 — S/M/L doubled at every breakpoint ("they can all be half the
+  // size", read as the mechanical instruction it is). XS is untouched: it
+  // was not called out and is already the densest tier.
+  S: "grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8",
+  M: "grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-6",
+  L: "grid-cols-2 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-4",
 }
 
 export default function ProjectsPage() {

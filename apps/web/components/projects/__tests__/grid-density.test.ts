@@ -44,6 +44,17 @@ function overviewLadders(): Record<string, number[]> {
   return out
 }
 
+/**
+ * §67 doubled S/M/L in both grids and deliberately left XS alone. In the
+ * OVERVIEW that keeps the ladder ordered (XS 3/5/7/9 still leads S 2/4/6/8).
+ * In the ASSET GRID it does not: S is now denser than XS at every
+ * breakpoint and M at most of them, so "XS" is no longer the smallest card
+ * there. That inversion is a consequence of the instruction, not a mistake
+ * in carrying it out — so the ordering invariant is asserted only where it
+ * still holds, and the asset grid's exact table is pinned instead. Deleting
+ * the check outright would have lost the one thing still worth catching:
+ * that these numbers are the numbers that were asked for.
+ */
 describe.each([
   ['in-project asset grid', assetGridLadders],
   ['projects overview', overviewLadders],
@@ -55,14 +66,16 @@ describe.each([
     expect(lengths[0]).toBeGreaterThan(1)
   })
 
-  it('never puts a larger card in more columns than a smaller one', () => {
+  it('never puts a larger card in more columns than a smaller one, from S down', () => {
     const ladders = read()
     const steps = ladders.XS.length
+    // XS is excluded: §67 left it untouched while doubling everything else,
+    // which puts it below S (and mostly below M) in the asset grid. Among
+    // S/M/L the ordering still has to hold.
+    const ordered = ['S', 'M', 'L'] as const
     for (let i = 0; i < steps; i++) {
-      for (let j = 1; j < SIZES.length; j++) {
-        const bigger = SIZES[j]
-        const smaller = SIZES[j - 1]
-        expect(ladders[smaller][i]).toBeGreaterThanOrEqual(ladders[bigger][i])
+      for (let j = 1; j < ordered.length; j++) {
+        expect(ladders[ordered[j - 1]][i]).toBeGreaterThanOrEqual(ladders[ordered[j]][i])
       }
     }
   })
@@ -82,5 +95,41 @@ describe.each([
     for (const size of SIZES) {
       expect(Math.min(...ladders[size])).toBeGreaterThanOrEqual(1)
     }
+  })
+})
+
+/**
+ * The numbers themselves (§67).
+ *
+ * §55's header says these are deliberately not asserted, because they were
+ * a first-pass estimate expected to be re-tuned by eye. §67 changed that:
+ * it names an exact table, and the ordering invariant that used to protect
+ * the asset grid no longer applies to it. Pinning the values is what is
+ * left — without it, nothing at all would catch the asset grid drifting.
+ */
+describe('§67 target tables', () => {
+  it('asset grid matches the doubled S/M/L, with XS untouched', () => {
+    expect(assetGridLadders()).toEqual({
+      XS: [4, 5, 7, 9],
+      S: [6, 8, 10, 12],
+      M: [4, 6, 8, 8],
+      L: [2, 4, 4, 6],
+    })
+  })
+
+  it('projects overview matches the doubled S/M/L, with XS untouched', () => {
+    expect(overviewLadders()).toEqual({
+      XS: [3, 5, 7, 9],
+      S: [2, 4, 6, 8],
+      M: [2, 4, 4, 6],
+      L: [2, 2, 2, 4],
+    })
+  })
+
+  it('and the asset grid is now inverted at XS, which the ordering test excludes', () => {
+    const a = assetGridLadders()
+    // Stated as an assertion rather than a comment so it cannot quietly
+    // stop being true without someone noticing.
+    expect(a.S.every((n, i) => n > a.XS[i])).toBe(true)
   })
 })

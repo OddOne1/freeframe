@@ -42,7 +42,16 @@ beforeEach(() => {
 })
 
 describe('XS', () => {
-  it('is denser than S at every breakpoint', () => {
+  /**
+   * §67 INVERTED THIS. It doubled S/M/L and deliberately left XS alone, so
+   * in the asset grid XS (4/5/7/9) is now LESS dense than S (6/8/10/12) at
+   * every breakpoint — the "extra small" card is the larger one there.
+   *
+   * Kept and inverted rather than deleted, because the relationship is
+   * still worth pinning: if XS is ever re-tuned to lead S again, that is a
+   * decision someone should make on purpose rather than discover.
+   */
+  it('is LESS dense than S at every breakpoint since §67 left it untouched', () => {
     // One entry per breakpoint, in source order (base, 640, 1024, 1280).
     const cols = (size: string) =>
       Array.from(
@@ -55,7 +64,7 @@ describe('XS', () => {
     const s = cols('S')
     expect(xs.length).toBeGreaterThan(1)
     expect(xs).toHaveLength(s.length)
-    xs.forEach((n, i) => expect(n).toBeGreaterThan(s[i]))
+    xs.forEach((n, i) => expect(n).toBeLessThan(s[i]))
   })
 
   it('is offered first, smallest to largest, in the in-project control', () => {

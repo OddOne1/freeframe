@@ -110,27 +110,27 @@
 }
 
 .asset-grid[data-size='XS'] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.asset-grid[data-size='S']  { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.asset-grid[data-size='M']  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.asset-grid[data-size='L']  { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+.asset-grid[data-size='S']  { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.asset-grid[data-size='M']  { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.asset-grid[data-size='L']  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 @container assetgrid (min-width: 640px) {
   .asset-grid[data-size='XS'] { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .asset-grid[data-size='S']  { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .asset-grid[data-size='M']  { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .asset-grid[data-size='L']  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .asset-grid[data-size='S']  { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+  .asset-grid[data-size='M']  { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .asset-grid[data-size='L']  { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
 @container assetgrid (min-width: 1024px) {
   .asset-grid[data-size='XS'] { grid-template-columns: repeat(7, minmax(0, 1fr)); }
-  .asset-grid[data-size='S']  { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .asset-grid[data-size='M']  { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .asset-grid[data-size='L']  { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .asset-grid[data-size='S']  { grid-template-columns: repeat(10, minmax(0, 1fr)); }
+  .asset-grid[data-size='M']  { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+  .asset-grid[data-size='L']  { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
 @container assetgrid (min-width: 1280px) {
   .asset-grid[data-size='XS'] { grid-template-columns: repeat(9, minmax(0, 1fr)); }
-  .asset-grid[data-size='S']  { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-  .asset-grid[data-size='M']  { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .asset-grid[data-size='L']  { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .asset-grid[data-size='S']  { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+  .asset-grid[data-size='M']  { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+  .asset-grid[data-size='L']  { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
