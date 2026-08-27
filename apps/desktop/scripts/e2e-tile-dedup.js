@@ -185,6 +185,81 @@ const check = (ok, label, detail = "") => {
     check(!projMenu.includes("Choose a different folder/file…"),
       "and it does NOT also get the generic swap entry — that ambiguity is what §24a removed");
 
+    // ── §66 — the tile says used or free depending on its role ──────────
+    console.log("6b. (\u00a766) Storage shown depends on the tile's role");
+    const meta = await ev(`(() => {
+      volumes = [
+        { name: "S66_Card", mountPoint: "/Volumes/S66_Card", type: "external",
+          totalBytes: 512 * 1024 ** 3, freeBytes: 100 * 1024 ** 3 },
+        { name: "S66_Raid", mountPoint: "/Volumes/S66_Raid", type: "external",
+          totalBytes: 8 * 1024 ** 4, freeBytes: 3 * 1024 ** 4 },
+        { name: "S66_Idle", mountPoint: "/Volumes/S66_Idle", type: "external",
+          totalBytes: 4 * 1024 ** 4, freeBytes: 1 * 1024 ** 4 },
+        // A network volume reports no sizes at all.
+        { name: "S66_Nas", mountPoint: "/Volumes/S66_Nas", type: "network",
+          totalBytes: null, freeBytes: null },
+        // And the half-reported case: free known, total missing. Without a
+        // separate fixture the total-is-null guard is unreachable, since
+        // the free-is-null check above would already have returned.
+        // (No backticks in here — this comment lives inside a template
+        // literal, and one would end it.)
+        { name: "S66_Half", mountPoint: "/Volumes/S66_Half", type: "network",
+          totalBytes: null, freeBytes: 50 * 1024 ** 3 },
+      ];
+      ffProjects = [{ id: "s66", name: "S66_Project", asset_count: 7 }];
+      extraFolders = [];
+      clearAll();
+      render();
+      setSource("/Volumes/S66_Card");
+      addDest("/Volumes/S66_Raid", null);
+      // A network share as a second destination: the free-is-null guard is
+      // only observable HERE, because the dest branch returns before the
+      // total-is-null check that would otherwise cover for it.
+      addDest("/Volumes/S66_Nas", null);
+      render();
+      const pick = (zone, name) => {
+        const t = [...document.querySelectorAll(zone + " .tile")]
+          .find(x => (x.querySelector(".tile-name") || {}).textContent === name);
+        if (!t) return null;
+        const m = t.querySelector(".tile-meta");
+        return { text: m.textContent, clipped: m.scrollWidth > m.clientWidth + 1,
+                 twoLine: m.classList.contains("two-line") };
+      };
+      return {
+        source: pick("#zone-source", "S66_Card"),
+        dest: pick("#zone-dest", "S66_Raid"),
+        idle: pick("#zone-volumes", "S66_Idle"),
+        nasDest: pick("#zone-dest", "S66_Nas"),
+        project: pick("#zone-volumes", "S66_Project"),
+        half: pick("#zone-volumes", "S66_Half"),
+      };
+    })()`);
+
+    // 512 total - 100 free = 412 used. Asserting the NUMBER, not just the
+    // word: showing free space labelled "used" would pass a word check.
+    check(meta.source && meta.source.text === "412.0 GB used",
+      "a source shows what the card HOLDS — that is what is about to be copied",
+      meta.source && meta.source.text);
+    check(meta.dest && meta.dest.text === "3.0 TB free",
+      "a destination still shows what REMAINS, unchanged", meta.dest && meta.dest.text);
+    check(meta.idle && /3\.0 TB used/.test(meta.idle.text) && /1\.0 TB free/.test(meta.idle.text),
+      "an unassigned tile shows both, since neither question has been asked yet",
+      meta.idle && JSON.stringify(meta.idle.text));
+    // The Volumes column caps tiles at 118px (§22f) and the pair does not
+    // fit on one line there — it ellipsised the free figure away entirely
+    // before this wrapped.
+    check(meta.idle && meta.idle.twoLine && !meta.idle.clipped,
+      "on two lines, so neither figure is ellipsised away",
+      meta.idle && JSON.stringify(meta.idle));
+    check(meta.nasDest && meta.nasDest.text === "/Volumes/S66_Nas",
+      "a destination reporting no sizes falls back to its mount point, not \u201c\u2014 free\u201d",
+      meta.nasDest && meta.nasDest.text);
+    check(meta.half && meta.half.text === "/Volumes/S66_Half",
+      "a volume that reports free but not total also falls back — used cannot be computed",
+      meta.half && meta.half.text);
+    check(meta.project && meta.project.text === "7 assets",
+      "and a FreeFrame project is untouched", meta.project && meta.project.text);
+
     console.log("6. The panel's Clear controls exist in both windows");
     check(await ev(`!!document.getElementById("jobs-clear")`), "docked panel has Clear");
     const panelSrc = require("node:fs").readFileSync(

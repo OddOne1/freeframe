@@ -565,6 +565,14 @@
       overflow: hidden;
     }
     .tile-meta { font-size: 10px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* §66 — the unassigned tile shows BOTH figures, and the pair does not
+       fit on one line in the Volumes column, whose tiles are capped at
+       118px (§22f). Measured: ~29 characters wanting ~150px of a 111px
+       box, so it ellipsised away the free figure entirely. Two lines
+       rather than a shorter, vaguer wording: the tile has the vertical
+       room, and "used"/"free" are the words that make the numbers mean
+       anything. */
+    .tile-meta.two-line { white-space: pre-line; line-height: 1.35; }
     /* §22e — the name is a control now, so it has to look like one on
        hover. Without this it reads as plain text and nobody clicks it. */
     /* §22f — a destination tile carries what only the list view used to:
@@ -1313,6 +1321,31 @@
       return `${n.toFixed(1)} ${u[i]}`;
     }
     const baseName = (p) => p.split("/").filter(Boolean).pop() || p;
+
+    /**
+     * §66 — what a drive's tile says about its storage depends on the role
+     * it is holding.
+     *
+     * A source is a card you are pulling FROM: what matters is how much it
+     * holds, because that is what is about to be copied. A destination is a
+     * drive you are writing TO: what matters is how much room is left. With
+     * no role assigned yet, neither question has been asked, so both
+     * figures are shown.
+     *
+     * Falls back to the mount point whenever a figure it needs is missing,
+     * matching the guard this replaces — a network volume reports no sizes,
+     * and "— used" reads like a bug.
+     */
+    function storageMeta(entry, role) {
+      const { totalBytes: total, freeBytes: free } = entry;
+      if (free == null) return entry.mountPoint;
+      if (role === "dest") return `${formatBytes(free)} free`;
+      if (total == null) return entry.mountPoint;
+      const used = Math.max(0, total - free);
+      if (role === "source") return `${formatBytes(used)} used`;
+      // Two lines, not a separator — see .tile-meta.two-line for why.
+      return `${formatBytes(used)} used\n${formatBytes(free)} free`;
+    }
 
     // User-supplied volume and file names land in the DOM, and this renderer
     // is deliberately the untrusted side of the IPC boundary — build text
@@ -2494,21 +2527,23 @@
       // in the middle of it.
       const nameEl = el("div", { class: "tile-name", text: entry.name, title: entry.name });
 
+      // §66 — computed first so the class can follow the content: only the
+      // both-figures case needs two lines, and forcing every tile to wrap
+      // would let a long mount point push the tile taller than its
+      // neighbours in the same grid row.
+      const metaText = entry.kind === "freeframe"
+        ? ((entry.folderLabels && entry.folderLabels.length)
+            ? entry.folderLabels.join(" · ")
+            : `${entry.assetCount} asset${entry.assetCount === 1 ? "" : "s"}`)
+        : entry.fileList
+          ? entry.fileList
+          : storageMeta(entry, role);
+
       const info = el("div", { class: "tile-info" }, [
         nameEl,
         el("div", {
-          class: "tile-meta",
-          // A FreeFrame project has no free-space figure, so the generic
-          // branch rendered a bare "— free".
-          text: entry.kind === "freeframe"
-            ? ((entry.folderLabels && entry.folderLabels.length)
-                ? entry.folderLabels.join(" · ")
-                : `${entry.assetCount} asset${entry.assetCount === 1 ? "" : "s"}`)
-            : entry.fileList
-              ? entry.fileList
-            : entry.freeBytes == null
-              ? entry.mountPoint
-              : `${formatBytes(entry.freeBytes)} free`,
+          class: metaText.includes("\n") ? "tile-meta two-line" : "tile-meta",
+          text: metaText,
           title: entry.mountPoint,
         }),
       ]);
