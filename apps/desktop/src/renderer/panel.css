@@ -61,3 +61,27 @@
   padding: 1px 7px; border-radius: 4px;
 }
 .job-log:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* §71 — the completion detail, now inside the job's own row instead of a
+   separate card below the Log. Styles moved from index.html's `.summary`
+   block so the docked and detached panels render it identically. */
+.job-summary {
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--border-primary);
+}
+.job-summary .head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.job-summary h3 { margin: 0; font-size: 12px; }
+.job-summary h3.ok { color: var(--status-success); }
+.job-summary h3.bad { color: var(--status-error); }
+.job-summary .stats { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 11px; color: var(--text-secondary); }
+.job-summary .stats b { color: var(--text-primary); font-weight: 600; }
+.job-summary ul { margin: 6px 0 0; padding-left: 16px; font-size: 10px; color: var(--status-error); }
+.job-summary .verdict { margin-top: 8px; font-size: 11px; line-height: 1.5; }
+.job-summary .verdict.ok { color: var(--status-success); }
+.job-summary .verdict.bad { color: var(--status-error); }
+.job-summary .verdict.warn { color: var(--status-warning); }
+.job-summary .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--status-draft); }
+.job-summary .dot.verified { background: var(--status-success); }
+.job-summary .dot.failed { background: var(--status-error); }
+.job-summary .dot.skipped { background: var(--status-warning); }
+.job-summary .dot.copying, .job-summary .dot.verifying { background: var(--status-info); }

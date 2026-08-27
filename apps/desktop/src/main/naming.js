@@ -247,6 +247,22 @@ const FOLDER_ONLY_REFUSALS = {
     + "creates one folder per file. Use {sourcecounter} to number by card instead.",
 };
 
+/**
+ * §71 — does this job actually rename anything?
+ *
+ * One definition, two callers: `copy:start` uses it for the §23d
+ * fragile-rename guard, and the renderer asks over IPC before deciding
+ * whether to consume a {sourcecounter} value. A second copy of this rule
+ * would let a job rename without advancing the counter, or advance it
+ * without renaming — both silent.
+ *
+ * Reads the STRIPPED template on purpose: disabling every field a file
+ * pattern used leaves nothing to rename by (§22g).
+ */
+function rendersNewFileNames(fileTemplate, disabled = []) {
+  return Boolean(String(omitTokens(fileTemplate, disabled) || "").trim());
+}
+
 function folderPatternError(template) {
   for (const t of tokensIn(template)) {
     if (Object.prototype.hasOwnProperty.call(FOLDER_ONLY_REFUSALS, t)) {
@@ -477,6 +493,7 @@ module.exports = {
   tokensIn,
   unknownTokens,
   folderPatternError,
+  rendersNewFileNames,
   builtinValues,
   fragileRenameExtensions,
   omitTokens,

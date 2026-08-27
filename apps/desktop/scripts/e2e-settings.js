@@ -584,39 +584,145 @@ async function waitFor(ev, expr, tries = 40) {
   check(await ev(`algorithm === ${JSON.stringify(persisted)}`),
     "and a job started now would use it — this is the only place it comes from");
 
-  // ── Speed / ETA reaches both surfaces ──
+  // ── §58's speed/ETA, now in the Log row rather than a second panel ────
+  //
+  // §71 removed the docked Progress column: it and the Log showed the same
+  // run twice, and the Log's own row already carried a bar, a rate and an
+  // ETA. So this asserts the surviving surface, driven through the queue
+  // snapshot the row actually renders from.
   console.log("3. Speed and ETA");
-  const footer = await ev(`
+  const row = await ev(`
     (() => {
-      const p = { phase: "bytes", percent: 40, file: "CLIP.MOV",
-                  speed: 42 * 1024 * 1024, eta: 185, nodeIds: [] };
-      window.dispatchEvent(new CustomEvent("noop"));
-      onProgress(p);
-      return document.getElementById("p-rate").textContent;
+      setJobsPanelOpen(true);
+      jobSnapshot = [{ id: "s58", kind: "copy", mode: "free", status: "running",
+        label: "CARD → RAID", sourceLabel: "/Volumes/CARD", destLabels: ["RAID"],
+        destPaths: ["/Volumes/RAID"], summary: null, error: null,
+        createdAt: Date.now() - 9000, startedAt: Date.now() - 8000, finishedAt: null,
+        blockedBy: [],
+        progress: { phase: "bytes", percent: 40, file: "CLIP.MOV",
+                    speed: 42 * 1024 * 1024, eta: 185, totalFiles: 10 } }];
+      drawJobs();
+      return (document.querySelector("#jobs-list .job-meta") || {}).textContent || "";
     })()
   `);
-  check(/MB\/s/.test(footer), "the docked footer shows a speed", footer);
-  check(/remaining/.test(footer), "and a remaining time", footer);
-  check(/3m/.test(footer), "coarse, not to the second", footer);
+  check(/MB\/s/.test(row), "the Log row shows a speed", row);
+  check(/remaining/.test(row), "and a remaining time", row);
+  check(/3m/.test(row), "coarse, not to the second", row);
+
+  check(!(await ev(`!!document.getElementById("p-rate") || !!document.getElementById("jobs-progress-col")`)),
+    "and the second copy of it — the Progress column — is gone (\u00a771)");
 
   const blank = await ev(`
     (() => {
-      onProgress({ phase: "bytes", percent: 41, file: "CLIP.MOV", nodeIds: [] });
-      return document.getElementById("p-rate").textContent;
+      jobSnapshot[0].progress = { phase: "bytes", percent: 41, file: "CLIP.MOV", totalFiles: 10 };
+      drawJobs();
+      return (document.querySelector("#jobs-list .job-meta") || {}).textContent || "";
     })()
   `);
-  check(blank === "",
-    "and shows nothing at all before there is a rate, rather than a stale one");
+  check(!/MB\/s|remaining/.test(blank),
+    "and shows nothing at all before there is a rate, rather than a stale one", blank);
 
-  const verifying = await ev(`
+  const finished = await ev(`
     (() => {
-      onProgress({ phase: "bytes", percent: 60, speed: 1e7, eta: 20, nodeIds: [] });
-      onProgress({ phase: "verifying", file: "CLIP.MOV" });
-      return document.getElementById("p-rate").textContent;
+      jobSnapshot[0].status = "done";
+      jobSnapshot[0].finishedAt = Date.now();
+      jobSnapshot[0].progress = { phase: "bytes", percent: 100, speed: 1e7, eta: 20 };
+      drawJobs();
+      return (document.querySelector("#jobs-list .job-meta") || {}).textContent || "";
     })()
   `);
-  check(verifying === "",
-    "and clears it when the job stops transferring — verification is not a transfer");
+  check(!/MB\/s|remaining/.test(finished),
+    "and drops it once the job stops — a speed on a finished row describes something that stopped happening",
+    finished);
+
+  // ── §71 Part B — the completion card folds into the job's own row ─────
+  console.log("3b. (\u00a771) The finished row carries the whole summary");
+  const detail = await ev(`
+    (() => {
+      jobSnapshot = [{ id: "s71", kind: "copy", mode: "free", status: "done",
+        label: "CARD → RAID", sourceLabel: "/Volumes/CARD",
+        destLabels: ["RAID"], destPaths: ["/Volumes/RAID"], progress: null,
+        error: null, createdAt: 1, startedAt: 2, finishedAt: 3, blockedBy: [],
+        summary: { totalFiles: 120, fileCopiesVerified: 118, totalFileCopies: 120,
+          allVerified: false, copiedBytes: 5e9, durationMs: 91000, legCount: 2,
+          nodes: [{ id: "n1", path: "/Volumes/RAID", status: "failed", parentId: null },
+                  { id: "n2", path: "/Volumes/SHUTTLE", status: "verified", parentId: "n1" }],
+          mismatches: [{ file: "A.MOV", destRoot: "/Volumes/RAID", sourceHash: "aa", destHash: "bb" }],
+          errors: [], skippedAssets: [{ name: "X.MOV", reason: "no original" }], filteredOut: [] } }];
+      drawJobs();
+      const d = document.querySelector("#jobs-list .job-summary");
+      if (!d) return null;
+      return {
+        heading: d.querySelector("h3").textContent,
+        bad: d.querySelector("h3").className === "bad",
+        stats: [...d.querySelectorAll(".stats")][0].textContent,
+        nodeLines: [...d.querySelectorAll(".stats")].slice(1).map(x => x.textContent.trim()),
+        verdicts: [...d.querySelectorAll(".verdict")].map(v => v.textContent),
+        items: [...d.querySelectorAll("li")].map(x => x.textContent),
+        separateCard: getComputedStyle(document.getElementById("summary")).display !== "none",
+        insideRow: !!d.closest(".job-row"),
+      };
+    })()
+  `);
+  check(Boolean(detail), "a finished row carries a summary block");
+  check(detail && detail.insideRow, "inside the job's own row, not beside it");
+  check(detail && !detail.separateCard,
+    "and no separate card appears below the Log");
+  check(detail && detail.heading === "Copy finished with problems" && detail.bad,
+    "with renderSummary's own verdict wording", detail && detail.heading);
+  // Everything the spec listed as must-keep.
+  for (const [label, needle] of [
+    ["file count", "Files 120"], ["verified count", "Verified 118/120"],
+    ["destinations", "Destinations 2"], ["cascade legs", "Cascade Legs 2"],
+    ["data", "Data 4.7 GB"], ["duration", "Duration 91.0s"], ["mismatches", "Mismatches 1"],
+  ]) {
+    check(detail && detail.stats.includes(needle), `keeps the ${label}`, detail && detail.stats);
+  }
+  check(detail && detail.nodeLines.includes("SHUTTLE (from RAID) — Verified"),
+    "keeps per-destination status WITH cascade parent attribution",
+    JSON.stringify(detail && detail.nodeLines));
+  check(detail && detail.verdicts.some((v) => /not a complete copy/.test(v)),
+    "keeps the skipped-assets warning", JSON.stringify(detail && detail.verdicts));
+  check(detail && detail.items.some((i) => /X\.MOV — no original/.test(i)),
+    "and lists them", JSON.stringify(detail && detail.items));
+  check(detail && detail.items.some((i) => /expected aa, got bb/.test(i)),
+    "and lists the mismatches");
+
+  // A row that is still running must not show a completion card, even if a
+  // summary is somehow attached — "Copy verified" over a live progress bar
+  // is the worst possible thing for this panel to say.
+  const stillRunning = await ev(`
+    (() => {
+      jobSnapshot[0].status = "running";
+      jobSnapshot[0].progress = { phase: "bytes", percent: 30, totalFiles: 120 };
+      drawJobs();
+      return { hasDetail: !!document.querySelector("#jobs-list .job-summary"),
+               hasBar: !!document.querySelector("#jobs-list .job-bar") };
+    })()
+  `);
+  check(!stillRunning.hasDetail && stillRunning.hasBar,
+    "a running row shows its bar and NO completion detail, summary attached or not",
+    JSON.stringify(stillRunning));
+  await ev(`jobSnapshot[0].status = "done"; jobSnapshot[0].progress = null; true`);
+
+  const upload = await ev(`
+    (() => {
+      jobSnapshot[0].summary = { uploadOnly: true, totalFiles: 4, filesCopied: 4,
+        fileCopiesVerified: 4, totalFileCopies: 4, allVerified: false, nodes: [],
+        destPaths: ["freeframe://p1"], copiedBytes: 1e6, durationMs: 2000, legCount: 1,
+        mismatches: [], errors: [], skippedAssets: [], filteredOut: [] };
+      drawJobs();
+      const d = document.querySelector("#jobs-list .job-summary");
+      return { heading: d.querySelector("h3").textContent,
+               stats: [...d.querySelectorAll(".stats")][0].textContent,
+               verdict: d.querySelector(".verdict").textContent };
+    })()
+  `);
+  check(upload.heading === "Upload complete", "an upload keeps its own wording", upload.heading);
+  check(/Uploaded 4\/4/.test(upload.stats) && /Destinations 1/.test(upload.stats),
+    "counts uploads rather than verifications, and finds its destination", upload.stats);
+  check(/not yet independently verified/.test(upload.verdict),
+    "and never claims to have verified anything", upload.verdict.slice(0, 50));
 
   await shutdown(child, ws);
 

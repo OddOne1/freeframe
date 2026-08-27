@@ -10,7 +10,7 @@ const { runCopyJob } = require("./copy-engine");
 const presets = require("./presets");
 const settings = require("./settings");
 const webview = require("./webview");
-const { buildRelMapper, unknownTokens, folderPatternError, omitTokens } = require("./naming");
+const { buildRelMapper, unknownTokens, folderPatternError, rendersNewFileNames, omitTokens } = require("./naming");
 const { normalizeFilters, wantsFlatten } = require("./filters");
 const { JobQueue } = require("./job-queue");
 const { listAlgorithms, isSupported, DEFAULT_ALGORITHM } = require("./hashers");
@@ -406,6 +406,11 @@ ipcMain.handle("presets:list", async () => presets.list());
  */
 ipcMain.handle("presets:validate-folder", async (_e, { folderTemplate } = {}) =>
   ({ error: folderPatternError(folderTemplate) }));
+
+/** §71 — whether a job with this file pattern would rename anything. Same
+ *  function copy:start uses for the §23d guard. */
+ipcMain.handle("presets:renames-files", async (_e, { fileTemplate, disabled } = {}) =>
+  ({ renames: rendersNewFileNames(fileTemplate, Array.isArray(disabled) ? disabled : []) }));
 
 ipcMain.handle("presets:save", async (_e, { preset } = {}) => {
   const out = await presets.save(preset || {});
@@ -902,10 +907,10 @@ ipcMain.handle("copy:start", async (event, payload) => {
     // Re-normalized here rather than trusted: the renderer is the untrusted
     // side of this boundary, and these decide which files get copied.
     filters = normalizeFilters(naming.filters);
-    // Read from the stripped template: disabling every field a file
-    // pattern used leaves nothing to rename by, and that must not trip the
-    // §23d rename guard for a job that no longer renames anything.
-    renamesFiles = Boolean(String(fileTemplate || "").trim());
+    // §71 — the same predicate the renderer asks before consuming a
+    // {sourcecounter} value, so a job can never rename without advancing
+    // the counter or advance it without renaming.
+    renamesFiles = rendersNewFileNames(naming.fileTemplate, disabled);
 
     mapRel = buildRelMapper({
       folderTemplate,

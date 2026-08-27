@@ -65,6 +65,10 @@ contextBridge.exposeInMainWorld("freeframe", {
    *  function the engine checks with at job start. */
   validateFolderPattern: (folderTemplate) =>
     ipcRenderer.invoke("presets:validate-folder", { folderTemplate }),
+  /** §71 — would this job rename files? Decided by the same function the
+   *  engine checks with, so the counter and the rename can never disagree. */
+  renamesFiles: (fileTemplate, disabled) =>
+    ipcRenderer.invoke("presets:renames-files", { fileTemplate, disabled }),
   deletePreset: (id) => ipcRenderer.invoke("presets:delete", { id }),
   /** Same reason as onSettingsChanged: the editor lives in the Settings
    *  window, the active-preset label and Fields panel live in the main one. */

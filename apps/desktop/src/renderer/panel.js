@@ -66,6 +66,149 @@
     return n;
   }
 
+  const baseName = (p) => String(p || "").split("/").filter(Boolean).pop() || String(p || "");
+  const NODE_STATUS_LABEL = {
+    pending: "Waiting", copying: "Copying", verifying: "Verifying",
+    verified: "Verified", failed: "Failed", skipped: "Skipped",
+  };
+  const statusLabel = (st) => NODE_STATUS_LABEL[st] || "Ready";
+
+  /**
+   * §71 — the completion detail, rendered INTO a job's own Log row.
+   *
+   * Moved here from index.html, where it filled a separate `#summary`
+   * card below the Log. It lives in panel.js rather than behind a
+   * callback so the detached window gets the same detail as the docked
+   * one — two renderings of the same job is the thing this file exists
+   * to prevent.
+   */
+  function renderSummary(s, box) {
+    box.replaceChildren();
+    // Items 1 & 2 — an upload summary is a different shape AND a
+    // different guarantee, and rendering it through the local-copy
+    // vocabulary made a working upload read as a failed copy.
+    const isUpload = Boolean(s.uploadOnly);
+    const uploadOk = isUpload && !s.cancelled && s.errors.length === 0 && s.filesCopied === s.totalFiles;
+    const good = isUpload ? uploadOk : s.allVerified;
+
+    box.appendChild(el("div", { class: "head" }, [
+      el("h3", {
+        // Never "verified" for an upload: nothing has been read back
+        // from FreeFrame and compared. See the verdict text below.
+        class: good ? "ok" : "bad",
+        text: isUpload
+          ? (uploadOk ? "Upload complete" : "Upload finished with problems")
+          : (good ? "Copy verified" : "Copy finished with problems"),
+      }),
+    ]));
+
+    const stats = el("div", { class: "stats" });
+    const stat = (k, v) => stats.appendChild(el("span", {}, [
+      document.createTextNode(`${k} `), el("b", { text: v }),
+    ]));
+    stat("Files", `${s.totalFiles}`);
+    // "Verified" means re-read from the destination and hash-matched.
+    // An upload has done no such thing — the count is "the upload call
+    // returned", which is a weaker claim and needs a weaker word.
+    if (isUpload) stat("Uploaded", `${s.filesCopied ?? s.fileCopiesVerified}/${s.totalFiles}`);
+    else stat("Verified", `${s.fileCopiesVerified}/${s.totalFileCopies}`);
+    // Item 1 — an upload tracks no per-node cascade state, so nodes is
+    // empty by design and the real target lives in destPaths. Reading
+    // nodes.length for both is why a real upload said "Destinations 0".
+    stat("Destinations", `${isUpload ? (s.destPaths || []).length : s.nodes.length}`);
+    // Item 4 — "Legs" is cascade jargon and irrelevant to the vast
+    // majority of jobs, which have exactly one.
+    if (s.legCount > 1) stat("Cascade Legs", `${s.legCount}`);
+    stat("Data", fmtBytes(s.copiedBytes));
+    stat("Duration", s.durationMs < 1000 ? `${s.durationMs} ms` : `${(s.durationMs / 1000).toFixed(1)}s`);
+    if (s.mismatches.length) stat("Mismatches", `${s.mismatches.length}`);
+    if (s.errors.length) stat("Errors", `${s.errors.length}`);
+    box.appendChild(stats);
+
+    // Per-node outcome, so a partially-failed cascade is legible at a
+    // glance rather than hidden behind one aggregate number.
+    for (const n of s.nodes) {
+      const parent = n.parentId ? s.nodes.find((x) => x.id === n.parentId) : null;
+      box.appendChild(el("div", { class: "stats", style: "margin-top:4px" }, [
+        el("span", { class: `dot ${n.status}`, style: "display:inline-block;margin-right:6px" }),
+        el("span", { text: `${baseName(n.path)}${parent ? ` (from ${baseName(parent.path)})` : ""} — ${statusLabel(n.status)}` }),
+      ]));
+    }
+
+    // Assets the server couldn't hand over as originals. Shown even on a
+    // fully-verified job, and deliberately not folded into the mismatch
+    // list: nothing went wrong with these files, they were never
+    // attempted — and "Copy verified" must not be readable as
+    // "everything came down" when it isn't.
+    if (s.skippedAssets && s.skippedAssets.length) {
+      box.appendChild(el("div", {
+        class: "verdict bad",
+        style: "margin-top:8px",
+        text: `${s.skippedAssets.length} asset${s.skippedAssets.length === 1 ? " was" : "s were"} not pulled — ` +
+          `this offload is not a complete copy of the folder.`,
+      }));
+      const sl = el("ul");
+      for (const a of s.skippedAssets.slice(0, 8)) {
+        sl.appendChild(el("li", { text: `${a.name} — ${a.reason}` }));
+      }
+      if (s.skippedAssets.length > 8) {
+        sl.appendChild(el("li", { text: `…and ${s.skippedAssets.length - 8} more` }));
+      }
+      box.appendChild(sl);
+    }
+
+    // §23c. Files the preset's filter chose not to take. Neutral, not a
+    // failure — but stated, because the difference between a tool that
+    // skips files and one that loses them is whether it tells you.
+    if (s.filteredOut && s.filteredOut.length) {
+      box.appendChild(el("div", {
+        class: "verdict warn",
+        style: "margin-top:8px",
+        text: `${s.filteredOut.length} file${s.filteredOut.length === 1 ? " was" : "s were"} skipped by this preset's ` +
+          `filter and are NOT in the destination.`,
+      }));
+      const fl = el("ul");
+      for (const f of s.filteredOut.slice(0, 8)) {
+        fl.appendChild(el("li", { text: `${f.rel} — ${f.reason}` }));
+      }
+      if (s.filteredOut.length > 8) {
+        fl.appendChild(el("li", { text: `…and ${s.filteredOut.length - 8} more` }));
+      }
+      box.appendChild(fl);
+    }
+
+    const problems = [...s.mismatches, ...s.errors];
+    if (problems.length) {
+      const ul = el("ul");
+      for (const p of problems.slice(0, 8)) {
+        ul.appendChild(el("li", {
+          text: p.destHash !== undefined
+            ? `${p.file} → ${baseName(p.destRoot)}: expected ${p.sourceHash}, got ${p.destHash ?? "—"}`
+            : `${p.file ? p.file + " " : ""}${p.destRoot ? "→ " + baseName(p.destRoot) : ""}: ${p.error}`,
+        }));
+      }
+      if (problems.length > 8) ul.appendChild(el("li", { text: `…and ${problems.length - 8} more` }));
+      box.appendChild(ul);
+    }
+
+    // Item 2 — an upload gets its own verdict. `allVerified: false` is
+    // correct and deliberate for uploads (nothing has been read back
+    // from FreeFrame and compared), but the local-copy wording read as
+    // an active failure rather than "this destination type is honestly
+    // less mature". The claim is weakened, not the honesty: this still
+    // does not say "verified", because it isn't.
+    box.appendChild(el("div", {
+      class: `verdict ${good ? (isUpload ? "warn" : "ok") : "bad"}`,
+      text: isUpload
+        ? (uploadOk
+            ? "Uploaded — not yet independently verified against FreeFrame. Checksum verification for this destination type isn't built yet, so keep the source until you've confirmed the files yourself."
+            : "Upload did not finish — some files were not sent. Keep the source.")
+        : (good
+            ? "Every file was re-read from each destination and matched the source. Safe to wipe the card."
+            : "Not every destination verified — do NOT wipe the source until this is resolved."),
+    }));
+  }
+
   /**
    * Render the whole job list into `host`.
    *
@@ -176,22 +319,10 @@
         state = el("span", { class: "job-state", text: p.phase });
       } else if (j.error) {
         state = el("span", { class: "job-state job-error", text: j.error });
-      } else if (j.summary) {
-        const s = j.summary;
-        if (s.uploadOnly) {
-          state = el("span", {
-            class: "job-state job-warn",
-            text: `Uploaded ${s.filesCopied ?? 0}/${s.totalFiles ?? 0} — not verified against FreeFrame.`,
-          });
-        } else {
-          state = el("span", {
-            class: `job-state ${s.allVerified ? "job-ok" : "job-error"}`,
-            text: s.allVerified
-              ? `Verified ${s.fileCopiesVerified}/${s.totalFileCopies} — safe to wipe the source.`
-              : `Not fully verified — ${s.mismatches?.length ?? 0} mismatch(es), ${s.errors?.length ?? 0} error(s).`,
-          });
-        }
       }
+      // §71 — a finished job's own row carries the full completion detail
+      // that used to appear as a separate card below the Log. The one-line
+      // verdict this replaces said less and said it twice.
       if (state) sub.appendChild(state);
 
       // Only once the log actually exists on disk — an "Open Log" button
@@ -203,6 +334,12 @@
         }));
       }
       row.appendChild(sub);
+
+      if (j.summary && j.status !== "running" && j.status !== "queued") {
+        const detail = el("div", { class: "job-summary" });
+        renderSummary(j.summary, detail);
+        row.appendChild(detail);
+      }
 
       host.appendChild(row);
     }

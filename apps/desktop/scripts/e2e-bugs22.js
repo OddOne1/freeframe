@@ -413,26 +413,29 @@ const check = (ok, label, detail = "") => {
     check(counter.preview.ok && /CARD_00\d/.test(counter.preview.result),
       "the token renders in a folder pattern", JSON.stringify(counter.preview));
 
+    // §22h claimed a number the moment a path became the Source, and kept
+    // one per card so swapping back reused it. §71 removed BOTH: nothing is
+    // claimed until a job that actually renames starts, so there is no
+    // per-card number to remember. Inverted rather than deleted — assigning
+    // a source consuming a number is the exact bug §71 fixed, and it must
+    // not come back. The positive half (a renaming job takes exactly one,
+    // and renders it) lives in e2e-field-panel.js section 5.
     const perSource = await ev(`(async () => {
       clearAll();
-      sourceCounters.clear();
       await window.freeframe.setSourceCounter(1);
       const a = volumes[0].mountPoint;
       const b = (volumes[1] || {}).mountPoint || "/tmp";
       setSource(a); await new Promise(r => setTimeout(r, 60));
-      const first = sourceCounter;
       setSource(b); await new Promise(r => setTimeout(r, 60));
-      const second = sourceCounter;
-      // Going back to a card assigned earlier must reuse its number.
       setSource(a); await new Promise(r => setTimeout(r, 60));
-      const back = sourceCounter;
+      const stored = (await window.freeframe.listPresets()).sourceCounter;
       clearAll();
-      return { first, second, back };
+      return { stored, perPathMapGone: typeof sourceCounters === "undefined" };
     })()`);
-    check(perSource.first === 1 && perSource.second === 2,
-      "a second card gets the next number", `${perSource.first} then ${perSource.second}`);
-    check(perSource.back === 1,
-      "re-selecting the first card reuses its number rather than burning a new one", `${perSource.back}`);
+    check(perSource.stored === 1,
+      "assigning three sources consumes no numbers at all (\u00a771)", `${perSource.stored}`);
+    check(perSource.perPathMapGone,
+      "and the per-card map is gone, not merely unused — there is nothing to remember before a job runs");
 
     // ── §24a/§24b — project folder roles, and dragging after picking one ──
     console.log("\n8. (24a/24b) A project's two folder roles are independent")

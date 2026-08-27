@@ -742,26 +742,11 @@
       overflow-y: auto; height: 180px;
     }
     #jobs-panel.open { display: block; }
-    /* §65.14 — two columns, not stacked. The log gets the wider share
-       because its rows are the ones that wrap. */
-    #jobs-cols {
-      display: grid; grid-template-columns: minmax(0, 280px) minmax(0, 1fr);
-      align-items: start; min-height: 0;
-    }
-    #jobs-progress-col { border-right: 1px solid var(--border); min-width: 0; }
+    /* §71 — one column. §65.14 put Progress beside the Log, and in use
+       they showed the same run twice: the Log's own row already carries a
+       bar, a rate and an ETA. The Log is the only live view now. */
+    #jobs-cols { display: block; min-height: 0; }
     #jobs-log-col { min-width: 0; }
-    .jobs-col-title {
-      font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
-      color: var(--text-tertiary); padding: 7px 12px 3px;
-    }
-    .jobs-col-empty { padding: 2px 12px 12px; font-size: 11px; color: var(--text-tertiary); }
-    /* At a narrow window two columns become two very thin ones; one above
-       the other is the better failure mode, and §25b already established
-       reflow-over-clip as this app's answer. */
-    @media (max-width: 780px) {
-      #jobs-cols { grid-template-columns: minmax(0, 1fr); }
-      #jobs-progress-col { border-right: none; border-bottom: 1px solid var(--border); }
-    }
     /* The handle replaces the panel's own top border when it's showing. */
     #jobs-resize.open + #jobs-panel { border-top: none; }
     #jobs-detached-note {
@@ -961,24 +946,7 @@
        the moment it matters. -->
   <div id="jobs-panel">
     <div id="jobs-cols">
-      <div id="jobs-progress-col">
-        <div class="jobs-col-title">Progress</div>
-        <div class="progress" id="progress">
-          <div class="progress-line">
-            <strong id="p-phase">Preparing…</strong>
-            <span id="p-counts"></span>
-          </div>
-          <div class="bar"><div id="p-bar"></div></div>
-          <div class="progress-file" id="p-file"></div>
-          <!-- §58. Its own line rather than appended to p-counts, which
-               shows the job's totals and should not flicker every tick. -->
-          <div class="progress-rate" id="p-rate"></div>
-          <div class="released" id="p-released"></div>
-        </div>
-        <div class="jobs-col-empty" id="progress-idle">Nothing running.</div>
-      </div>
       <div id="jobs-log-col">
-        <div class="jobs-col-title">Log</div>
         <div id="jobs-list"></div>
         <div id="jobs-detached-note">
           Transfers are showing in their own window.
@@ -1542,29 +1510,32 @@
     }
 
     /**
-     * §22h — the number this source will render as `{sourcecounter}`.
+     * §22h/§71 — the number this job renders as `{sourcecounter}`.
      *
-     * Kept per path, not as a single "current" value: swapping back to a
-     * card assigned earlier in the session should show the number it was
-     * given then, not a fresh one. Claiming is async, so a job started in
-     * the same tick falls back to 1 rather than blocking the UI on a disk
-     * write — the value is only ever used at job-start, long after.
+     * §22h claimed it the moment a path became the Source. §71 moved that
+     * to job start, and only for a job that actually renames: assigning a
+     * card and then copying it plainly was burning a number nothing used,
+     * so the folders skipped.
+     *
+     * Nothing is remembered per path any more, and that removal is the
+     * point rather than a simplification — with the claim at job start
+     * there is no per-card number to remember until a job runs, and
+     * keeping one would recreate exactly the "displayed vs internal" split
+     * §71 rules out. What the card shows is `nextSourceCounter`, which is
+     * the store's own next value: the number shown is always the number
+     * used next, in both directions.
      */
-    const sourceCounters = new Map();
     let sourceCounter = 1;
 
-    async function claimSourceCounter(p) {
-      if (sourceCounters.has(p)) {
-        sourceCounter = sourceCounters.get(p);
-        return;
-      }
+    /** Claim one number for the job about to start. Awaited by startCopy,
+     *  so the payload it builds carries the claimed value rather than a
+     *  stale one. */
+    async function claimSourceCounter() {
       const claimed = await window.freeframe.bumpSourceCounter();
-      sourceCounters.set(p, claimed);
+      sourceCounter = claimed;
       // Keeps the editable field honest without re-reading the store.
       nextSourceCounter = claimed + 1;
-      // Guard against a second source having been assigned while this was
-      // in flight: the last assignment wins, not the last write to finish.
-      if (sourcePath === p) sourceCounter = claimed;
+      return claimed;
     }
 
     function setSource(p) {
@@ -1585,11 +1556,9 @@
       if (p !== FILESET) sourceFiles = null;
       const previous = sourcePath;
       sourcePath = p;
-      // §22h — claim the next source number, but only for a genuinely new
-      // card. Re-assigning the same path (a drag that lands back where it
-      // started, the dual-role modal reverting) must not burn a number, or
-      // the folders skip.
-      if (p && p !== previous) claimSourceCounter(p);
+      // §71 — assigning a source no longer claims a number. A plain copy
+      // with no renaming must not consume one, and which job it is cannot
+      // be known until Start is pressed.
       // Item 5: holding both roles is legitimate — copying between two
       // folders on one big RAID is a real workflow. What's *not* legitimate
       // is the bare volume root on both sides, which would copy a folder
@@ -2728,204 +2697,42 @@
       render();
     }
 
-    // ── Progress ──
-    /** "3m 20s" / "45s". Coarse on purpose: an ETA that reports seconds
-     *  precisely invites the user to believe it, and it is an estimate from
-     *  a five-second window. */
-    function fmtEta(seconds) {
-      if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return "";
-      if (seconds < 60) return `${Math.max(1, Math.round(seconds))}s`;
-      const m = Math.floor(seconds / 60);
-      const rest = Math.round(seconds % 60);
-      if (m < 60) return rest ? `${m}m ${rest}s` : `${m}m`;
-      return `${Math.floor(m / 60)}h ${m % 60}m`;
-    }
-
-    function renderRate(p) {
-      const bits = [];
-      if (typeof p.speed === "number" && p.speed > 0) bits.push(`${formatBytes(p.speed)}/s`);
-      const eta = fmtEta(p.eta);
-      if (eta) bits.push(`${eta} remaining`);
-      // Left blank rather than showing a stale figure: the first couple of
-      // ticks genuinely have nothing to say yet.
-      $("p-rate").textContent = bits.join(" · ");
-    }
-
-    /** §65.14 — the Progress column always says something. Without this the
-     *  column is a bare heading over empty space whenever nothing runs. */
-    function showProgress(on) {
-      $("progress").style.display = on ? "block" : "none";
-      const idle = $("progress-idle");
-      if (idle) idle.style.display = on ? "none" : "block";
-    }
-
+    /**
+     * §71 — the Progress column is gone; the Log row is the only live view.
+     *
+     * What survives here is the state the DESTINATION TILES read
+     * (`nodeStatus`, `sourceReleased`), which nothing else computes. The
+     * phase/percent/rate text this used to write into `#p-*` is already in
+     * the Log row, rendered by panel.js from the queue snapshot — it was
+     * being shown twice.
+     */
     function onProgress(p) {
-      if (p.phase === "start") {
-        showProgress(true);
-        $("p-phase").textContent = p.legCount > 1 ? `Copying · ${p.legCount} legs` : "Copying";
-        $("p-counts").textContent = `${p.totalFiles} files · ${formatBytes(p.totalBytes)}`;
-      } else if (p.phase === "scanning") {
-        showProgress(true);
-        $("p-phase").textContent = "Scanning source…";
-      } else if (p.phase === "node-status") {
+      if (p.phase === "node-status") {
         const prev = nodeStatus.get(p.node.id) || {};
         nodeStatus.set(p.node.id, { ...prev, status: p.node.status, filesVerified: p.node.filesVerified });
         if (p.node.status === "verified") nodeStatus.get(p.node.id).percent = 100;
         render();
       } else if (p.phase === "bytes") {
-        if (typeof p.percent === "number") $("p-bar").style.width = `${p.percent.toFixed(1)}%`;
-        $("p-file").textContent = p.file || "";
-        renderRate(p);
         // Per-node bars: every node in this leg shares the leg's progress.
         for (const id of p.nodeIds || []) {
           const prev = nodeStatus.get(id) || {};
           nodeStatus.set(id, { ...prev, percent: p.percent });
         }
         render();
-      } else if (p.phase === "verifying") {
-        $("p-phase").textContent = "Verifying checksums…";
-        $("p-file").textContent = p.file || "";
-        // Verification is not a transfer; a speed left over from the copy
-        // phase would be describing something that is no longer happening.
-        $("p-rate").textContent = "";
       } else if (p.phase === "source-released") {
         // The actual payoff of cascading: the card is free before the whole
-        // chain finishes.
+        // chain finishes. Surfaced on the Source tile itself (see render),
+        // which is where someone about to pull the card is looking.
         sourceReleased = true;
-        $("p-released").style.display = "block";
-        $("p-released").textContent = "✓ Source verified — the card can be ejected now; remaining legs read from the local copy.";
         render();
       }
     }
 
-    function renderSummary(s) {
-      const box = $("summary");
-      box.replaceChildren();
-      box.style.display = "block";
-      // Items 1 & 2 — an upload summary is a different shape AND a
-      // different guarantee, and rendering it through the local-copy
-      // vocabulary made a working upload read as a failed copy.
-      const isUpload = Boolean(s.uploadOnly);
-      const uploadOk = isUpload && !s.cancelled && s.errors.length === 0 && s.filesCopied === s.totalFiles;
-      const good = isUpload ? uploadOk : s.allVerified;
-
-      box.appendChild(el("div", { class: "head" }, [
-        el("h3", {
-          // Never "verified" for an upload: nothing has been read back
-          // from FreeFrame and compared. See the verdict text below.
-          class: good ? "ok" : "bad",
-          text: isUpload
-            ? (uploadOk ? "Upload complete" : "Upload finished with problems")
-            : (good ? "Copy verified" : "Copy finished with problems"),
-        }),
-      ]));
-
-      const stats = el("div", { class: "stats" });
-      const stat = (k, v) => stats.appendChild(el("span", {}, [
-        document.createTextNode(`${k} `), el("b", { text: v }),
-      ]));
-      stat("Files", `${s.totalFiles}`);
-      // "Verified" means re-read from the destination and hash-matched.
-      // An upload has done no such thing — the count is "the upload call
-      // returned", which is a weaker claim and needs a weaker word.
-      if (isUpload) stat("Uploaded", `${s.filesCopied ?? s.fileCopiesVerified}/${s.totalFiles}`);
-      else stat("Verified", `${s.fileCopiesVerified}/${s.totalFileCopies}`);
-      // Item 1 — an upload tracks no per-node cascade state, so nodes is
-      // empty by design and the real target lives in destPaths. Reading
-      // nodes.length for both is why a real upload said "Destinations 0".
-      stat("Destinations", `${isUpload ? (s.destPaths || []).length : s.nodes.length}`);
-      // Item 4 — "Legs" is cascade jargon and irrelevant to the vast
-      // majority of jobs, which have exactly one.
-      if (s.legCount > 1) stat("Cascade Legs", `${s.legCount}`);
-      stat("Data", formatBytes(s.copiedBytes));
-      stat("Duration", s.durationMs < 1000 ? `${s.durationMs} ms` : `${(s.durationMs / 1000).toFixed(1)}s`);
-      if (s.mismatches.length) stat("Mismatches", `${s.mismatches.length}`);
-      if (s.errors.length) stat("Errors", `${s.errors.length}`);
-      box.appendChild(stats);
-
-      // Per-node outcome, so a partially-failed cascade is legible at a
-      // glance rather than hidden behind one aggregate number.
-      for (const n of s.nodes) {
-        const parent = n.parentId ? s.nodes.find((x) => x.id === n.parentId) : null;
-        box.appendChild(el("div", { class: "stats", style: "margin-top:4px" }, [
-          el("span", { class: `dot ${n.status}`, style: "display:inline-block;margin-right:6px" }),
-          el("span", { text: `${baseName(n.path)}${parent ? ` (from ${baseName(parent.path)})` : ""} — ${statusLabel(n.status)}` }),
-        ]));
-      }
-
-      // Assets the server couldn't hand over as originals. Shown even on a
-      // fully-verified job, and deliberately not folded into the mismatch
-      // list: nothing went wrong with these files, they were never
-      // attempted — and "Copy verified" must not be readable as
-      // "everything came down" when it isn't.
-      if (s.skippedAssets && s.skippedAssets.length) {
-        box.appendChild(el("div", {
-          class: "verdict bad",
-          style: "margin-top:8px",
-          text: `${s.skippedAssets.length} asset${s.skippedAssets.length === 1 ? " was" : "s were"} not pulled — ` +
-            `this offload is not a complete copy of the folder.`,
-        }));
-        const sl = el("ul");
-        for (const a of s.skippedAssets.slice(0, 8)) {
-          sl.appendChild(el("li", { text: `${a.name} — ${a.reason}` }));
-        }
-        if (s.skippedAssets.length > 8) {
-          sl.appendChild(el("li", { text: `…and ${s.skippedAssets.length - 8} more` }));
-        }
-        box.appendChild(sl);
-      }
-
-      // §23c. Files the preset's filter chose not to take. Neutral, not a
-      // failure — but stated, because the difference between a tool that
-      // skips files and one that loses them is whether it tells you.
-      if (s.filteredOut && s.filteredOut.length) {
-        box.appendChild(el("div", {
-          class: "verdict warn",
-          style: "margin-top:8px",
-          text: `${s.filteredOut.length} file${s.filteredOut.length === 1 ? " was" : "s were"} skipped by this preset's ` +
-            `filter and are NOT in the destination.`,
-        }));
-        const fl = el("ul");
-        for (const f of s.filteredOut.slice(0, 8)) {
-          fl.appendChild(el("li", { text: `${f.rel} — ${f.reason}` }));
-        }
-        if (s.filteredOut.length > 8) {
-          fl.appendChild(el("li", { text: `…and ${s.filteredOut.length - 8} more` }));
-        }
-        box.appendChild(fl);
-      }
-
-      const problems = [...s.mismatches, ...s.errors];
-      if (problems.length) {
-        const ul = el("ul");
-        for (const p of problems.slice(0, 8)) {
-          ul.appendChild(el("li", {
-            text: p.destHash !== undefined
-              ? `${p.file} → ${baseName(p.destRoot)}: expected ${p.sourceHash}, got ${p.destHash ?? "—"}`
-              : `${p.file ? p.file + " " : ""}${p.destRoot ? "→ " + baseName(p.destRoot) : ""}: ${p.error}`,
-          }));
-        }
-        if (problems.length > 8) ul.appendChild(el("li", { text: `…and ${problems.length - 8} more` }));
-        box.appendChild(ul);
-      }
-
-      // Item 2 — an upload gets its own verdict. `allVerified: false` is
-      // correct and deliberate for uploads (nothing has been read back
-      // from FreeFrame and compared), but the local-copy wording read as
-      // an active failure rather than "this destination type is honestly
-      // less mature". The claim is weakened, not the honesty: this still
-      // does not say "verified", because it isn't.
-      box.appendChild(el("div", {
-        class: `verdict ${good ? (isUpload ? "warn" : "ok") : "bad"}`,
-        text: isUpload
-          ? (uploadOk
-              ? "Uploaded — not yet independently verified against FreeFrame. Checksum verification for this destination type isn't built yet, so keep the source until you've confirmed the files yourself."
-              : "Upload did not finish — some files were not sent. Keep the source.")
-          : (good
-              ? "Every file was re-read from each destination and matched the source. Safe to wipe the card."
-              : "Not every destination verified — do NOT wipe the source until this is resolved."),
-      }));
-    }
+    // §71 — renderSummary moved to panel.js, which renders it INTO the
+    // finished job's own Log row. It used to fill a separate #summary card
+    // below the Log, saying the same thing in a second place. #summary
+    // itself survives for two unrelated notices (an eject failure, a
+    // same-project conflict) that have nothing to do with a completed job.
 
     async function startCopy(allowFragileRename = false) {
       if (!sourcePath || !destNodes.length || currentJobPending()) return;
@@ -2949,13 +2756,29 @@
         }
         return;
       }
+      // §71 — claim the card number HERE, and only when this job actually
+      // renames. Awaited before the payload is built below, so the job
+      // carries the number it just claimed rather than a stale one.
+      //
+      // The predicate comes from main, which is the same function the
+      // engine uses for its own §23d guard — asking rather than
+      // re-deriving is what stops a job renaming without advancing the
+      // counter, or advancing it without renaming.
+      const naming = namingPayload();
+      if (naming) {
+        let renames = false;
+        try {
+          const r = await window.freeframe.renamesFiles(naming.fileTemplate, naming.disabledFields);
+          renames = Boolean(r && r.renames);
+        } catch { /* treated as "does not rename": never burn a number on an error */ }
+        if (renames) await claimSourceCounter();
+      }
+
       copying = true;
       sourceReleased = false;
       nodeStatus = new Map();
       let blockedByFragileRename = null;
       $("summary").style.display = "none";
-      $("p-released").style.display = "none";
-      $("p-bar").style.width = "0%";
       render();
 
       try {
@@ -2989,7 +2812,8 @@
             blockedByFragileRename = summary.message;
             return;
           }
-          renderSummary(summary);
+          // §71 — no card to render: the job's own Log row now carries
+          // this summary, from the queue snapshot main already broadcasts.
         }
         // Uploads run after the local legs, and one project at a time —
         // main refuses a second job while one is active. Sequential rather
@@ -3007,7 +2831,7 @@
             sourceFiles,
             concurrencyMode
           );
-          renderSummary(up);
+          void up;
         }
       } catch (err) {
         const box = $("summary");
@@ -3018,7 +2842,6 @@
         box.style.display = "block";
       } finally {
         copying = false;
-        showProgress(false);
         render();
       }
 
@@ -3568,24 +3391,20 @@
      */
     function renderCardNumber() {
       const wrap = el("div", { class: "fv-counter" });
-      wrap.appendChild(el("label", { text: sourcePath ? "Card #" : "Next card #",
-        title: "What {sourcecounter} renders as" }));
+      // §71 — always the store's NEXT value, whether or not a source is
+      // assigned. The claim happens at job start now, so there is no
+      // per-card number to show before then, and the number displayed is
+      // by construction the number the next renaming job will use.
+      wrap.appendChild(el("label", { text: "Next card #",
+        title: "What {sourcecounter} renders as on the next renaming job" }));
       const input = el("input", { id: "fv-counter-input" });
       input.type = "number";
       input.min = "1";
-      input.value = String(sourcePath ? sourceCounter : nextSourceCounter);
+      input.value = String(nextSourceCounter);
       input.addEventListener("change", async () => {
         const n = Math.max(1, Math.floor(Number(input.value) || 1));
-        if (sourcePath) {
-          sourceCounter = n;
-          // Remembered per path, exactly as a claimed number is, so
-          // switching cards and back does not undo the correction.
-          sourceCounters.set(sourcePath, n);
-          nextSourceCounter = await window.freeframe.setSourceCounter(n + 1);
-        } else {
-          nextSourceCounter = await window.freeframe.setSourceCounter(n);
-        }
-        input.value = String(sourcePath ? sourceCounter : nextSourceCounter);
+        nextSourceCounter = await window.freeframe.setSourceCounter(n);
+        input.value = String(nextSourceCounter);
         updateFieldsPreview();
       });
       wrap.appendChild(input);

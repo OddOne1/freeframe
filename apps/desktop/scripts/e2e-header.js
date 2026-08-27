@@ -213,30 +213,34 @@ async function waitFor(ev, expr, tries = 40) {
   })()`);
 
   // ── §64 ────────────────────────────────────────────────────────────────
-  // ── §65.14 ─────────────────────────────────────────────────────────────
-  console.log("2b. (\u00a765.14) Transfers shows Progress and Log side by side");
+  // ── §65.14, corrected by §71 ──────────────────────────────────────────
+  //
+  // §65.14 put Progress beside the Log as two columns. In use they showed
+  // the same run twice — the Log's own row already carries a bar, a rate
+  // and an ETA — so §71 removed the Progress column. Inverted rather than
+  // deleted: the section it lives in must still be the same collapsible
+  // Transfers panel, with its own controls, which is what §65.14 was
+  // really protecting.
+  console.log("2b. (\u00a771) Transfers is one column: the Log");
   const transfers = await ev(`
     (() => {
       const panel = document.getElementById("jobs-panel");
       if (!panel.classList.contains("open")) document.getElementById("jobs-toggle").click();
-      const p = document.getElementById("jobs-progress-col").getBoundingClientRect();
-      const l = document.getElementById("jobs-log-col").getBoundingClientRect();
       return {
-        inPanel: panel.contains(document.getElementById("progress"))
-              && panel.contains(document.getElementById("jobs-list")),
-        sameRow: Math.abs(p.top - l.top) < 2,
-        logRightOfProgress: l.left >= p.right - 1,
-        // The section it lives in must be the SAME collapsible one, with
-        // its own controls intact — not a new panel or a new tab.
+        progressColGone: !document.getElementById("jobs-progress-col"),
+        legacyProgressGone: !document.getElementById("progress") && !document.getElementById("p-bar"),
+        logStillThere: panel.contains(document.getElementById("jobs-list")),
+        // Still the SAME collapsible section, with its own controls — not a
+        // new panel and not a new tab.
         stillCollapsible: !!document.getElementById("jobs-toggle"),
         keepsClear: !!document.getElementById("jobs-clear"),
         keepsDetach: !!document.getElementById("jobs-detach"),
       };
     })()
   `);
-  check(transfers.inPanel, "both live inside the Transfers section");
-  check(transfers.sameRow && transfers.logRightOfProgress,
-    "as two columns rather than stacked", JSON.stringify(transfers));
+  check(transfers.progressColGone && transfers.legacyProgressGone,
+    "the Progress column and its readout are gone", JSON.stringify(transfers));
+  check(transfers.logStillThere, "the Log remains, as the only live view");
   check(transfers.stillCollapsible && transfers.keepsClear && transfers.keepsDetach,
     "and it is still the same collapsible section, with Clear and Detach");
 

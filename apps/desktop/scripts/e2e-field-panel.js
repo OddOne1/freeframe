@@ -261,15 +261,22 @@ async function walk(dir, base = "") {
       return {
         before,
         counterNow: document.getElementById("fv-counter-input").value,
-        payloadCounter: namingPayload().sourceCounter,
+        stored: (await window.freeframe.listPresets()).sourceCounter,
         hasClear: !!document.getElementById("fields-clear"),
       };
     })()`);
     check(card.hasClear, "Clear is inside the card");
     check(String(card.counterNow) === String(Number(card.before) + 5),
       "the Card # is editable in place", `${card.before} → ${card.counterNow}`);
-    check(String(card.payloadCounter) === String(card.counterNow),
-      "and it is what the job will render as {sourcecounter}", String(card.payloadCounter));
+    // §71 changed what this field MEANS. It was the number already claimed
+    // for the assigned card; it is now the store's next value, because the
+    // claim happens at job start. So it is checked against the store rather
+    // than against namingPayload(), which carries nothing until a job runs.
+    // Section 5 below proves the end-to-end half: the job renders the
+    // number it claimed.
+    check(String(card.stored) === String(card.counterNow),
+      "and it is the store's next value — what the next renaming job will claim",
+      String(card.stored));
 
     const cleared = await ev(`(() => {
       const inp = document.querySelector('#fields-body input[data-fv-key="operator"]');
@@ -448,6 +455,70 @@ async function walk(dir, base = "") {
     check(/"Alex Rivera"/.test(reread.raw) && /"AR"/.test(reread.raw),
       "…while the Choice field's authored options are still there");
     check(reread.fields[0].required === true, "Required is untouched — it is a different thing from the toggle");
+
+    // ── §71 — the counter advances on a renaming job, and only then ──────
+    console.log("\n5. (\u00a771) The card number advances only for a renaming job");
+    const store = `window.freeframe.listPresets().then(s => s.sourceCounter)`;
+    await ev(`window.freeframe.setSourceCounter(200)`);
+    await ev(`(async () => { nextSourceCounter = (await window.freeframe.listPresets()).sourceCounter; return true; })()`);
+
+    // Assigning a source used to burn a number here (§22h). It must not.
+    await ev(`clearAll(); setSource(${JSON.stringify(cardB)}); render(); true`);
+    await ev(`setSource(${JSON.stringify(cardA)}); render(); true`);
+    check(await ev(store) === 200,
+      "assigning a source — twice — consumes nothing", String(await ev(store)));
+    check(await ev(`document.getElementById("fv-counter-input").value`) === "200",
+      "and the card shows the number the next renaming job will use");
+
+    // A plain copy with no preset must not consume one either.
+    const dest71 = path.join(tmp, "RAID71");
+    await fsp.mkdir(dest71, { recursive: true });
+    await ev(`activePresetId = null; updatePresetLabel();
+      extraFolders = ${JSON.stringify([cardA, cardB, dest, dest71])};
+      clearAll(); setSource(${JSON.stringify(cardA)}); addDest(${JSON.stringify(dest71)}, null); render(); true`);
+    await ev(`startCopy()`);
+    check(await ev(store) === 200, "a plain copy with no naming consumes nothing", String(await ev(store)));
+
+    // The distinction the spec actually draws: a preset that IS active but
+    // renames nothing (folder pattern only, empty file pattern). Without a
+    // separate fixture the no-preset case above passes vacuously, since a
+    // null payload skips the whole claim path.
+    const pNoRename = await ev(`(async () => {
+      const st = await window.freeframe.savePreset({ id: null, name: "S71 No Rename",
+        folderTemplate: "plain{sourcecounter}", fileTemplate: "", fields: [] });
+      presetStore = st;
+      const p = st.presets.find(x => x.name === "S71 No Rename");
+      setActivePreset(p.id);
+      return p.id;
+    })()`);
+    await ev(`clearAll(); setSource(${JSON.stringify(cardA)}); addDest(${JSON.stringify(dest71)}, null); render(); true`);
+    await ev(`startCopy()`);
+    check(await ev(store) === 200,
+      "an ACTIVE preset that renames nothing consumes nothing either", String(await ev(store)));
+    await ev(`window.freeframe.deletePreset(${JSON.stringify(pNoRename)})`);
+    await fsp.rm(dest71, { recursive: true, force: true }).catch(() => {});
+    await fsp.mkdir(dest71, { recursive: true });
+
+    // A renaming job takes exactly one, and renders THAT number.
+    const p71 = await ev(`(async () => {
+      const st = await window.freeframe.savePreset({ id: null, name: "S71 Field Panel",
+        folderTemplate: "card{sourcecounter}", fileTemplate: "{name}_{counter}", fields: [] });
+      presetStore = st;
+      const p = st.presets.find(x => x.name === "S71 Field Panel");
+      setActivePreset(p.id);
+      return p.id;
+    })()`);
+    await ev(`clearAll(); setSource(${JSON.stringify(cardA)}); addDest(${JSON.stringify(dest71)}, null); render(); true`);
+    await ev(`startCopy()`);
+    check(await ev(store) === 201, "a renaming job takes exactly one", String(await ev(store)));
+
+    const landed = await walk(dest71);
+    check(landed.some((f) => f.startsWith("card200/")),
+      "and the job rendered the number it claimed, not the one after it",
+      landed.join(" | "));
+
+    await ev(`window.freeframe.deletePreset(${JSON.stringify(p71)})`);
+    await fsp.rm(dest71, { recursive: true, force: true }).catch(() => {});
 
     check(pageErrors.length === 0, "no uncaught exception across the whole run", pageErrors.join(" | "));
   } finally {

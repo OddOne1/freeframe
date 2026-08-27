@@ -13,6 +13,7 @@ const path = require("node:path");
 const {
   buildRelMapper, renderTemplate, sanitizeSegment, tokensIn, unknownTokens, builtinValues, omitTokens,
   folderPatternError,
+  rendersNewFileNames,
 } = require(path.join(__dirname, "..", "src", "main", "naming.js"));
 
 let fail = 0;
@@ -198,6 +199,23 @@ console.log("\n6b. {counter} is refused in a folder pattern (\u00a765c)");
   // later assumes buildRelMapper refuses it and drops the check.
   const map = buildRelMapper({ folderTemplate: "X_{counter}", values: {}, now: NOW });
   eq(map("a/one.MOV"), "X_0001/a/one.MOV", "buildRelMapper itself is unchanged — the refusal is upstream");
+}
+
+console.log("\n6c. Does this job rename anything? (\u00a771)");
+{
+  // One definition, two callers: the engine's §23d fragile-rename guard
+  // and the renderer's decision to consume a {sourcecounter} value. A
+  // second copy of this rule lets a job rename without advancing the
+  // counter, or advance it without renaming — both silent.
+  check(rendersNewFileNames("{name}_{counter}") === true, "a real file pattern renames");
+  check(rendersNewFileNames("") === false, "an empty one does not");
+  check(rendersNewFileNames(null) === false, "nor an absent one");
+  check(rendersNewFileNames("   ") === false, "nor whitespace");
+  // §22g — disabling every field a pattern used leaves nothing to rename by.
+  check(rendersNewFileNames("{operator}", ["operator"]) === false,
+        "and a pattern whose every field is switched off renames nothing");
+  check(rendersNewFileNames("{operator}_{counter}", ["operator"]) === true,
+        "…but one with a surviving token still does");
 }
 
 console.log("\n7. No template = no mapper");
