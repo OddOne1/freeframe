@@ -165,10 +165,13 @@ async function main() {
       // the editor and the engine refuse the same folder patterns from one
       // implementation rather than two; renamesFiles with §71, for the same
       // reason — the counter must advance exactly when the engine renames.
+      // dailyOverview / resetDailyOverview / exportDailyOverview /
+      // onDailyOverviewChanged with §72: read, reset and export only — the
+      // aggregation itself happens in main at the completion point.
       // This list is an allowlist, not a snapshot: it is here so a new
       // channel has to be a deliberate act rather than something that
       // arrives unnoticed.
-      bridge === "appInfo,bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearFinishedJobs,clearRecentFolders,deletePreset,detachPanel,dockPanel,ejectVolume,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,getSettings,hideWebView,listJobs,listPresets,listVolumes,onAccountChanged,onCopyProgress,onJobsChanged,onPanelDockChanged,onPresetsChanged,onSettingsChanged,onSettingsTab,onVolumesChanged,openJobLog,openLogsFolder,openSettingsWindow,pathForFile,previewNaming,reloadWebView,rememberFolder,removeJob,renamesFiles,savePreset,setDisplayName,setSettings,setSourceCounter,setWebViewInset,showWebView,startCopy,validateFolderPattern",
+      bridge === "appInfo,bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearFinishedJobs,clearRecentFolders,dailyOverview,deletePreset,detachPanel,dockPanel,ejectVolume,exportDailyOverview,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,getSettings,hideWebView,listJobs,listPresets,listVolumes,onAccountChanged,onCopyProgress,onDailyOverviewChanged,onJobsChanged,onPanelDockChanged,onPresetsChanged,onSettingsChanged,onSettingsTab,onVolumesChanged,openJobLog,openLogsFolder,openSettingsWindow,pathForFile,previewNaming,reloadWebView,rememberFolder,removeJob,renamesFiles,resetDailyOverview,savePreset,setDisplayName,setSettings,setSourceCounter,setWebViewInset,showWebView,startCopy,validateFolderPattern",
       "contextBridge exposes exactly the intended API", bridge);
     check(await cdp.eval("typeof window.require") === "undefined", "no window.require");
     check(await cdp.eval("typeof window.process") === "undefined", "no window.process");

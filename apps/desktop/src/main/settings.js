@@ -26,7 +26,22 @@ const DEFAULTS = Object.freeze({
   hiddenVolumeNames: [],
   // Projects DO have a real stable id, so they use it.
   hiddenProjectIds: [],
+  // §72 — when "today" starts for the daily overview. "HH:MM", 24-hour.
+  // 00:00 means no shift, i.e. plain calendar days, which is what someone
+  // who never opens this setting gets.
+  dayBoundary: "00:00",
 });
+
+/** "HH:MM", 24-hour, or the default. A malformed value here would shift
+ *  every job into the wrong day silently, so anything unparseable falls
+ *  back rather than being coerced into something plausible. */
+function normalizeDayBoundary(raw) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(raw ?? "").trim());
+  if (!m) return DEFAULTS.dayBoundary;
+  const h = Number(m[1]), min = Number(m[2]);
+  if (!(h >= 0 && h <= 23 && min >= 0 && min <= 59)) return DEFAULTS.dayBoundary;
+  return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+}
 
 /** Strings only, trimmed, de-duplicated, empties dropped. A malformed
  *  entry here would silently hide nothing or — worse with a stray "" —
@@ -54,6 +69,7 @@ function normalize(raw) {
     // algorithm id from an older build must not leave the picker with
     // nothing selected.
     if (typeof algo === "string" && algo.trim()) out.defaultChecksumAlgo = algo.trim();
+    out.dayBoundary = normalizeDayBoundary(raw.dayBoundary);
     out.hiddenVolumeNames = normalizeIdList(raw.hiddenVolumeNames);
     out.hiddenProjectIds = normalizeIdList(raw.hiddenProjectIds);
   }
@@ -80,4 +96,4 @@ async function writeSettings(patch) {
   return next;
 }
 
-module.exports = { readSettings, writeSettings, normalize, normalizeIdList, DEFAULTS, settingsFile };
+module.exports = { readSettings, writeSettings, normalize, normalizeIdList, normalizeDayBoundary, DEFAULTS, settingsFile };

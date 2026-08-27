@@ -144,6 +144,10 @@ class JobQueue {
       destPaths: spec.destPaths || [],
       // The source's own path, distinct from sourceLabel's display duty.
       sourcePath: spec.sourcePath || null,
+      // §72 — the {sourcecounter} value this job claimed, or null when it
+      // renamed nothing. Carried so the completion point can file the job
+      // under the card it belongs to rather than guessing from a path.
+      cardNumber: spec.cardNumber ?? null,
       payload: spec.payload,
       progress: null,
       summary: null,

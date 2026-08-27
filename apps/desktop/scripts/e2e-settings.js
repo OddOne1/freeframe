@@ -204,6 +204,33 @@ async function waitFor(ev, expr, tries = 40) {
     "picking one writes it straight away, with no Save step to forget",
     `${builtIn} → ${persisted}`);
 
+  // §72 — the day-boundary control lives here, not in the panel it drives.
+  console.log("2b. (\u00a772) Day boundary");
+  check(await waitFor(sev, `!!document.getElementById("settings-day-boundary")`),
+    "General has a day-boundary control");
+  check(await sev(`document.getElementById("settings-day-boundary").type === "time"`),
+    "as a time-of-day picker");
+  const boundary = await sev(`
+    (async () => {
+      const el = document.getElementById("settings-day-boundary");
+      const before = el.value;
+      el.value = "05:30";
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise(r => setTimeout(r, 600));
+      const stored = (await window.freeframe.getSettings()).dayBoundary;
+      // Reset, so the rest of the suite sees plain calendar days.
+      el.value = "00:00";
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise(r => setTimeout(r, 600));
+      const restored = (await window.freeframe.getSettings()).dayBoundary;
+      return JSON.stringify({ before, stored, restored, shown: el.value });
+    })()
+  `).then(JSON.parse);
+  check(boundary.stored === "05:30",
+    "changing it writes straight through, with no Save step to forget", JSON.stringify(boundary));
+  check(boundary.restored === "00:00" && boundary.shown === "00:00",
+    "and it can be set back", JSON.stringify(boundary));
+
   console.log("3. Volumes — exactly one list");
   await sev(`document.querySelector('nav button[data-tab="volumes"]').click(); true`);
   check(!(await sev(`!!document.getElementById("settings-hidden")`)),

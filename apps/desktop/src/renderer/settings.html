@@ -43,6 +43,11 @@
       font-size: 11px; color: var(--text-tertiary); margin: 2px 0 6px;
       line-height: 1.5; word-break: break-word;
     }
+    #settings-day-boundary {
+      height: 28px; border-radius: 6px; padding: 0 8px;
+      background: var(--bg-secondary); border: 1px solid var(--border);
+      color: var(--text-primary); font-size: 12px; font-family: inherit;
+    }
     button.plain {
       border: 1px solid var(--border); background: var(--bg-tertiary);
       color: var(--text-primary); font-family: inherit; font-size: 11px;
@@ -237,6 +242,17 @@
           per-job override.
         </div>
         <div id="algo-list" class="algo-list"></div>
+      </div>
+
+      <div class="setting">
+        <div class="setting-label">Day boundary time</div>
+        <div class="setting-sub">
+          When "today" starts for the Daily overview. A job finishing before
+          this time counts towards the previous day — so a night shift that
+          runs past midnight stays one day's work. Midnight means plain
+          calendar days.
+        </div>
+        <input id="settings-day-boundary" type="time" step="60" />
       </div>
     </section>
 

@@ -9,6 +9,7 @@ const { listVolumes } = require("./volumes");
 const { runCopyJob } = require("./copy-engine");
 const presets = require("./presets");
 const settings = require("./settings");
+const dailyOverview = require("./daily-overview");
 const webview = require("./webview");
 const { buildRelMapper, unknownTokens, folderPatternError, rendersNewFileNames, omitTokens } = require("./naming");
 const { normalizeFilters, wantsFlatten } = require("./filters");
@@ -32,7 +33,11 @@ let settingsWindow = null;
 let jobs = new JobQueue({
   run: (job) => job.payload.run(job),
   onChange: () => broadcastJobs(),
-  onFinish: (job) => { writeJobLog(job).catch(() => {}); },
+  onFinish: (job) => {
+    writeJobLog(job).catch(() => {});
+    // §72 — the same completion point, one write per finished job.
+    recordDailyOverview(job).catch(() => {});
+  },
 });
 
 // ── Transfer logs (§18c) ──────────────────────────────────────────────
@@ -72,6 +77,43 @@ function buildJobLog(job) {
     },
     summary: job.summary || null,
   };
+}
+
+/**
+ * §72 — fold one finished job into the daily overview.
+ *
+ * Shares `onFinish` with the transfer log because they answer different
+ * questions about the same event: the log is this job, the overview is
+ * this card's day. Best-effort on purpose — a copy that verified must not
+ * be reported as failed because an aggregate file would not write.
+ *
+ * A card is identified by the number the naming card claimed (§71) when
+ * there was one, and by its source folder name otherwise. A plain copy
+ * still appears; it just has no number.
+ */
+async function recordDailyOverview(job) {
+  if (job.status !== "done" || !job.summary) return;
+  const s = job.summary;
+  // An upload has verified nothing (§18-era wording, kept honest here):
+  // its "verified" count is the upload call returning, not a re-read.
+  const verified = s.uploadOnly
+    ? false
+    : Boolean(s.allVerified) && !s.mismatches?.length && !s.errors?.length;
+  const { dayBoundary } = await settings.readSettings();
+  await dailyOverview.recordJob({
+    // Keyed by the source, labelled by the number — see foldJob for why
+    // those cannot be the same thing once §71 claims a number per job.
+    key: job.sourcePath || job.sourceLabel || job.label || "Unknown",
+    label: job.cardNumber != null ? String(job.cardNumber) : (path.basename(job.sourceLabel || "") || job.label || "Unknown"),
+    isNamedCard: job.cardNumber != null,
+    completedAt: job.finishedAt || Date.now(),
+    files: s.totalFiles || 0,
+    bytes: s.copiedBytes || 0,
+    verifiedFiles: s.fileCopiesVerified || 0,
+    totalFileCopies: s.totalFileCopies || 0,
+    verified,
+  }, dayBoundary);
+  broadcast("daily-overview:changed");
 }
 
 /**
@@ -406,6 +448,44 @@ ipcMain.handle("presets:list", async () => presets.list());
  */
 ipcMain.handle("presets:validate-folder", async (_e, { folderTemplate } = {}) =>
   ({ error: folderPatternError(folderTemplate) }));
+
+// ── Daily overview (§72) ─────────────────────────────────────────────────
+
+/** Today's LOGICAL day, per the configured boundary. Computed in main so
+ *  the panel, the reset and the export can never disagree about which day
+ *  they are talking about. */
+async function currentDayKey() {
+  const { dayBoundary } = await settings.readSettings();
+  return { dayKey: dailyOverview.dayKeyFor(Date.now(), dayBoundary), dayBoundary };
+}
+
+ipcMain.handle("daily:get", async () => {
+  const { dayKey, dayBoundary } = await currentDayKey();
+  return { dayBoundary, day: await dailyOverview.forDay(dayKey) };
+});
+
+ipcMain.handle("daily:reset", async () => {
+  const { dayKey, dayBoundary } = await currentDayKey();
+  const day = await dailyOverview.resetDay(dayKey);
+  broadcast("daily-overview:changed");
+  return { dayBoundary, day };
+});
+
+/** CSV into the same folder "Open Logs Folder" already opens (§72) —
+ *  a second export location would be one more place to go looking. */
+ipcMain.handle("daily:export", async () => {
+  const { dayKey } = await currentDayKey();
+  const day = await dailyOverview.forDay(dayKey);
+  const dir = LOG_DIR();
+  await fsp.mkdir(dir, { recursive: true });
+  const file = path.join(dir, `daily-overview-${dayKey}.csv`);
+  try {
+    await fsp.writeFile(file, dailyOverview.toCsv(day), "utf8");
+    return { ok: true, path: file, cards: day.cards.length };
+  } catch (err) {
+    return { ok: false, error: String(err.message || err) };
+  }
+});
 
 /** §71 — whether a job with this file pattern would rename anything. Same
  *  function copy:start uses for the §23d guard. */
@@ -946,6 +1026,11 @@ ipcMain.handle("copy:start", async (event, payload) => {
     destPaths: destPathsForKeys,
     sourceKey: volumeKeyOf(sourcePath || (sourceFiles && sourceFiles[0]), volumes),
     destKeys: Array.from(new Set(destPathsForKeys.map((p) => volumeKeyOf(p, volumes)).filter(Boolean))),
+    // §72 — only when this job actually renamed, which is the same
+    // condition §71 uses to claim the number in the first place. Without
+    // that gate a plain copy would be filed under whatever stale counter
+    // value happened to be in the payload.
+    cardNumber: renamesFiles && naming ? presets.normalizeCounter(naming.sourceCounter) : null,
     payload: { run: async (self) => {
       let cancelled = false;
       self._cancel = () => { cancelled = true; };

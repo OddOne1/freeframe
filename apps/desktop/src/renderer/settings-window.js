@@ -297,6 +297,10 @@ async function loadSettings() {
     : builtInAlgo || (algorithms[0] || {}).id || null;
   renderAlgoList();
   renderHideList();
+  // §72 — the Daily overview's day boundary. Saved on change like the
+  // algorithm above: this window has no Cancel, so a deferred save would
+  // only invite closing it and losing the change.
+  $("settings-day-boundary").value = s.dayBoundary || "00:00";
 }
 
 (async () => {
@@ -348,3 +352,11 @@ window.freeframe.onSettingsChanged((s) => {
 });
 
 $("settings-open-logs").addEventListener("click", () => window.freeframe.openLogsFolder());
+
+$("settings-day-boundary").addEventListener("change", async () => {
+  const el = $("settings-day-boundary");
+  const saved = await window.freeframe.setSettings({ dayBoundary: el.value });
+  // Echoed back from main rather than trusted: an unparseable value falls
+  // back to the default there, and the field must show what was stored.
+  el.value = saved.dayBoundary;
+});

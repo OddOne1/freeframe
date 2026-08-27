@@ -795,6 +795,58 @@
     #menu .sep { height: 1px; background: var(--border); margin: 4px 0; }
     #menu .label { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-tertiary); padding: 5px 10px 3px; }
 
+    /* §72 — the daily overview card. Same positioning family as #menu
+       (fixed, anchored under its button), just wider and with structure
+       inside instead of a list of actions. */
+    #daily-card {
+      position: fixed; z-index: 1000; display: none;
+      background: var(--bg-elevated); border: 1px solid var(--border);
+      border-radius: 10px; width: 460px; max-width: calc(100vw - 24px);
+      box-shadow: 0 16px 40px rgba(0,0,0,.6); overflow: hidden;
+    }
+    #daily-card.open { display: block; }
+    .dov-head { padding: 10px 12px 8px; border-bottom: 1px solid var(--border); }
+    .dov-title { display: flex; align-items: baseline; gap: 8px; }
+    .dov-title h3 { margin: 0; font-size: 13px; font-weight: 600; }
+    .dov-title .spacer { flex: 1; }
+    .dov-sub { font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
+    /* Amber, matching the app's own reset/caution treatment rather than
+       --status-error: this clears a view, it does not delete footage. */
+    .dov-reset {
+      border: 1px solid var(--status-warning); background: transparent;
+      color: var(--status-warning); font-family: inherit; font-size: 10px;
+      height: 22px; padding: 0 8px; border-radius: 6px; cursor: pointer;
+    }
+    .dov-reset:hover { background: var(--status-warning); color: #1a1a1a; }
+    .dov-stats {
+      display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--border);
+      background: var(--bg-secondary);
+    }
+    .dov-stat .k { font-size: 9px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-tertiary); }
+    .dov-stat .v { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+    .dov-list { max-height: 260px; overflow-y: auto; }
+    .dov-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 12px; font-size: 11px; border-bottom: 1px solid var(--border);
+    }
+    .dov-row:last-child { border-bottom: none; }
+    .dov-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+    .dov-badge {
+      font-size: 9px; padding: 1px 5px; border-radius: 999px; flex-shrink: 0;
+      color: var(--text-tertiary); border: 1px solid var(--border);
+    }
+    .dov-num { color: var(--text-secondary); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+    .dov-ok { color: var(--status-success); flex-shrink: 0; }
+    .dov-bad { color: var(--status-error); flex-shrink: 0; }
+    .dov-empty { padding: 16px 12px; font-size: 11px; color: var(--text-tertiary); text-align: center; }
+    .dov-foot {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; border-top: 1px solid var(--border); background: var(--bg-secondary);
+    }
+    .dov-foot .spacer { flex: 1; }
+    .dov-hint { font-size: 10px; color: var(--text-tertiary); }
+
     /* ── Submenus ("Source Folder ▸" / "Destination Folder ▸") ── */
     #menu .has-sub { position: relative; }
     /* The trigger is a row, not a plain label: the caret has to sit hard
@@ -874,6 +926,7 @@
     </span>
     <span class="spacer"></span>
     <button id="refresh"><span class="icon" data-icon="refresh"></span> Refresh</button>
+    <button id="daily-btn" title="What has been offloaded today">Daily overview</button>
     <button id="settings-btn" title="Settings">Settings</button>
     <button id="fields-show">Naming Fields</button>
   </header>
@@ -1061,6 +1114,9 @@
 
   <div id="ghost"></div>
   <div id="menu"></div>
+  <!-- §72 — a dropdown anchored under its button, not a window: this is a
+       glance at today, and a BrowserWindow would make it a destination. -->
+  <div id="daily-card"></div>
 
   <script>
     // No Node access here (contextIsolation + sandbox: true in main.js) —
@@ -2403,6 +2459,9 @@
     }
     window.addEventListener("mousedown", (e) => {
       if (!menu.contains(e.target)) closeMenu();
+      const card = $("daily-card");
+      if (card && !card.contains(e.target) && e.target !== $("daily-btn")
+          && !$("daily-btn").contains(e.target)) closeDaily();
     });
 
     // ── Rendering ──
@@ -3865,6 +3924,122 @@
         menu.style.left = `${Math.min(r.left, window.innerWidth - 300)}px`;
         menu.style.top = `${r.bottom + 4}px`;
       });
+    });
+
+    // ── §72 — the daily overview ────────────────────────────────────────
+    //
+    // A dropdown, not a window: this is a glance at what has landed today,
+    // and a BrowserWindow would make it a destination. Anchored like #menu.
+    let dailyOpen = false;
+
+    const closeDaily = () => { dailyOpen = false; $("daily-card").classList.remove("open"); };
+
+    function dailyRow(c) {
+      const verifiedAll = c.status === "verified";
+      return el("div", { class: "dov-row" }, [
+        el("span", { class: "dov-name",
+          text: c.isNamedCard ? `Card ${c.label}` : c.label,
+          title: c.isNamedCard ? `{sourcecounter} ${c.label}` : c.label }),
+        // A plain copy still appears — it just never claimed a number, and
+        // saying so is better than implying it did.
+        c.isNamedCard ? null : el("span", { class: "dov-badge", text: "no preset" }),
+        el("span", { class: "dov-num", text: c.firstCompletedAt
+          ? new Date(c.firstCompletedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+          : "—" }),
+        el("span", { class: "dov-num", text: `${c.files} files` }),
+        el("span", { class: "dov-num", text: formatBytes(c.bytes) }),
+        el("span", { class: verifiedAll ? "dov-ok" : "dov-bad",
+          text: verifiedAll ? "Verified" : `${c.verifiedFiles}/${c.totalFileCopies}`,
+          title: verifiedAll ? "Every copy was re-read and matched" : "Not every copy verified" }),
+      ]);
+    }
+
+    async function drawDaily() {
+      const host = $("daily-card");
+      if (!host) return;
+      const { dayBoundary, day } = await window.freeframe.dailyOverview();
+      if (!dailyOpen) return;   // closed while awaiting
+      host.replaceChildren();
+
+      const cards = day.cards || [];
+      const totals = cards.reduce((a, c) => ({
+        files: a.files + c.files, bytes: a.bytes + c.bytes,
+        verified: a.verified + c.verifiedFiles, copies: a.copies + c.totalFileCopies,
+      }), { files: 0, bytes: 0, verified: 0, copies: 0 });
+
+      const head = el("div", { class: "dov-head" });
+      const title = el("div", { class: "dov-title" }, [
+        el("h3", { text: `Today — ${new Date().toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })}` }),
+        el("span", { class: "spacer" }),
+        el("button", { class: "dov-reset", text: "Reset now",
+          title: "Clear today's overview. Does not touch any files, any log, or the card number.",
+          onClick: async () => { await window.freeframe.resetDailyOverview(); drawDaily(); } }),
+      ]);
+      head.appendChild(title);
+      head.appendChild(el("div", { class: "dov-sub",
+        text: `Resets at ${dayBoundary} · ${cards.length} card${cards.length === 1 ? "" : "s"} so far` }));
+      host.appendChild(head);
+
+      const stats = el("div", { class: "dov-stats" });
+      for (const [k, v] of [
+        ["Cards", String(cards.length)],
+        ["Files", String(totals.files)],
+        ["Data", formatBytes(totals.bytes)],
+        ["Verified", totals.copies ? `${totals.verified}/${totals.copies}` : "—"],
+      ]) {
+        stats.appendChild(el("div", { class: "dov-stat" }, [
+          el("div", { class: "k", text: k }), el("div", { class: "v", text: v }),
+        ]));
+      }
+      host.appendChild(stats);
+
+      const list = el("div", { class: "dov-list" });
+      if (!cards.length) {
+        list.appendChild(el("div", { class: "dov-empty", text: "Nothing offloaded yet today." }));
+      } else {
+        // Earliest first: the order the day actually happened in.
+        for (const c of [...cards].sort((a, b) => a.firstCompletedAt - b.firstCompletedAt)) {
+          list.appendChild(dailyRow(c));
+        }
+      }
+      host.appendChild(list);
+
+      const foot = el("div", { class: "dov-foot" });
+      foot.appendChild(el("button", {
+        text: "Export as CSV",
+        onClick: async () => {
+          const res = await window.freeframe.exportDailyOverview();
+          const note = $("daily-export-note");
+          if (note) note.textContent = res && res.ok ? `Saved to ${res.path}` : (res && res.error) || "Export failed";
+        },
+      }));
+      foot.appendChild(el("span", { class: "spacer" }));
+      // A hint, not a control — the setting itself lives in Settings (§72).
+      foot.appendChild(el("span", { class: "dov-hint", text: "Day boundary: Settings → General" }));
+      host.appendChild(foot);
+      host.appendChild(el("div", { id: "daily-export-note", class: "dov-hint",
+        style: "padding:0 12px 8px;word-break:break-all" }));
+    }
+
+    initStep("daily overview", () => {
+      on("daily-btn", "click", async (e) => {
+        e.stopPropagation();
+        // Captured before the await, per §65c: currentTarget is only valid
+        // during synchronous dispatch, and reading it after yielding is
+        // what made the preset pill silently do nothing.
+        const btn = e.currentTarget;
+        if (dailyOpen) { closeDaily(); return; }
+        dailyOpen = true;
+        const host = $("daily-card");
+        host.classList.add("open");
+        await drawDaily();
+        const r = btn.getBoundingClientRect();
+        host.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - host.offsetWidth - 8))}px`;
+        host.style.top = `${r.bottom + 6}px`;
+      });
+      // Redrawn on the same broadcast the completion point fires, so a job
+      // finishing while the card is open updates it rather than going stale.
+      window.freeframe.onDailyOverviewChanged(() => { if (dailyOpen) drawDaily(); });
     });
 
     initStep("naming presets", () => {

@@ -69,6 +69,13 @@ contextBridge.exposeInMainWorld("freeframe", {
    *  engine checks with, so the counter and the rename can never disagree. */
   renamesFiles: (fileTemplate, disabled) =>
     ipcRenderer.invoke("presets:renames-files", { fileTemplate, disabled }),
+
+  /** §72 — the daily overview. Read/reset/export only; the aggregation
+   *  itself happens in main at the job-completion point. */
+  dailyOverview: () => ipcRenderer.invoke("daily:get"),
+  resetDailyOverview: () => ipcRenderer.invoke("daily:reset"),
+  exportDailyOverview: () => ipcRenderer.invoke("daily:export"),
+  onDailyOverviewChanged: (cb) => ipcRenderer.on("daily-overview:changed", () => cb()),
   deletePreset: (id) => ipcRenderer.invoke("presets:delete", { id }),
   /** Same reason as onSettingsChanged: the editor lives in the Settings
    *  window, the active-preset label and Fields panel live in the main one. */
