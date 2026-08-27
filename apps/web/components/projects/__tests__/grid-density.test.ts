@@ -126,13 +126,26 @@ describe('§67 target tables', () => {
     })
   })
 
-  it('projects overview matches the doubled S/M/L, with XS untouched', () => {
+  it('projects overview follows §68\'s 1/3 growth curve, with XS untouched', () => {
     expect(overviewLadders()).toEqual({
       XS: [3, 5, 7, 9],
-      S: [2, 4, 6, 8],
-      M: [2, 4, 4, 6],
-      L: [2, 2, 2, 4],
+      S: [2, 4, 5, 7],
+      M: [2, 3, 4, 5],
+      L: [2, 2, 3, 4],
     })
+  })
+
+  it('and the overview steps strictly down everywhere EXCEPT base, where it cannot', () => {
+    const o = overviewLadders()
+    // XS is 3 columns at base, so four strictly-decreasing counts would
+    // need 3 > 2 > 1 > 0. S/M/L all sit at 2 there — which is also what the
+    // width curve wants — and step strictly down at every other breakpoint.
+    expect([o.XS[0], o.S[0], o.M[0], o.L[0]]).toEqual([3, 2, 2, 2])
+    for (let i = 1; i < o.XS.length; i++) {
+      for (let j = 1; j < SIZES.length; j++) {
+        expect(o[SIZES[j - 1]][i]).toBeGreaterThan(o[SIZES[j]][i])
+      }
+    }
   })
 
   it('and XS leads S everywhere again — 1b7f16e\'s inversion is gone', () => {

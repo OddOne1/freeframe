@@ -302,12 +302,20 @@ function InviteUserDialog() {
  *  again by the back door. */
 const projectGridColsMap: Record<CardSize, string> = {
   XS: "grid-cols-3 sm:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9",
-  // §67 — S/M/L doubled at every breakpoint ("they can all be half the
-  // size", read as the mechanical instruction it is). XS is untouched: it
-  // was not called out and is already the densest tier.
-  S: "grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8",
-  M: "grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-6",
-  L: "grid-cols-2 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-4",
+  // §68 — a compounding 1/3 growth curve in rendered card WIDTH, anchored
+  // on XS: width(S) = XS x 4/3, width(M) = S x 4/3, width(L) = M x 4/3.
+  // Column counts were chosen by measuring XS's real rendered width at each
+  // breakpoint (192px sidebar, p-6, gap-4) and picking the integer count
+  // landing nearest each target — not by scaling column ratios, which
+  // ignores the gap.
+  //
+  // base is the one breakpoint where strict XS > S > M > L is arithmetically
+  // impossible: XS is 3 columns, so four strictly-decreasing counts would
+  // need 3 > 2 > 1 > 0. All three tiers sit at 2, which is also what the
+  // width curve wants there, and is unchanged from before this change.
+  S: "grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-7",
+  M: "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5",
+  L: "grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
 }
 
 export default function ProjectsPage() {
