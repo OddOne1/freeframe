@@ -566,7 +566,6 @@ const check = (ok, label, detail = "") => {
         colWrap: col.flexWrap,
         colTitleEllipsis: getComputedStyle(document.querySelector(".col-head h2")).textOverflow,
         colButtonShrink: getComputedStyle(document.querySelector(".col-head button")).flexShrink,
-        showLabel: document.getElementById("fields-show").textContent.trim(),
         panelHeading: document.querySelector("#fields-panel h2").textContent.trim(),
       };
     })()`)
@@ -581,8 +580,10 @@ const check = (ok, label, detail = "") => {
       "…their titles ellipsize instead, so controls never clip", chrome.colTitleEllipsis)
     check(chrome.colButtonShrink === "0",
       "…and the button is never squeezed", chrome.colButtonShrink)
-    check(chrome.showLabel === "Naming Fields", "the reopen button is renamed (§25c)", chrome.showLabel)
-    check(chrome.panelHeading === "Naming Fields", "and so is the panel heading", chrome.panelHeading)
+    // §25c renamed both the panel and the header button that reopened it.
+    // §70 deleted that button along with the card's own Hide, so only the
+    // heading is left to carry the name.
+    check(chrome.panelHeading === "Naming Fields", "the panel is named Naming Fields (§25c)", chrome.panelHeading)
 
     // §25a. A SOURCE-LEVEL pin, and deliberately labelled as one: Electron
     // does not expose CDP's Browser domain, so getWindowBounds/
@@ -609,7 +610,6 @@ const check = (ok, label, detail = "") => {
       activePresetId = null; updatePresetLabel();
       const none = {
         panelHidden: document.getElementById("fields-panel").classList.contains("hidden"),
-        buttonShown: document.getElementById("fields-show").classList.contains("on"),
       };
 
       activePresetId = p.id; updatePresetLabel();
@@ -617,24 +617,25 @@ const check = (ok, label, detail = "") => {
         panelHidden: document.getElementById("fields-panel").classList.contains("hidden"),
       };
 
-      // A manual Hide must still work, and must survive under the gate.
-      setFieldsPanel(true);
-      const hiddenManually = {
-        panelHidden: document.getElementById("fields-panel").classList.contains("hidden"),
-        buttonShown: document.getElementById("fields-show").classList.contains("on"),
+      // §70 — the preset toggle is the whole mechanism. Nothing else may
+      // dismiss the card, because nothing else also lifts the required-field
+      // gate that comes with it.
+      const noManualHide = {
+        collapse: !!document.getElementById("fields-collapse"),
+        show: !!document.getElementById("fields-show"),
+        setter: typeof setFieldsPanel !== "undefined",
       };
-      setFieldsPanel(false);
 
       activePresetId = null; updatePresetLabel();
       await window.freeframe.deletePreset(p.id);
-      return { none, withPreset, hiddenManually };
+      return { none, withPreset, noManualHide };
     })()`)
     check(panelVis.none.panelHidden === true,
       "with no preset the panel is hidden outright, not showing an empty state")
-    check(panelVis.none.buttonShown === false, "and its reopen button is gone too")
     check(panelVis.withPreset.panelHidden === false, "selecting a preset brings it back")
-    check(panelVis.hiddenManually.panelHidden === true, "Hide still hides it")
-    check(panelVis.hiddenManually.buttonShown === true, "…and then the reopen button is offered")
+    check(!panelVis.noManualHide.collapse && !panelVis.noManualHide.show && !panelVis.noManualHide.setter,
+      "and the preset toggle is the only thing that can dismiss it (\u00a770)",
+      JSON.stringify(panelVis.noManualHide))
 
     check(pageErrors.length === 0, "no uncaught exception across the whole run", pageErrors.join(" | "));
   } finally {

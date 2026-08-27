@@ -303,25 +303,29 @@ async function walk(dir, base = "") {
       return true;
     })()`);
 
-    // ── 1e. The card can be dismissed, and Copy & Verify follows ─────────
-    console.log("\n1e. (\u00a765.12) The button follows the card");
-    const followed = await ev(`(() => {
-      setFieldsPanel(true);
-      const c = document.getElementById("fields-clear");
-      const hidden = {
-        cardHidden: document.getElementById("fields-panel").classList.contains("hidden"),
-        startParent: document.getElementById("start").parentElement.id,
-        // Dismissed, not deselected: the button is still built, but nothing
-        // of it is on screen.
-        clearVisible: Boolean(c && c.offsetParent),
-      };
-      setFieldsPanel(false);
-      return { hidden, backParent: document.getElementById("start").parentElement.id };
-    })()`);
-    check(followed.hidden.startParent === "start-zone-columns",
-      "with no card showing it centres under the three columns", followed.hidden.startParent);
-    check(!followed.hidden.clearVisible, "and no Clear button is on screen");
-    check(followed.backParent === "start-zone-card", "it returns under the card when that reopens");
+    // ── 1e. There is no way to hide the card but deselect the preset ─────
+    // §70 inverted what this section used to assert. It drove a Hide
+    // control that dismissed the card while leaving every required field
+    // still required — a job could then refuse to start with the
+    // explanation of why hidden behind the thing that was hidden. Both
+    // that control and the header button that brought the card back are
+    // gone, so what is checked now is their absence.
+    console.log("\n1e. (\u00a770) The card has no separate Hide");
+    const noHide = await ev(`(() => ({
+      collapseExists: !!document.getElementById("fields-collapse"),
+      showExists: !!document.getElementById("fields-show"),
+      setterExists: typeof setFieldsPanel !== "undefined",
+      // A preset is active, so the card is on screen and stays there.
+      cardHidden: document.getElementById("fields-panel").classList.contains("hidden"),
+      startParent: document.getElementById("start").parentElement.id,
+    }))()`);
+    check(noHide.collapseExists === false, "the card carries no Hide button");
+    check(noHide.showExists === false, "and the header carries no button to bring it back");
+    check(noHide.setterExists === false, "the flag they flipped is gone with them");
+    check(noHide.cardHidden === false,
+      "an active preset keeps its card on screen, with nothing able to dismiss it");
+    check(noHide.startParent === "start-zone-card",
+      "so Copy & Verify stays under the card", noHide.startParent);
 
     // The spec's actual rule: with NO preset active there is no Clear at
     // all — not hidden, not built. Dismissing the card above is a

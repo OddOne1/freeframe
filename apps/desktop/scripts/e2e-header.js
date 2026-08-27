@@ -288,15 +288,19 @@ async function waitFor(ev, expr, tries = 40) {
   await ev(`setPage("freeframe")`);
   await sleep(900);
   const hiddenNow = await ev(`JSON.stringify(
-    ["settings-btn", "start-bar", "fields-show", "refresh"].map(id =>
+    ["settings-btn", "start-bar", "refresh"].map(id =>
       [id, getComputedStyle(document.getElementById(id)).display === "none"]))`);
   const map = Object.fromEntries(JSON.parse(hiddenNow));
   // §65.12 relocated Copy & Verify into #start-bar and deleted Clear, so
   // what has to disappear on this page is the bar rather than a header
-  // button — same rule, the controls simply moved.
-  check(map["settings-btn"] && map["start-bar"] && map["fields-show"],
-    "Settings, the Copy & Verify bar and the naming-card toggle are hidden there", hiddenNow);
+  // button — same rule, the controls simply moved. §70 then removed
+  // #fields-show entirely, so the naming card is no longer something this
+  // rule has to name: it is checked as absent below instead.
+  check(map["settings-btn"] && map["start-bar"],
+    "Settings and the Copy & Verify bar are hidden there", hiddenNow);
   check(map.refresh === false, "Refresh stays");
+  check(await ev(`document.getElementById("fields-show") === null`),
+    "and there is no naming-card toggle left in the header to scope (\u00a770)");
 
   // And it must mean the thing on screen, rather than silently re-listing
   // drives the page is not showing.
@@ -327,9 +331,6 @@ async function waitFor(ev, expr, tries = 40) {
   const backNow = await ev(`JSON.stringify(
     ["settings-btn", "start-bar"].map(id =>
       getComputedStyle(document.getElementById(id)).display !== "none"))`);
-  // #fields-show is deliberately absent from this list: it has its own
-  // rule (shown only when a preset is active AND its card is hidden), so
-  // asserting it visible here would be asserting the wrong thing.
   check(JSON.parse(backNow).every(Boolean), "switching back restores them", backNow);
   check(await ev(`refresh.toString().includes("listVolumes")`),
     "and Refresh goes back to listing volumes");

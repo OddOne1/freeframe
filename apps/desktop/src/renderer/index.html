@@ -81,11 +81,9 @@
        switch back to open Settings. */
     body.page-web #settings-btn,
     /* §65.12 moved Copy & Verify out of the header into #start-bar and
-       deleted Clear outright, so the rule follows them. #fields-show is
-       hidden too: it reveals the naming card, which belongs to the Offload
-       page, and leaving it would offer to open a panel that page cannot
-       show. */
-    body.page-web #fields-show,
+       deleted Clear outright, so the rule follows them. §70 removed
+       #fields-show along with the panel's own Hide, so there is nothing
+       left here to name for the naming card. */
     body.page-web #start-bar { display: none !important; }
     header .spacer { flex: 1; }
     header .mode {
@@ -260,10 +258,6 @@
       color: var(--text-primary);
     }
     .fv-clear-row { display: flex; justify-content: flex-end; margin-top: 8px; }
-    /* Restores the panel once hidden — lives in the header so it is
-       reachable when the panel itself is not. */
-    #fields-show { display: none; }
-    #fields-show.on { display: inline-flex; }
 
     .columns { flex: 1; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,3fr) minmax(0,1fr); gap: 1px; background: var(--border); min-height: 0; }
     .col { background: var(--bg-primary); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
@@ -928,7 +922,6 @@
     <button id="refresh"><span class="icon" data-icon="refresh"></span> Refresh</button>
     <button id="daily-btn" title="What has been offloaded today">Daily overview</button>
     <button id="settings-btn" title="Settings">Settings</button>
-    <button id="fields-show">Naming Fields</button>
   </header>
 
   <div class="workspace">
@@ -973,7 +966,6 @@
       <div class="naming-card-head">
         <h2>Naming Fields</h2>
         <span class="spacer"></span>
-        <button id="fields-collapse" title="Hide the naming fields panel">Hide</button>
       </div>
       <div id="fields-body"></div>
     </div>
@@ -2941,8 +2933,6 @@
     }
 
     window.freeframe.onCopyProgress(onProgress);
-    on("fields-collapse", "click", () => setFieldsPanel(true));
-    on("fields-show", "click", () => setFieldsPanel(false));
     on("refresh", "click", refresh);
     // Wrapped, not passed directly: a click handler receives the MouseEvent
     // as its first argument, which would land in startCopy's
@@ -3251,7 +3241,6 @@
 
     // ── §22g — per-transfer field values panel ───────────────────────────
 
-    let fieldsPanelHidden = false;
 
     /**
      * Show/hide state, and the rule that outranks it (§25c).
@@ -3265,18 +3254,23 @@
      * manual Hide state is kept underneath, so a preset chosen later
      * restores whatever the user had.
      */
+    /**
+     * §70 — the card is visible exactly when a preset is active, and there
+     * is no second control that hides it.
+     *
+     * There used to be a "Hide" on the card and a "Naming Fields" button in
+     * the header to bring it back, both flipping a display-only flag. That
+     * flag was a trap: hiding the panel left every required field STILL
+     * required, so a job could refuse to start with the explanation of why
+     * hidden behind the thing that was hidden. The header's preset toggle
+     * already removes the panel and the requirement together, which is the
+     * only removal that is actually safe.
+     */
     function applyFieldsPanelVisibility() {
-      const hasPreset = Boolean(activePreset());
-      $("fields-panel").classList.toggle("hidden", !hasPreset || fieldsPanelHidden);
-      $("fields-show").classList.toggle("on", hasPreset && fieldsPanelHidden);
+      $("fields-panel").classList.toggle("hidden", !activePreset());
       // §65.12 — Copy & Verify follows the card, so it moves on the same
       // signal rather than needing every caller to remember to move it.
       placeStartButton();
-    }
-
-    function setFieldsPanel(hidden) {
-      fieldsPanelHidden = hidden;
-      applyFieldsPanelVisibility();
     }
 
     /**
