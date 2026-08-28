@@ -2748,12 +2748,20 @@
         // from a button labelled "Eject" would unassign a card with no
         // warning, so this refuses instead and says what to do. The old menu
         // entry is deliberately left as it was.
+        // Names what is actually held. §59's role-both case — two folders
+        // on one RAID, one each way — is easy to reach now that the check
+        // is device-level, and a title saying "Source" while a Destination
+        // is also on the drive sends someone to remove the wrong one.
+        // Hoisted out of the title rather than nested a third level deep.
+        const heldRoles = heldAsSource && heldAsDest
+          ? "Source and Destination roles"
+          : heldAsSource ? "Source role" : "Destination role";
         const ejectBtn = el("button", {
           class: "tile-menu tile-eject",
           title: busy
             ? `${verb} unavailable while a job is using this drive`
             : heldAsSource || heldAsDest
-              ? `Remove this drive's ${heldAsSource ? "Source" : "Destination"} role before ejecting`
+              ? `Remove this drive's ${heldRoles} before ejecting`
               : verb,
           onClick: (e) => {
             e.stopPropagation();
