@@ -2734,11 +2734,14 @@
       if (ejectVol && ejectVol.type !== "internal") {
         const isNetwork = ejectVol.type === "network";
         const verb = isNetwork ? "Disconnect" : "Eject";
-        // EXACT path match, not deviceFor(): what is being gated is
-        // unmounting this volume, and a subfolder of it holding a role is
-        // the same physical drive being pulled out from under a job.
-        const heldAsSource = sourcePath === entry.mountPoint;
-        const heldAsDest = destNodes.some((n) => n.path === entry.mountPoint);
+        // The SAME signal the tile's own outline uses, via deviceFor —
+        // not an exact path match. §76 shipped the exact match and it made
+        // the two disagree: assigning a card's DCIM directory (the normal
+        // case, not the drive root) outlined the tile as held while leaving
+        // its eject button live. A button that contradicts the border drawn
+        // around it is worse than either rule on its own.
+        const heldAsSource = derived.isSource;
+        const heldAsDest = derived.isDest;
         const busy = isBusy(entry.mountPoint);
         // §76 tightens this beyond the context menu's mid-copy-only gate.
         // ejectVolume() silently drops a held role on success; reaching that
