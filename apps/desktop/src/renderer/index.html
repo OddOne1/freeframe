@@ -4197,7 +4197,7 @@
         // otherwise leave the picker showing nothing selected (§58).
         try {
           const saved = await window.freeframe.getSettings();
-          const wanted = saved && saved.defaultChecksumAlgo;
+          const wanted = saved && saved.liveChecksumAlgo;
           if (wanted && algorithms.some((a) => a.id === wanted)) algorithm = wanted;
           hiddenVolumeNames = (saved && saved.hiddenVolumeNames) || [];
           hiddenProjectIds = (saved && saved.hiddenProjectIds) || [];
@@ -4208,7 +4208,7 @@
       // Settings is another window now, so its writes arrive as a
       // broadcast rather than as a local re-render.
       window.freeframe.onSettingsChanged((saved) => {
-        const wanted = saved && saved.defaultChecksumAlgo;
+        const wanted = saved && saved.liveChecksumAlgo;
         if (wanted && algorithms.some((a) => a.id === wanted)) algorithm = wanted;
         hiddenVolumeNames = (saved && saved.hiddenVolumeNames) || [];
         hiddenProjectIds = (saved && saved.hiddenProjectIds) || [];

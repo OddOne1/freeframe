@@ -17,7 +17,17 @@ const { app } = require("electron");
 /** Mirrors the picker's own fallback in index.html. Defined here too, so a
  *  fresh install and a saved-then-cleared setting land in the same place. */
 const DEFAULTS = Object.freeze({
-  defaultChecksumAlgo: "xxhash64",
+  // §86 — two tiers. `live` is hashed while the bytes stream past during
+  // the copy; `finalized` is an optional SECOND full read of the source and
+  // every destination afterwards, with its own algorithm.
+  liveChecksumAlgo: "xxhash64",
+  // Off by default: it is a genuine second read of everything, so it costs
+  // real time and real disk wear. Opting in has to be deliberate.
+  finalizedChecksumEnabled: false,
+  // Empty means "whatever live resolves to" — so a user who turns the
+  // toggle on without touching the dropdown gets a coherent pass rather
+  // than a hardcoded second algorithm they never chose.
+  finalizedChecksumAlgo: "",
   // §60a. Drives are matched by NAME because nothing better exists:
   // deviceId changes across reboots and replugs and is empty for network
   // volumes, and mountPoint is derived from the name anyway. The known
@@ -57,6 +67,18 @@ function normalizeIdList(raw) {
   return Array.from(seen);
 }
 
+/**
+ * §86 — the algorithm the finalized pass actually runs with.
+ *
+ * One function rather than `s.finalizedChecksumAlgo || s.liveChecksumAlgo`
+ * repeated at each reader: the engine, the Settings dropdown and the log
+ * all have to name the same algorithm, and three copies of that fallback
+ * is how one of them ends up reporting sha1 while another hashes xxhash64.
+ */
+function finalizedAlgoFor(s) {
+  return (s && s.finalizedChecksumAlgo) || (s && s.liveChecksumAlgo) || DEFAULTS.liveChecksumAlgo;
+}
+
 function settingsFile() {
   return path.join(app.getPath("userData"), "settings.json");
 }
@@ -64,11 +86,19 @@ function settingsFile() {
 function normalize(raw) {
   const out = { ...DEFAULTS };
   if (raw && typeof raw === "object") {
-    const algo = raw.defaultChecksumAlgo;
+    // §86 — `defaultChecksumAlgo` is the pre-two-tier name for this. Read
+    // as a fallback rather than dropped, or an existing settings.json would
+    // silently reset to xxHash64 the first time this ships: the field would
+    // simply be absent under its new name, which is indistinguishable from
+    // "never configured".
+    const algo = raw.liveChecksumAlgo ?? raw.defaultChecksumAlgo;
     // Validated against the caller's list rather than trusted: a stale
     // algorithm id from an older build must not leave the picker with
     // nothing selected.
-    if (typeof algo === "string" && algo.trim()) out.defaultChecksumAlgo = algo.trim();
+    if (typeof algo === "string" && algo.trim()) out.liveChecksumAlgo = algo.trim();
+    out.finalizedChecksumEnabled = raw.finalizedChecksumEnabled === true;
+    const fin = raw.finalizedChecksumAlgo;
+    if (typeof fin === "string" && fin.trim()) out.finalizedChecksumAlgo = fin.trim();
     out.dayBoundary = normalizeDayBoundary(raw.dayBoundary);
     out.hiddenVolumeNames = normalizeIdList(raw.hiddenVolumeNames);
     out.hiddenProjectIds = normalizeIdList(raw.hiddenProjectIds);
@@ -96,4 +126,4 @@ async function writeSettings(patch) {
   return next;
 }
 
-module.exports = { readSettings, writeSettings, normalize, normalizeIdList, normalizeDayBoundary, DEFAULTS, settingsFile };
+module.exports = { readSettings, writeSettings, normalize, finalizedAlgoFor, normalizeIdList, normalizeDayBoundary, DEFAULTS, settingsFile };

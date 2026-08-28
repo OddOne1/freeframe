@@ -15,7 +15,7 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 
-const { runCopyJob, hashFileOnDisk } = require("../src/main/copy-engine");
+const { runCopyJob, hashFileOnDisk, runFinalizedPass } = require("../src/main/copy-engine");
 const { listAlgorithms, getHasherFactory, c4Digest } = require("../src/main/hashers");
 
 let failures = 0;
@@ -371,6 +371,86 @@ async function main() {
     check(par.nodes.length === 3 && par.nodes.every((n) => n.status === "verified"), "all 3 nodes recorded and verified");
     check(par.totalFileCopies === srcFileCount * 3, "file-copy denominator scales with destinations",
       `${par.totalFileCopies}`);
+
+    // ── §86: the optional finalized pass ────────────────────────────────
+    console.log("\n§86. Finalized checksum — a second, independent read");
+    {
+      const fdst = path.join(tmp, "final-a");
+      const fnodes = [{ id: "f1", path: fdst, parentId: null }];
+      // Deliberately DIFFERENT from the live algorithm: the whole point is
+      // that the two tiers are independent, and a test using one algorithm
+      // for both could not tell them apart.
+      const s86 = await runCopyJob({
+        sourcePath: source, nodes: fnodes, algorithm: "xxhash64", finalizedAlgorithm: "sha1",
+      });
+      check(s86.allVerified, "the live pass still verifies with a finalized pass configured");
+      check(Boolean(s86.finalized) && s86.finalized.algorithm === "sha1",
+        "a finalized block is reported, under its own algorithm",
+        s86.finalized && s86.finalized.algorithm);
+      check(s86.finalized.checked === srcFileCount && s86.finalized.verified === srcFileCount,
+        "every file was re-read and re-verified",
+        `${s86.finalized.verified}/${s86.finalized.checked} of ${srcFileCount}`);
+      const one = s86.nodes[0].files[0];
+      check(Boolean(one.finalCheck) && one.finalCheck.ok === true,
+        "each file carries its own finalCheck");
+      check(typeof one.sourceHash === "string" && one.sourceHash !== one.finalCheck.sourceHash,
+        "…and the LIVE hash survives beside it — two algorithms, two results, neither overwritten");
+
+      // Off is off: nothing added anywhere.
+      const off = await runCopyJob({
+        sourcePath: source, nodes: [{ id: "f2", path: path.join(tmp, "final-off"), parentId: null }],
+        algorithm: "xxhash64",
+      });
+      check(off.finalized === null, "no finalized block when it is not configured");
+      check(!off.nodes[0].files[0].finalCheck, "…and no finalCheck on any file");
+
+      // THE CASE THE LIVE PASS CANNOT SEE. The live check hashes the source
+      // as it streams and compares that to the destination written from the
+      // same read — so a destination damaged afterwards, or a bad read at
+      // copy time, matches. Corrupting a verified destination and running
+      // only the finalized pass reproduces exactly that gap.
+      const victim = off.nodes[0].files[0];
+      await fs.writeFile(victim.destPath, "tampered");
+      const caught = await runFinalizedPass({
+        sourcePath: source, nodes: off.nodes, algorithm: "sha1",
+        isCancelled: () => false, onProgress: () => {},
+      });
+      check(caught.ok === false, "a destination corrupted after a clean live pass is caught");
+      check(caught.mismatches.length === 1
+        && caught.mismatches[0].destPath === victim.destPath,
+        "…named exactly, and only it", JSON.stringify(caught.mismatches.map((m) => m.file)));
+      check(caught.verified === srcFileCount - 1, "…while the rest still verify",
+        `${caught.verified} of ${srcFileCount - 1}`);
+
+      // Cancellation has to stop it, not merely be recorded afterwards.
+      let ticks = 0;
+      const events = [];
+      const stopped = await runFinalizedPass({
+        sourcePath: source, nodes: off.nodes, algorithm: "sha1",
+        isCancelled: () => ++ticks > 1, onProgress: (e) => events.push(e),
+      });
+      check(stopped.cancelled === true && stopped.checked < srcFileCount,
+        "cancelling is reported and nothing further is verified",
+        `${stopped.checked} of ${srcFileCount}`);
+      // `checked` alone does NOT prove it stopped: the inner loop breaks on
+      // cancellation too, so a version that kept walking the remaining
+      // files — re-hashing each source for nothing — would also report 0.
+      // The per-file progress event is what separates "stopped" from "still
+      // looping quietly".
+      check(events.length <= 1,
+        "…and it really stops, rather than looping on through every remaining file",
+        `${events.length} file events after cancelling`);
+
+      // A source that vanished between the copy and this pass — pulling the
+      // card — is a source error, not N destination mismatches.
+      const missing = { ...off.nodes[0], files: [{ file: "__gone__.MOV", destPath: victim.destPath, bytes: 1 }] };
+      const srcErr = await runFinalizedPass({
+        sourcePath: source, nodes: [missing], algorithm: "sha1",
+        isCancelled: () => false, onProgress: () => {},
+      });
+      check(srcErr.errors.some((e) => e.stage === "source") && srcErr.ok === false,
+        "an unreadable source is reported as a source error, and the pass does not claim success");
+    }
 
     console.log(
       failures === 0

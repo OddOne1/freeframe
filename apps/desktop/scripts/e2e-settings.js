@@ -171,38 +171,70 @@ async function waitFor(ev, expr, tries = 40) {
   check(/minWidth|resizable:\s*true/.test(block) || !/resizable:\s*false/.test(block),
     "and is resizable");
 
-  console.log("2. General — a themed picker, not a native select");
-  check(await waitFor(sev, `document.querySelectorAll("#algo-list .algo-opt").length > 1`),
-    "the picker populates from main's own algorithm list");
-  check(!(await sev(`!!document.getElementById("settings-algo")`)),
-    "the native <select> is gone");
-  const opts = await sev(`document.querySelectorAll("#algo-list .algo-opt").length`);
-  check(opts > 1, "replaced by the app's own option list", `${opts} options`);
-  check(await sev(`!!document.querySelector("#algo-list .algo-opt .algo-name")
-      && !!document.querySelector("#algo-list .algo-opt .algo-blurb")`),
-    "carrying a name AND the explanation a native select cannot show");
-  check(await sev(`getComputedStyle(document.querySelector("#algo-list")).backgroundColor !== "rgb(255, 255, 255)"`),
+  // §86 INVERTS what this section used to assert. §61 replaced a native
+  // <select> with a themed list precisely BECAUSE a select cannot carry the
+  // per-option explanation. Two tiers would have printed those same four
+  // paragraphs twice, so the explanations moved to one read-only reference
+  // block and both pickers became plain selects. The requirement did not go
+  // away — it moved — so it is checked in its new home rather than dropped.
+  console.log("2. (\u00a786) General — two selects, explanations once beneath");
+  check(await waitFor(sev, `document.querySelectorAll("#settings-live-checksum option").length > 1`),
+    "the live picker populates from main's own algorithm list");
+  check(await sev(`document.querySelectorAll("#settings-finalized-checksum option").length > 1`),
+    "and so does the finalized one");
+  check(!(await sev(`!!document.getElementById("algo-list")`)),
+    "the single themed picker is gone — one control cannot express two tiers");
+  check(await sev(`document.querySelectorAll("#algo-reference .algo-ref-blurb").length > 1`),
+    "the explanations survive as a read-only reference, not as a second picker");
+  check(await sev(`getComputedStyle(document.querySelector("#algo-reference")).backgroundColor !== "rgb(255, 255, 255)"`),
     "and it is themed with the app's own colours");
-  check(await sev(`document.querySelectorAll("#algo-list .algo-opt.selected").length === 1`),
-    "exactly one option reads as chosen");
+  check(await sev(`!!document.getElementById("settings-finalized-enabled")`),
+    "the finalized pass has its own toggle");
+  check(await sev(`document.getElementById("settings-finalized-checksum").disabled === true`),
+    "…and its dropdown is inert while the toggle is off, rather than hidden");
+
+  // Day boundary moved above the checksum section (§86's reorder).
+  check(await sev(`(() => {
+    const p = document.getElementById("tab-general");
+    const kids = [...p.querySelectorAll(".setting")];
+    const day = kids.findIndex(k => k.querySelector("#settings-day-boundary"));
+    const live = kids.findIndex(k => k.querySelector("#settings-live-checksum"));
+    return day >= 0 && live >= 0 && day < live;
+  })()`), "day boundary now comes first");
 
   const builtIn = await ev(`window.freeframe.getAlgorithms().then(r => r.default || "xxhash64")`);
   // Deliberately something OTHER than the built-in default, so the relaunch
   // check below can tell "the saved value was applied" from "the default
   // happened to be right anyway".
-  const chosen = await sev(`
+  await sev(`
     (() => {
-      const sel = document.querySelector("#algo-list .algo-opt.selected");
-      const other = [...document.querySelectorAll("#algo-list .algo-opt")].find(o => o !== sel);
-      other.click();
-      return [...document.querySelectorAll("#algo-list .algo-opt")].indexOf(other);
+      const sel = document.getElementById("settings-live-checksum");
+      const other = [...sel.options].find(o => o.value !== sel.value);
+      sel.value = other.value;
+      sel.dispatchEvent(new Event("change"));
+      return other.value;
     })()
   `);
   await sleep(600);
-  const persisted = await ev(`window.freeframe.getSettings().then(s => s.defaultChecksumAlgo)`);
+  const persisted = await ev(`window.freeframe.getSettings().then(s => s.liveChecksumAlgo)`);
   check(typeof persisted === "string" && persisted !== builtIn,
     "picking one writes it straight away, with no Save step to forget",
     `${builtIn} → ${persisted}`);
+
+  // The finalized tier persists on its own, and turning it on must not
+  // disturb the live one.
+  await sev(`(() => {
+    const t = document.getElementById("settings-finalized-enabled");
+    t.checked = true; t.dispatchEvent(new Event("change"));
+    return true;
+  })()`);
+  await sleep(600);
+  const finOn = await ev(`window.freeframe.getSettings().then(s => s.finalizedChecksumEnabled)`);
+  check(finOn === true, "the finalized toggle persists");
+  check(await sev(`document.getElementById("settings-finalized-checksum").disabled === false`),
+    "…and its dropdown becomes usable");
+  check(await ev(`window.freeframe.getSettings().then(s => s.liveChecksumAlgo)`) === persisted,
+    "…without disturbing the live algorithm");
 
   // §72 — the day-boundary control lives here, not in the panel it drives.
   console.log("2b. (\u00a772) Day boundary");
@@ -606,7 +638,7 @@ async function waitFor(ev, expr, tries = 40) {
   console.log("6. It survives a relaunch");
   ({ child, ws, ev } = await launch());
 
-  const active = await ev(`window.freeframe.getSettings().then(s => s.defaultChecksumAlgo)`);
+  const active = await ev(`window.freeframe.getSettings().then(s => s.liveChecksumAlgo)`);
   check(active === persisted, "the setting is still there", active);
   check(await ev(`algorithm === ${JSON.stringify(persisted)}`),
     "and a job started now would use it — this is the only place it comes from");

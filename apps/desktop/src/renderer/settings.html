@@ -60,6 +60,31 @@
       height: 26px; padding: 0 12px; border-radius: 6px; cursor: pointer;
     }
 
+    /* §86 — two tiers means two pickers, so the per-option explanation
+       cannot live inside either one. It moves to the read-only reference
+       block below them, and these become plain selects. */
+    .settings-select {
+      height: 28px; border-radius: 6px; padding: 0 8px; min-width: 180px;
+      background: var(--bg-secondary); border: 1px solid var(--border);
+      color: var(--text-primary); font-size: 12px; font-family: inherit;
+    }
+    .settings-select:disabled { opacity: .45; cursor: not-allowed; }
+    .settings-toggle {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+      font-size: 12px; color: var(--text-primary); cursor: pointer;
+    }
+    .settings-toggle input { cursor: pointer; }
+    /* Read-only: the same blurbs the old picker showed per option, now
+       shown once for all four. Deliberately not a control — picking is done
+       in the two dropdowns above. */
+    .algo-reference {
+      border: 1px solid var(--border); border-radius: 8px;
+      background: var(--bg-secondary); padding: 4px 2px;
+    }
+    .algo-ref-row { padding: 7px 10px; }
+    .algo-ref-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+    .algo-ref-blurb { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; line-height: 1.5; }
+
     /* ── Themed checksum picker ──
        Ported from the toolbar's #algo-menu, which this replaces. A native
        <select> cannot carry the per-option explanation, and the explanation
@@ -236,15 +261,6 @@
     <section class="tab-panel active" id="tab-general" role="tabpanel">
       <h2>General</h2>
       <div class="setting">
-        <div class="setting-label">Checksum algorithm</div>
-        <div class="setting-sub">
-          Used to verify every copy. Applies to all jobs — there is no
-          per-job override.
-        </div>
-        <div id="algo-list" class="algo-list"></div>
-      </div>
-
-      <div class="setting">
         <div class="setting-label">Day boundary time</div>
         <div class="setting-sub">
           When "today" starts for the Daily overview. A job finishing before
@@ -253,6 +269,38 @@
           calendar days.
         </div>
         <input id="settings-day-boundary" type="time" step="60" />
+      </div>
+
+      <div class="setting">
+        <div class="setting-label">Live checksum</div>
+        <div class="setting-sub">
+          Hashed while each file streams past during the copy, then compared
+          against every destination read back from disk. Applies to all jobs
+          — there is no per-job override.
+        </div>
+        <select id="settings-live-checksum" class="settings-select"></select>
+      </div>
+
+      <div class="setting">
+        <div class="setting-label">Finalized checksum</div>
+        <div class="setting-sub">
+          An optional second pass once every file has copied: the source and
+          every destination are read from disk again and hashed with the
+          algorithm below. It is a full extra read of everything, so it
+          roughly doubles the time a job spends hashing. Only runs for jobs
+          copying from a drive — a job that only uploads to FreeFrame has no
+          local source left to re-read, and is skipped.
+        </div>
+        <label class="settings-toggle">
+          <input id="settings-finalized-enabled" type="checkbox" />
+          <span>Also run a finalized checksum after copy</span>
+        </label>
+        <select id="settings-finalized-checksum" class="settings-select"></select>
+      </div>
+
+      <div class="setting">
+        <div class="setting-label">About the algorithms</div>
+        <div id="algo-reference" class="algo-reference"></div>
       </div>
     </section>
 

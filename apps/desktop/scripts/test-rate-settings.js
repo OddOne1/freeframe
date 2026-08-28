@@ -11,7 +11,7 @@ const path = require("node:path");
 const { RateTracker, MIN_SPAN_MS, WINDOW_MS } = require(
   path.join(__dirname, "..", "src", "main", "rate.js"),
 );
-const { normalize, normalizeIdList, DEFAULTS } = require(
+const { normalize, normalizeIdList, DEFAULTS, finalizedAlgoFor } = require(
   path.join(__dirname, "..", "src", "main", "settings.js"),
 );
 
@@ -156,18 +156,40 @@ withClock(({ advance }) => {
 });
 
 console.log("6. Settings normalisation");
-check(normalize(null).defaultChecksumAlgo === DEFAULTS.defaultChecksumAlgo,
-  "no file means defaults, not an empty object");
-check(normalize({}).defaultChecksumAlgo === DEFAULTS.defaultChecksumAlgo,
-  "an empty object means defaults too");
-check(normalize({ defaultChecksumAlgo: "md5" }).defaultChecksumAlgo === "md5",
-  "a stored value is kept");
-check(normalize({ defaultChecksumAlgo: "  sha1  " }).defaultChecksumAlgo === "sha1",
-  "and trimmed");
-check(normalize({ defaultChecksumAlgo: "" }).defaultChecksumAlgo === DEFAULTS.defaultChecksumAlgo,
-  "a blank value falls back rather than leaving the picker with nothing");
-check(normalize({ defaultChecksumAlgo: 42 }).defaultChecksumAlgo === DEFAULTS.defaultChecksumAlgo,
-  "so does a non-string");
+// §86 renamed this to liveChecksumAlgo, and the OLD name has to keep
+// working: an existing settings.json has only the old key, which is
+// indistinguishable from "never configured" unless it is read as a
+// fallback. These are the same cases as before, under the new name.
+check(normalize(null).liveChecksumAlgo === DEFAULTS.liveChecksumAlgo,
+      "null settings fall back to the default algorithm");
+check(normalize({}).liveChecksumAlgo === DEFAULTS.liveChecksumAlgo,
+      "an empty object does too");
+check(normalize({ liveChecksumAlgo: "md5" }).liveChecksumAlgo === "md5",
+      "a stored algorithm survives");
+check(normalize({ liveChecksumAlgo: "  sha1  " }).liveChecksumAlgo === "sha1",
+      "…trimmed");
+check(normalize({ liveChecksumAlgo: "" }).liveChecksumAlgo === DEFAULTS.liveChecksumAlgo,
+      "an empty string is not an algorithm");
+check(normalize({ liveChecksumAlgo: 42 }).liveChecksumAlgo === DEFAULTS.liveChecksumAlgo,
+      "nor is a number");
+
+// The upgrade path itself.
+check(normalize({ defaultChecksumAlgo: "md5" }).liveChecksumAlgo === "md5",
+      "\u00a786: a settings.json written under the OLD key upgrades rather than resetting");
+check(normalize({ liveChecksumAlgo: "c4", defaultChecksumAlgo: "md5" }).liveChecksumAlgo === "c4",
+      "…and the new key wins when both are present");
+
+// The finalized tier.
+check(normalize({}).finalizedChecksumEnabled === false,
+      "the finalized pass is off unless asked for — it is a full second read");
+check(normalize({ finalizedChecksumEnabled: "yes" }).finalizedChecksumEnabled === false,
+      "…and only a real true turns it on, not anything truthy");
+check(finalizedAlgoFor(normalize({ liveChecksumAlgo: "md5" })) === "md5",
+      "an unset finalized algorithm follows live rather than a hardcoded default");
+check(finalizedAlgoFor(normalize({ liveChecksumAlgo: "md5", finalizedChecksumAlgo: "sha1" })) === "sha1",
+      "…and a chosen one is used");
+check(finalizedAlgoFor(normalize({ defaultChecksumAlgo: "c4" })) === "c4",
+      "…including through the old-key upgrade path");
 check(Object.keys(normalize({ junk: true })).length === Object.keys(DEFAULTS).length,
   "unknown keys are dropped rather than written back out");
 

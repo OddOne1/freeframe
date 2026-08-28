@@ -416,6 +416,9 @@ async function runCopyJob({
   // `allowFragileRename` is the user's explicit per-job acknowledgement.
   renamesFiles = false,
   allowFragileRename = false,
+  // §86 — the optional second pass. Null (the default, and what every
+  // existing caller and test produces) means it does not run at all.
+  finalizedAlgorithm = null,
 }) {
   const startedAt = Date.now();
 
@@ -713,6 +716,36 @@ async function runCopyJob({
     );
   }
 
+  // §86 — after every leg, before the summary is built.
+  //
+  // Gated on a real local sourcePath: a FreeFrame-upload-only job has no
+  // local file left to re-read once the upload finished, and a job reading
+  // FROM a project has no local source at all. Skipped rather than
+  // errored — the live verification already happened and stands.
+  let finalized = null;
+  if (finalizedAlgorithm && sourcePath && !source && !cancelled) {
+    finalized = await runFinalizedPass({
+      sourcePath,
+      nodes: [...state.values()],
+      algorithm: finalizedAlgorithm,
+      isCancelled,
+      onProgress,
+    });
+  } else if (finalizedAlgorithm) {
+    // Said out loud rather than left absent: "no finalized block" and "the
+    // finalized pass could not run here" are different facts, and only one
+    // of them means the user's setting did nothing.
+    finalized = {
+      algorithm: finalizedAlgorithm,
+      algorithmLabel: ALGORITHMS[finalizedAlgorithm]?.label || finalizedAlgorithm,
+      skipped: true,
+      reason: cancelled
+        ? "the job was cancelled"
+        : "this job has no local source to re-read (FreeFrame upload or project source)",
+      checked: 0, verified: 0, mismatches: [], errors: [], ok: false,
+    };
+  }
+
   const nodesOut = [...state.values()].map(publicNode);
   const allMismatches = nodesOut.flatMap((n) => n.mismatches);
   const allErrors = nodesOut.flatMap((n) => n.errors);
@@ -752,12 +785,88 @@ async function runCopyJob({
     // than omitted: a tool that silently drops files is indistinguishable
     // from one that loses them, and this is the record that says otherwise.
     filteredOut,
+    // §86 — its own block, never folded into the live numbers above. A
+    // reader has to be able to tell which tier verified what.
+    finalized,
     // Flattened per-file view across every node, for callers that want it.
     files: nodesOut.flatMap((n) => (n.files || []).map((f) => ({ ...f, nodeId: n.id, destRoot: n.path }))),
   };
 
   onProgress({ phase: "done", summary });
   return summary;
+}
+
+/**
+ * §86 — the optional finalized pass.
+ *
+ * The live check hashes the source as its bytes stream past during the
+ * copy, then re-reads each destination and compares. That leaves one gap
+ * it cannot close by construction: a transient read error during the copy
+ * would hash the corrupted bytes and then match them against a destination
+ * written from those same bytes — a clean result for a bad file. This pass
+ * closes it by reading the source AGAIN, from disk, afterwards.
+ *
+ * BE CLEAR ABOUT THE COST: this is a full second read of the source and of
+ * every destination, with no copying to overlap it. On a card offload,
+ * where hashing is already frequently the bottleneck, it roughly doubles
+ * the time spent hashing and doubles the reads against the drives. It is
+ * off by default for exactly that reason.
+ *
+ * The source is hashed ONCE per file and every node — root and cascaded
+ * alike — is compared against it. A cascaded leg's live check compares it
+ * against the destination it copied from, so checking it against the
+ * original card here is a stronger statement than repeating that: it says
+ * the bytes at the end of the chain are the bytes that came off the card.
+ */
+async function runFinalizedPass({ sourcePath, nodes, algorithm, isCancelled, onProgress }) {
+  const rels = [...new Set(nodes.flatMap((n) => (n.files || []).map((f) => f.file)))];
+  const results = { algorithm, algorithmLabel: ALGORITHMS[algorithm]?.label || algorithm,
+                    checked: 0, verified: 0, mismatches: [], errors: [], cancelled: false };
+
+  let done = 0;
+  for (const rel of rels) {
+    if (isCancelled()) { results.cancelled = true; break; }
+    let sourceHash = null;
+    try {
+      sourceHash = await hashFileOnDisk(path.join(sourcePath, rel), algorithm);
+    } catch (err) {
+      // The card being pulled between the copy and this pass is the
+      // obvious cause, and it is not a corrupted destination — reported as
+      // its own error rather than as N mismatches.
+      results.errors.push({ file: rel, stage: "source", error: String(err.message || err) });
+      continue;
+    }
+
+    for (const n of nodes) {
+      if (isCancelled()) { results.cancelled = true; break; }
+      const f = (n.files || []).find((x) => x.file === rel);
+      if (!f || !f.destPath) continue;
+      try {
+        const hash = await hashFileOnDisk(f.destPath, algorithm);
+        const bytes = (await fsp.stat(f.destPath)).size;
+        const ok = hash === sourceHash && bytes === f.bytes;
+        // A NEW field beside the live result, never merged into it: both
+        // have to survive, or the log cannot say which tier found what.
+        f.finalCheck = { algorithm, sourceHash, hash, bytes, ok };
+        results.checked += 1;
+        if (ok) results.verified += 1;
+        else results.mismatches.push({ file: rel, destRoot: n.path, destPath: f.destPath, sourceHash, destHash: hash });
+      } catch (err) {
+        f.finalCheck = { algorithm, sourceHash, hash: null, bytes: null, ok: false, error: String(err.message || err) };
+        results.checked += 1;
+        results.errors.push({ file: rel, destRoot: n.path, stage: "destination", error: String(err.message || err) });
+      }
+    }
+    done += 1;
+    // Unknown phases are ignored by the renderer today, so this costs
+    // nothing and means a long second pass is not silent when something
+    // does listen.
+    onProgress({ phase: "finalizing", file: rel, done, total: rels.length });
+  }
+
+  results.ok = !results.cancelled && results.errors.length === 0
+    && results.mismatches.length === 0 && results.checked > 0;
+  return results;
 }
 
 /** Strip internals before a node crosses the IPC boundary. */
@@ -771,6 +880,10 @@ function publicNode(n) {
     copiedBytes: n.copiedBytes,
     mismatches: n.mismatches,
     errors: n.errors,
+    // §86 — n.files entries may carry a finalCheck by the time this runs
+    // (the finalized pass writes onto them before the summary is built),
+    // so they are passed through whole rather than re-picked field by
+    // field, which is what would drop it.
     files: n.files || [],
     durationMs: n.startedAt && n.finishedAt ? n.finishedAt - n.startedAt : null,
   };
@@ -784,6 +897,7 @@ module.exports = {
   // VERIFIED/PRO tiers and the ASC MHL writer.
   listFilesRecursive,
   hashFileOnDisk,
+  runFinalizedPass,
   copyOneFileFanOut,
   // The default provider, and the shape main.js's FreeFrame one implements.
   localSource,

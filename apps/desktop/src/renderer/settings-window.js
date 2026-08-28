@@ -55,39 +55,86 @@ window.freeframe.onSettingsTab(showTab);
 // at start time.
 
 let algorithms = [];
-let algorithm = null;
+let algorithm = null;            // live
+let finalizedAlgorithm = null;   // finalized, when enabled
+let finalizedEnabled = false;
 let builtInAlgo = null;
 
-function renderAlgoList() {
-  const host = $("algo-list");
-  host.replaceChildren();
+/**
+ * §86 — one <select> per tier, plus the explanations once underneath.
+ *
+ * The old picker put a paragraph beside every option, because "xxh3 vs c4"
+ * is not a choice anyone makes from a name alone. With two tiers that would
+ * have printed the same four paragraphs twice, so the explanations moved
+ * out to a read-only block and these became plain dropdowns.
+ */
+function fillAlgoSelect(sel, selected) {
+  sel.replaceChildren();
   for (const a of algorithms) {
-    const top = el("div", { class: "algo-top" }, [
-      el("span", { class: "algo-name", text: a.label }),
-      a.recommended ? el("span", { class: "algo-tag", text: "Default" }) : null,
-    ]);
-    if (a.id === algorithm) {
-      const chk = el("span", { class: "algo-check" });
-      chk.appendChild(icon("check"));
-      top.appendChild(chk);
-    }
-    host.appendChild(el("button", {
-      class: a.id === algorithm ? "algo-opt selected" : "algo-opt",
-      // Saved immediately rather than on a Done button: this window has no
-      // Cancel, so a deferred save would only invite closing it and losing
-      // the change.
-      onClick: async () => {
-        algorithm = a.id;
-        renderAlgoList();
-        await window.freeframe.setSettings({ defaultChecksumAlgo: a.id });
-      },
-    }, [top, el("div", { class: "algo-blurb", text: a.blurb })]));
+    const opt = el("option", { text: a.recommended ? `${a.label} (default)` : a.label });
+    // el() sets value via the property, and an <option> needs it set before
+    // it is selected against.
+    opt.value = a.id;
+    sel.appendChild(opt);
   }
-  host.appendChild(el("div", {
-    class: "algo-guidance",
-    text: "xxHash for speed (default) · MD5/SHA-1 to match an existing pipeline · "
-        + "C4 when the checksum itself might need to prove something in a dispute.",
-  }));
+  sel.value = selected || "";
+}
+
+function renderAlgoList() {
+  const live = $("settings-live-checksum");
+  const fin = $("settings-finalized-checksum");
+  const toggle = $("settings-finalized-enabled");
+  if (!live || !fin || !toggle) return;
+
+  fillAlgoSelect(live, algorithm);
+  // Empty stored value means "follow live" (settings.js's finalizedAlgoFor),
+  // so the dropdown shows what would actually run rather than nothing.
+  fillAlgoSelect(fin, finalizedAlgorithm || algorithm);
+  toggle.checked = finalizedEnabled;
+  // Visible but inert while off: hiding it would make the toggle look like
+  // it does nothing, and the algorithm is what the toggle is about.
+  fin.disabled = !finalizedEnabled;
+
+  const ref = $("algo-reference");
+  if (ref) {
+    ref.replaceChildren();
+    for (const a of algorithms) {
+      ref.appendChild(el("div", { class: "algo-ref-row" }, [
+        el("div", { class: "algo-ref-name", text: a.recommended ? `${a.label} — default` : a.label }),
+        el("div", { class: "algo-ref-blurb", text: a.blurb }),
+      ]));
+    }
+    ref.appendChild(el("div", {
+      class: "algo-guidance",
+      text: "xxHash for speed (default) · MD5/SHA-1 to match an existing pipeline · "
+          + "C4 when the checksum itself might need to prove something in a dispute.",
+    }));
+  }
+}
+
+/** Saved immediately rather than on a Done button: this window has no
+ *  Cancel, so a deferred save would only invite closing it and losing the
+ *  change. */
+function wireChecksumControls() {
+  const live = $("settings-live-checksum");
+  const fin = $("settings-finalized-checksum");
+  const toggle = $("settings-finalized-enabled");
+  if (!live || !fin || !toggle) return;
+
+  live.addEventListener("change", async () => {
+    algorithm = live.value;
+    renderAlgoList();
+    await window.freeframe.setSettings({ liveChecksumAlgo: algorithm });
+  });
+  fin.addEventListener("change", async () => {
+    finalizedAlgorithm = fin.value;
+    await window.freeframe.setSettings({ finalizedChecksumAlgo: finalizedAlgorithm });
+  });
+  toggle.addEventListener("change", async () => {
+    finalizedEnabled = toggle.checked;
+    renderAlgoList();
+    await window.freeframe.setSettings({ finalizedChecksumEnabled: finalizedEnabled });
+  });
 }
 
 // ── Volumes: one list, orphans tagged in place ───────────────────────────
@@ -291,10 +338,16 @@ async function loadSettings() {
   hiddenProjectIds = s.hiddenProjectIds || [];
   // A stored id that no longer exists must not leave the list with nothing
   // selected — fall back to whatever main calls the default.
-  const known = algorithms.some((a) => a.id === s.defaultChecksumAlgo);
+  const known = algorithms.some((a) => a.id === s.liveChecksumAlgo);
   algorithm = known
-    ? s.defaultChecksumAlgo
+    ? s.liveChecksumAlgo
     : builtInAlgo || (algorithms[0] || {}).id || null;
+  // Same staleness guard for the finalized tier. Empty is legitimate here
+  // and means "follow live", so it is left empty rather than pinned.
+  finalizedAlgorithm = algorithms.some((a) => a.id === s.finalizedChecksumAlgo)
+    ? s.finalizedChecksumAlgo
+    : null;
+  finalizedEnabled = s.finalizedChecksumEnabled === true;
   renderAlgoList();
   renderHideList();
   // §72 — the Daily overview's day boundary. Saved on change like the
@@ -316,6 +369,11 @@ async function loadSettings() {
   await refreshBusy();
   renderAccount();
 
+  // Listeners before the first render, so a change made immediately after
+  // the pane appears is not dropped. Registering them once here rather than
+  // inside renderAlgoList(), which re-runs on every broadcast and would
+  // stack a new listener each time.
+  wireChecksumControls();
   await loadSettings();
   await loadProjectsForHideList();
   await window.PresetEditor.init({
@@ -345,8 +403,12 @@ window.freeframe.onVolumesChanged((v) => { volumes = v; renderHideList(); });
 window.freeframe.onSettingsChanged((s) => {
   hiddenVolumeNames = s.hiddenVolumeNames || [];
   hiddenProjectIds = s.hiddenProjectIds || [];
-  const known = algorithms.some((a) => a.id === s.defaultChecksumAlgo);
-  if (known) algorithm = s.defaultChecksumAlgo;
+  const known = algorithms.some((a) => a.id === s.liveChecksumAlgo);
+  if (known) algorithm = s.liveChecksumAlgo;
+  finalizedAlgorithm = algorithms.some((a) => a.id === s.finalizedChecksumAlgo)
+    ? s.finalizedChecksumAlgo
+    : null;
+  finalizedEnabled = s.finalizedChecksumEnabled === true;
   renderAlgoList();
   renderHideList();
 });

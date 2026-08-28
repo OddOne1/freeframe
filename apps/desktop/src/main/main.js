@@ -115,6 +115,7 @@ function buildJobLog(job) {
     }
   }
 
+  const fin = (job.summary && job.summary.finalized) || null;
   const failed = files.filter((f) => !f.verified);
   // A card is only safe to wipe if EVERY destination verified. Stated as a
   // sentence as well as a boolean, because the sentence is the reason
@@ -128,7 +129,12 @@ function buildJobLog(job) {
   const allVerified = nodes.length > 0
     && job.status === "done"
     && nodes.every((n) => n.status === "verified")
-    && failed.length === 0;
+    && failed.length === 0
+    // §86 — a finalized pass that ran and found a mismatch is the STRONGER
+    // signal, so it has to be able to veto. It reads the source again from
+    // disk; the live check could not tell a corrupted read from a good one
+    // because both ends came from the same read. Not running is not a veto.
+    && !(fin && !fin.skipped && !fin.ok);
 
   return {
     freeframeTransferLog: 2,
@@ -144,6 +150,17 @@ function buildJobLog(job) {
         : "NOT every file verified — do not wipe the card. See notVerified below.",
       fileCount: files.length,
       renamedCount: files.filter((f) => f.renamed).length,
+      // §86 — its own labelled line, never folded into the live numbers.
+      // "42/42 verified" means nothing unless you can tell which pass and
+      // which algorithm produced it.
+      finalizedChecksum: fin
+        ? (fin.skipped
+            ? `Not run — ${fin.reason}.`
+            : `${fin.algorithmLabel}: ${fin.verified}/${fin.checked} verified`
+              + (fin.mismatches.length ? `, ${fin.mismatches.length} MISMATCHED` : "")
+              + (fin.errors.length ? `, ${fin.errors.length} error(s)` : "")
+              + (fin.cancelled ? " (cancelled part-way)" : ""))
+        : "Off",
       // Listed first and separately, so a problem is not something you have
       // to notice by scanning a long list of successes.
       notVerified: failed.map((f) => ({ destination: f.destination, from: f.from, to: f.to })),
@@ -1054,6 +1071,16 @@ ipcMain.handle("copy:start", async (event, payload) => {
   // surface as a mid-copy throw after files had already been written.
   const algorithm = isSupported(payload?.algorithm) ? payload.algorithm : DEFAULT_ALGORITHM;
 
+  // §86 — read at job start and captured for this job, the same way the
+  // live algorithm is. Changing the setting mid-copy must not retune a
+  // job already running.
+  const jobSettings = await settings.readSettings();
+  const finalizedAlgorithm = jobSettings.finalizedChecksumEnabled
+    ? (isSupported(settings.finalizedAlgoFor(jobSettings))
+        ? settings.finalizedAlgoFor(jobSettings)
+        : DEFAULT_ALGORITHM)
+    : null;
+
   // ── Naming template (§10 / §18b) ──
   //
   // Validated HERE, before a single byte moves. The renderer blocks the
@@ -1180,6 +1207,7 @@ ipcMain.handle("copy:start", async (event, payload) => {
         filters,
         renamesFiles,
         allowFragileRename,
+        finalizedAlgorithm,
         isCancelled: () => cancelled,
         onProgress: (p) => {
           // Enriched with speed/ETA (§58) before it goes anywhere, so both
