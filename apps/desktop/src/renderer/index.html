@@ -2519,6 +2519,18 @@
       // folder…" above rather than cleared to empty — the user's explicit
       // ask, and it removes the state where the Destinations column is
       // empty because someone reached for Remove meaning "change this".
+      //
+      // §85 — DELIBERATELY UNGATED, and it has been wrongly guarded with
+      // isBusy() twice before. Do not add a third.
+      //
+      // A running job is independent of what Source/Destination currently
+      // shows: this is the menu equivalent of dragging the card out, and it
+      // is how sequential jobs are queued — assign, Start, immediately
+      // reassign to the next card, Start again, while the first keeps
+      // copying underneath. Clearing the tile of a running job is the
+      // intended outcome, not a mistake to prevent. Eject above is a
+      // different concern (do not physically unmount mid-transfer) and
+      // stays gated.
       if (role === "source") {
         menu.appendChild(el("div", { class: "sep" }));
         add("Remove", () => {
@@ -2948,12 +2960,37 @@
         if (p.node.status === "verified") nodeStatus.get(p.node.id).percent = 100;
         render();
       } else if (p.phase === "bytes") {
-        // Per-node bars: every node in this leg shares the leg's progress.
+        // §85 — the ONE branch that must not call render().
+        //
+        // "bytes" fires many times a second for the whole length of a copy,
+        // and render() does zoneVolumes.replaceChildren() — tearing down and
+        // rebuilding every tile, every kebab and every eject button. A click
+        // spans mousedown → render → click, so by the time `click` fired the
+        // button it started on no longer existed: the context menu simply
+        // did nothing, drag lost the element under the pointer, and the
+        // column flashed, for the entire duration of every job.
+        //
+        // Nothing else on screen changes on a byte tick. Status, busy-state
+        // and the source-released hint all arrive on their own events, and
+        // free-space figures do not move per tick — so writing the width
+        // straight onto the existing bar is the complete update, not a
+        // partial one.
+        let missing = false;
         for (const id of p.nodeIds || []) {
           const prev = nodeStatus.get(id) || {};
           nodeStatus.set(id, { ...prev, percent: p.percent });
+          // querySelectorAll, not querySelector: a node id appearing twice
+          // would otherwise leave the second bar frozen while the first
+          // moved, which reads as a stalled destination.
+          const bars = document.querySelectorAll(`[data-dest-id="${id}"] .node-bar > div`);
+          if (!bars.length) { missing = true; continue; }
+          for (const bar of bars) bar.style.width = `${p.percent != null ? p.percent : 0}%`;
         }
-        render();
+        // A tile that should have a bar and doesn't means the DOM and
+        // nodeStatus have diverged — correctness over speed in the rare
+        // case, speed in the overwhelmingly common one. Once per tick, not
+        // once per missing id.
+        if (missing) render();
       } else if (p.phase === "source-released") {
         // The actual payoff of cascading: the card is free before the whole
         // chain finishes. Surfaced on the Source tile itself (see render),
