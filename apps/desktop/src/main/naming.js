@@ -318,7 +318,7 @@ function renderTemplate(template, values, ctx = {}) {
  * template. Flattening a card's DCIM tree into one directory would be a
  * different feature, and a lossy one.
  */
-function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, sourceLabel = "", now = new Date(), flatten = false, sourceCounter = 1 } = {}) {
+function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, sourceLabel = "", now = new Date(), flatten = false, sourceCounter = 1, autoSuffixSource = "counter", autoSuffixPosition = "end" } = {}) {
   const folder = String(folderTemplate || "").trim();
   const file = String(fileTemplate || "").trim();
   // `flatten` alone is reason enough to build a mapper: it changes where
@@ -349,6 +349,20 @@ function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, s
    * exactly the case this net exists to catch — while switching the net
    * off. {counter} is the only token that varies per file, so it is the
    * only one that can stand in for the suffix.
+   *
+   * WHAT the suffix is, and WHERE it goes, are per-preset (§77):
+   * `counter` is a zero-padded per-file number, `filename` is the source
+   * file's own stem — which is what OffShoot writes, and what keeps a
+   * camera's original clip name recoverable from the new one. `end` or
+   * `front` places it. Both default to the pre-§77 behaviour
+   * (counter/end), because the alternative is existing presets quietly
+   * renaming files differently after an update.
+   *
+   * Note the two sources differ in more than appearance: `counter`
+   * guarantees uniqueness by construction, while `filename` inherits it
+   * from the source tree. Two files with the same stem in different
+   * directories, flattened into one, still collide — which is why the
+   * NAMING_COLLISION check below stays as the backstop.
    */
   const autoCounter = Boolean(file)
     && !tokensIn(file).some((t) => t === "counter");
@@ -425,7 +439,14 @@ function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, s
     // is what the user wrote, and a suffix on the rendered name is the
     // smallest thing that makes it unique. An empty render is left alone —
     // mapRel falls back to the original basename in that case.
-    if (autoCounter && out) out += `_${pad(ctx.index, 4)}`;
+    if (autoCounter && out) {
+      const suffixValue = autoSuffixSource === "filename"
+        ? path.basename(rel, path.extname(rel))
+        : pad(ctx.index, 4);
+      out = autoSuffixPosition === "front"
+        ? `${suffixValue}_${out}`
+        : `${out}_${suffixValue}`;
+    }
     renderedBase.set(rel, out);
     return out;
   }

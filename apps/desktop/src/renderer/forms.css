@@ -110,3 +110,24 @@
   color: var(--text-primary); flex: 1; min-width: 0; box-sizing: border-box;
 }
 
+/* §77 — the auto-suffix rule, under the file-name pattern. Two closed
+   two-option choices, so a segmented pair rather than dropdowns: the whole
+   set is visible without opening anything, and which one is active reads at
+   a glance. */
+.pe-autosuffix { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.pe-seg { display: flex; gap: 6px; flex-wrap: wrap; }
+.pe-seg button {
+  flex: 1; min-width: 0; height: 28px; padding: 0 10px;
+  border-radius: 6px; font-size: 11px; font-family: inherit; cursor: pointer;
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  color: var(--text-secondary); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.pe-seg button:hover { background: var(--bg-hover); color: var(--text-primary); }
+/* Selection is carried by the border, matching how §62's preset pill shows
+   its own on-state, rather than by a fill this window uses for nothing
+   else. */
+.pe-seg button.on {
+  border-color: var(--accent); color: var(--text-primary);
+  background: var(--bg-hover);
+}

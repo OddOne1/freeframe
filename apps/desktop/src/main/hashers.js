@@ -73,6 +73,28 @@ function nodeHasher(algorithm, encode) {
  * tradeoffs are easy to get subtly wrong, and they were deliberately
  * worded once already.
  */
+/**
+ * §79 — `blurb` is one short sentence each. It is read in a dropdown while
+ * someone is trying to start a copy, not studied, and four paragraphs there
+ * meant nobody read any of them.
+ *
+ * The longer tradeoffs, kept here rather than lost with the old text:
+ *
+ *   xxhash64  Often 5-10x faster than the rest, which on a multi-hundred-GB
+ *             offload is frequently the real bottleneck. Explicitly not
+ *             designed to resist deliberate tampering.
+ *   md5       128-bit, fastest of the cryptographic options, and
+ *             cryptographically broken — collisions can be engineered on
+ *             purpose, so it proves nothing against intent. Still fine for
+ *             accidental corruption and bit-rot.
+ *   sha1      160-bit, slower than MD5, also broken (demonstrated attacks,
+ *             not theoretical). Common as a legacy default in broadcast
+ *             pipelines; no real edge over MD5 or xxHash for corruption.
+ *   c4        SHA-512 underneath (2^256 collision resistance), strong
+ *             against deliberate tampering. A permanent self-describing
+ *             90-character identifier rather than a short hex string, so it
+ *             is harder to eyeball or transcribe. Slower than xxHash.
+ */
 const ALGORITHMS = {
   xxhash64: {
     id: "xxhash64",
@@ -80,7 +102,7 @@ const ALGORITHMS = {
     short: "xxHash64",
     mhlName: "xxh64",
     blurb:
-      "Not cryptographic, and explicitly not designed to resist deliberate tampering. Dramatically faster than MD5/SHA-1/C4 (often 5–10×+), which matters a great deal on multi-hundred-GB card offloads where hash time is frequently the real bottleneck. The right default when the only threat model is “did the copy succeed correctly.”",
+      "Much faster than the rest and not cryptographic — the right default when the question is just “did the copy succeed.”",
     recommended: true,
   },
   md5: {
@@ -89,7 +111,7 @@ const ALGORITHMS = {
     short: "MD5",
     mhlName: "md5",
     blurb:
-      "Fastest of the cryptographic options, 128-bit. Cryptographically broken: someone can deliberately engineer a collision, so it proves nothing against intentional tampering. Fine, and extremely common, for catching accidental corruption/bit-rot. Pick it mainly for compatibility with someone else's existing MD5-based workflow.",
+      "Fast and cryptographically broken, but fine for accidental corruption — pick it to match an existing MD5 workflow.",
   },
   sha1: {
     id: "sha1",
@@ -97,7 +119,7 @@ const ALGORITHMS = {
     short: "SHA-1",
     mhlName: "sha1",
     blurb:
-      "Slower than MD5, 160-bit. Also cryptographically broken for deliberate-collision resistance (real attacks demonstrated, not theoretical). Still common in production/broadcast pipelines as a legacy default. The reason to pick it is compatibility with an existing pipeline that already standardized on it, not a real technical edge over MD5 or xxHash for corruption detection.",
+      "Slower than MD5 and also broken — a legacy compatibility pick, with no technical edge over the others.",
   },
   c4: {
     id: "c4",
@@ -105,7 +127,7 @@ const ALGORITHMS = {
     short: "C4",
     mhlName: "c4",
     blurb:
-      "Built on SHA-512 (2^256 collision resistance), cryptographically strong against deliberate tampering, not just accidental corruption. Designed as a permanent, self-describing identifier (90-character encoded form) rather than a short hex string, so it's less convenient to eyeball or manually transcribe. Slower than xxHash. Best fit when the offload needs to hold up as evidence later — legal disputes, insurance claims, disputed authorship.",
+      "Cryptographically strong, with a long self-describing ID — for when the offload may need to hold up as evidence.",
   },
 };
 

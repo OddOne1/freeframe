@@ -82,8 +82,15 @@ contextBridge.exposeInMainWorld("freeframe", {
   onPresetsChanged: (cb) => ipcRenderer.on("presets:changed", () => cb()),
   /** `disabled` (§22g) is the list of field keys switched off for this
    *  transfer, so the preview shows the name the job will actually make. */
-  previewNaming: (folderTemplate, fileTemplate, values, sourceLabel, disabled) =>
-    ipcRenderer.invoke("presets:preview", { folderTemplate, fileTemplate, values, sourceLabel, disabled }),
+  previewNaming: (folderTemplate, fileTemplate, values, sourceLabel, disabled, opts) =>
+    ipcRenderer.invoke("presets:preview", {
+      folderTemplate, fileTemplate, values, sourceLabel, disabled,
+      // §77/§78 — an object rather than two more positional arguments: a
+      // seven-argument call is where the wrong value silently lands in the
+      // wrong slot. Both are optional; main defaults each on its own.
+      autoSuffix: opts?.autoSuffix,
+      dateOverride: opts?.dateOverride,
+    }),
 
   /** §22h — {sourcecounter}. bump() claims the current number and advances
    *  the stored one; set() is the editable field in the presets window. */

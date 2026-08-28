@@ -306,5 +306,61 @@ console.log("\n10. Disabling a field removes its token AND a separator (§22g)")
     "20260813", "a retained value cannot leak back in through the template");
 }
 
+// ── §77: the auto-suffix is a per-preset choice ─────────────────────────
+{
+  const T = "{operator}";
+  const values = { operator: "M" };
+  const rels = ["DCIM/P1012257.MOV", "DCIM/P1012258.MOV"];
+  const mk = (autoSuffixSource, autoSuffixPosition) =>
+    buildRelMapper({ fileTemplate: T, values, now: NOW, autoSuffixSource, autoSuffixPosition });
+
+  // The pre-§77 behaviour, which is also what every axis falls back to.
+  const cEnd = mk("counter", "end");
+  eq(mapOr(cEnd, rels[0]), "DCIM/M_0001.MOV", "counter/end numbers at the end");
+  eq(mapOr(cEnd, rels[1]), "DCIM/M_0002.MOV", "\u2026and increments");
+
+  // OffShoot's own shape: template + _ + the source stem + real extension.
+  const fEnd = mk("filename", "end");
+  eq(mapOr(fEnd, rels[0]), "DCIM/M_P1012257.MOV", "filename/end keeps the camera's clip name");
+  eq(mapOr(fEnd, rels[1]), "DCIM/M_P1012258.MOV", "\u2026per file, not per job");
+
+  const fFront = mk("filename", "front");
+  eq(mapOr(fFront, rels[0]), "DCIM/P1012257_M.MOV", "filename/front puts the stem first");
+
+  const cFront = mk("counter", "front");
+  eq(mapOr(cFront, rels[0]), "DCIM/0001_M.MOV", "counter/front puts the number first");
+  eq(mapOr(cFront, rels[1]), "DCIM/0002_M.MOV", "\u2026and still increments");
+
+  // Omitting both params entirely is what every existing call site did.
+  const legacy = buildRelMapper({ fileTemplate: T, values, now: NOW });
+  eq(mapOr(legacy, rels[0]), "DCIM/M_0001.MOV",
+     "omitting both params is counter/end \u2014 a preset saved before \u00a777 is unchanged");
+
+  // The net is off when the pattern numbers itself, whatever these say.
+  const numbered = buildRelMapper({ fileTemplate: "{operator}_{counter}", values, now: NOW,
+                                    autoSuffixSource: "filename", autoSuffixPosition: "front" });
+  check(numbered.autoCounter === false, "a self-numbering pattern still exempts itself (\u00a774)");
+  eq(mapOr(numbered, rels[0]), "DCIM/M_0001.MOV", "\u2026and neither axis touches it");
+
+  // The stem is everything before the REAL extension \u2014 a name with dots
+  // in it must not be cut short on the way in.
+  const dotted = buildRelMapper({ fileTemplate: T, values, now: NOW,
+                                  autoSuffixSource: "filename", autoSuffixPosition: "end" });
+  eq(mapOr(dotted, "DCIM/A.001.CLIP.MOV"), "DCIM/M_A.001.CLIP.MOV",
+     "a stem with dots keeps all of it, and only the real extension is re-added");
+}
+
+// ── §78: the date tokens render from `now` ──────────────────────────────
+{
+  // A LOCAL date, which is what the renderer's date input produces.
+  const m = buildRelMapper({ fileTemplate: "{YYYY}{MM}{DD}_{hh}{mm}", values: {},
+                             now: new Date(2025, 0, 2, 3, 4) });
+  eq(mapOr(m, "a/CLIP.MOV"), "a/20250102_0304_0001.MOV",
+     "an overridden date renders instead of the live clock");
+  // A second, different value \u2014 so this cannot pass by echoing one input.
+  const live = buildRelMapper({ fileTemplate: "{YYYY}", values: {}, now: new Date(2030, 5, 1) });
+  eq(mapOr(live, "a/CLIP.MOV"), "a/2030_0001.MOV", "and a different one renders differently");
+}
+
 console.log(`\n${fail === 0 ? "ALL PASS" : fail + " FAILED"}`);
 process.exit(fail === 0 ? 0 : 1);

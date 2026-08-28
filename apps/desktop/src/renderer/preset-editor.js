@@ -174,6 +174,9 @@ window.PresetEditor = (function () {
     const res = await window.freeframe.previewNaming(
       editingPreset.folderTemplate, editingPreset.fileTemplate, sample,
       sampleSource,
+      undefined,
+      // §77 — preview the rule being edited, not the default.
+      { autoSuffix: editingPreset.autoSuffix || null },
     );
     // Asked as the pattern is typed, not only at save: a refusal that
     // arrives when you press Save is a refusal about something you wrote
@@ -205,22 +208,118 @@ window.PresetEditor = (function () {
         fi.textContent = "Original file names are kept.";
         return;
       }
-      // §65.9 — the auto-appended counter is text the user did not write,
+      // §65.9 — the auto-appended suffix is text the user did not write,
       // so it is marked rather than blended in. Amber is this app's own
       // warning colour (--status-warning), used here as the standing
       // treatment for anything inferred or auto-corrected in a preview.
-      const auto = res.autoCounter ? String(res.file).match(/_(\d{4})(\.[^.]*)?$/) : null;
-      if (auto) {
-        const cut = res.file.length - auto[0].length;
-        fi.appendChild(document.createTextNode(res.file.slice(0, cut)));
-        fi.appendChild(el("span", { class: "auto-fix", text: `_${auto[1]}`,
-          title: "Added automatically: the pattern numbers nothing, so files would otherwise collide" }));
-        if (auto[2]) fi.appendChild(document.createTextNode(auto[2]));
-      } else {
-        fi.textContent = res.file;
-      }
+      //
+      // §77 — main reports what it added and where. This used to hunt for
+      // four digits at the end with a regex, which stops matching as soon
+      // as the suffix is a filename or sits at the front: the marking would
+      // vanish and auto-inserted text would read as the user's own.
+      const marked = markAutoSuffix(res);
+      if (marked) fi.replaceChildren(...marked);
+      else fi.textContent = res.file;
     }
   }
+  /**
+   * §77 — what the safety net appends when the file pattern numbers
+   * nothing, and which end it goes on.
+   *
+   * Two closed choices rather than free text: the engine understands
+   * exactly these values, and a typo in a text field would silently fall
+   * back to the default while looking configured.
+   *
+   * `counter` guarantees uniqueness by construction. `filename` is what
+   * OffShoot writes — it keeps the camera's own clip name recoverable from
+   * the new one, at the cost of inheriting uniqueness from the source tree
+   * rather than guaranteeing it. Both defaults match the pre-§77 behaviour,
+   * so opening and saving an old preset changes nothing.
+   */
+  function renderAutoSuffix() {
+    const box = el("div", { class: "pe-autosuffix" });
+    box.appendChild(el("div", { class: "token-help",
+      text: "When the pattern numbers nothing, add:" }));
+
+    const current = () => {
+      const a = editingPreset.autoSuffix || {};
+      return {
+        source: a.source === "filename" ? "filename" : "counter",
+        position: a.position === "front" ? "front" : "end",
+      };
+    };
+    const set = (patch) => {
+      editingPreset.autoSuffix = { ...current(), ...patch };
+      renderPresetPane();
+      refreshPresetPreview();
+    };
+
+    // Segmented, matching how the rest of this window offers a small closed
+    // set rather than introducing a third control style for two options.
+    const group = (axis, options) => {
+      const row = el("div", { class: "pe-seg" });
+      for (const [value, label, title] of options) {
+        const b = el("button", {
+          class: current()[axis] === value ? "on" : "",
+          text: label, title,
+          onClick: () => set({ [axis]: value }),
+        });
+        row.appendChild(b);
+      }
+      return row;
+    };
+
+    box.appendChild(group("source", [
+      ["counter", "Counter", "A zero-padded number, unique within the job"],
+      ["filename", "Original file name", "The source file's own name, so the camera's clip name stays recoverable"],
+    ]));
+    box.appendChild(group("position", [
+      ["end", "At the end", "Appended after the pattern"],
+      ["front", "At the front", "Prepended before the pattern"],
+    ]));
+    return box;
+  }
+
+  /**
+   * Split the previewed file name around the suffix main says it added, so
+   * that part can be marked. Returns null when there is nothing to mark.
+   *
+   * Located by position rather than by pattern: `front` means the name
+   * starts with `${value}_`, `end` means the stem ends with `_${value}`.
+   * Both are checked against what main reported rather than guessed, so a
+   * user value that merely looks like a counter is never mistaken for one.
+   */
+  function markAutoSuffix(res) {
+    const info = res.autoCounter && res.autoSuffix;
+    if (!info || !info.value) return null;
+    const name = String(res.file);
+    const title = info.source === "filename"
+      ? "Added automatically: the pattern numbers nothing, so the original file name keeps each one distinct"
+      : "Added automatically: the pattern numbers nothing, so files would otherwise collide";
+
+    if (info.position === "front") {
+      const lead = `${info.value}_`;
+      if (!name.startsWith(lead)) return null;
+      return [
+        el("span", { class: "auto-fix", text: lead, title }),
+        document.createTextNode(name.slice(lead.length)),
+      ];
+    }
+    // End: the suffix sits on the stem, before the extension the mapper
+    // re-adds afterwards.
+    const dot = name.lastIndexOf(".");
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : "";
+    const tail = `_${info.value}`;
+    if (!stem.endsWith(tail)) return null;
+    const out = [
+      document.createTextNode(stem.slice(0, stem.length - tail.length)),
+      el("span", { class: "auto-fix", text: tail, title }),
+    ];
+    if (ext) out.push(document.createTextNode(ext));
+    return out;
+  }
+
   /**
    * The option list for one Choice field (§65.1).
    *
@@ -463,6 +562,11 @@ window.PresetEditor = (function () {
         id: key === "fileTemplate" ? "tpl-preview-file" : "tpl-preview-folder",
         class: "tpl-preview",
       }));
+
+      // §77 — directly under the file-name field, because that is the only
+      // pattern this affects and it explains the amber text in the preview
+      // immediately above it.
+      if (key === "fileTemplate") patternBox.appendChild(renderAutoSuffix());
     }
 
     host.appendChild(patternBox);

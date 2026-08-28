@@ -520,18 +520,42 @@ ipcMain.handle("presets:set-source-counter", async (_e, { value } = {}) => {
  * lookalike — a preview that agrees with a separate implementation is
  * worse than no preview, because it builds confidence in the wrong thing.
  */
-ipcMain.handle("presets:preview", async (_e, { folderTemplate, fileTemplate, values, sourceLabel, disabled } = {}) => {
+/**
+ * §78 — the date a job renders its date tokens from.
+ *
+ * The renderer is the untrusted side of this boundary (see the note at the
+ * real job's own call), and this ends up in folder names on someone's
+ * drive. Anything unparseable falls back to the live clock rather than
+ * throwing: a job refusing to start because a date field held junk would be
+ * a worse failure than simply using today, which is what every job did
+ * before this existed.
+ */
+function resolveNow(raw) {
+  if (raw == null || raw === "") return new Date();
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? new Date() : d;
+}
+
+ipcMain.handle("presets:preview", async (_e, { folderTemplate, fileTemplate, values, sourceLabel, disabled, autoSuffix, dateOverride } = {}) => {
   try {
     // §22g — the preview has to show what a disabled field actually does
     // to the name, or the panel would promise something the job won't do.
     const off = Array.isArray(disabled) ? disabled : [];
     const folderTpl = omitTokens(folderTemplate, off);
     const fileTpl = omitTokens(fileTemplate, off);
+    // §77/§78 — the preview runs the same mapper the job will, with the
+    // same suffix rule and the same clock. A preview that agrees with a
+    // different configuration than the job is the failure this handler's
+    // own header warns about, just one level further in.
+    const suffix = presets.normalizeAutoSuffix(autoSuffix);
     const mapper = buildRelMapper({
       folderTemplate: folderTpl,
       fileTemplate: fileTpl,
       values: values || {},
       sourceLabel: sourceLabel || "/Volumes/A001",
+      autoSuffixSource: suffix.source,
+      autoSuffixPosition: suffix.position,
+      now: resolveNow(dateOverride),
     });
     const sample = "DCIM/100MEDIA/CLIP0001.MOV";
     const result = mapper ? mapper(sample) : sample;
@@ -564,6 +588,18 @@ ipcMain.handle("presets:preview", async (_e, { folderTemplate, fileTemplate, val
       // Whether the file name carries a suffix the user did not write
       // (§65.5/.9), so the preview can mark it rather than let it surprise.
       autoCounter: Boolean(mapper && mapper.autoCounter),
+      // §77 — WHAT that suffix is and WHERE it sits, reported rather than
+      // left for the renderer to find with a regex. It used to look for
+      // four digits at the end, which stops matching the moment the suffix
+      // is a filename or moves to the front: the amber marking would
+      // silently disappear and auto-inserted text would blend in as though
+      // the user had written it.
+      autoSuffix: mapper && mapper.autoCounter
+        ? { source: suffix.source, position: suffix.position,
+            value: suffix.source === "filename"
+              ? path.basename(sample, path.extname(sample))
+              : "0001" }
+        : null,
     };
   } catch (err) {
     return { ok: false, error: String(err.message || err) };
@@ -992,6 +1028,7 @@ ipcMain.handle("copy:start", async (event, payload) => {
     // the counter or advance it without renaming.
     renamesFiles = rendersNewFileNames(naming.fileTemplate, disabled);
 
+    const jobSuffix = presets.normalizeAutoSuffix(naming.autoSuffix);
     mapRel = buildRelMapper({
       folderTemplate,
       fileTemplate,
@@ -1001,6 +1038,13 @@ ipcMain.handle("copy:start", async (event, payload) => {
       // Clamped rather than trusted: the renderer holds the number claimed
       // when this source was assigned, and it ends up in a folder name.
       sourceCounter: presets.normalizeCounter(naming.sourceCounter),
+      // §77 — re-normalized here for the same reason every other field on
+      // this payload is: the renderer sent it, and it decides what every
+      // file in this job is called.
+      autoSuffixSource: jobSuffix.source,
+      autoSuffixPosition: jobSuffix.position,
+      // §78 — a manually-set date, or the live clock.
+      now: resolveNow(naming.dateOverride),
     });
     // §65 — nothing is remembered from a job's values any more. The
     // Suggesting field type that consumed this history is gone.

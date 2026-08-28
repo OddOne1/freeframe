@@ -109,8 +109,27 @@ function normalizePreset(p) {
     // spec that asks for nothing, so a half-filled form can't quietly
     // become an active filter either.
     filters: normalizeFilters(p?.filters),
+    // §77 — counter/end for anything missing, so nothing already saved
+    // starts naming files differently the first time this ships.
+    autoSuffix: normalizeAutoSuffix(p?.autoSuffix),
     updatedAt: p?.updatedAt || new Date().toISOString(),
   };
+}
+
+/**
+ * The auto-suffix rule (§77) — what the safety net appends when a file
+ * pattern numbers nothing, and where.
+ *
+ * `counter`/`end` is what every preset did before this existed, and is the
+ * fallback on each axis independently: a preset saved before this shipped
+ * has no `autoSuffix` at all, and a half-written one must not silently
+ * change how existing files are named. Each axis falls back on its own, so
+ * a valid `position` still applies even if `source` is garbage.
+ */
+function normalizeAutoSuffix(value) {
+  const source = value?.source === "filename" ? "filename" : "counter";
+  const position = value?.position === "front" ? "front" : "end";
+  return { source, position };
 }
 
 /** The source counter (§22h) — a whole number, at least 1. */
@@ -208,5 +227,6 @@ module.exports = {
   remove,
   normalizeKey,
   normalizePreset,
+  normalizeAutoSuffix,
   presetsFile,
 };

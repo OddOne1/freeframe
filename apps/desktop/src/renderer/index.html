@@ -257,6 +257,19 @@
       background: var(--bg-secondary); border: 1px solid var(--border);
       color: var(--text-primary);
     }
+    /* §78 — same footer family as .fv-counter above; only the control
+       widths differ, since a date needs more room than a card number. */
+    .fv-date { border-top: none; padding-top: 0; margin-top: 6px; }
+    .fv-date input { width: 130px; }
+    .fv-date button {
+      height: 26px; padding: 0 10px; border-radius: 6px;
+      font-size: 12px; font-family: inherit; cursor: pointer;
+      background: var(--bg-secondary); border: 1px solid var(--border);
+      color: var(--text-primary);
+    }
+    .fv-date button:hover { background: var(--bg-hover); }
+    .fv-date button:disabled { opacity: .38; cursor: default; }
+    .fv-date button:disabled:hover { background: var(--bg-secondary); }
     .fv-clear-row { display: flex; justify-content: flex-end; margin-top: 8px; }
 
     .columns { flex: 1; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,3fr) minmax(0,1fr); gap: 1px; background: var(--border); min-height: 0; }
@@ -1558,6 +1571,14 @@
      * call order (§64 hit exactly that with `currentPage`).
      */
     let claimedForPath = null;
+
+    /**
+     * §78 — the date every date token renders from, or null for the live
+     * clock. Session-only, deliberately: unlike {sourcecounter} this is not
+     * a per-card fact worth remembering, and a stale override silently
+     * surviving a relaunch would misdate a whole day's cards.
+     */
+    let dateOverride = null;
 
     const FILESET = "fileset://selected";
     const isFileSet = (p) => p === FILESET;
@@ -3160,9 +3181,31 @@
      */
     const valuesBySource = new Map();   // path -> { values: {}, disabled: Set }
 
+    /**
+     * §80 — which card was looked at last, so a brand-NEW one can start
+     * from its values instead of blank. A shoot runs one or two operators
+     * and mostly one content type; retyping them per card is friction, and
+     * a panel that reappears empty every time reads as broken rather than
+     * fresh.
+     */
+    let lastActiveKey = null;
+
     function valuesEntry(path = sourcePath) {
       const key = path || "__none__";
-      if (!valuesBySource.has(key)) valuesBySource.set(key, { values: {}, disabled: new Set() });
+      if (!valuesBySource.has(key)) {
+        // A COPY, never the same object. An earlier syncPresetValues() let
+        // one card's edits leak into another through a shared reference —
+        // see the warning below — and seeding is exactly the shape that
+        // reintroduces it. `disabled` is deliberately NOT carried over: it
+        // says "this card doesn't use that field", which is a fact about
+        // the card in front of you, not a habit.
+        const seed = key !== "__none__" && lastActiveKey && valuesBySource.has(lastActiveKey)
+          ? { ...valuesBySource.get(lastActiveKey).values }
+          : {};
+        valuesBySource.set(key, { values: seed, disabled: new Set() });
+      }
+      // AFTER the seed decision, or a new card would seed from itself.
+      if (key !== "__none__") lastActiveKey = key;
       return valuesBySource.get(key);
     }
 
@@ -3317,6 +3360,9 @@
       const res = await window.freeframe.previewNaming(
         preset.folderTemplate, preset.fileTemplate, presetValues,
         sourcePath && !isProject(sourcePath) ? sourcePath : "",
+        undefined,
+        { autoSuffix: preset.autoSuffix || null,
+          dateOverride: dateOverride ? dateOverride.toISOString() : null },
       );
       renderScopedPreview(out, res);
     }
@@ -3371,6 +3417,13 @@
         // tokens from the templates rather than substituting empty
         // strings, which would leave the separator behind.
         disabledFields: disabledFields(),
+        // §77. Whether the auto-suffix is a counter or the source's own
+        // filename, and which end it goes on. Main re-normalizes it.
+        autoSuffix: preset.autoSuffix || null,
+        // §78. A manually-set date, or null for the live clock. Serialized,
+        // because a Date does not survive the structured clone across IPC
+        // as anything main can rely on.
+        dateOverride: dateOverride ? dateOverride.toISOString() : null,
       };
     }
 
@@ -3577,6 +3630,7 @@
 
       host.appendChild(el("div", { id: "fields-preview", class: "fv-preview" }));
       host.appendChild(renderCardNumber());
+      host.appendChild(renderCardDate());
       host.appendChild(renderCardClear());
       updateFieldsPreview();
     }
@@ -3621,6 +3675,59 @@
       return wrap;
     }
 
+    /** Local YYYY-MM-DD, which is what <input type="date"> speaks.
+     *  toISOString() would be wrong here — it converts to UTC first, so an
+     *  evening in a positive-offset zone reports tomorrow's date. */
+    function dateInputValue(d) {
+      const pad2 = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    }
+
+    /**
+     * §78 — the date the job's date tokens render from.
+     *
+     * Modelled on OffShoot's own Review panel, which shows an editable date
+     * with one click back to now. Defaults to live: the field shows today
+     * and nothing is overridden until it is changed, so the common case
+     * needs no interaction and behaves exactly as it did before this row
+     * existed.
+     *
+     * The reason it exists is offloading after midnight, or a card handed
+     * over the next morning — the shoot's date is not the clock's.
+     */
+    function renderCardDate() {
+      const wrap = el("div", { class: "fv-counter fv-date" });
+      wrap.appendChild(el("label", { text: "Date",
+        title: "What {date}/{YYYY}/{MM}/{DD} render as. Defaults to today." }));
+
+      const input = el("input", { id: "fv-date-input" });
+      input.type = "date";
+      input.value = dateInputValue(dateOverride || new Date());
+      input.addEventListener("change", () => {
+        // Parsed as LOCAL midnight, not UTC: `new Date("2026-08-28")` is
+        // UTC midnight, which renders as the 27th anywhere west of
+        // Greenwich — the date tokens would be a day off for half the
+        // world.
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input.value);
+        // Cleared rather than kept: an empty field means "no override",
+        // which is the same thing the Now button does.
+        dateOverride = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+        renderFieldsPanel();
+      });
+      wrap.appendChild(input);
+
+      const now = el("button", { id: "fv-date-now", text: "Now",
+        title: "Use today's date", onClick: () => {
+          dateOverride = null;
+          renderFieldsPanel();
+        } });
+      // Disabled when it would do nothing, so the button itself says
+      // whether an override is currently in effect.
+      now.disabled = !dateOverride;
+      wrap.appendChild(now);
+      return wrap;
+    }
+
     /**
      * §65.11 — Clear, in its new and only home.
      *
@@ -3658,6 +3765,10 @@
         preset.folderTemplate, preset.fileTemplate, valuesEntry().values,
         sourcePath && !isProject(sourcePath) ? sourcePath : "",
         off,
+        // §77/§78 — the preview has to run the job's own suffix rule and
+        // clock, or it quietly promises a name the job will not produce.
+        { autoSuffix: preset.autoSuffix || null,
+          dateOverride: dateOverride ? dateOverride.toISOString() : null },
       );
       const box = $("fields-preview");
       if (!box) return;   // re-rendered while awaiting
