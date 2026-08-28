@@ -416,9 +416,13 @@ const check = (ok, label, detail = "") => {
                        : "/Volumes/S73_Main";
       const tops = () => destNodes.filter(n => n.parentId === null).map(n => n.path);
       const seed = (p) => { clearAll(); addDest(p, null); render(); };
-      const menuOn = (p) => {
+      // The third argument is which COLUMN the tile was right-clicked in.
+      // Several entries are gated on it — "Choose a different folder/file…"
+      // is only offered on a tile that actually holds a role — so passing
+      // undefined silently tests a different menu than the user sees.
+      const menuOn = (p, role) => {
         closeMenu();
-        openMenu({ preventDefault(){}, clientX: 40, clientY: 40 }, p, undefined);
+        openMenu({ preventDefault(){}, clientX: 40, clientY: 40 }, p, role);
       };
       const clickItem = (label) => {
         const b = [...document.querySelectorAll("#menu button")]
@@ -534,6 +538,23 @@ const check = (ok, label, detail = "") => {
       out.projectKept = tops();
       ffProjects = [];
 
+      // ── The PRE-EXISTING "Choose a different folder/file…" handler,
+      // which §73 deliberately did not touch. It does its own
+      // addDest(f) + removeDest(path), so now that addDest narrows on its
+      // own there is a shape where it evicts one node and the handler's
+      // own removeDest then drops a SECOND — losing a destination the user
+      // never asked to lose. Driven rather than reasoned about.
+      pickFolder = async () => "/Volumes/S73_Main/Swapped";
+      clearAll();
+      addDest("/Volumes/S73_Main/Old", null);
+      addDest("/Volumes/S73_Shuttle/Keep", null);
+      render();
+      menuOn("/Volumes/S73_Main/Old", "dest");
+      out.chooseDifferentFound = clickItem("Choose a different folder/file\u2026");
+      await new Promise(r => setTimeout(r, 350));
+      out.chooseDifferent = tops();
+      closeMenu();
+
       // ── No volumes enumerated at all. The real deviceFor returns
       // \`best || internal\`, i.e. null when there is nothing to place a
       // path against — which is the app's own state before the first
@@ -552,6 +573,14 @@ const check = (ok, label, detail = "") => {
       clearAll(); render();
       return out;
     })()`);
+
+    check(every.chooseDifferentFound, "the tile menu still offers \"Choose a different folder/file\u2026\"");
+    check(every.chooseDifferent.length === 2
+      && every.chooseDifferent.includes("/Volumes/S73_Main/Swapped")
+      && every.chooseDifferent.includes("/Volumes/S73_Shuttle/Keep")
+      && !every.chooseDifferent.includes("/Volumes/S73_Main/Old"),
+      "\u2026and it swaps ONE tile — addDest's narrowing plus its own removeDest do not drop two",
+      JSON.stringify(every.chooseDifferent));
 
     check(every.noVolumes.length === 2,
       "with no volumes enumerated, two destinations stay two — nothing is placeable, so nothing narrows",
