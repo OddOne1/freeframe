@@ -1538,6 +1538,18 @@
 
     const projectIdOf = (p) => (isProject(p) ? p.slice("freeframe://".length) : null);
 
+    /**
+     * Which `sourcePath` the current `sourceCounter` was claimed for, or
+     * null when nothing is claimed for the current assignment. §75 — see
+     * the long note on `sourceCounter` below for what it is for.
+     *
+     * Declared HERE, above every function that assigns it, rather than
+     * beside `sourceCounter` where it belongs by subject: `setSourceFiles`
+     * writes it, and a `let` below its own writer is a TDZ throw waiting on
+     * call order (§64 hit exactly that with `currentPage`).
+     */
+    let claimedForPath = null;
+
     const FILESET = "fileset://selected";
     const isFileSet = (p) => p === FILESET;
 
@@ -1554,6 +1566,11 @@
       if (isBusy(sourcePath)) return;
       if (files.length === 1) { sourceFiles = null; setSource(files[0]); return; }
       sourceFiles = [...files];
+      // §75 — every multi-file selection is the SAME sentinel path, so the
+      // path comparison in setSource cannot see that the selection changed.
+      // Cleared here instead: two genuinely different file sets are two
+      // sources, and must not share one card number.
+      claimedForPath = null;
       setSource(FILESET);
     }
 
@@ -1565,13 +1582,26 @@
      * card and then copying it plainly was burning a number nothing used,
      * so the folders skipped.
      *
-     * Nothing is remembered per path any more, and that removal is the
-     * point rather than a simplification — with the claim at job start
-     * there is no per-card number to remember until a job runs, and
-     * keeping one would recreate exactly the "displayed vs internal" split
-     * §71 rules out. What the card shows is `nextSourceCounter`, which is
-     * the store's own next value: the number shown is always the number
-     * used next, in both directions.
+     * §75 then added back ONE piece of memory, and only one: which source
+     * path the current `sourceCounter` was claimed for. §71's own comment
+     * here used to say nothing was remembered per path and that the
+     * removal was the point — that was right for the problem §71 solved
+     * and wrong for this one, so it is corrected rather than left
+     * standing. §71's rule survives intact: a job that does not rename
+     * still never claims.
+     *
+     * What changes is a retry. A job can fail at start — a naming
+     * collision, a fragile-rename refusal — having copied nothing. The
+     * card is still sitting in Source; pressing Start again is the same
+     * card's first real attempt, not its second, and it must not skip a
+     * number. So a claim is reused for as long as the SAME source
+     * assignment stands.
+     *
+     * The reuse window is one `setSource()` call to the next, not the
+     * lifetime of a path string: re-picking the same physical card is a
+     * new card as far as this is concerned, and claims normally. Editing
+     * the Card # by hand also ends it, or the retry would quietly ignore
+     * the number just typed.
      */
     let sourceCounter = 1;
 
@@ -1603,17 +1633,31 @@
       // list would be sent alongside an unrelated path.
       if (p !== FILESET) sourceFiles = null;
       const previous = sourcePath;
+      const previousClaim = claimedForPath;
       sourcePath = p;
       // §71 — assigning a source no longer claims a number. A plain copy
       // with no renaming must not consume one, and which job it is cannot
       // be known until Start is pressed.
+      //
+      // §75 — a genuinely different assignment ends the previous claim's
+      // reuse window. Cleared only here, after the guards above have let
+      // the reassignment through, so a REFUSED setSource (busy source,
+      // project on both sides) leaves the claim alone — the card it was
+      // claimed for is still the one in Source.
+      if (p !== previous) claimedForPath = null;
       // Item 5: holding both roles is legitimate — copying between two
       // folders on one big RAID is a real workflow. What's *not* legitimate
       // is the bare volume root on both sides, which would copy a folder
       // into itself. So don't silently evict it from Destinations any more;
       // surface the conflict and make the user resolve it with subfolders.
       if (destNodes.some((n) => n.path === p)) {
-        openDualRoleModal(p, () => { sourcePath = previous; render(); });
+        // Reverting the assignment reverts the claim with it, or the card
+        // that is back in Source would be told to claim a second number.
+        openDualRoleModal(p, () => {
+          sourcePath = previous;
+          claimedForPath = previousClaim;
+          render();
+        });
       }
       render();
     }
@@ -2871,7 +2915,13 @@
           const r = await window.freeframe.renamesFiles(naming.fileTemplate, naming.disabledFields);
           renames = Boolean(r && r.renames);
         } catch { /* treated as "does not rename": never burn a number on an error */ }
-        if (renames) await claimSourceCounter();
+        // §75 — claim once per source assignment. A retry after a failed
+        // start reuses the number already claimed for this same card
+        // rather than burning the next one.
+        if (renames && claimedForPath !== sourcePath) {
+          await claimSourceCounter();
+          claimedForPath = sourcePath;
+        }
       }
 
       copying = true;
@@ -3489,6 +3539,12 @@
         const n = Math.max(1, Math.floor(Number(input.value) || 1));
         nextSourceCounter = await window.freeframe.setSourceCounter(n);
         input.value = String(nextSourceCounter);
+        // §75 — typing a number here has to win over a claim already made
+        // for the current source, or a retry would reuse the old value and
+        // silently ignore what was just typed. Ending the reuse window
+        // makes the next renaming job claim afresh, which is exactly this
+        // number.
+        claimedForPath = null;
         updateFieldsPreview();
       });
       wrap.appendChild(input);

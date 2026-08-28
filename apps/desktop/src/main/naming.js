@@ -341,9 +341,17 @@ function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, s
    * FILE PATTERN ONLY. A folder pattern containing {counter} deliberately
    * creates a folder per file, and auto-adding one there would invent that
    * behaviour for someone who never asked for it.
+   *
+   * {sourcecounter} DOES NOT EXEMPT A PATTERN (§74). It used to, and that
+   * was the bug: it numbers the card, not the file, so it renders one
+   * constant value for the whole job. A pattern built from per-job fields
+   * plus {sourcecounter} therefore renders the SAME name for every file —
+   * exactly the case this net exists to catch — while switching the net
+   * off. {counter} is the only token that varies per file, so it is the
+   * only one that can stand in for the suffix.
    */
   const autoCounter = Boolean(file)
-    && !tokensIn(file).some((t) => t === "counter" || t === "sourcecounter");
+    && !tokensIn(file).some((t) => t === "counter");
 
   // rel -> the rel whose rendered basename this file must adopt. Populated
   // only by prepare(); empty means every file is named independently, which

@@ -21,6 +21,16 @@ function check(ok, label, detail = "") {
   if (!ok) fail++;
   console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}${detail ? "  — " + detail : ""}`);
 }
+/**
+ * Map one rel, reporting a refusal as a value instead of letting it
+ * propagate. NAMING_COLLISION is exactly what several of these assertions
+ * are pinning the ABSENCE of, and an uncaught throw kills this file — every
+ * assertion after it silently never runs. A regression has to read as one
+ * failed check, not as a stack trace plus silence.
+ */
+function mapOr(map, rel) {
+  try { return map(rel); } catch (e) { return `THREW ${e.code || e.message}`; }
+}
 function eq(actual, expected, label) {
   check(actual === expected, label, actual === expected ? "" : `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
 }
@@ -135,10 +145,38 @@ console.log("\n6. A pattern that numbers nothing is numbered for you (\u00a765.5
   eq(map("a/one.MOV"), "a/M_0001.MOV", "and renders exactly what was written");
 }
 {
+  // §74 INVERTS what this used to assert. {sourcecounter} was treated as
+  // numbering, and it is not: it numbers the CARD, so it renders one
+  // constant value for the whole job. A pattern using only it names every
+  // file identically — the exact case the net exists to catch — while
+  // switching the net off.
   const map = buildRelMapper({ fileTemplate: "{operator}_{sourcecounter}", values: { operator: "M" },
                                now: NOW, sourceCounter: 7 });
-  check(map.autoCounter === false, "{sourcecounter} counts as numbering too");
-  eq(map("a/one.MOV"), "a/M_007.MOV", "and is not doubled up");
+  check(map.autoCounter === true, "{sourcecounter} does NOT count as numbering — it is per-card (\u00a774)");
+  eq(mapOr(map, "a/one.MOV"), "a/M_007_0001.MOV", "so the per-file suffix is still appended");
+  eq(mapOr(map, "a/two.MOV"), "a/M_007_0002.MOV", "and the two files differ");
+}
+{
+  // The reported failure, as reported: LUMIX \u2192 ODDONE_01, job 45f1c5d4.
+  // Per-job fields only (chosen once, not per file) plus {sourcecounter},
+  // no {counter} — which threw NAMING_COLLISION at job start.
+  const T = "{sourcecounter}_{YYYY}{MM}{DD}_{type}_{a1}_{a2}";
+  const map = buildRelMapper({ folderTemplate: T, fileTemplate: T, sourceCounter: 1,
+    values: { type: "B-Roll", a1: "Scott", a2: "JolandaPriori" },
+    now: new Date("2026-08-28T09:33:00Z") });
+  const dir = "001_20260828_B-Roll_Scott_JolandaPriori";
+  eq(mapOr(map, "DCIM/101_PANA/P1012257.MOV"), `${dir}/DCIM/101_PANA/${dir}_0001.MOV`,
+     "the reported collision now numbers instead of refusing");
+  eq(mapOr(map, "DCIM/101_PANA/P1012258.MOV"), `${dir}/DCIM/101_PANA/${dir}_0002.MOV`,
+     "and the second file is distinct");
+}
+{
+  // A folder pattern is untouched: {sourcecounter} there is exactly what it
+  // is for, and an empty file template still renames nothing.
+  const map = buildRelMapper({ folderTemplate: "Card_{sourcecounter}", fileTemplate: "",
+                               now: NOW, sourceCounter: 7 });
+  check(map.autoCounter === false, "an empty file template appends nothing");
+  eq(map("a/P1012257.MOV"), "Card_007/a/P1012257.MOV", "and the original name survives");
 }
 {
   // FILE PATTERN ONLY. A folder pattern with {counter} deliberately makes a
