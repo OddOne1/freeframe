@@ -16,6 +16,7 @@ const os = require("node:os");
 const crypto = require("node:crypto");
 
 const { runCopyJob, hashFileOnDisk, runFinalizedPass } = require("../src/main/copy-engine");
+const journal = require("../src/main/job-journal");
 const { listAlgorithms, getHasherFactory, c4Digest } = require("../src/main/hashers");
 
 let failures = 0;
@@ -450,6 +451,133 @@ async function main() {
       });
       check(srcErr.errors.some((e) => e.stage === "source") && srcErr.ok === false,
         "an unreadable source is reported as a source error, and the pass does not claim success");
+    }
+
+    // ── §87 Phase 1: the live per-job journal ───────────────────────────
+    console.log("\n\u00a787. Job journal — a truthful record WHILE the job runs");
+    {
+      const logs = path.join(tmp, "logs");
+      const readJ = (id) => fs.readFile(journal.journalFile(logs, id), "utf8")
+        .then(JSON.parse).catch(() => null);
+      const naming = {
+        presetId: "p1", folderTemplate: "{operator}", fileTemplate: "{operator}_{counter}",
+        values: { operator: "Mathias" }, disabledFields: ["talent"],
+        sourceCounter: 7, dateOverride: "2026-08-28T09:33:00.000Z",
+        autoSuffix: { source: "counter", position: "end" }, filters: null,
+      };
+      const job = { id: "jrnl-1", label: "L", kind: "copy", sourcePath: source,
+                    destPaths: [path.join(tmp, "jrnl-a")] };
+
+      await journal.startJournal(logs, job, { algorithm: "xxhash64", naming });
+      let d = await readJ(job.id);
+      check(Boolean(d) && d.status === "running" && d.files.length === 0,
+        "the journal exists at job START, empty — writeJobLog only ever wrote at the end");
+      // Optional-chained throughout. An absent journal or naming block is
+      // exactly what a regression here produces, and an uncaught TypeError
+      // kills this file — every check after it silently never runs, and a
+      // mutation sweep reads the crash as "survived".
+      const nm = (d && d.naming) || {};
+      // The half a resume cannot re-derive: after a crash the renderer's
+      // memory is gone, and re-deriving these would rename the REMAINING
+      // files inconsistently with the ones already on the destination.
+      check(nm.sourceCounter === 7, "the claimed card number is captured (\u00a775)");
+      check(nm.values && nm.values.operator === "Mathias", "…and this card's typed values (\u00a780)");
+      check(nm.dateOverride === "2026-08-28T09:33:00.000Z", "…and any date override (\u00a778)");
+      check(Array.isArray(nm.disabledFields) && nm.disabledFields.length === 1,
+        "…and which fields were switched off");
+
+      const pending = [];
+      const midRun = [];
+      const sum = await runCopyJob({
+        sourcePath: source, nodes: [{ id: "jn", path: job.destPaths[0], parentId: null }],
+        algorithm: "xxhash64",
+        // Fire-and-forget, exactly as main.js calls it: the engine does not
+        // await onProgress, so asserting the journal is instantaneously
+        // current would be asserting a contract the app does not have.
+        onProgress: (p) => {
+          if (p.phase !== "file-done") return;
+          pending.push(journal.appendFileResult(job.id, p));
+          midRun.push(readJ(job.id));
+        },
+      });
+      await Promise.all(pending);
+      check(sum.allVerified, "the copy itself is unaffected by journalling");
+      const snaps = await Promise.all(midRun);
+      check(snaps.every((x) => x !== null),
+        "every mid-run read got valid JSON — never a half-written file");
+      const counts = snaps.map((x) => x.files.length);
+      check(counts.every((n, i) => i === 0 || n >= counts[i - 1]),
+        "…and the record only ever grows", JSON.stringify(counts));
+
+      d = await readJ(job.id);
+      const jfiles = (d && d.files) || [];
+      check(jfiles.length === srcFileCount, "one entry per file", `${jfiles.length}`);
+      // `ok` alone cannot tell a resume that a file is safe to skip — that
+      // is why the hashes had to be threaded out of runLeg at all.
+      check(jfiles.length > 0 && jfiles.every((f) => typeof f.sourceHash === "string" && f.sourceHash),
+        "every entry carries a real source hash, not a placeholder");
+      check(jfiles.length > 0 && jfiles.every((f) => f.destinations.length === 1 && f.destinations[0].hash),
+        "…and the per-destination hash it was verified against");
+
+      await journal.finishJournal(logs, job.id);
+      check((await readJ(job.id)) === null,
+        "a COMPLETED job's journal is removed — the real log is the permanent record");
+
+      // An interrupted job keeps its journal, and a deliberate cancel is
+      // the same shape of data as a crash — a later phase should not have
+      // to tell them apart.
+      const job2 = { id: "jrnl-2", label: "L2", kind: "copy", sourcePath: source, destPaths: [] };
+      await journal.startJournal(logs, job2, { algorithm: "xxhash64", naming });
+      await journal.appendFileResult(job2.id, { file: "one.MOV", ok: true, sourceHash: "h", destinations: [] });
+      journal.releaseJournal(job2.id);
+      const left = await readJ(job2.id);
+      check(Boolean(left) && left.files.length === 1 && left.status === "running",
+        "an interrupted job's journal is LEFT on disk, with only what completed");
+      // No finish, no release, no shutdown hook ran for that file above —
+      // which is exactly what a kill -9 leaves. Nothing here depends on a
+      // graceful exit.
+      check(Boolean(left) && Boolean(left.startedAt) && Array.isArray(left.files),
+        "…valid and complete enough to resume from, with no cleanup step");
+
+      // runCopyJob runs a job's legs under Promise.all, so overlapping
+      // appends for ONE job are the real shape. Two un-serialized
+      // whole-file writes can interleave and truncate the document.
+      const job3 = { id: "jrnl-3", label: "L3", kind: "copy", sourcePath: source, destPaths: [] };
+      await journal.startJournal(logs, job3, { algorithm: "xxhash64", naming });
+      await Promise.all(Array.from({ length: 40 }, (_, i) =>
+        journal.appendFileResult(job3.id, { file: `f${i}`, ok: true, sourceHash: `h${i}`, destinations: [] })));
+      const j3 = await readJ(job3.id);
+      check(Boolean(j3) && j3.files.length === 40,
+        "40 overlapping appends leave valid JSON with every entry",
+        j3 ? `${j3.files.length}` : "unreadable");
+
+      await fs.writeFile(journal.journalFile(logs, "jrnl-bad"), "{ not json", "utf8");
+      check((await journal.readJournal(logs, "jrnl-bad")) === null,
+        "a corrupt journal reads as nothing to resume, not as an error");
+      check((await journal.readJournal(logs, "jrnl-missing")) === null, "…and so does a missing one");
+
+      // Two properties no in-process probe can observe, asserted at the
+      // SOURCE and labelled as such.
+      //
+      // Atomicity: a torn read needs a reader to open the file inside the
+      // window of a partial write. Write-then-rename removes the window
+      // entirely, and its absence is only visible under a crash at exactly
+      // the wrong microsecond — which is precisely the case a journal
+      // exists for, and precisely what cannot be scheduled in a test.
+      const jsrc = fssync.readFileSync(
+        path.join(__dirname, "..", "src", "main", "job-journal.js"), "utf8");
+      check(/await fsp\.writeFile\(tmp,/.test(jsrc) && /await fsp\.rename\(tmp, target\)/.test(jsrc),
+        "the journal is written whole then renamed into place, never edited in situ");
+
+      // And that an INTERRUPTED job keeps its journal. The behavioural
+      // check above drives releaseJournal directly, so it cannot see
+      // main.js choosing between the two — which is where the mistake
+      // would actually be made.
+      const msrc = fssync.readFileSync(
+        path.join(__dirname, "..", "src", "main", "main.js"), "utf8");
+      check(/if \(job\.status === "done"\) journal\.finishJournal\(/.test(msrc)
+        && /else journal\.releaseJournal\(job\.id\);/.test(msrc),
+        "only a COMPLETED job's journal is deleted; anything else keeps its record");
     }
 
     console.log(

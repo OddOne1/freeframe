@@ -332,7 +332,21 @@ async function runLeg({ from, toRoots, relFiles, sizes, onFileEvent, isCancelled
     }
 
     fileResults.push(entry);
-    onFileEvent({ type: "file-done", file: rel, ok: entry.ok });
+    // §87 — the proof, not just the verdict. sourceHash and the
+    // per-destination results are what a resume needs to say "this file is
+    // already verified good, skip it"; `ok` alone cannot distinguish a file
+    // that verified from one that merely finished. They existed here
+    // already and were dropped at this line, only resurfacing batched in
+    // n.files once the whole leg was over — too late for a live journal.
+    onFileEvent({
+      type: "file-done",
+      file: rel,
+      ok: entry.ok,
+      bytes: entry.bytes,
+      sourceHash: entry.sourceHash,
+      destinations: entry.destinations,
+      error: entry.error,
+    });
   }
 
   return fileResults;
@@ -668,6 +682,21 @@ async function runCopyJob({
                 }
               }
               onProgress({ phase: "verifying", file: ev.file, nodeIds: groupNodes.map((n) => n.id) });
+            } else if (ev.type === "file-done") {
+              // §87 — its own branch rather than a blanket forward of `ev`.
+              // file-start shares this else, and spreading whatever
+              // happened to be on the event would give it stale hash and
+              // destination fields it has no business carrying.
+              onProgress({
+                phase: ev.type,
+                file: ev.file,
+                ok: ev.ok,
+                bytes: ev.bytes,
+                sourceHash: ev.sourceHash,
+                destinations: ev.destinations,
+                error: ev.error,
+                nodeIds: groupNodes.map((n) => n.id),
+              });
             } else {
               onProgress({ phase: ev.type, file: ev.file, ok: ev.ok, nodeIds: groupNodes.map((n) => n.id) });
             }

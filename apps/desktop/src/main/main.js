@@ -9,6 +9,7 @@ const { listVolumes } = require("./volumes");
 const { runCopyJob } = require("./copy-engine");
 const presets = require("./presets");
 const settings = require("./settings");
+const journal = require("./job-journal");
 const dailyOverview = require("./daily-overview");
 const webview = require("./webview");
 const { buildRelMapper, unknownTokens, folderPatternError, rendersNewFileNames, omitTokens, tokensIn } = require("./naming");
@@ -37,6 +38,18 @@ let jobs = new JobQueue({
     writeJobLog(job).catch(() => {});
     // §72 — the same completion point, one write per finished job.
     recordDailyOverview(job).catch(() => {});
+    // §87 — the journal existed to survive a job that never reached here.
+    // It did, so the real log above is the permanent record and the
+    // duplicate goes.
+    //
+    // ONLY for a job that actually completed. A cancelled or failed one
+    // keeps its journal: "how far did we get" is the same question whether
+    // the job was stopped deliberately or by a pulled cable, and a later
+    // phase should not have to tell those apart. The in-memory handle is
+    // released either way, or a long-lived app would hold every job it
+    // ever ran.
+    if (job.status === "done") journal.finishJournal(LOG_DIR(), job.id).catch(() => {});
+    else journal.releaseJournal(job.id);
   },
 });
 
@@ -1197,6 +1210,20 @@ ipcMain.handle("copy:start", async (event, payload) => {
     payload: { run: async (self) => {
       let cancelled = false;
       self._cancel = () => { cancelled = true; };
+      // §87 — opened here rather than at queue time: a job sitting in the
+      // queue has copied nothing, and a journal for it would claim an
+      // interrupted transfer that never started. Awaited so the file
+      // exists before the first file-done can try to append to it.
+      //
+      // The naming state comes from the raw payload, not from the derived
+      // mapRel: what a resume needs is the INPUT that produced the names
+      // already on disk, so it can produce the same ones for the rest.
+      await journal.startJournal(LOG_DIR(), self, {
+        algorithm,
+        finalizedAlgorithm,
+        naming,
+        sourceFiles,
+      }).catch(() => {});
       const summary = await runCopyJob({
         sourcePath,
         sourceFiles,
@@ -1210,6 +1237,13 @@ ipcMain.handle("copy:start", async (event, payload) => {
         finalizedAlgorithm,
         isCancelled: () => cancelled,
         onProgress: (p) => {
+          // §87 — one append per finished file, so the file on disk is
+          // never more than one file behind reality. Deliberately not
+          // awaited: the copy must not wait on a log write, and a journal
+          // that cannot be written is a lost resume, not a failed job.
+          if (p.phase === "file-done") {
+            journal.appendFileResult(self.id, p).catch(() => {});
+          }
           // Enriched with speed/ETA (§58) before it goes anywhere, so both
           // listeners see one set of numbers rather than two.
           const enriched = jobs.updateProgress(self.id, p) || p;
