@@ -65,6 +65,10 @@ const ICONS = {
   // same family — an arrow rising off a line — so it reads correctly at
   // 14px without hand-drawing an SVG this file exists to avoid.
   eject: "ArrowUpFromLine",
+  // §92 — a cascade hop on the Copy & Verify button. The turn is the whole
+  // point: a straight arrow means "also copy here", this means "and then on
+  // from there", which is what a cascade actually is.
+  cascade: "CornerDownRight",
 };
 
 /** lucide ships icons as [tag, attrs] child tuples; wrap them in the same

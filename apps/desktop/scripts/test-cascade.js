@@ -179,5 +179,72 @@ console.log("\n6. Re-picking the path already set changes nothing");
     String(w.nodes().length));
 }
 
+console.log("\n7. (§92) The button counts the two kinds separately");
+{
+  // The old label read "(2, 1 cascaded)" for one direct copy plus one hop,
+  // because destNodes.length counted both kinds together — and the leading
+  // number is the one people read.
+  const mkEl = () => ({
+    children: [], attrs: {}, text: "",
+    appendChild(c) { this.children.push(c); },
+    replaceChildren(...c) { this.children = c; },
+    setAttribute(k, v) { this.attrs[k] = v; },
+    removeAttribute(k) { delete this.attrs[k]; },
+    get textContent() { return (this.text || "") + this.children.map((c) => c.textContent).join(""); },
+  });
+  const btn = mkEl();
+  const setStartLabel = new Function("el", "icon", "$",
+    grab("setStartLabel") + "; return setStartLabel;")(
+      (tag, opts = {}) => { const n = mkEl(); if (opts.text != null) n.text = opts.text; return n; },
+      (name) => { const n = mkEl(); n.text = `[${name}]`; return n; },
+      () => btn,
+    );
+  const label = (parallel, cascades) => {
+    setStartLabel(parallel, cascades);
+    return { text: btn.textContent, aria: btn.attrs["aria-label"] || null };
+  };
+
+  const one = label(1, 0);
+  check(one.text === "Copy & Verify" && one.aria === null,
+    "one plain destination shows no count at all — \"→ 1\" is noise", one.text);
+
+  const two = label(2, 0);
+  check(/\[arrowRight\]2/.test(two.text) && !/\[cascade\]/.test(two.text),
+    "two parallel destinations show the arrow group only", two.text);
+
+  // §89's video scenario: one direct copy, one hop. This is the case the
+  // old label called "2".
+  const hop = label(1, 1);
+  check(/\[cascade\]1/.test(hop.text) && !/\[arrowRight\]/.test(hop.text),
+    "one destination cascaded from another shows the hop alone, not \"2\"", hop.text);
+
+  const both = label(2, 1);
+  check(/\[arrowRight\]2/.test(both.text) && /\[cascade\]1/.test(both.text),
+    "both kinds present shows both groups", both.text);
+
+  // The icons carry no meaning to a screen reader, so the button has to.
+  check(hop.aria === "Copy & Verify — 1 cascaded hop",
+    "the hop case announces what the icon means", hop.aria);
+  check(both.aria === "Copy & Verify — 2 destinations, 1 cascaded hop",
+    "…and so does the combined case", both.aria);
+  check(label(3, 2).aria === "Copy & Verify — 3 destinations, 2 cascaded hops",
+    "…pluralised", label(3, 2).aria);
+  check(label(1, 0).aria === null,
+    "…and the plain case adds no label to read out over the visible text");
+
+  // The checks above pass whatever numbers they are handed, so they cannot
+  // see the CALLER going back to one mixed total — which is the entire bug.
+  // Asserted at the source, and labelled as such: the computation lives
+  // inside render(), which is not extractable the way setStartLabel is.
+  const callLine = src.split("\n").find((l) => l.includes("setStartLabel(parallel, cascades)"));
+  check(Boolean(callLine), "render() calls setStartLabel with two counts");
+  check(/const parallel = destNodes\.filter\(\(n\) => n\.parentId === null\)\.length;/.test(src),
+    "…parallel counts ROOT destinations, not every node");
+  check(/const cascades = destNodes\.filter\(\(n\) => n\.parentId !== null\)\.length;/.test(src),
+    "…and cascades counts the hops");
+  check(!/Copy & Verify \(\$\{destNodes\.length\}/.test(src),
+    "…and the old mixed-total label is gone, not merely bypassed");
+}
+
 console.log(fail === 0 ? "\nALL PASS" : `\n${fail} FAILED`);
 process.exit(fail === 0 ? 0 : 1);

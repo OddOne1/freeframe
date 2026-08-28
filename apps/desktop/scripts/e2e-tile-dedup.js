@@ -281,7 +281,10 @@ const check = (ok, label, detail = "") => {
       const snap = () => ({
         tops: destNodes.filter(n => n.parentId === null).map(n => n.path),
         total: destNodes.length,
-        label: document.getElementById("start").textContent,
+        // §92 — the counts are icon+number groups now, so the arrow is an
+        // SVG and textContent no longer carries it. aria-label is where the
+        // same statement lives, and is what a screen reader is given.
+        label: document.getElementById("start").getAttribute("aria-label") || "",
       });
       const out = {};
 
@@ -346,12 +349,12 @@ const check = (ok, label, detail = "") => {
       "picking a folder on that same drive NARROWS it — one tile, not two",
       JSON.stringify(narrow.same.tops));
     // The recording's own tell: the button read "Copy & Verify -> 2".
-    check(!/→\s*2/.test(narrow.same.label),
-      "and Copy & Verify does not report a second leg", narrow.same.label);
+    check(!/2 destinations/.test(narrow.same.label),
+      "and Copy & Verify does not report a second leg", narrow.same.label || "(no count shown)");
     check(narrow.different.tops.length === 2,
       "a folder on a DIFFERENT drive still adds a parallel destination",
       JSON.stringify(narrow.different.tops));
-    check(/→\s*2/.test(narrow.different.label),
+    check(/2 destinations/.test(narrow.different.label),
       "and that one does report two legs", narrow.different.label);
     check(narrow.twice.tops.length === 2
       && narrow.twice.tops.includes("/Volumes/S69_Shuttle/Other")
@@ -454,7 +457,10 @@ const check = (ok, label, detail = "") => {
         .map(x => x.textContent.trim()).join(" | ");
       if (recent) recent.click();
       await new Promise(r => setTimeout(r, 250));
-      out.viaRecent = { tops: tops(), label: document.getElementById("start").textContent };
+      out.viaRecent = { tops: tops(), // §92 — the counts are icon+number groups now, so the arrow is an
+        // SVG and textContent no longer carries it. aria-label is where the
+        // same statement lives, and is what a screen reader is given.
+        label: document.getElementById("start").getAttribute("aria-label") || "" };
       closeMenu();
 
       // ── Its "Browse…" sibling, same submenu, separate wiring.
@@ -511,7 +517,10 @@ const check = (ok, label, detail = "") => {
       // different drive is still a second parallel destination.
       seed("/Volumes/S73_Main");
       addDest("/Volumes/S73_Shuttle/Dailies", null);
-      out.differentDrive = { tops: tops(), label: document.getElementById("start").textContent };
+      out.differentDrive = { tops: tops(), // §92 — the counts are icon+number groups now, so the arrow is an
+        // SVG and textContent no longer carries it. aria-label is where the
+        // same statement lives, and is what a screen reader is given.
+        label: document.getElementById("start").getAttribute("aria-label") || "" };
 
       // ── A cascaded child shares its parent's device by necessity. If
       // narrowing applied to it, chaining a drive to itself would eat the
@@ -593,8 +602,8 @@ const check = (ok, label, detail = "") => {
       && every.viaRecent.tops[0] === "/Volumes/S73_Main/01_Projects/ReShuffle",
       "a Recent Folders pick NARROWS the drive it is on — the recorded bug",
       JSON.stringify(every.viaRecent.tops));
-    check(!/\u2192\s*2/.test(every.viaRecent.label),
-      "and Copy & Verify does not report a second leg", every.viaRecent.label);
+    check(!/2 destinations/.test(every.viaRecent.label),
+      "and Copy & Verify does not report a second leg", every.viaRecent.label || "(no count shown)");
     check(every.browseFound && every.viaBrowse.tops.length === 1
       && every.viaBrowse.tops[0] === "/Volumes/S73_Main/Browsed",
       "so does that submenu's own Browse\u2026, which is separately wired",
@@ -627,7 +636,7 @@ const check = (ok, label, detail = "") => {
     check(every.differentDrive.tops.length === 2,
       "a genuinely different drive is STILL a second parallel destination",
       JSON.stringify(every.differentDrive.tops));
-    check(/\u2192\s*2/.test(every.differentDrive.label),
+    check(/2 destinations/.test(every.differentDrive.label),
       "and that one does report two legs", every.differentDrive.label);
 
     check(every.cascadeChild.length === 2

@@ -413,6 +413,14 @@
       font-size: 10px; color: var(--text-tertiary); padding: 0 2px 4px;
     }
     .arrow { color: var(--accent); font-size: 13px; line-height: 1; }
+    /* §92 — the two count groups on Copy & Verify. Inherit the button's
+       colour rather than picking their own: on .primary's accent ground,
+       an accent-coloured icon would vanish. */
+    .start-count {
+      display: inline-flex; align-items: center; gap: 3px;
+      margin-left: 8px; font-variant-numeric: tabular-nums;
+    }
+    .start-count svg { height: 13px; width: 13px; }
     .cascaded { margin-left: 18px; border-left: 2px solid var(--accent); padding-left: 10px; position: relative; }
     .cascaded::before {
       content: "↳"; position: absolute; left: -10px; top: 6px;
@@ -2984,12 +2992,20 @@
       const ready = Boolean(sourcePath) && destNodes.length > 0
         && !currentJobPending() && missingRequired().length === 0;
       $("start").disabled = !ready;
+      // §92 — two counts, not one mixed total.
+      //
+      // The old label read `(2, 1 cascaded)` for one direct copy plus one
+      // hop, because destNodes.length counted both kinds together. The
+      // leading number was the one people read, and it was answering a
+      // question nobody asked: how many NODES, rather than how many drives
+      // the card is being written to.
+      //
+      // A straight arrow means "also copy here" (parallel); the turning
+      // arrow means "and then on from there" (a cascade hop). Each carries
+      // its own number, and each is omitted when it has nothing to say.
+      const parallel = destNodes.filter((n) => n.parentId === null).length;
       const cascades = destNodes.filter((n) => n.parentId !== null).length;
-      $("start").textContent = cascades
-        ? `Copy & Verify (${destNodes.length}, ${cascades} cascaded)`
-        : destNodes.length > 1
-          ? `Copy & Verify → ${destNodes.length}`
-          : "Copy & Verify";
+      setStartLabel(parallel, cascades);
       // Refresh only re-lists volumes; it never touches a job, so there is
       // no reason for a running copy to disable it.
       $("refresh").disabled = false;
@@ -3226,6 +3242,42 @@
       btn.disabled = true;
       $("start-zone-columns").appendChild(btn);
     })();
+
+    /**
+     * §92 — the Copy & Verify label, as icon+count groups rather than text.
+     *
+     * A single destination with no cascade shows no count at all: "→ 1" is
+     * noise, and the button already says what it does.
+     *
+     * The icons are decorative and marked so; the button carries an
+     * aria-label spelling the same thing out, because two glyphs and two
+     * digits announce as "Copy & Verify 2 1" otherwise — the old text at
+     * least said "cascaded" out loud, and losing that to a prettier button
+     * would be a straight downgrade for anyone not looking at it.
+     */
+    function setStartLabel(parallel, cascades) {
+      const btn = $("start");
+      if (!btn) return;
+      const kids = [el("span", { text: "Copy & Verify" })];
+      const group = (name, n, title) => {
+        const wrap = el("span", { class: "start-count", title });
+        wrap.setAttribute("aria-hidden", "true");
+        wrap.appendChild(icon(name));
+        wrap.appendChild(el("span", { text: String(n) }));
+        return wrap;
+      };
+      // Only when there is more than one: a lone destination needs no
+      // number beside a button that already names the action.
+      if (parallel > 1) kids.push(group("arrowRight", parallel, "Destinations copied to in parallel"));
+      if (cascades > 0) kids.push(group("cascade", cascades, "Cascade hops — copied on from another destination"));
+      btn.replaceChildren(...kids);
+
+      const parts = [];
+      if (parallel > 1) parts.push(`${parallel} destinations`);
+      if (cascades > 0) parts.push(`${cascades} cascaded ${cascades === 1 ? "hop" : "hops"}`);
+      if (parts.length) btn.setAttribute("aria-label", `Copy & Verify — ${parts.join(", ")}`);
+      else btn.removeAttribute("aria-label");
+    }
 
     /** Put it under the card when the card is showing, under the columns
      *  when it is not. */
