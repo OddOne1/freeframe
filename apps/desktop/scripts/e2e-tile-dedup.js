@@ -388,10 +388,231 @@ const check = (ok, label, detail = "") => {
     // destination populated rather than empty.
     const src = require("node:fs").readFileSync(
       path.join(APP, "src", "renderer", "index.html"), "utf8");
-    const block = src.slice(src.indexOf("\u00a769 — picking a folder on a drive"),
-                            src.indexOf("\u00a769 — picking a folder on a drive") + 1400);
-    check(block.indexOf("addDest(folder, null);") < block.indexOf("removeDest(existing.path)"),
+    const block = src.slice(src.indexOf("\u00a773 — picking a folder on a drive"),
+                            src.indexOf("\u00a773 — picking a folder on a drive") + 1400);
+    check(block.indexOf("destNodes.push(") < block.indexOf("removeDest(narrowed.path)"),
       "the new destination is added BEFORE the old one is dropped (source-level check)");
+
+    // ── §73 — the rule lives in addDest(), so every entry point has it ───
+    // §69 wrote this logic at ONE of nine call sites. The identical bug
+    // then resurfaced through the tile context menu, which §69 never
+    // touched. What is checked here is not "the context menu was also
+    // patched" but that each independent entry point inherits the rule —
+    // the distinction that stops the tenth call site reintroducing it.
+    console.log("6d. (\u00a773) Every destination entry point narrows");
+    const every = await ev(`(async () => {
+      volumes = [
+        { name: "S73_Main", mountPoint: "/Volumes/S73_Main", type: "internal",
+          totalBytes: 1e12, freeBytes: 5e11 },
+        { name: "S73_Shuttle", mountPoint: "/Volumes/S73_Shuttle", type: "external",
+          totalBytes: 2e12, freeBytes: 1e12 },
+      ];
+      // Mirrors the REAL deviceFor, fallback included: it ends in
+      // \`best || internal\`, so a path it cannot place — a freeframe:// URI
+      // among them — resolves to the internal volume rather than to null.
+      // A stub that returned null there would quietly hide the project
+      // hazard this section exists to pin.
+      deviceFor = (p) => p.startsWith("/Volumes/S73_Shuttle") ? "/Volumes/S73_Shuttle"
+                       : "/Volumes/S73_Main";
+      const tops = () => destNodes.filter(n => n.parentId === null).map(n => n.path);
+      const seed = (p) => { clearAll(); addDest(p, null); render(); };
+      const menuOn = (p) => {
+        closeMenu();
+        openMenu({ preventDefault(){}, clientX: 40, clientY: 40 }, p, undefined);
+      };
+      const clickItem = (label) => {
+        const b = [...document.querySelectorAll("#menu button")]
+          .find(x => x.textContent.trim().replace(/\u2026$/, "") === label.replace(/\u2026$/, ""));
+        if (!b) return false;
+        b.click();
+        return true;
+      };
+      const out = {};
+
+      // ── The recorded repro: tile menu → Destination Folder ▸ → a recent.
+      // Driven through the real submenu rather than by calling addDest,
+      // because "the menu wires apply() straight to addDest" was exactly
+      // the gap.
+      // Through the app's own recorder, so the submenu reads it the same
+      // way it reads a folder the user really picked.
+      rememberRecent("/Volumes/S73_Main", "destination",
+        "/Volumes/S73_Main/01_Projects/ReShuffle");
+      seed("/Volumes/S73_Main");
+      menuOn("/Volumes/S73_Main");
+      const trigger = [...document.querySelectorAll("#menu .sub-trigger")]
+        .find(x => /Destination Folder/.test(x.textContent));
+      out.submenuFound = Boolean(trigger);
+      if (trigger) trigger.click();
+      const recent = [...document.querySelectorAll("#menu .submenu button")]
+        .find(x => /ReShuffle/.test(x.textContent));
+      out.recentFound = Boolean(recent);
+      out.menuDump = [...document.querySelectorAll("#menu button")]
+        .map(x => x.textContent.trim()).join(" | ");
+      if (recent) recent.click();
+      await new Promise(r => setTimeout(r, 250));
+      out.viaRecent = { tops: tops(), label: document.getElementById("start").textContent };
+      closeMenu();
+
+      // ── Its "Browse…" sibling, same submenu, separate wiring.
+      pickFolder = async () => "/Volumes/S73_Main/Browsed";
+      seed("/Volumes/S73_Main");
+      menuOn("/Volumes/S73_Main");
+      const t2 = [...document.querySelectorAll("#menu .sub-trigger")]
+        .find(x => /Destination Folder/.test(x.textContent));
+      if (t2) t2.click();
+      const browse = [...document.querySelectorAll("#menu .submenu button")]
+        .find(x => /^Browse/.test(x.textContent.trim()));
+      out.browseFound = Boolean(browse);
+      if (browse) browse.click();
+      await new Promise(r => setTimeout(r, 300));
+      out.viaBrowse = { tops: tops() };
+      closeMenu();
+
+      // ── "Set as Destination" on a subfolder tile of a drive already held.
+      seed("/Volumes/S73_Main");
+      if (!extraFolders.includes("/Volumes/S73_Main/Sub")) extraFolders.push("/Volumes/S73_Main/Sub");
+      render();
+      menuOn("/Volumes/S73_Main/Sub");
+      out.setAsFound = clickItem("Set as Destination");
+      await new Promise(r => setTimeout(r, 200));
+      out.viaSetAs = { tops: tops() };
+      closeMenu();
+
+      // ── Dragging a tile onto the Destination zone.
+      seed("/Volumes/S73_Main");
+      addDest("/Volumes/S73_Main/Dragged", null);
+      out.viaDrag = { tops: tops() };
+
+      // ── "Also use as Destination\u2026", offered on a tile that holds the
+      // SOURCE role. Its own separate wiring, and the one path where the
+      // dual-role modal can also fire — so what is checked is that the
+      // narrowing happened, not that nothing else did.
+      // It lives in the isVolume branch, so the source has to be a drive
+      // root — a subfolder tile is not offered it at all.
+      clearAll();
+      setSource("/Volumes/S73_Shuttle");
+      addDest("/Volumes/S73_Main/Old", null);
+      render();
+      menuOn("/Volumes/S73_Shuttle");
+      out.alsoFound = clickItem("Also use as Destination\u2026");
+      await new Promise(r => setTimeout(r, 200));
+      out.viaAlso = { tops: tops() };
+      closeMenu();
+      // Same drive on both sides now, so a narrowing pick on THAT drive
+      // must still land — the shuttle is the source, the main drive is not.
+      setSource(null); sourcePath = null; sourceFiles = null;
+      closeModal && closeModal();
+
+      // ── Negative case, and the one that must NOT collapse: a genuinely
+      // different drive is still a second parallel destination.
+      seed("/Volumes/S73_Main");
+      addDest("/Volumes/S73_Shuttle/Dailies", null);
+      out.differentDrive = { tops: tops(), label: document.getElementById("start").textContent };
+
+      // ── A cascaded child shares its parent's device by necessity. If
+      // narrowing applied to it, chaining a drive to itself would eat the
+      // parent it copies from.
+      clearAll();
+      addDest("/Volumes/S73_Main", null);
+      const parent = destNodes[0].id;
+      addDest("/Volumes/S73_Main/Leg", parent);
+      render();
+      out.cascadeChild = destNodes.map(n => ({ p: n.path, child: n.parentId !== null }));
+
+      // ── Projects, both directions. deviceFor() falls back to the
+      // internal volume for anything it cannot place, so a freeframe:// URI
+      // resolves to a REAL mount point — without an explicit exclusion a
+      // project would evict a boot-drive folder and vice versa.
+      ffProjects = [{ id: "p73", name: "Proj 73", assetCount: 3 }];
+      clearAll();
+      addDest("/Volumes/S73_Main/Keep", null);
+      addDest("freeframe://p73", null);
+      out.projectAdded = tops();
+      clearAll();
+      addDest("freeframe://p73", null);
+      addDest("/Volumes/S73_Main/Keep", null);
+      out.projectKept = tops();
+      ffProjects = [];
+
+      // ── No volumes enumerated at all. The real deviceFor returns
+      // \`best || internal\`, i.e. null when there is nothing to place a
+      // path against — which is the app's own state before the first
+      // listVolumes resolves. Without the null guard, dev === null would
+      // compare equal to every other unplaceable node and the second
+      // destination would evict the first.
+      const realVolumes = volumes;
+      volumes = [];
+      deviceFor = (p) => null;
+      clearAll();
+      addDest("/tmp/s73/one", null);
+      addDest("/tmp/s73/two", null);
+      out.noVolumes = tops();
+      volumes = realVolumes;
+
+      clearAll(); render();
+      return out;
+    })()`);
+
+    check(every.noVolumes.length === 2,
+      "with no volumes enumerated, two destinations stay two — nothing is placeable, so nothing narrows",
+      JSON.stringify(every.noVolumes));
+
+    check(every.submenuFound && every.recentFound,
+      "the tile menu's Destination Folder submenu offers the recent folder",
+      every.menuDump);
+    check(every.viaRecent.tops.length === 1
+      && every.viaRecent.tops[0] === "/Volumes/S73_Main/01_Projects/ReShuffle",
+      "a Recent Folders pick NARROWS the drive it is on — the recorded bug",
+      JSON.stringify(every.viaRecent.tops));
+    check(!/\u2192\s*2/.test(every.viaRecent.label),
+      "and Copy & Verify does not report a second leg", every.viaRecent.label);
+    check(every.browseFound && every.viaBrowse.tops.length === 1
+      && every.viaBrowse.tops[0] === "/Volumes/S73_Main/Browsed",
+      "so does that submenu's own Browse\u2026, which is separately wired",
+      JSON.stringify(every.viaBrowse.tops));
+    check(every.setAsFound && every.viaSetAs.tops.length === 1
+      && every.viaSetAs.tops[0] === "/Volumes/S73_Main/Sub",
+      "so does \"Set as Destination\" on a subfolder of a drive already held",
+      JSON.stringify(every.viaSetAs.tops));
+    check(every.viaDrag.tops.length === 1 && every.viaDrag.tops[0] === "/Volumes/S73_Main/Dragged",
+      "and so does dropping a tile straight onto the Destination zone",
+      JSON.stringify(every.viaDrag.tops));
+    check(every.alsoFound, "\"Also use as Destination\u2026\" is offered on a source drive tile");
+    check(every.viaAlso.tops.length === 2
+      && every.viaAlso.tops.includes("/Volumes/S73_Shuttle")
+      && every.viaAlso.tops.includes("/Volumes/S73_Main/Old"),
+      "\u2026and it adds beside a destination on a DIFFERENT drive, not over it",
+      JSON.stringify(every.viaAlso.tops));
+
+    // The OS drag-and-drop handler is the one entry point no synthetic
+    // event can reach — Electron populates the drop's file list from the
+    // real Finder, which CDP cannot forge (the same limitation
+    // e2e-copy.js's own header records). Asserted at the source instead,
+    // and labelled as such: what matters is that it reaches addDest()
+    // plainly, i.e. that it has no private copy of the rule to drift.
+    const dropHandler = src.slice(src.indexOf("A destination has to be a folder to copy into"));
+    const dropBody = dropHandler.slice(0, dropHandler.indexOf("addDest(folder, null);") + 30);
+    check(dropBody.includes("addDest(folder, null);") && !dropBody.includes("removeDest"),
+      "the OS drop handler adds plainly and inherits the rule (source-level check)");
+
+    check(every.differentDrive.tops.length === 2,
+      "a genuinely different drive is STILL a second parallel destination",
+      JSON.stringify(every.differentDrive.tops));
+    check(/\u2192\s*2/.test(every.differentDrive.label),
+      "and that one does report two legs", every.differentDrive.label);
+
+    check(every.cascadeChild.length === 2
+      && every.cascadeChild.some(n => n.p === "/Volumes/S73_Main" && !n.child)
+      && every.cascadeChild.some(n => n.p === "/Volumes/S73_Main/Leg" && n.child),
+      "a cascaded child never narrows the parent whose device it shares",
+      JSON.stringify(every.cascadeChild));
+
+    check(every.projectAdded.length === 2 && every.projectAdded.includes("/Volumes/S73_Main/Keep"),
+      "assigning a project does not evict a folder on the boot drive",
+      JSON.stringify(every.projectAdded));
+    check(every.projectKept.length === 2 && every.projectKept.includes("freeframe://p73"),
+      "and a boot-drive folder does not evict a project",
+      JSON.stringify(every.projectKept));
 
     console.log("6. The panel's Clear controls exist in both windows");
     check(await ev(`!!document.getElementById("jobs-clear")`), "docked panel has Clear");

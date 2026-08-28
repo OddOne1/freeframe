@@ -1617,6 +1617,38 @@
       }
       render();
     }
+    /**
+     * The existing top-level destination that adding `p` should REPLACE
+     * rather than sit beside, or null to add normally. §73.
+     *
+     * Only top-level nodes on either side. A cascaded node copies FROM
+     * another destination rather than from the source, so narrowing one
+     * would silently restructure the chain — and a cascaded child being
+     * added must not evict the parent whose device it necessarily shares.
+     *
+     * Projects are excluded in BOTH directions, and that exclusion is
+     * load-bearing rather than tidiness: deviceFor() falls back to the
+     * internal volume for any path it cannot place, so a `freeframe://id`
+     * URI resolves to a real mount point. Without this, assigning a project
+     * would evict a destination folder on the boot drive, and vice versa.
+     */
+    function narrowingTarget(p, parentId) {
+      if (parentId !== null) return null;
+      if (isProject(p)) return null;
+      const dev = deviceFor(p);
+      if (!dev) return null;
+      // `n.path !== p` is unreachable from addDest — its own exact-match
+      // guard returns before this runs — and kept only so the helper is
+      // correct if it is ever called from somewhere else. §69's version
+      // WAS reachable, because it ran outside addDest: the early return
+      // skipped the add while the caller went on to remove the node it had
+      // matched, emptying the column. That shape is gone with the caller.
+      return destNodes.find(
+        (n) => n.parentId === null && !isProject(n.path) &&
+          n.path !== p && deviceFor(n.path) === dev
+      ) || null;
+    }
+
     function addDest(p, parentId = null) {
       // Adding a destination disturbs nothing already running, so this is
       // deliberately ungated.
@@ -1628,7 +1660,24 @@
       // to re-read for an upload. Silently accepting it would produce a
       // chain that fails at run time.
       if (parentId && isProject(destNodes.find((n) => n.id === parentId)?.path || "")) return;
+
+      // §73 — picking a folder on a drive that is ALREADY a destination
+      // narrows that destination; it does not add a second leg beside it.
+      // This lives HERE rather than at the call sites because §69 fixed one
+      // of nine and the identical bug resurfaced through another two weeks
+      // later. Any entry point added later inherits the rule by
+      // construction instead of having to remember it.
+      //
+      // Source has no equivalent bug because `sourcePath` is one scalar, so
+      // picking always replaces. Destinations are a list on purpose
+      // (parallel copies are a real feature), which is why this narrows per
+      // DEVICE rather than always replacing: a folder on a genuinely
+      // different drive is still a new destination, unchanged.
+      const narrowed = narrowingTarget(p, parentId);
       destNodes.push({ id: newId(), path: p, parentId });
+      // Order matters: add first, then drop the old one, so a failure
+      // between the two leaves the destination populated rather than empty.
+      if (narrowed) removeDest(narrowed.path);
       // Symmetric with setSource: same conflict, same modal, whichever side
       // triggered it.
       if (p === sourcePath) {
@@ -2956,28 +3005,10 @@
         const dev = deviceFor(folder);
         if (dev) rememberRecent(dev, which === "source" ? "source" : "destination", folder);
         if (which === "source") { setSource(folder); return; }
-
-        // §69 — picking a folder on a drive that is ALREADY a destination
-        // narrows that destination; it does not add a second leg beside it.
-        //
-        // Source has no equivalent bug because `sourcePath` is one scalar,
-        // so picking always replaces. Destinations are a list on purpose
-        // (parallel copies are a real feature), which is why this narrows
-        // per DEVICE rather than always replacing: a folder on a genuinely
-        // different drive is still a new destination, unchanged.
-        //
-        // Only top-level nodes are considered. A cascaded node copies FROM
-        // another destination rather than from the source, so replacing one
-        // with a picked folder would silently restructure the chain.
-        const existing = dev
-          ? destNodes.find((n) => n.parentId === null && deviceFor(n.path) === dev)
-          : null;
-        // Order matters, and matches the context-menu path this mirrors
-        // (see "Choose a different folder/file…"): add first, then drop the
-        // old one, so a failure between the two leaves the destination
-        // populated rather than empty.
+        // §69's narrowing used to be written out here. It moved into
+        // addDest() in §73, so this is a plain add again — two copies of one
+        // rule is what let the bug survive at eight other call sites.
         addDest(folder, null);
-        if (existing && existing.path !== folder) removeDest(existing.path);
       });
     }
 
