@@ -1729,6 +1729,10 @@
      * would evict a destination folder on the boot drive, and vice versa.
      */
     function narrowingTarget(p, parentId) {
+      // An EXPLICIT cascade parent means the caller is building a chain,
+      // not editing which folder a device points at — cascadeFrom is the
+      // only such caller. Keyed off a named parent, not off the
+      // inherit-sentinel: `undefined` reaches here as `null` (see addDest).
       if (parentId !== null) return null;
       if (isProject(p)) return null;
       const dev = deviceFor(p);
@@ -1739,13 +1743,33 @@
       // WAS reachable, because it ran outside addDest: the early return
       // skipped the add while the caller went on to remove the node it had
       // matched, emptying the column. That shape is gone with the caller.
+      //
+      // §89 — CASCADE CHILDREN COUNT. This used to require
+      // `n.parentId === null`, so a device whose only destination was a
+      // cascade child looked empty: narrowing found nothing, and addDest
+      // built a second, independent root destination beside a chain that
+      // already used that drive. One device holds one destination folder
+      // wherever it sits in the chain, so where it sits is not a reason to
+      // ignore it.
       return destNodes.find(
-        (n) => n.parentId === null && !isProject(n.path) &&
-          n.path !== p && deviceFor(n.path) === dev
+        (n) => !isProject(n.path) && n.path !== p && deviceFor(n.path) === dev
       ) || null;
     }
 
-    function addDest(p, parentId = null) {
+    /**
+     * @param {string} p
+     * @param {string|null|undefined} parentId
+     *   A node id cascades from that node. `null` means ROOT, explicitly.
+     *   `undefined` — the default — means "wherever the destination this
+     *   replaces already sat", which is root when it replaces nothing.
+     *
+     *   §89 — those last two used to be the same value, and that is half
+     *   of what the bug was: narrowing a cascade child rebuilt it with the
+     *   caller's `null`, silently promoting it out of the chain. Fixing
+     *   only the matching half would have swapped a duplicated node for a
+     *   quietly-dropped cascade — different symptom, same loss.
+     */
+    function addDest(p, parentId = undefined) {
       // Adding a destination disturbs nothing already running, so this is
       // deliberately ungated.
       if (destNodes.some((n) => n.path === p)) return;
@@ -1769,8 +1793,14 @@
       // (parallel copies are a real feature), which is why this narrows per
       // DEVICE rather than always replacing: a folder on a genuinely
       // different drive is still a new destination, unchanged.
-      const narrowed = narrowingTarget(p, parentId);
-      destNodes.push({ id: newId(), path: p, parentId });
+      // `undefined` asks narrowingTarget the same question `null` does —
+      // the sentinel only decides where the REPLACEMENT lands, not whether
+      // there is something to replace.
+      const narrowed = narrowingTarget(p, parentId === undefined ? null : parentId);
+      const resolvedParentId = parentId === undefined
+        ? (narrowed ? narrowed.parentId : null)
+        : parentId;
+      destNodes.push({ id: newId(), path: p, parentId: resolvedParentId });
       // Order matters: add first, then drop the old one, so a failure
       // between the two leaves the destination populated rather than empty.
       if (narrowed) removeDest(narrowed.path);
@@ -2245,7 +2275,11 @@
           const n = destNodes.find((x) => x.path === dragged);
           if (n && n.parentId !== null) { n.parentId = null; render(); }
         } else {
-          addDest(dragged, null);
+          // §89 — INHERIT, for the same reason as the OS drop below: one
+          // rule for every entry point is what stops this bug returning
+          // through a fifth one. §73 already made this narrow; all that
+          // changes is that the replacement keeps its place in the chain.
+          addDest(dragged);
         }
       }
     });
@@ -2327,7 +2361,12 @@
       // there was a permanently-greyed row explaining a fact the column
       // already states.
       if (!heldDest && !heldSource) add("Set as Source", () => setSource(path));
-      if (!heldSource && !heldDest) add("Set as Destination", () => addDest(path, null));
+      // §89 — INHERIT, though the spec did not classify this one. The tile
+      // holds no role, but its DEVICE may already hold a destination, and
+      // if that one is cascaded, forcing root here drops the chain exactly
+      // the way the reported bug did. Never silently losing a cascade beats
+      // the weaker reading that this is always "a brand new destination".
+      if (!heldSource && !heldDest) add("Set as Destination", () => addDest(path));
 
       /**
        * "Source Folder ▸" / "Destination Folder ▸" — one submenu per role,
@@ -2438,7 +2477,12 @@
           labelOf: (r) => r.replace(path, "").replace(/^\//, "") || r,
         });
         if (!heldDest) roleSubmenu("source", "Source Folder", (f) => setSource(f), driveOpts("source", (f) => setSource(f)));
-        if (!heldSource) roleSubmenu("destination", "Destination Folder", (f) => addDest(f, null), driveOpts("destination", (f) => addDest(f, null)));
+        // §89 — INHERIT. This is offered on a tile that may already be
+        // assigned, and choosing a folder here means "this device's
+        // destination is that folder", not "start a new root destination".
+        // Passing null here is what put a third, independent LUMIX → Desktop
+        // beside an existing cascade on video.
+        if (!heldSource) roleSubmenu("destination", "Destination Folder", (f) => addDest(f), driveOpts("destination", (f) => addDest(f)));
 
         // Item 1's judgement call: one explicit, distinctly-worded entry
         // for the same-volume-both-roles case, rather than relying on drag
@@ -2454,6 +2498,12 @@
         // both sides would copy a folder into itself.
         if (heldSource || heldDest) {
           menu.appendChild(el("div", { class: "sep" }));
+          // §89 — EXPLICITLY ROOT, per the spec, and the one call site
+          // where I think that is arguable: this tile is held as SOURCE, so
+          // the spec reasons there is no destination on the device to
+          // narrow. On a single big RAID used for both roles (§59's
+          // role-both case) there can be, and if it is cascaded this
+          // promotes it. Left as instructed rather than changed quietly.
           if (heldSource) add("Also use as Destination…", () => addDest(path, null));
           else add("Also use as Source…", () => setSource(path));
         }
@@ -2487,7 +2537,14 @@
           // Order matters: add first, then drop the old one, so a failure
           // between the two leaves the destination populated rather than
           // empty.
-          addDest(f, null);
+          // §89 — INHERIT. This IS narrowing the tile that was
+          // right-clicked, so the replacement belongs wherever that tile
+          // sat. removeDest below still promotes any CHILDREN of the old
+          // node to root; that is removeDest's own long-standing rule
+          // (§73 recorded and pinned it) and is unchanged here — the new
+          // node has already taken the old one's parent slot, so nothing
+          // is orphaned upward.
+          addDest(f);
           removeDest(path);
           render();
         });
@@ -3208,7 +3265,12 @@
         // §69's narrowing used to be written out here. It moved into
         // addDest() in §73, so this is a plain add again — two copies of one
         // rule is what let the bug survive at eight other call sites.
-        addDest(folder, null);
+        //
+        // §89 — INHERIT. This is the Destinations column's own "Choose
+        // folder…", i.e. "the destination is that folder", so the
+        // replacement keeps whatever place in the chain it replaced. It
+        // reproduces §89's bug identically if left as an explicit root.
+        addDest(folder);
       });
     }
 
@@ -4068,7 +4130,10 @@
           }
           const dev = deviceFor(folder);
           if (dev) rememberRecent(dev, "destination", folder);
-          addDest(folder, null);
+          // §89 — INHERIT. Deliberately NOT special-cased away from the
+          // menu paths: consistency across entry points is the whole
+          // lesson of §69 → §73 → §89.
+          addDest(folder);
         }
       });
     }
