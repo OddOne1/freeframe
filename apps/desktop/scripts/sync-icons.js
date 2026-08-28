@@ -59,6 +59,12 @@ const ICONS = {
   chevronDown: "ChevronDown",
   kebab: "EllipsisVertical",
   pencil: "Pencil",
+  // §76's tile eject button. lucide 0.511 ships no Eject icon (checked, not
+  // assumed), and apps/web has no eject concept to borrow from. The real
+  // eject glyph is a triangle above a bar; this is the nearest member of the
+  // same family — an arrow rising off a line — so it reads correctly at
+  // 14px without hand-drawing an SVG this file exists to avoid.
+  eject: "ArrowUpFromLine",
 };
 
 /** lucide ships icons as [tag, attrs] child tuples; wrap them in the same

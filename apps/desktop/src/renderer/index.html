@@ -675,6 +675,15 @@
     }
     .tile-menu:hover { background: rgba(0,0,0,.8); color: #fff; }
 
+    /* §76 — eject, top-LEFT, deliberately the same chip as the kebab in the
+       opposite corner rather than a new visual idea. Shares .tile-menu's
+       rules above; only the corner differs. */
+    .tile-eject { left: 6px; right: auto; }
+    /* Disabled means "not now", not "not a thing" — it stays legible and
+       keeps its tooltip, which is the only place the reason is written. */
+    .tile-eject:disabled { opacity: .38; cursor: not-allowed; }
+    .tile-eject:disabled:hover { background: rgba(0,0,0,.55); color: rgba(255,255,255,.85); }
+
     /* Algorithm picker — a menu, not a bare <select>, because each option
        carries a paragraph of explanation. Somebody choosing between MD5,
        SHA-1, xxHash and C4 from four names alone will just pick the first
@@ -2703,6 +2712,56 @@
       tileKebab.appendChild(icon("kebab"));
       tileKebab.addEventListener("mousedown", (e) => e.stopPropagation());
       media.appendChild(tileKebab);
+
+      // §76 — a VISIBLE eject, since the existing one is a context-menu
+      // entry nobody finds. Same `ejectVolume()` the menu calls: a second
+      // implementation of the unmount-and-report path is how the two would
+      // drift.
+      //
+      // Rendered only where there is something to eject: a real volume that
+      // is not the boot drive. A project has no mount point, and main
+      // refuses internal independently — a permanently-disabled button on
+      // the machine's own disk would be UI for an action that can never
+      // succeed.
+      // Volumes column only (§76's wording), which `role` being unset is
+      // exactly what identifies — makeTile draws all three columns. A tile
+      // in the Source or Destination column holds a role by definition, so
+      // its button could never be anything but disabled: a permanently dead
+      // control on every assigned card.
+      const ejectVol = role
+        ? null
+        : volumes.find((v) => v.mountPoint === entry.mountPoint);
+      if (ejectVol && ejectVol.type !== "internal") {
+        const isNetwork = ejectVol.type === "network";
+        const verb = isNetwork ? "Disconnect" : "Eject";
+        // EXACT path match, not deviceFor(): what is being gated is
+        // unmounting this volume, and a subfolder of it holding a role is
+        // the same physical drive being pulled out from under a job.
+        const heldAsSource = sourcePath === entry.mountPoint;
+        const heldAsDest = destNodes.some((n) => n.path === entry.mountPoint);
+        const busy = isBusy(entry.mountPoint);
+        // §76 tightens this beyond the context menu's mid-copy-only gate.
+        // ejectVolume() silently drops a held role on success; reaching that
+        // from a button labelled "Eject" would unassign a card with no
+        // warning, so this refuses instead and says what to do. The old menu
+        // entry is deliberately left as it was.
+        const ejectBtn = el("button", {
+          class: "tile-menu tile-eject",
+          title: busy
+            ? `${verb} unavailable while a job is using this drive`
+            : heldAsSource || heldAsDest
+              ? `Remove this drive's ${heldAsSource ? "Source" : "Destination"} role before ejecting`
+              : verb,
+          onClick: (e) => {
+            e.stopPropagation();
+            ejectVolume(ejectVol);
+          },
+        });
+        ejectBtn.disabled = busy || heldAsSource || heldAsDest;
+        ejectBtn.appendChild(icon("eject"));
+        ejectBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+        media.appendChild(ejectBtn);
+      }
 
       tile.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
