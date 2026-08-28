@@ -275,8 +275,13 @@
         <div class="setting-label">Live checksum</div>
         <div class="setting-sub">
           Hashed while each file streams past during the copy, then compared
-          against every destination read back from disk. Applies to all jobs
+          against every destination read back from disk. Used by every copy
           — there is no per-job override.
+        </div>
+        <div class="setting-sub">
+          Uploads to a FreeFrame project are not verified by either tier:
+          they do not go through the copy engine at all. Copying the same
+          card to a drive as well is what gets you a checksummed copy.
         </div>
         <select id="settings-live-checksum" class="settings-select"></select>
       </div>
@@ -287,9 +292,9 @@
           An optional second pass once every file has copied: the source and
           every destination are read from disk again and hashed with the
           algorithm below. It is a full extra read of everything, so it
-          roughly doubles the time a job spends hashing. Only runs for jobs
-          copying from a drive — a job that only uploads to FreeFrame has no
-          local source left to re-read, and is skipped.
+          roughly doubles the time a job spends hashing. It covers local
+          destinations; a job reading from a FreeFrame project has no local
+          copy to re-read and is skipped.
         </div>
         <label class="settings-toggle">
           <input id="settings-finalized-enabled" type="checkbox" />

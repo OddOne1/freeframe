@@ -747,10 +747,18 @@ async function runCopyJob({
 
   // §86 — after every leg, before the summary is built.
   //
-  // Gated on a real local sourcePath: a FreeFrame-upload-only job has no
-  // local file left to re-read once the upload finished, and a job reading
-  // FROM a project has no local source at all. Skipped rather than
-  // errored — the live verification already happened and stands.
+  // Gated on a real local sourcePath: a job reading FROM a FreeFrame
+  // project has no local origin to re-read. Skipped rather than errored —
+  // the live verification already happened and stands.
+  //
+  // §88 — this used to also blame "a FreeFrame-upload-only job has no
+  // local file left once the upload finished". That was wrong twice.
+  // Uploading TO FreeFrame does not consume the local source; the card is
+  // still sitting there. And an upload-only job cannot reach this line at
+  // all: startCopy() only calls into runCopyJob when there is at least one
+  // LOCAL destination node, so a job whose destinations are all projects
+  // never runs this engine. The two reachable triggers are cancellation
+  // and a project SOURCE, and those are what the reason now says.
   let finalized = null;
   if (finalizedAlgorithm && sourcePath && !source && !cancelled) {
     finalized = await runFinalizedPass({
@@ -770,7 +778,7 @@ async function runCopyJob({
       skipped: true,
       reason: cancelled
         ? "the job was cancelled"
-        : "this job has no local source to re-read (FreeFrame upload or project source)",
+        : "this job's source is a FreeFrame project — there is no local copy to re-read",
       checked: 0, verified: 0, mismatches: [], errors: [], ok: false,
     };
   }

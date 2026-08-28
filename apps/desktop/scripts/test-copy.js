@@ -451,6 +451,47 @@ async function main() {
       });
       check(srcErr.errors.some((e) => e.stage === "source") && srcErr.ok === false,
         "an unreadable source is reported as a source error, and the pass does not claim success");
+
+      // §88 — when the pass is configured but cannot run, WHY is reported,
+      // and that reason has to be true. It used to blame "a FreeFrame
+      // upload has no local source left to re-read", which was wrong twice:
+      // uploading does not consume the card, and an upload-only job never
+      // reaches this engine at all (startCopy only calls it when there is a
+      // local destination node). Only two triggers are reachable.
+      const { localSource } = require("../src/main/copy-engine");
+      const provider = localSource(source);           // stands in for a project source
+      const pulled = await runCopyJob({
+        source: provider,
+        nodes: [{ id: "sk1", path: path.join(tmp, "skip-a"), parentId: null }],
+        algorithm: "xxhash64", finalizedAlgorithm: "sha1",
+      });
+      check(Boolean(pulled.finalized) && pulled.finalized.skipped === true,
+        "a job with no local sourcePath reports the pass as skipped, not absent");
+      // Optional-chained: an absent block is exactly what a regression here
+      // produces, and an uncaught TypeError kills this file — every later
+      // check silently never runs and a sweep reads the crash as "survived".
+      const pr = (pulled.finalized && pulled.finalized.reason) || "";
+      check(/FreeFrame project/.test(pr) && !/upload/i.test(pr),
+        "…and blames the project SOURCE, never an upload", pr || "(no finalized block)");
+      check(pulled.finalized?.ok === false && pulled.finalized?.checked === 0,
+        "…and does not claim to have verified anything");
+
+      // The other reachable trigger.
+      const stoppedJob = await runCopyJob({
+        sourcePath: source,
+        nodes: [{ id: "sk2", path: path.join(tmp, "skip-b"), parentId: null }],
+        algorithm: "xxhash64", finalizedAlgorithm: "sha1",
+        isCancelled: () => true,
+      });
+      const sr = (stoppedJob.finalized && stoppedJob.finalized.reason) || "";
+      check(/cancelled/.test(sr), "a cancelled job says so instead", sr || "(no finalized block)");
+
+      // Nothing anywhere in the engine still tells the old story.
+      const esrc = fssync.readFileSync(
+        path.join(__dirname, "..", "src", "main", "copy-engine.js"), "utf8");
+      const reasonLine = esrc.split("\n").find((l) => l.includes("there is no local copy to re-read"));
+      check(Boolean(reasonLine) && !/upload/i.test(reasonLine),
+        "the reason string itself carries no upload framing", (reasonLine || "(absent)").trim());
     }
 
     // ── §87 Phase 1: the live per-job journal ───────────────────────────
