@@ -11,7 +11,7 @@ const presets = require("./presets");
 const settings = require("./settings");
 const dailyOverview = require("./daily-overview");
 const webview = require("./webview");
-const { buildRelMapper, unknownTokens, folderPatternError, rendersNewFileNames, omitTokens } = require("./naming");
+const { buildRelMapper, unknownTokens, folderPatternError, rendersNewFileNames, omitTokens, tokensIn } = require("./naming");
 const { normalizeFilters, wantsFlatten } = require("./filters");
 const { JobQueue } = require("./job-queue");
 const { listAlgorithms, isSupported, DEFAULT_ALGORITHM } = require("./hashers");
@@ -58,9 +58,25 @@ function stampFor(ms) {
   return `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
 }
 
+/**
+ * §84 — the transfer log, human-readable part first.
+ *
+ * "Open Log" calls shell.openPath(): this file IS the viewer, opened in
+ * whatever macOS hands a .json to. So the order of the keys is the order
+ * someone reads, and hashes and IDs at the top meant the answer to "did my
+ * card copy, and what are the files called now" was several screens down.
+ *
+ * `readable` is a view, not new truth — every value in it is derived from
+ * `technical`, which keeps everything the file carried before, unchanged.
+ * Nothing was removed.
+ *
+ * Version bumped to 2: the two top-level keys this file used to have
+ * (`job`, `summary`) both moved under `technical`, so anything reading
+ * them by path breaks. A reader that checks the version now finds out,
+ * rather than silently seeing undefined.
+ */
 function buildJobLog(job) {
-  return {
-    freeframeTransferLog: 1,
+  const technical = {
     job: {
       id: job.id,
       kind: job.kind,
@@ -76,6 +92,67 @@ function buildJobLog(job) {
       error: job.error || null,
     },
     summary: job.summary || null,
+  };
+
+  const nodes = (job.summary && job.summary.nodes) || [];
+  // Every file, per destination, source name beside the name it landed as.
+  const files = [];
+  for (const n of nodes) {
+    for (const f of n.files || []) {
+      const from = path.basename(f.file || "");
+      // null when the write never happened — a file that errored before a
+      // destination path existed. Reported as such rather than as a rename.
+      const to = f.destPath ? path.basename(f.destPath) : null;
+      files.push({
+        destination: n.path,
+        from,
+        to,
+        renamed: Boolean(to) && to !== from,
+        verified: Boolean(f.ok),
+        sourcePath: f.file,
+        destPath: f.destPath || null,
+      });
+    }
+  }
+
+  const failed = files.filter((f) => !f.verified);
+  // A card is only safe to wipe if EVERY destination verified. Stated as a
+  // sentence as well as a boolean, because the sentence is the reason
+  // anyone opens this file.
+  //
+  // `failed.length === 0` is belt AND braces on top of the node statuses,
+  // deliberately: a node reporting "verified" while one of its own files
+  // reports ok:false should never be reachable, but if it ever is, this
+  // line is the one that says "your footage is safe, erase the card". It
+  // must not be able to contradict the list printed directly beneath it.
+  const allVerified = nodes.length > 0
+    && job.status === "done"
+    && nodes.every((n) => n.status === "verified")
+    && failed.length === 0;
+
+  return {
+    freeframeTransferLog: 2,
+    readable: {
+      job: job.label || job.id,
+      status: job.status,
+      source: job.sourceLabel,
+      destinations: technical.job.destinations,
+      finished: technical.job.finishedAt,
+      safeToWipeCard: allVerified,
+      verdict: allVerified
+        ? "Every file was copied and verified on every destination. The card can be wiped."
+        : "NOT every file verified — do not wipe the card. See notVerified below.",
+      fileCount: files.length,
+      renamedCount: files.filter((f) => f.renamed).length,
+      // Listed first and separately, so a problem is not something you have
+      // to notice by scanning a long list of successes.
+      notVerified: failed.map((f) => ({ destination: f.destination, from: f.from, to: f.to })),
+      files: files.map((f) => ({
+        from: f.from, to: f.to, renamed: f.renamed,
+        verified: f.verified, destination: f.destination,
+      })),
+    },
+    technical,
   };
 }
 
@@ -520,6 +597,12 @@ ipcMain.handle("presets:set-source-counter", async (_e, { value } = {}) => {
  * lookalike — a preview that agrees with a separate implementation is
  * worse than no preview, because it builds confidence in the wrong thing.
  */
+/** §81 — the built-ins that make a Date row worth showing, and the ones
+ *  that make a Time row worth showing. Case matters: {MM} is the month,
+ *  {mm} is minutes (§65). */
+const DATE_TOKENS = new Set(["date", "YYYY", "YY", "MM", "DD"]);
+const TIME_TOKENS = new Set(["hh", "mm"]);
+
 /**
  * §78 — the date a job renders its date tokens from.
  *
@@ -588,6 +671,15 @@ ipcMain.handle("presets:preview", async (_e, { folderTemplate, fileTemplate, val
       // Whether the file name carries a suffix the user did not write
       // (§65.5/.9), so the preview can mark it rather than let it surprise.
       autoCounter: Boolean(mapper && mapper.autoCounter),
+      // §81 — which kinds of token the patterns actually use, so the
+      // renderer can hide the Date and Time rows for a preset that renders
+      // neither. Answered here because tokensIn() lives here; a regex in
+      // the renderer would be a second implementation of the tokenizer,
+      // and the two would drift the first time the syntax changed.
+      //
+      // Read off the STRIPPED templates, which is what actually renders.
+      usesDate: [folderTpl, fileTpl].some((t) => tokensIn(t).some((k) => DATE_TOKENS.has(k))),
+      usesTime: [folderTpl, fileTpl].some((t) => tokensIn(t).some((k) => TIME_TOKENS.has(k))),
       // §77 — WHAT that suffix is and WHERE it sits, reported rather than
       // left for the renderer to find with a regex. It used to look for
       // four digits at the end, which stops matching the moment the suffix

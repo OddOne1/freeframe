@@ -421,13 +421,70 @@ function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, s
       for (const sidecar of sidecars) followsMedia.set(sidecar, target);
     }
 
-    // Only files that are named in their own right consume a counter.
-    let n = 0;
+    // §82 — the counter restarts in every destination folder.
+    //
+    // It used to be one running sequence for the whole job, which is
+    // correct in the sense that no two files collide, and wrong in the
+    // sense that matters: a folder holding 13 files read _0003 to _0015,
+    // and the next folder picked up at _0016. Anyone looking at one folder
+    // reads that as footage missing — a worse failure than the collision
+    // the counter exists to prevent.
+    //
+    // Sidecars are excluded here exactly as before: they adopt their media
+    // file's number, so consuming one of their own would push every
+    // following clip a number too high (§23d).
+    const byFolder = new Map();
     for (const rel of relFiles) {
       if (followsMedia.has(rel)) continue;
-      n += 1;
-      indexFor.set(rel, n);
+      const key = destFolderKey(rel, rel, 0);
+      if (!byFolder.has(key)) byFolder.set(key, []);
+      byFolder.get(key).push(rel);
     }
+    for (const group of byFolder.values()) {
+      let n = 0;
+      for (const rel of group) {
+        n += 1;
+        indexFor.set(rel, n);
+      }
+    }
+  }
+
+  /**
+   * Where a file lands, as the two parts that make up its destination
+   * directory: the rendered folder template, and the source subtree kept
+   * beneath it.
+   *
+   * §82 — factored out so prepare() and mapRel() cannot disagree about
+   * which folder a file goes to. They did not disagree before because only
+   * mapRel computed it at all; now that the counter is grouped by folder,
+   * two implementations would mean files numbered for one folder and
+   * written to another.
+   *
+   * `idx` is only read by a `{counter}` in the FOLDER template, which §65c
+   * rejects at both the editor and job start — so prepare() can pass a
+   * placeholder before any index exists. A hand-built payload that bypassed
+   * that validation would group by a folder key computed with the wrong
+   * index; it would still be internally consistent per file, just numbered
+   * per folder-per-file, which is what such a template asks for anyway.
+   */
+  function destFolderParts(nameSource, rel, idx) {
+    const ctx = { now, sourceLabel, rel: nameSource, index: idx, sourceCounter };
+    const prefix = folder ? renderTemplate(folder, values, ctx) : "";
+    const dir = path.dirname(rel);
+    // Flatten discards the source's own directory structure, dropping every
+    // file directly under the folder template. Off by default: preserving
+    // the tree is the correct thing for a card offload, and losing it is
+    // only ever an explicit request.
+    const keepDir = !flatten && dir && dir !== "." ? dir : "";
+    return { prefix, keepDir };
+  }
+
+  /** The identity of one destination folder, for grouping. */
+  function destFolderKey(nameSource, rel, idx) {
+    const { prefix, keepDir } = destFolderParts(nameSource, rel, idx);
+    // NUL, as elsewhere in this file: the one byte a path cannot contain,
+    // so "a/b" + "" and "a" + "b" cannot collide into one group.
+    return `${prefix}\u0000${keepDir}`;
   }
 
   function renderBaseFor(rel) {
@@ -460,13 +517,9 @@ function buildRelMapper({ folderTemplate = "", fileTemplate = "", values = {}, s
     const nameSource = followsMedia.get(rel) ?? rel;
     const ctx = { now, sourceLabel, rel: nameSource, index: indexFor.get(nameSource) ?? index + 1, sourceCounter };
 
-    const prefix = folder ? renderTemplate(folder, values, ctx) : "";
-    const dir = path.dirname(rel);
-    // Flatten discards the source's own directory structure, dropping every
-    // file directly under the folder template. Off by default: preserving
-    // the tree is the correct thing for a card offload, and losing it is
-    // only ever an explicit request.
-    const keepDir = !flatten && dir && dir !== "." ? dir : "";
+    // §82 — the same helper prepare() groups by, so a file cannot be
+    // numbered for one folder and written to another.
+    const { prefix, keepDir } = destFolderParts(nameSource, rel, ctx.index);
 
     let base = path.basename(rel);
     if (file) {

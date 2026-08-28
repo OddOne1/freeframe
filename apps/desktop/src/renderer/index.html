@@ -260,6 +260,10 @@
     /* §78 — same footer family as .fv-counter above; only the control
        widths differ, since a date needs more room than a card number. */
     .fv-date { border-top: none; padding-top: 0; margin-top: 6px; }
+    /* §81 — .fv-counter is display:flex, so hiding needs its own rule: the
+       only .hidden in this file is scoped to #fields-panel, and a bare
+       class toggle would have been silently inert. */
+    .fv-counter.hidden { display: none; }
     .fv-date input { width: 130px; }
     .fv-date button {
       height: 26px; padding: 0 10px; border-radius: 6px;
@@ -1579,6 +1583,24 @@
      * surviving a relaunch would misdate a whole day's cards.
      */
     let dateOverride = null;
+
+    /**
+     * §81 — whether the active preset's patterns render date/time tokens at
+     * all. Answered by main (presets:preview), not by a regex here: a
+     * second tokenizer in the renderer would drift from naming.js's the
+     * first time the syntax changed.
+     *
+     * Both start false, so a panel shows neither row until the round trip
+     * that decides comes back. That is a brief absence rather than a wrong
+     * row, and the round trip already happens on every panel render.
+     */
+    let patternUses = { date: false, time: false };
+
+    function applyDateTimeRows() {
+      const d = $("fv-date-row"), t = $("fv-time-row");
+      if (d) d.classList.toggle("hidden", !patternUses.date);
+      if (t) t.classList.toggle("hidden", !patternUses.time);
+    }
 
     const FILESET = "fileset://selected";
     const isFileSet = (p) => p === FILESET;
@@ -3667,8 +3689,14 @@
 
       host.appendChild(el("div", { id: "fields-preview", class: "fv-preview" }));
       host.appendChild(renderCardNumber());
+      // §81 — built hidden and revealed by updateFieldsPreview() once main
+      // reports which token kinds the patterns use. Built rather than
+      // skipped so the reveal is a class toggle, not a re-render that would
+      // re-enter this function.
       host.appendChild(renderCardDate());
+      host.appendChild(renderCardTime());
       host.appendChild(renderCardClear());
+      applyDateTimeRows();
       updateFieldsPreview();
     }
 
@@ -3720,49 +3748,116 @@
       return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
     }
 
+    /** Local HH:MM, matching dateInputValue's reasoning about time zones. */
+    function timeInputValue(d) {
+      const pad2 = (n) => String(n).padStart(2, "0");
+      return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    }
+
+    /** What the job will actually render from right now. */
+    const effectiveNow = () => dateOverride || new Date();
+
     /**
-     * §78 — the date the job's date tokens render from.
+     * §78/§81 — the date and time the job's date/time tokens render from.
      *
-     * Modelled on OffShoot's own Review panel, which shows an editable date
-     * with one click back to now. Defaults to live: the field shows today
-     * and nothing is overridden until it is changed, so the common case
-     * needs no interaction and behaves exactly as it did before this row
-     * existed.
+     * ONE Date, two editable views onto it. Date edits Y/M/D, Time edits
+     * h/m; both feed the single `now` buildRelMapper receives, because
+     * that is what a Date already is.
      *
-     * The reason it exists is offloading after midnight, or a card handed
-     * over the next morning — the shoot's date is not the clock's.
+     * Defaults to live: the fields show the clock and nothing is
+     * overridden until one is changed, so the common case needs no
+     * interaction. The reason it exists is offloading after midnight, or a
+     * card handed over the next morning — the shoot's date is not the
+     * clock's.
+     *
+     * §81 — each row appears only when the patterns actually use a token
+     * it controls. A Date row above a preset that renders no date is an
+     * offer to change something that will not appear anywhere.
      */
     function renderCardDate() {
-      const wrap = el("div", { class: "fv-counter fv-date" });
+      const wrap = el("div", { class: "fv-counter fv-date", id: "fv-date-row" });
       wrap.appendChild(el("label", { text: "Date",
-        title: "What {date}/{YYYY}/{MM}/{DD} render as. Defaults to today." }));
+        title: "What {date}/{YYYY}/{YY}/{MM}/{DD} render as. Defaults to today." }));
 
       const input = el("input", { id: "fv-date-input" });
       input.type = "date";
-      input.value = dateInputValue(dateOverride || new Date());
+      input.value = dateInputValue(effectiveNow());
       input.addEventListener("change", () => {
         // Parsed as LOCAL midnight, not UTC: `new Date("2026-08-28")` is
         // UTC midnight, which renders as the 27th anywhere west of
         // Greenwich — the date tokens would be a day off for half the
         // world.
         const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input.value);
-        // Cleared rather than kept: an empty field means "no override",
-        // which is the same thing the Now button does.
-        dateOverride = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+        if (!m) { input.value = dateInputValue(effectiveNow()); return; }
+        // The time half is carried over, not reset: editing one view must
+        // not silently discard what the other one says.
+        const base = effectiveNow();
+        dateOverride = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+                                base.getHours(), base.getMinutes());
         renderFieldsPanel();
       });
       wrap.appendChild(input);
 
       const now = el("button", { id: "fv-date-now", text: "Now",
         title: "Use today's date", onClick: () => {
-          dateOverride = null;
+          const live = new Date();
+          const base = effectiveNow();
+          dateOverride = new Date(live.getFullYear(), live.getMonth(), live.getDate(),
+                                  base.getHours(), base.getMinutes());
+          dropOverrideIfLive();
           renderFieldsPanel();
         } });
       // Disabled when it would do nothing, so the button itself says
-      // whether an override is currently in effect.
-      now.disabled = !dateOverride;
+      // whether THIS row is currently overriding anything.
+      now.disabled = !dateOverride || dateInputValue(dateOverride) === dateInputValue(new Date());
       wrap.appendChild(now);
       return wrap;
+    }
+
+    /** §81 — the time half of the same value. */
+    function renderCardTime() {
+      const wrap = el("div", { class: "fv-counter fv-date", id: "fv-time-row" });
+      wrap.appendChild(el("label", { text: "Time",
+        title: "What {hh}/{mm} render as. Defaults to the current time." }));
+
+      const input = el("input", { id: "fv-time-input" });
+      input.type = "time";
+      input.value = timeInputValue(effectiveNow());
+      input.addEventListener("change", () => {
+        const m = /^(\d{2}):(\d{2})$/.exec(input.value);
+        if (!m) { input.value = timeInputValue(effectiveNow()); return; }
+        const base = effectiveNow();
+        dateOverride = new Date(base.getFullYear(), base.getMonth(), base.getDate(),
+                                Number(m[1]), Number(m[2]));
+        renderFieldsPanel();
+      });
+      wrap.appendChild(input);
+
+      const now = el("button", { id: "fv-time-now", text: "Now",
+        title: "Use the current time", onClick: () => {
+          const live = new Date();
+          const base = effectiveNow();
+          dateOverride = new Date(base.getFullYear(), base.getMonth(), base.getDate(),
+                                  live.getHours(), live.getMinutes());
+          dropOverrideIfLive();
+          renderFieldsPanel();
+        } });
+      now.disabled = !dateOverride || timeInputValue(dateOverride) === timeInputValue(new Date());
+      wrap.appendChild(now);
+      return wrap;
+    }
+
+    /**
+     * Once neither half differs from the clock any more, stop overriding
+     * at all — otherwise a value pinned to "now" would freeze there and
+     * quietly stop tracking, which is the opposite of what pressing Now
+     * asks for.
+     */
+    function dropOverrideIfLive() {
+      if (!dateOverride) return;
+      const live = new Date();
+      if (dateInputValue(dateOverride) === dateInputValue(live)
+        && timeInputValue(dateOverride) === timeInputValue(live)) dateOverride = null;
     }
 
     /**
@@ -3809,6 +3904,9 @@
       );
       const box = $("fields-preview");
       if (!box) return;   // re-rendered while awaiting
+      // §81 — same round trip, so no extra channel and no second tokenizer.
+      patternUses = { date: Boolean(res && res.usesDate), time: Boolean(res && res.usesTime) };
+      applyDateTimeRows();
       renderScopedPreview(box, res);
     }
 

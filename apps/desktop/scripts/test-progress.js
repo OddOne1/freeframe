@@ -162,5 +162,202 @@ console.log("\n7. Remove stays unguarded (§85, wrongly gated twice before)");
     "while Eject stays gated — a different concern");
 }
 
+console.log("\n8. (§81) Date and Time are two views on ONE value");
+{
+  // The real helpers, extracted rather than restated — a second copy would
+  // keep passing while the shipped ones drifted.
+  const grab = (name) => {
+    const i = src.indexOf(`    function ${name}(`);
+    if (i < 0) throw new Error(`${name} not found`);
+    return src.slice(i, src.indexOf("\n    }\n", i) + 6);
+  };
+  let ov = null;
+  const api = new Function("getD", "setD",
+    grab("dateInputValue") + grab("timeInputValue") + grab("dropOverrideIfLive") + `
+    const effectiveNow = () => getD() || new Date();
+    const settle = () => { let dateOverride = getD(); if (!dateOverride) return;
+      const live = new Date();
+      if (dateInputValue(dateOverride) === dateInputValue(live)
+        && timeInputValue(dateOverride) === timeInputValue(live)) setD(null); };
+    return {
+      dateStr: () => getD() && dateInputValue(getD()),
+      timeStr: () => getD() && timeInputValue(getD()),
+      setDate(y,m,d){const b=effectiveNow();setD(new Date(y,m-1,d,b.getHours(),b.getMinutes()));},
+      setTime(h,mi){const b=effectiveNow();setD(new Date(b.getFullYear(),b.getMonth(),b.getDate(),h,mi));},
+      dateNow(){const l=new Date(),b=effectiveNow();
+        setD(new Date(l.getFullYear(),l.getMonth(),l.getDate(),b.getHours(),b.getMinutes()));settle();},
+      timeNow(){const l=new Date(),b=effectiveNow();
+        setD(new Date(b.getFullYear(),b.getMonth(),b.getDate(),l.getHours(),l.getMinutes()));settle();},
+      today: () => dateInputValue(new Date()),
+    };`)(() => ov, (v) => { ov = v; });
+
+  check(ov === null, "starts live — nothing overridden until something is set");
+  api.setDate(2025, 1, 2);
+  check(api.dateStr() === "2025-01-02", "setting the date pins it", api.dateStr());
+  api.setTime(3, 4);
+  check(api.dateStr() === "2025-01-02", "setting the TIME does not discard the date", api.dateStr());
+  check(api.timeStr() === "03:04", "…and pins the time", api.timeStr());
+  api.setDate(2026, 12, 31);
+  check(api.timeStr() === "03:04", "setting the DATE does not discard the time", api.timeStr());
+  api.dateNow();
+  check(api.dateStr() === api.today(), "Date's Now returns to today");
+  check(api.timeStr() === "03:04", "…and leaves the time override alone", api.timeStr());
+  api.timeNow();
+  check(ov === null,
+    "once neither half differs from the clock, the override drops — a value pinned to \"now\" would freeze there");
+}
+
+console.log("\n9. (§81) A local date is not a UTC one");
+{
+  // `new Date("2026-08-28")` is UTC midnight, which formats as the 27th
+  // anywhere west of Greenwich. Both directions are parsed/formatted from
+  // local parts, and this pins that rather than the timezone this happens
+  // to run in.
+  const i = src.indexOf("    function dateInputValue(");
+  const fn = new Function(src.slice(i, src.indexOf("\n    }\n", i) + 6) + "; return dateInputValue;")();
+  check(fn(new Date(2026, 7, 28, 23, 30)) === "2026-08-28",
+    "a late-evening local time still formats as its own day", fn(new Date(2026, 7, 28, 23, 30)));
+  check(fn(new Date(2026, 0, 1, 0, 5)) === "2026-01-01",
+    "…and just after local midnight too", fn(new Date(2026, 0, 1, 0, 5)));
+}
+
+console.log("\n10. (§84) The transfer log reads top-down");
+{
+  const mainSrc = fs.readFileSync(path.join(__dirname, "..", "src", "main", "main.js"), "utf8");
+  const i = mainSrc.indexOf("function buildJobLog(job) {");
+  // Anchored on the KEY, not on its value. Anchoring on "freeframeTransferLog: 2"
+  // made a version change break the extraction instead of failing the
+  // assertion below — the script threw, no FAIL line was printed, and a
+  // mutation sweep read that as "survived".
+  const end = mainSrc.indexOf("\n}\n", mainSrc.indexOf("    freeframeTransferLog:", i)) + 3;
+  const buildJobLog = new Function("path", mainSrc.slice(i, end) + "; return buildJobLog;")(path);
+
+  const mk = (files, status = "done", nodeStatus = "verified") => buildJobLog({
+    id: "j1", label: "LUMIX to ReShuffle", status, mode: "free",
+    sourceLabel: "/Volumes/LUMIX", destPaths: ["/dst"],
+    createdAt: 1, startedAt: 2, finishedAt: 3,
+    summary: { nodes: [{ path: "/dst", status: nodeStatus, files }] },
+  });
+
+  const renamed = mk([
+    { file: "DCIM/P1012257.MOV", destPath: "/dst/001_B-Roll/DCIM/001_B-Roll_0001.MOV", ok: true },
+    { file: "DCIM/P1012258.MOV", destPath: "/dst/001_B-Roll/DCIM/001_B-Roll_0002.MOV", ok: true },
+  ]);
+  check(Object.keys(renamed).join(",") === "freeframeTransferLog,readable,technical",
+    "readable comes before technical — this file IS the viewer",
+    Object.keys(renamed).join(","));
+  check(renamed.freeframeTransferLog === 2,
+    "the version is bumped: `job`/`summary` moved, so a path-based reader breaks loudly");
+  check(renamed.readable.files[0].from === "P1012257.MOV"
+    && renamed.readable.files[0].to === "001_B-Roll_0001.MOV"
+    && renamed.readable.files[0].renamed === true,
+    "a renamed file shows both names and says so", JSON.stringify(renamed.readable.files[0]));
+  check(renamed.readable.renamedCount === 2 && renamed.readable.fileCount === 2, "…and is counted");
+  check(renamed.technical.job && renamed.technical.summary !== undefined,
+    "everything that was in the file before is still there, just lower down");
+
+  const plain = mk([{ file: "DCIM/A.MOV", destPath: "/dst/DCIM/A.MOV", ok: true }]);
+  check(plain.readable.files[0].renamed === false
+    && plain.readable.files[0].from === plain.readable.files[0].to,
+    "a plain copy shows identical names and renamed:false — no special casing");
+
+  check(renamed.readable.safeToWipeCard === true, "all verified: safe to wipe");
+  const bad = mk([{ file: "DCIM/A.MOV", destPath: "/dst/DCIM/A.MOV", ok: false }]);
+  check(bad.readable.safeToWipeCard === false, "one unverified file: NOT safe to wipe");
+  check(bad.readable.notVerified.length === 1,
+    "…and it is listed on its own, not left to be spotted in a long list");
+  // The line that says "erase your footage" must never disagree with the
+  // list printed under it, even from a node status that should be
+  // impossible.
+  const lying = mk([{ file: "DCIM/A.MOV", destPath: "/dst/DCIM/A.MOV", ok: false }], "done", "verified");
+  check(lying.readable.safeToWipeCard === false,
+    "a node claiming verified cannot override a file that failed");
+
+  const noDest = mk([{ file: "DCIM/B.MOV", destPath: null, ok: false }]);
+  check(noDest.readable.files[0].to === null && noDest.readable.files[0].renamed === false,
+    "a file that never reached a destination is not reported as renamed",
+    JSON.stringify(noDest.readable.files[0]));
+}
+
+console.log("\n11. (§81) Which token kinds a pattern uses is decided in main");
+{
+  // The renderer asks rather than tokenizing again, so the classification
+  // itself has to be pinned where it lives.
+  const mainSrc = fs.readFileSync(path.join(__dirname, "..", "src", "main", "main.js"), "utf8");
+  const { tokensIn } = require(path.join(__dirname, "..", "src", "main", "naming.js"));
+  // Read out of the source by bracket position rather than by regex —
+  // the escaping needed to match `new Set(` inside a generated file is
+  // exactly where this went wrong once already.
+  const grabSet = (name) => {
+    const i = mainSrc.indexOf(`const ${name} = new Set(`);
+    if (i < 0) throw new Error(`${name} not found`);
+    const open = mainSrc.indexOf("[", i);
+    const close = mainSrc.indexOf("]", open);
+    return new Set(JSON.parse(mainSrc.slice(open, close + 1)));
+  };
+  const DATE = grabSet("DATE_TOKENS"), TIME = grabSet("TIME_TOKENS");
+  const uses = (t) => ({
+    date: tokensIn(t).some((k) => DATE.has(k)),
+    time: tokensIn(t).some((k) => TIME.has(k)),
+  });
+
+  check(!uses("{operator}_{sourcecounter}").date && !uses("{operator}_{sourcecounter}").time,
+    "a pattern with no date or time token claims neither row");
+  check(uses("{YYYY}{MM}{DD}").date && !uses("{YYYY}{MM}{DD}").time,
+    "a date pattern claims Date only");
+  check(!uses("{hh}{mm}").date && uses("{hh}{mm}").time,
+    "a time pattern claims Time only");
+  check(uses("{date}_{hh}").date && uses("{date}_{hh}").time, "both claims both");
+  // The one that a careless Set would get wrong.
+  check(uses("{MM}").date && !uses("{MM}").time,
+    "{MM} is the MONTH — a date token, not a time one");
+  check(!uses("{mm}").date && uses("{mm}").time,
+    "{mm} is MINUTES — a time token, not a date one");
+
+  // The classification above is only worth anything if the handler
+  // actually applies it. Asserted at the source, because the flags come
+  // back over IPC and this suite starts no Electron: the check right above
+  // re-applies tokensIn itself, so a handler hardcoding `usesDate: true`
+  // would sail past it.
+  for (const [key, set] of [["usesDate", "DATE_TOKENS"], ["usesTime", "TIME_TOKENS"]]) {
+    const line = mainSrc.split("\n").find((l) => l.trim().startsWith(`${key}:`));
+    check(Boolean(line) && line.includes("tokensIn(") && line.includes(`${set}.has(`),
+      `${key} is derived from the templates, not asserted`, (line || "(absent)").trim());
+    check(Boolean(line) && line.includes("folderTpl") && line.includes("fileTpl"),
+      `…from BOTH templates — a date token in either one earns the row`);
+  }
+}
+
+console.log("\n11b. (§81) …and the renderer hides the rows on those flags");
+{
+  // Three separate things, each of which alone would leave a row that is
+  // always shown or never shown.
+  check(/patternUses = \{ date: Boolean\(res && res\.usesDate\), time: Boolean\(res && res\.usesTime\) \}/.test(src),
+    "the flags are read off the preview the panel already requests");
+  check(/d\.classList\.toggle\("hidden", !patternUses\.date\)/.test(src)
+    && /t\.classList\.toggle\("hidden", !patternUses\.time\)/.test(src),
+    "…and drive each row's visibility");
+  // .fv-counter is display:flex, and the only other .hidden in the file is
+  // scoped to #fields-panel — so without its own rule the toggle is inert
+  // and both rows show regardless.
+  check(/\.fv-counter\.hidden \{ display: none; \}/.test(src),
+    "…against a CSS rule that actually hides them");
+}
+
+console.log("\n12. (§84) copy-engine keeps the destination path per file");
+{
+  // Asserted at the source: n.files is built deep inside runCopyJob's
+  // closure, and the fixture in section 10 supplies destPath itself — so
+  // nothing there would notice the engine dropping it again.
+  const eng = fs.readFileSync(path.join(__dirname, "..", "src", "main", "copy-engine.js"), "utf8");
+  const m = /n\.files = fileResults\.map\(\(f\) => \{[\s\S]*?\}\);/.exec(eng);
+  check(Boolean(m), "the per-file trim is still there");
+  check(m && /destPath: d\?\.path/.test(m[0]),
+    "…and carries the destination path, not just the source one",
+    m ? (m[0].match(/destPath:[^,]*/) || ["(absent)"])[0] : "");
+  check(m && /const d = f\.destinations\.find\(\(x\) => x\.destRoot === n\.path\)/.test(m[0]),
+    "…looked up for THIS node, matching summarizeRoot's own pattern");
+}
+
 console.log(fail === 0 ? "\nALL PASS" : `\n${fail} FAILED`);
 process.exit(fail === 0 ? 0 : 1);

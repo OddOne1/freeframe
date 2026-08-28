@@ -55,12 +55,19 @@
 .job-error { color: var(--status-error); }
 .job-warn  { color: var(--status-warning); }
 
+/* §83 — it was a neutral border and secondary text, which is the app's
+   treatment for a LABEL. Its contrast was never the problem (6.0:1 against
+   the panel, higher than the accent's 5.6:1); nothing marked it as a thing
+   you press. Blue is what this app uses for that everywhere else.
+   Hover fills rather than brightens, matching button.primary exactly
+   (accent ground, #08080b text — 6.0:1 dark, 5.0:1 light), so the change is
+   unmistakable instead of marginal. */
 .job-log {
-  flex-shrink: 0; border: 1px solid var(--border); background: transparent;
-  font-family: inherit; font-size: 10px; color: var(--text-secondary);
+  flex-shrink: 0; border: 1px solid var(--accent); background: transparent;
+  font-family: inherit; font-size: 10px; color: var(--accent);
   padding: 1px 7px; border-radius: 4px;
 }
-.job-log:hover { background: var(--bg-hover); color: var(--text-primary); }
+.job-log:hover { background: var(--accent); color: #08080b; }
 
 /* §71 — the completion detail, now inside the job's own row instead of a
    separate card below the Log. Styles moved from index.html's `.summary`

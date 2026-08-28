@@ -678,12 +678,21 @@ async function runCopyJob({
           n.errors.push(...rollup.errors);
           n.status = rollup.ok && !isCancelled() ? "verified" : "failed";
           n.finishedAt = Date.now();
-          n.files = fileResults.map((f) => ({
-            file: f.file,
-            bytes: f.bytes,
-            sourceHash: f.sourceHash,
-            ok: f.destinations.find((d) => d.destRoot === n.path)?.ok ?? false,
-          }));
+          // §84 — the destination path survives the trim now. It already
+          // existed one level up (runLeg computes it per destination), and
+          // dropping it meant the log could say what was read and never
+          // what was written — so a rename was invisible in the one file
+          // someone opens to check exactly that.
+          n.files = fileResults.map((f) => {
+            const d = f.destinations.find((x) => x.destRoot === n.path);
+            return {
+              file: f.file,
+              destPath: d?.path ?? null,
+              bytes: f.bytes,
+              sourceHash: f.sourceHash,
+              ok: d?.ok ?? false,
+            };
+          });
           onProgress({ phase: "node-status", node: publicNode(n) });
 
           // The whole point of cascading (per Hedge's docs, and the reason

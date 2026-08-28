@@ -362,5 +362,61 @@ console.log("\n10. Disabling a field removes its token AND a separator (§22g)")
   eq(mapOr(live, "a/CLIP.MOV"), "a/2030_0001.MOV", "and a different one renders differently");
 }
 
+// ── §82: the counter restarts in every destination folder ───────────────
+{
+  // The reported shape: a card's clips in one folder, Panasonic's own
+  // sidecar tree in another. It read _0003.._0015 then _0016.._0020, which
+  // looks like missing footage when you open either folder.
+  const files = [
+    "DCIM/101_PANA/P1012257.MOV", "DCIM/101_PANA/P1012258.MOV", "DCIM/101_PANA/P1012259.MOV",
+    "PRIVATE/PANA_GRP/PAVC/LUMIX/TEMP/A.TMP", "PRIVATE/PANA_GRP/PAVC/LUMIX/TEMP/B.TMP",
+  ];
+  const map = buildRelMapper({ fileTemplate: "CLIP_{counter}", now: NOW });
+  map.prepare(files);
+  eq(mapOr(map, files[0]), "DCIM/101_PANA/CLIP_0001.MOV", "the first folder starts at 1");
+  eq(mapOr(map, files[2]), "DCIM/101_PANA/CLIP_0003.MOV", "\u2026and counts up within itself");
+  eq(mapOr(map, files[3]), "PRIVATE/PANA_GRP/PAVC/LUMIX/TEMP/CLIP_0001.TMP",
+     "a DIFFERENT folder restarts at 1 rather than continuing (\u00a782)");
+  eq(mapOr(map, files[4]), "PRIVATE/PANA_GRP/PAVC/LUMIX/TEMP/CLIP_0002.TMP", "\u2026and counts up on its own");
+}
+{
+  // \u00a777's auto-suffix counter reads the same ctx.index, so it inherits this.
+  const files = ["A/one.MOV", "A/two.MOV", "B/three.MOV"];
+  const map = buildRelMapper({ fileTemplate: "{operator}", values: { operator: "M" }, now: NOW });
+  map.prepare(files);
+  eq(mapOr(map, "A/one.MOV"), "A/M_0001.MOV", "the auto-suffix numbers per folder too");
+  eq(mapOr(map, "A/two.MOV"), "A/M_0002.MOV", "\u2026");
+  eq(mapOr(map, "B/three.MOV"), "B/M_0001.MOV", "\u2026including its restart");
+}
+{
+  // The common case — one folder — must be byte-identical to before.
+  const files = ["DCIM/a.MOV", "DCIM/b.MOV", "DCIM/c.MOV"];
+  const map = buildRelMapper({ fileTemplate: "X_{counter}", now: NOW });
+  map.prepare(files);
+  eq(mapOr(map, files[0]), "DCIM/X_0001.MOV", "a single-folder job is unchanged");
+  eq(mapOr(map, files[2]), "DCIM/X_0003.MOV", "\u2026right through");
+}
+{
+  // FLATTEN puts everything in one folder, so everything shares one
+  // sequence — the grouping must follow where files LAND, not where they
+  // came from.
+  const files = ["A/one.MOV", "B/two.MOV", "C/three.MOV"];
+  const map = buildRelMapper({ fileTemplate: "F_{counter}", flatten: true, now: NOW });
+  map.prepare(files);
+  eq(mapOr(map, "A/one.MOV"), "F_0001.MOV", "flattened: one folder, one sequence");
+  eq(mapOr(map, "B/two.MOV"), "F_0002.MOV", "\u2026so the second source dir does NOT restart");
+  eq(mapOr(map, "C/three.MOV"), "F_0003.MOV", "\u2026nor the third");
+}
+{
+  // A folder TEMPLATE that varies per file groups by the rendered result,
+  // not by the source directory.
+  const files = ["A/one.MOV", "B/two.MOV"];
+  const map = buildRelMapper({ folderTemplate: "SHOOT", fileTemplate: "G_{counter}",
+                               flatten: true, now: NOW });
+  map.prepare(files);
+  eq(mapOr(map, "A/one.MOV"), "SHOOT/G_0001.MOV", "one rendered folder\u2026");
+  eq(mapOr(map, "B/two.MOV"), "SHOOT/G_0002.MOV", "\u2026means one sequence");
+}
+
 console.log(`\n${fail === 0 ? "ALL PASS" : fail + " FAILED"}`);
 process.exit(fail === 0 ? 0 : 1);

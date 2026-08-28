@@ -189,11 +189,22 @@ console.log("\n7. Pairing is scoped, and placement follows too");
   // Same stem in two directories must not cross-pair: two cards can both
   // hold a C0001, and attaching one card's sidecar to the other's clip
   // would be worse than not pairing at all.
-  const files = ["CARD_A/C0001.MP4", "CARD_A/C0001.XML", "CARD_B/C0001.XML"];
+  // §82 REWROTE THIS FIXTURE, and the reason matters. It used to be three
+  // files, and proved "B's sidecar did not adopt A's clip" by asserting B's
+  // sidecar got the NEXT global number. Numbering now restarts per folder,
+  // so an unpaired file in CARD_B is 0001 — which is also what it would be
+  // if it HAD wrongly paired with CARD_A's 0001 clip. The old assertion
+  // would have passed either way.
+  //
+  // CARD_B gets its own clip first, so its unpaired sidecar is 0002 within
+  // that folder. Cross-pairing would render A's number, 0001, which is
+  // distinguishable again.
+  const files = ["CARD_A/C0001.MP4", "CARD_A/C0001.XML", "CARD_B/AAA.MP4", "CARD_B/C0001.XML"];
   const map = buildRelMapper({ fileTemplate: "R_{counter}" });
   map.prepare(files);
   eq(map("CARD_A/C0001.MP4"), "CARD_A/R_0001.MP4", "clip in card A");
   eq(map("CARD_A/C0001.XML"), "CARD_A/R_0001.XML", "its own card's sidecar follows it");
+  eq(map("CARD_B/AAA.MP4"), "CARD_B/R_0001.MP4", "card B numbers from 1 in its own folder (\u00a782)");
   eq(map("CARD_B/C0001.XML"), "CARD_B/R_0002.XML", "card B's sidecar did NOT follow card A's clip");
 }
 
