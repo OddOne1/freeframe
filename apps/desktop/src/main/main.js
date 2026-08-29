@@ -935,7 +935,32 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
 
   async function runUpload(self) {
   let cancelled = false;
-  self._cancel = () => { cancelled = true; };
+  // §98 — the same pause machinery §95 built for local copies, rebuilt
+  // here rather than shared.
+  //
+  // §95's version lives inside runCopyJob's own payload.run closure, which
+  // is a different function; there is no state between the two today, and
+  // hoisting one out to be shared is a larger refactor than making Pause
+  // work. The cost is two copies of an eight-line pattern, which is a real
+  // cost — if a third job kind ever needs it, extract then.
+  //
+  // Pause was ALWAYS offered on upload rows: panel.js gates the button on
+  // status alone, never on kind. It simply did nothing, because
+  // JobQueue.pause() returns false when _pause is missing and says so to
+  // nobody.
+  let paused = false;
+  let resumeWaiters = [];
+  const wake = () => { const w = resumeWaiters; resumeWaiters = []; for (const r of w) r(); };
+  const waitIfPaused = () => (paused ? new Promise((res) => { resumeWaiters.push(res); }) : Promise.resolve());
+  self._pause = () => { paused = true; };
+  self._resume = () => { paused = false; wake(); };
+  self._cancel = () => {
+    cancelled = true;
+    // Cancel always wins. A paused upload is parked in waitIfPaused; the
+    // flag alone would never be read and the job would sit forever.
+    paused = false;
+    wake();
+  };
   const send = (p) => {
     // The enriched object, so the docked footer gets the same speed/ETA the
     // jobs panel does rather than a second, differently-computed one (§58).
@@ -973,6 +998,15 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
     let doneBytes = 0;
 
     for (const r of rel) {
+      // §98 — between files only, exactly as runLeg does. One file is one
+      // multipart upload run by several concurrent part workers; stopping
+      // inside that would leave an incomplete S3 upload to reconcile,
+      // which is a different and much harder problem than this.
+      //
+      // BEFORE the cancel check, same ordering as §95: a job cancelled
+      // while paused wakes here and exits on the very next line, instead
+      // of falling through and uploading one more whole file.
+      await waitIfPaused();
       if (cancelled) break;
       send({ phase: "file-start", file: r, bytes: sizes.get(r) });
       try {

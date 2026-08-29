@@ -522,6 +522,102 @@ function makeQueue() {
       "…without inventing a new dot colour for it");
   }
 
+  // ── §98: pause works on an UPLOAD job, not just a local copy ─────────
+  console.log("\n\u00a798. Pause on an upload job");
+  {
+    // runUpload's loop, reduced to its shape: the pause machinery it now
+    // sets on `self`, and a per-file loop that parks before checking
+    // cancel. Extracted from main.js rather than restated, so a
+    // regression there fails here.
+    const fs = require("node:fs");
+    const msrc = fs.readFileSync(path.join(__dirname, "..", "src", "main", "main.js"), "utf8");
+    const i = msrc.indexOf("  async function runUpload(self) {");
+    const head = msrc.slice(i, msrc.indexOf("const startedAt = Date.now();", i));
+    check(/self\._pause = \(\) => \{ paused = true; \};/.test(head),
+      "runUpload now sets _pause — the whole gap was that it never did");
+    check(/self\._resume = \(\) => \{ paused = false; wake\(\); \};/.test(head),
+      "…and _resume");
+    check(/cancelled = true;[\s\S]*paused = false;[\s\S]*wake\(\);/.test(head),
+      "…and _cancel clears the pause and wakes the loop, so cancel still wins");
+
+    const loop = msrc.slice(msrc.indexOf("    for (const r of rel) {", i));
+    const firstTwo = loop.slice(0, loop.indexOf("send({ phase: \"file-start\""));
+    // Presence FIRST. indexOf returns -1 for something absent, and -1 is
+    // less than any real position — so an ordering check alone passes
+    // when the call is deleted outright, which is the actual bug.
+    const parkAt = firstTwo.indexOf("await waitIfPaused();");
+    const cancelAt = firstTwo.indexOf("if (cancelled) break;");
+    check(parkAt >= 0, "the upload loop parks at all");
+    check(parkAt >= 0 && cancelAt >= 0 && parkAt < cancelAt,
+      "…and BEFORE the cancel check, so a cancelled pause exits at once "
+      + "rather than uploading one more file", `park@${parkAt} cancel@${cancelAt}`);
+
+    // The queue half, driven for real with an upload-kind job.
+    const uploads = [];
+    const q = new JobQueue({
+      onChange: () => {},
+      run: (job) => new Promise((resolve) => {
+        // The same closure runUpload builds.
+        let paused = false;
+        let waiters = [];
+        const wake = () => { const w = waiters; waiters = []; for (const r of w) r(); };
+        const waitIfPaused = () => (paused ? new Promise((r) => waiters.push(r)) : Promise.resolve());
+        job._pause = () => { paused = true; };
+        job._resume = () => { paused = false; wake(); };
+        job._cancel = () => { paused = false; wake(); resolve({ cancelled: true }); };
+        (async () => {
+          for (const f of ["a", "b", "c", "d"]) {
+            await waitIfPaused();
+            if (job._stopped) return;
+            uploads.push(f);
+            await sleep(5);
+          }
+          resolve({ ok: true });
+        })();
+      }),
+    });
+
+    q.add({ id: "u", label: "U", kind: "upload", payload: {} });
+    await sleep(0);
+    check(q.jobs[0].status === "running", "an upload job is running");
+    check(q.pause("u") === true,
+      "pause TAKES on an upload — it silently returned false before");
+    check(q.jobs[0].status === "paused", "…and the row would say Paused", q.jobs[0].status);
+
+    const atPause = uploads.length;
+    await sleep(40);
+    check(uploads.length === atPause,
+      "…and no further file is uploaded while paused — the bytes stop climbing",
+      `${uploads.length - atPause} more`);
+
+    check(q.resume("u") === true, "resume takes");
+    await sleep(60);
+    check(uploads.length > atPause, "…and it continues", uploads.join(""));
+    check(new Set(uploads).size === uploads.length,
+      "…from the next file, not restarting or repeating one", uploads.join(""));
+
+    // §95's queue-level rules are kind-agnostic — verified, not assumed.
+    const q2 = new JobQueue({ onChange: () => {}, run: (job) => new Promise((resolve) => {
+      job._pause = () => {}; job._resume = () => {};
+      job._cancel = () => resolve({ cancelled: true });
+    }) });
+    q2.add({ id: "x", label: "X", kind: "upload", mode: "exclusive", payload: {} });
+    await sleep(0);
+    q2.add({ id: "y", label: "Y", kind: "copy", mode: "free", payload: {} });
+    await sleep(0);
+    check(q2.jobs[1].status === "queued", "an exclusive upload blocks a queued copy");
+    q2.pause("x");
+    await sleep(0);
+    check(q2.jobs[1].status === "running",
+      "pausing the upload frees the slot, same as for a copy", q2.jobs[1].status);
+    check(q2.resume("x") === false && /waiting on/.test(q2.jobs[0].statusNote || ""),
+      "…and resuming back into the conflict is refused the same way",
+      q2.jobs[0].statusNote);
+    check(q2.cancel("x") === true, "a paused UPLOAD is still cancellable");
+    await sleep(0);
+    check(q2.jobs[0].status === "cancelled", "…and settles", q2.jobs[0].status);
+  }
+
   console.log(`\n${fail === 0 ? "ALL PASS" : fail + " FAILED"}`);
   process.exit(fail === 0 ? 0 : 1);
 })();
