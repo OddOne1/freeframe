@@ -121,3 +121,22 @@ class NotificationResponse(BaseModel):
     actor_name: Optional[str] = None
     comment_preview: Optional[str] = None
     project_id: Optional[uuid.UUID] = None
+
+
+class CheckExistingRequest(BaseModel):
+    """§97A — which of these assets are still there?
+
+    Asked once per resumed job with every id the journal claims succeeded,
+    rather than once per file: the point of the journal is to avoid a
+    round trip per file, and replacing one-per-file uploads with
+    one-per-file checks would trade nothing for nothing.
+    """
+
+    asset_ids: list[uuid.UUID] = Field(..., max_length=5000)
+
+
+class CheckExistingResponse(BaseModel):
+    # Only the ones that survive. The caller re-uploads everything it does
+    # NOT get back — an id that was deleted, never existed, or belongs to
+    # someone else all mean the same thing to a resume: do the work again.
+    existing_ids: list[uuid.UUID]

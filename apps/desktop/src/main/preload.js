@@ -180,8 +180,11 @@ contextBridge.exposeInMainWorld("freeframe", {
    *  size before a pull is started. */
   freeframeListAssets: (projectId, folderId, recursive) =>
     ipcRenderer.invoke("freeframe:list-assets", { projectId, folderId, recursive }),
-  freeframeUpload: (sourcePath, projectId, folderId, sourceFiles, concurrencyMode) =>
-    ipcRenderer.invoke("freeframe:upload", { sourcePath, projectId, folderId, sourceFiles, concurrencyMode }),
+  freeframeUpload: (sourcePath, projectId, folderId, sourceFiles, concurrencyMode, resumeJobId) =>
+    ipcRenderer.invoke("freeframe:upload", { sourcePath, projectId, folderId, sourceFiles, concurrencyMode, resumeJobId }),
+  /** §97A — upload jobs whose journal says they died mid-flight. §87
+   *  Phase 2 will decide how these are surfaced; this is the reader. */
+  interruptedUploads: () => ipcRenderer.invoke("freeframe:interrupted-uploads"),
 
   /** Cosmetic in-app display name per volume/folder. Never renames
    *  anything on disk. */

@@ -17,7 +17,7 @@ const { normalizeFilters, wantsFlatten } = require("./filters");
 const { JobQueue } = require("./job-queue");
 const { listAlgorithms, isSupported, DEFAULT_ALGORITHM } = require("./hashers");
 const freeframe = require("./freeframe");
-const { listFilesRecursive } = require("./copy-engine");
+const { listFilesRecursive, hashFileOnDisk } = require("./copy-engine");
 
 const execFileAsync = promisify(execFile);
 
@@ -906,11 +906,62 @@ function freeframeSource(projectId, folderId) {
 // also can't be a cascade parent -- reading files back down from FreeFrame
 // is explicitly out of scope for this pass, so nothing can copy *from* a
 // project.
-ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, projectId, folderId, concurrencyMode } = {}) => {
+/**
+ * §97A — the interrupted upload jobs a resume could continue.
+ *
+ * §87 Phase 2 (detection at mount/launch, with its own prompt) is not
+ * built, so this is the minimal reader that makes part A exercisable:
+ * every journal on disk that belongs to an upload job and is still marked
+ * running. A journal is only left behind when a job did NOT finish
+ * cleanly — finishJournal removes it — so anything here died mid-flight.
+ */
+async function interruptedUploadJournals() {
+  const out = [];
+  let names = [];
+  try {
+    names = (await fsp.readdir(LOG_DIR())).filter((n) => n.endsWith(".journal.json"));
+  } catch {
+    return out;   // no logs directory yet is not an error
+  }
+  for (const n of names) {
+    const doc = await journal.readJournal(LOG_DIR(), n.replace(/\.journal\.json$/, ""));
+    if (doc && doc.kind === "upload" && doc.status === "running") out.push(doc);
+  }
+  return out;
+}
+
+ipcMain.handle("freeframe:interrupted-uploads", async () => {
+  const docs = await interruptedUploadJournals();
+  // A serializable summary, not the whole journal: the renderer decides
+  // whether to resume, it does not need the per-file record to do that.
+  return docs.map((d) => ({
+    jobId: d.jobId,
+    label: d.label,
+    projectId: d.projectId || null,
+    sourcePath: d.sourcePath || null,
+    startedAt: d.startedAt,
+    uploadedCount: journal.uploadedAssetIds(d).length,
+    fileCount: (d.files || []).length,
+  }));
+});
+
+ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, projectId, folderId, concurrencyMode, resumeJobId } = {}) => {
   const pickedFiles = Array.isArray(sourceFiles) ? sourceFiles.filter((p) => typeof p === "string" && p) : [];
   if ((typeof sourcePath !== "string" && !pickedFiles.length) || !projectId) {
     throw new Error("Source and project are required");
   }
+
+  // §97A — resuming means starting the SAME job again with the previous
+  // attempt's journal in hand. Nothing about the job's inputs changes;
+  // what changes is that files the server confirms it already has are
+  // not sent a second time.
+  //
+  // Read here, before the job is queued, so a missing or corrupt journal
+  // simply means "no resume" — the job runs as a normal, complete upload
+  // rather than failing.
+  const resumeFrom = resumeJobId
+    ? await journal.readJournal(LOG_DIR(), resumeJobId)
+    : null;
 
   // Uploads share the queue with local copies (§18c: "one unified list"
   // covering every job type), so a card offloading to a RAID and one
@@ -993,8 +1044,52 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
 
     send({ phase: "start", totalFiles: rel.length, totalBytes, legCount: 1, nodes: [] });
 
+    // §97A — the journal, now covering uploads too. Same file, same
+    // crash-survival guarantee already trusted for local copies; it simply
+    // never reached this path before.
+    // sourceFiles is recorded too: an upload from individually-picked
+    // files has no sourcePath at all, and a resume needs to know what the
+    // job was over.
+    await journal.startJournal(LOG_DIR(), self, {
+      projectId,
+      folderId: folderId || null,
+      sourceFiles: pickedFiles.length ? [...pickedFiles] : null,
+    }).catch(() => {});
+
+    // §97A — what a RESUMED job may skip.
+    //
+    // `resumeFrom` is a journal left behind by a job that died mid-upload.
+    // Its claims are a starting point, never the answer: an asset it says
+    // uploaded may since have been deleted, and re-uploading a file that
+    // is already there is a far smaller harm than silently omitting one
+    // that is not. So the server is asked, once, and only ids it confirms
+    // are skipped.
+    //
+    // Everything not confirmed — deleted, unknown, not visible, or the
+    // call itself failed — is uploaded again.
+    const skip = new Map();   // rel -> { assetId, sourceHash }
+    if (resumeFrom) {
+      const claimed = journal.uploadedAssetIds(resumeFrom);
+      let live = new Set();
+      try {
+        live = await freeframe.checkExistingAssets(claimed);
+      } catch (err) {
+        // A failed check means we know nothing, so we skip nothing.
+        send({ phase: "resume-check-failed", error: String(err.message || err) });
+      }
+      for (const f of resumeFrom.files || []) {
+        if (f.ok === true && f.assetId && live.has(f.assetId)) {
+          skip.set(f.file, { assetId: f.assetId, sourceHash: f.sourceHash ?? null });
+        }
+      }
+    }
+
     const uploaded = [];
     const errors = [];
+    // §97A — files this run did not upload because a previous one already
+    // had. Reported rather than invisible: a job that uploaded 3 of 975
+    // files should say why.
+    const resumedSkips = [];
     let doneBytes = 0;
 
     for (const r of rel) {
@@ -1008,6 +1103,18 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
       // of falling through and uploading one more whole file.
       await waitIfPaused();
       if (cancelled) break;
+      // §97A — confirmed present on the server by the check above, so this
+      // file is not uploaded a second time. Its bytes still count towards
+      // progress: from the user's point of view the file IS in the
+      // project, and a progress bar that ignored it would report a job
+      // smaller than the one they started.
+      const already = skip.get(r);
+      if (already) {
+        doneBytes += sizes.get(r) || 0;
+        send({ phase: "file-done", file: r, ok: true, skipped: true, copiedBytes: doneBytes, totalBytes });
+        resumedSkips.push({ file: r, assetId: already.assetId, sourceHash: already.sourceHash });
+        continue;
+      }
       send({ phase: "file-start", file: r, bytes: sizes.get(r) });
       try {
         const res = await freeframe.uploadFile({
@@ -1025,10 +1132,80 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
         });
         uploaded.push(res);
         doneBytes += sizes.get(r) || 0;
+        // §97A — recorded per file, so a crash after this point leaves
+        // proof this one is already on the server. Not awaited, matching
+        // the copy path: an upload must not wait on a log write.
+        journal.appendFileResult(self.id, {
+          file: r,
+          ok: true,
+          bytes: sizes.get(r) || 0,
+          assetId: res && res.assetId,
+          versionId: res && res.versionId,
+        }).catch(() => {});
         send({ phase: "file-done", file: r, ok: true, copiedBytes: doneBytes, totalBytes });
       } catch (err) {
         errors.push({ file: r, error: String(err.message || err) });
+        journal.appendFileResult(self.id, {
+          file: r, ok: false, bytes: sizes.get(r) || 0,
+          error: String(err.message || err),
+        }).catch(() => {});
         send({ phase: "file-done", file: r, ok: false });
+      }
+    }
+
+    // §97A — the resume's own verification pass.
+    //
+    // ONLY on a resumed job, and deliberately over the WHOLE set rather
+    // than the files this run uploaded: the pre-crash portion is exactly
+    // the part nothing ever re-checked. The journal's claim about it was
+    // written by a process that then died, and resume is the one moment
+    // where trusting that claim silently would hide a bad file forever.
+    //
+    // Local-only. It re-reads each source file and compares to the hash
+    // the journal recorded; it does not ask the server, because what is
+    // in question is whether the bytes we uploaded were the bytes we
+    // thought, not whether they arrived.
+    //
+    // A MISMATCH DOES NOT FAIL THE JOB. Every byte is already on the
+    // server, and failing here would report a successful upload as broken
+    // while changing nothing about it. It is reported instead — in the
+    // summary, and as an error row so it reaches the log and the panel —
+    // because a file whose source no longer hashes to what was uploaded is
+    // something a person has to look at, not something to resolve
+    // automatically.
+    let resumeVerification = null;
+    if (resumeFrom) {
+      const claims = (resumeFrom.files || []).filter((f) => f.ok === true && f.sourceHash);
+      const checked = [];
+      const mismatched = [];
+      const unreadable = [];
+      for (const f of claims) {
+        const local = fullPath.get(f.file);
+        if (!local) { unreadable.push({ file: f.file, reason: "not part of this job" }); continue; }
+        try {
+          const hash = await hashFileOnDisk(local);
+          checked.push(f.file);
+          if (hash !== f.sourceHash) {
+            mismatched.push({ file: f.file, journalHash: f.sourceHash, currentHash: hash });
+          }
+        } catch (err) {
+          unreadable.push({ file: f.file, reason: String(err.message || err) });
+        }
+      }
+      resumeVerification = {
+        ran: true, checked: checked.length,
+        mismatched, unreadable,
+        ok: mismatched.length === 0 && unreadable.length === 0,
+      };
+      for (const m of mismatched) {
+        errors.push({
+          file: m.file,
+          error: "Resume check: this file's contents have changed since it was uploaded "
+               + `(journal ${String(m.journalHash).slice(0, 12)}…, now ${String(m.currentHash).slice(0, 12)}…)`,
+        });
+      }
+      for (const u of unreadable) {
+        errors.push({ file: u.file, error: `Resume check: could not re-read — ${u.reason}` });
       }
     }
 
@@ -1055,6 +1232,12 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
       // one thing this tool exists to prove.
       allVerified: false,
       uploadOnly: true,
+      // §97A — present only on a resumed job, and its own block: it says
+      // something about the SOURCE files, not about what the server holds,
+      // and folding it into allVerified would be the lie the comment above
+      // exists to avoid.
+      resumeVerification,
+      resumedSkips: resumedSkips.length ? resumedSkips : undefined,
       durationMs: Date.now() - startedAt,
       files: [],
     };

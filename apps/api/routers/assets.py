@@ -15,7 +15,7 @@ from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.share import AssetShare
 from ..models.activity import Mention, Notification, NotificationType
 from ..models.vote import Vote
-from ..schemas.asset import AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, VoteToggleResponse, VoteRequest, TranscriptResponse, TranscriptSegment
+from ..schemas.asset import AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, VoteToggleResponse, VoteRequest, TranscriptResponse, TranscriptSegment, CheckExistingRequest, CheckExistingResponse
 from ..schemas.notification import AssignmentUpdate
 from ..services.permissions import require_project_role, require_asset_access, can_access_asset, is_public_project, get_project_member, can_see_rating_aggregate
 from ..services.s3_service import build_download_filename, get_s3_client
@@ -635,6 +635,43 @@ def get_assignment(
     }
 
 # ── Votes ──────────────────────────────────────────────────────────────────────
+
+@router.post("/assets/check-existing", response_model=CheckExistingResponse)
+def check_existing_assets(
+    body: CheckExistingRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Which of these asset ids still exist and are visible to the caller.
+
+    §97A — the desktop app asks this once when resuming an upload job that
+    died mid-flight, with every asset id its journal recorded as uploaded.
+    Anything it does not get back gets re-uploaded.
+
+    Deliberately answers with the SURVIVORS rather than the missing, so the
+    caller's default on any surprise is to do the work again: an unknown
+    id, a deleted one, and one belonging to someone else are all simply
+    absent, and none of them can be mistaken for permission to skip a file.
+
+    Access is filtered per asset rather than assumed from the ids, or this
+    would answer "does this uuid exist" for the whole install.
+    """
+    if not body.asset_ids:
+        return CheckExistingResponse(existing_ids=[])
+
+    # Deduplicated before the query: a journal with repeated ids should not
+    # turn into a longer IN list.
+    wanted = list({aid for aid in body.asset_ids})
+
+    rows = db.query(Asset).filter(
+        Asset.id.in_(wanted),
+        Asset.deleted_at.is_(None),
+    ).all()
+
+    return CheckExistingResponse(
+        existing_ids=[a.id for a in rows if can_access_asset(db, a, current_user)],
+    )
+
 
 @router.post("/assets/{asset_id}/vote", response_model=VoteToggleResponse)
 def rate_asset(

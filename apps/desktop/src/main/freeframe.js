@@ -426,6 +426,25 @@ async function uploadFile({ projectId, filePath, assetName, folderId = null, onP
   return { assetId: asset_id, versionId: version_id, bytes: stat.size, fileName };
 }
 
+/**
+ * §97A — which of these assets does the server still have?
+ *
+ * ONE call per resumed job, with every id the journal claims uploaded.
+ * The whole point of the journal is to avoid a round trip per file;
+ * replacing per-file uploads with per-file checks would trade nothing for
+ * nothing.
+ *
+ * Returns a Set of surviving ids. The caller re-uploads everything not in
+ * it, so an unknown id, a deleted one and a permission failure all reach
+ * the same, safe conclusion: do the work again.
+ */
+async function checkExistingAssets(assetIds) {
+  const ids = [...new Set((assetIds || []).filter((x) => typeof x === "string" && x))];
+  if (!ids.length) return new Set();
+  const res = await apiRequest("POST", "/assets/check-existing", { asset_ids: ids });
+  return new Set((res && res.existing_ids) || []);
+}
+
 module.exports = {
   DEFAULT_BASE_URL,
   webSession,
@@ -440,6 +459,7 @@ module.exports = {
   listAssets,
   openAssetStream,
   uploadFile,
+  checkExistingAssets,
   mimeForFilename,
   // Test seam: lets the harness drive the client without real credentials.
   __setState: (patch) => Object.assign(state, patch),

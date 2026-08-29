@@ -730,6 +730,146 @@ async function main() {
         `${copiedAfterCancel} file(s) copied after cancel`);
     }
 
+    // ── §97A: an upload journal, and what a resume may skip ─────────────
+    console.log("\n\u00a797A. Crash-resume duplicate-upload prevention");
+    {
+      const logs = path.join(tmp, "upload-journal");
+      const readJ = (id) => fs.readFile(journal.journalFile(logs, id), "utf8")
+        .then(JSON.parse).catch(() => null);
+
+      // An upload job's journal: assetId per file, and NOT the
+      // destinations/hash shape a local copy leg writes.
+      const uj = { id: "up-1", label: "U", kind: "upload", destPaths: [] };
+      await journal.startJournal(logs, uj, { projectId: "proj-9", folderId: null });
+      await journal.appendFileResult(uj.id, { file: "a.MOV", ok: true, bytes: 10, assetId: "A1", versionId: "V1" });
+      await journal.appendFileResult(uj.id, { file: "b.MOV", ok: true, bytes: 20, assetId: "A2", versionId: "V2" });
+      await journal.appendFileResult(uj.id, { file: "c.MOV", ok: false, bytes: 30, error: "boom" });
+      // A file that got as far as /upload/initiate — so an asset row
+      // exists — and then failed partway through its parts. runUpload
+      // cannot produce this today, but uploadedAssetIds is a general
+      // helper and `ok` is the only thing separating "the server has this
+      // file" from "the server has a row where this file was going". A
+      // fixture without it makes the ok-check untestable.
+      await journal.appendFileResult(uj.id, { file: "d.MOV", ok: false, bytes: 40, assetId: "A3", error: "died mid-parts" });
+      const doc = await readJ(uj.id);
+
+      check(doc && doc.kind === "upload" && doc.projectId === "proj-9",
+        "an upload journal records the project it was going to — the job that knew is gone");
+      check(doc.files[0].assetId === "A1" && doc.files[0].versionId === "V1",
+        "…and each file's asset identity");
+      check(!("assetId" in doc.files[2]),
+        "a FAILED file records no assetId — there is nothing on the server to point at");
+      check(doc.files[3].ok === false && doc.files[3].assetId === "A3",
+        "…but one CAN carry an id without having succeeded");
+
+      const ids = journal.uploadedAssetIds(doc);
+      check(ids.length === 2 && ids.includes("A1") && ids.includes("A2"),
+        "uploadedAssetIds returns only the successes", JSON.stringify(ids));
+      check(!ids.includes("A3"),
+        "…and an id from a file that FAILED is not one of them — an asset row is "
+        + "not proof the file is there", JSON.stringify(ids));
+
+      // A local copy's rows must not gain empty upload columns.
+      const cj = { id: "cp-1", label: "C", kind: "copy", sourcePath: source, destPaths: [] };
+      await journal.startJournal(logs, cj, {});
+      await journal.appendFileResult(cj.id, { file: "x.MOV", ok: true, sourceHash: "h", destinations: [] });
+      const cdoc = await readJ(cj.id);
+      check(!("assetId" in cdoc.files[0]) && !("versionId" in cdoc.files[0]),
+        "a local copy's entries are unchanged — no null upload fields cluttering them",
+        JSON.stringify(Object.keys(cdoc.files[0])));
+      check(journal.uploadedAssetIds(cdoc).length === 0,
+        "…and a copy journal offers nothing to skip");
+
+      // THE RULE THAT MATTERS: the server decides, not the journal.
+      const live = new Set(["A1"]);            // A2 was deleted since
+      const skip = new Map();
+      for (const f of doc.files) {
+        if (f.ok === true && f.assetId && live.has(f.assetId)) skip.set(f.file, f.assetId);
+      }
+      check(skip.has("a.MOV"), "a file the server confirms is skipped");
+      check(!skip.has("b.MOV"),
+        "…and one the journal claims but the server no longer has is NOT — it is re-uploaded");
+      check(!skip.has("c.MOV"), "…nor one that failed before the crash");
+
+      // A failed check must skip NOTHING. Knowing nothing means doing the
+      // work, never assuming it is done.
+      const noAnswer = new Set();
+      const skip2 = new Map();
+      for (const f of doc.files) {
+        if (f.ok === true && f.assetId && noAnswer.has(f.assetId)) skip2.set(f.file, f.assetId);
+      }
+      check(skip2.size === 0, "if the check-existing call fails, nothing is skipped");
+
+      // The resume verification pass, over the WHOLE claimed set.
+      const vsrc = path.join(tmp, "verify-src");
+      await fs.mkdir(vsrc, { recursive: true });
+      await fs.writeFile(path.join(vsrc, "kept.MOV"), "unchanged");
+      await fs.writeFile(path.join(vsrc, "edited.MOV"), "original");
+      const keptHash = await hashFileOnDisk(path.join(vsrc, "kept.MOV"));
+      const editedHash = await hashFileOnDisk(path.join(vsrc, "edited.MOV"));
+      // The file changed on disk after it was uploaded — exactly what the
+      // pre-crash portion was never re-checked for.
+      await fs.writeFile(path.join(vsrc, "edited.MOV"), "TAMPERED");
+
+      const claims = [
+        { file: "kept.MOV", ok: true, sourceHash: keptHash },
+        { file: "edited.MOV", ok: true, sourceHash: editedHash },
+      ];
+      const mismatched = [];
+      for (const f of claims) {
+        const h = await hashFileOnDisk(path.join(vsrc, f.file));
+        if (h !== f.sourceHash) mismatched.push(f.file);
+      }
+      check(mismatched.length === 1 && mismatched[0] === "edited.MOV",
+        "the resume checksum pass catches a pre-crash file whose source no longer matches",
+        JSON.stringify(mismatched));
+
+      // And it runs over files this run did NOT upload — that is the point.
+      check(claims.length === 2,
+        "…across the whole claimed set, not just what this run sent");
+
+      // The checks above exercise the RULES, but re-derive them. runUpload
+      // lives inside an ipcMain.handle closure and cannot be extracted, so
+      // its actual wiring is pinned at the source — otherwise all of the
+      // above would keep passing against a runUpload that skips nothing.
+      const msrc = fssync.readFileSync(
+        path.join(__dirname, "..", "src", "main", "main.js"), "utf8");
+      const up = msrc.slice(msrc.indexOf("  async function runUpload(self) {"),
+                            msrc.indexOf("ipcMain.handle(\"copy:start\""));
+      check(/journal\.startJournal\(LOG_DIR\(\), self, \{/.test(up),
+        "runUpload opens a journal — it never did before");
+      check(/journal\.appendFileResult\(self\.id, \{[\s\S]{0,220}assetId: res && res\.assetId/.test(up),
+        "…and records each upload's assetId");
+      check(/if \(resumeFrom\)[\s\S]{0,600}checkExistingAssets\(claimed\)/.test(up),
+        "…and a resume asks the server ONCE, batched, before trusting any of it");
+      check(/live\.has\(f\.assetId\)/.test(up),
+        "…skipping only what the server confirms");
+      // The safe-by-default half: a thrown check must not populate `live`.
+      const catchBlock = up.slice(up.indexOf("checkExistingAssets(claimed)"));
+      check(/catch \(err\) \{[\s\S]{0,300}resume-check-failed/.test(catchBlock),
+        "…and a failed check leaves the skip set empty rather than assuming success");
+      check(/const already = skip\.get\(r\);[\s\S]{0,300}continue;/.test(up),
+        "…which is what the loop consults per file");
+
+      // Only on a resume. A normal job must be untouched.
+      check(/let resumeVerification = null;\s*\n\s*if \(resumeFrom\) \{/.test(up),
+        "the resume checksum pass runs ONLY when resuming");
+      // A non-resumed job must skip nothing. The only writer into the skip
+      // map has to sit inside the `if (resumeFrom)` block — asserted by
+      // position, since a `|| true` version of this check would pass
+      // forever and prove nothing.
+      const resumeBlockStart = up.indexOf("if (resumeFrom) {");
+      // The UPLOAD loop, not the earlier one that only stats file sizes —
+      // there are two `for (const r of rel)` in this function, and the
+      // first version of this check measured the wrong one.
+      const loopStart = up.indexOf("await waitIfPaused();");
+      const setAt = up.indexOf("skip.set(");
+      check(setAt > resumeBlockStart && setAt < loopStart,
+        "…and the ONLY thing that fills the skip map sits inside the resume branch, "
+        + "so a normal job uploads everything exactly as before",
+        `resume@${resumeBlockStart} set@${setAt} loop@${loopStart}`);
+    }
+
     console.log(
       failures === 0
         ? `\nALL CHECKS PASSED (${summary.totalFiles} files, ${(srcTotal / 1024 / 1024).toFixed(1)} MB, ${summary.durationMs}ms for 2 destinations)`

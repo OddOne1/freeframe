@@ -86,6 +86,10 @@ async function startJournal(dir, job, meta = {}) {
     destPaths: Array.isArray(job.destPaths) ? [...job.destPaths] : [],
     algorithm: meta.algorithm ?? null,
     finalizedAlgorithm: meta.finalizedAlgorithm ?? null,
+    // §97A — where an upload was going. A resume has to send the files to
+    // the same project, and the job that would have known is gone.
+    projectId: meta.projectId ?? null,
+    folderId: meta.folderId ?? null,
     startedAt: new Date().toISOString(),
     naming: namingSnapshot(meta.naming),
     files: [],
@@ -141,7 +145,7 @@ function flush(jobId) {
 async function appendFileResult(jobId, result) {
   const entry = open.get(jobId);
   if (!entry || !result || typeof result.file !== "string") return;
-  entry.doc.files.push({
+  const row = {
     file: result.file,
     ok: result.ok === true,
     bytes: result.bytes ?? null,
@@ -158,7 +162,14 @@ async function appendFileResult(jobId, result) {
       : [],
     error: result.error ?? null,
     at: new Date().toISOString(),
-  });
+  };
+  // §97A — an upload's per-file identity, and the only thing a resume can
+  // ask the server about. Added ONLY when present, so a local copy's rows
+  // do not gain two permanently-null columns describing a concept they
+  // have nothing to do with.
+  if (result.assetId) row.assetId = result.assetId;
+  if (result.versionId) row.versionId = result.versionId;
+  entry.doc.files.push(row);
   return flush(jobId);
 }
 
@@ -202,6 +213,18 @@ async function readJournal(dir, jobId) {
   }
 }
 
+/**
+ * §97A — the assets a journal claims were uploaded successfully.
+ *
+ * `ok: true` AND an assetId: a row that failed, or one from a local copy
+ * leg, is not something the server has. Deduplicated, because a resumed
+ * job that was itself resumed could name the same asset twice.
+ */
+function uploadedAssetIds(doc) {
+  if (!doc || !Array.isArray(doc.files)) return [];
+  return [...new Set(doc.files.filter((f) => f.ok === true && f.assetId).map((f) => f.assetId))];
+}
+
 module.exports = {
   JOURNAL_VERSION,
   journalFile,
@@ -211,4 +234,5 @@ module.exports = {
   finishJournal,
   releaseJournal,
   readJournal,
+  uploadedAssetIds,
 };
