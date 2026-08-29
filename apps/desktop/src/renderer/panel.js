@@ -241,7 +241,21 @@
       const head = el("div", { class: "job-head" }, [
         el("span", { class: `job-dot ${j.status}` }),
         el("span", { class: "job-label", text: j.label, title: j.sourceLabel }),
-        el("span", { class: "job-status", text: STATUS_LABEL[j.status] || j.status }),
+        // §96 — "Cancelling…" while the stop is still catching up. The
+        // engine only checks between files, so a large clip mid-copy keeps
+        // going after the click; without this the row said "Running" the
+        // whole time and the button looked ignored.
+        //
+        // Applied to a PAUSED row too, not just a running one: §95 made a
+        // paused job cancellable, and the prompt for this predates that.
+        // Text only, same dot as before — a new colour would read as a new
+        // outcome rather than as the same one arriving.
+        el("span", {
+          class: "job-status",
+          text: j.cancelling && (j.status === "running" || j.status === "paused")
+            ? "Cancelling…"
+            : STATUS_LABEL[j.status] || j.status,
+        }),
       ]);
 
       // Cascading chains report their leg count per row, matching the

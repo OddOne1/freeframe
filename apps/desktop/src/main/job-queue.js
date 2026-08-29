@@ -199,6 +199,8 @@ class JobQueue {
       finishedAt: null,
       logPath: null,
       _cancel: null,
+      /** §96 — cancel has been asked for, but the job has not stopped yet. */
+      cancelling: false,
       _pause: null,
       _resume: null,
       /** §95 — why a resume was refused, shown in the row. */
@@ -236,6 +238,20 @@ class JobQueue {
       // implementation resolves the waiters. Without that the job would
       // sit paused forever with a cancel flag nobody ever reads.
       job._cancel();
+      // §96 — acknowledge the click NOW.
+      //
+      // The engine only checks for cancellation between files, so a
+      // multi-GB clip mid-copy keeps going for as long as it takes; until
+      // then nothing about the row changed and the button looked ignored.
+      // This is a display flag layered on "running", deliberately NOT a
+      // new status: the running getter, isFinished and the scheduler would
+      // all have to learn about a fourth in-flight state to gain nothing.
+      //
+      // Broadcast immediately rather than waiting for the next progress
+      // tick — §94's throttle only applies to byte ticks, and this is the
+      // one signal whose whole value is being instant.
+      job.cancelling = true;
+      this.onChange();
       return true;
     }
     return false;
@@ -420,6 +436,8 @@ class JobQueue {
     if (job.status !== "running" && job.status !== "paused") return;
     job.finishedAt = Date.now();
     job.summary = summary || null;
+    // §96 — it has stopped, so it is no longer stopping.
+    job.cancelling = false;
     job._cancel = null;
 
     if (error) {
@@ -480,6 +498,8 @@ class JobQueue {
       status: j.status,
       // §95 — why a resume was refused, if it was.
       statusNote: j.statusNote || null,
+      // §96 — asked to stop, not stopped yet.
+      cancelling: j.cancelling === true,
       label: j.label,
       sourceLabel: j.sourceLabel,
       destLabels: j.destLabels,

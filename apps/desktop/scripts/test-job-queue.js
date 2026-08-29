@@ -410,6 +410,118 @@ function makeQueue() {
     }
   }
 
+  // ── §96: the click is acknowledged before the stop catches up ────────
+  console.log("\n\u00a796. Cancelling is visible while it is still happening");
+  {
+    // A job whose _cancel does NOT resolve immediately — which is the real
+    // shape: the engine only checks between files, so a large clip keeps
+    // copying after the click. A fixture that settled at once would make
+    // the whole window this flag exists for invisible.
+    const mk = () => {
+      let broadcasts = 0;
+      const stops = new Map();
+      const q = new JobQueue({
+        onChange: () => { broadcasts += 1; },
+        run: (job) => new Promise((resolve) => {
+          job._cancel = () => { stops.set(job.label, () => resolve({ cancelled: true })); };
+          job._pause = () => {};
+          job._resume = () => {};
+          job._finishNow = () => resolve({ ok: true });
+        }),
+      });
+      return { q, stops, count: () => broadcasts };
+    };
+
+    {
+      const { q, stops } = mk();
+      q.add({ id: "a", label: "A", payload: {} });
+      await sleep(0);
+      check(q.jobs[0].cancelling === false, "a running job is not cancelling by default");
+
+      const before = q.snapshot()[0];
+      check(before.status === "running" && before.cancelling === false,
+        "…and the snapshot the renderer reads says so");
+
+      q.cancel("a");
+      // The whole point: same tick as the click, not the next progress tick.
+      const mid = q.snapshot()[0];
+      check(mid.cancelling === true, "cancel marks it immediately");
+      check(mid.status === "running",
+        "…while the status stays running — no fourth in-flight state to teach the scheduler",
+        mid.status);
+
+      // Still genuinely in flight, and still counted as such.
+      check(q.running.length === 1, "…so it still occupies its slot until it really stops");
+      check(JobQueue.isFinished(q.jobs[0]) === false, "…and is not history yet");
+
+      stops.get("A")();
+      await sleep(0);
+      const after = q.snapshot()[0];
+      check(after.status === "cancelled", "once it settles the status catches up", after.status);
+      check(after.cancelling === false,
+        "…and the flag clears — it has stopped, so it is no longer stopping");
+    }
+
+    {
+      // The broadcast has to happen on the click. §94 throttles byte ticks
+      // only, and this is the one signal whose entire value is being
+      // instant, so it must not wait for the next one.
+      const { q, count } = mk();
+      q.add({ id: "a", label: "A", payload: {} });
+      await sleep(0);
+      const before = count();
+      q.cancel("a");
+      check(count() === before + 1, "cancelling broadcasts straight away",
+        `${count() - before} broadcast(s)`);
+    }
+
+    {
+      // A job that finishes normally must never have shown it.
+      const { q } = mk();
+      q.add({ id: "a", label: "A", payload: {} });
+      await sleep(0);
+      q.jobs[0]._finishNow();
+      await sleep(0);
+      check(q.jobs[0].status === "done" && q.jobs[0].cancelling === false,
+        "a job that finishes normally never shows Cancelling", q.jobs[0].status);
+    }
+
+    {
+      // A QUEUED job never enters this path — it stops at once, with
+      // nothing in flight to wait for.
+      const { q } = mk();
+      q.add({ id: "a", label: "A", mode: "exclusive", payload: {} });
+      await sleep(0);
+      q.add({ id: "b", label: "B", mode: "exclusive", payload: {} });
+      await sleep(0);
+      check(q.jobs[1].status === "queued", "a second exclusive job is queued");
+      q.cancel("b");
+      check(q.jobs[1].status === "cancelled",
+        "cancelling it is immediate, as before", q.jobs[1].status);
+      check(q.jobs[1].cancelling !== true,
+        "…and it never passes through Cancelling — there was nothing to wait for");
+    }
+  }
+
+  {
+    // The flag is only worth anything if the row renders it. panel.js needs
+    // a DOM, so this reads the expression it picks the label with — the
+    // same source-level shape §92's own label check uses.
+    const fs = require("node:fs");
+    const psrc = fs.readFileSync(
+      path.join(__dirname, "..", "src", "renderer", "panel.js"), "utf8");
+    const i = psrc.indexOf('class: "job-status"');
+    const block = psrc.slice(i, i + 400);
+    check(/j\.cancelling/.test(block) && /"Cancelling\u2026"/.test(block),
+      "panel.js labels a cancelling row \"Cancelling\u2026\"");
+    check(/STATUS_LABEL\[j\.status\]/.test(block),
+      "…and falls back to the normal label otherwise");
+    // Text only. A new dot colour would read as a new outcome rather than
+    // as the same one arriving.
+    check(!/job-dot[^\n]*cancelling/.test(psrc),
+      "…without inventing a new dot colour for it");
+  }
+
   console.log(`\n${fail === 0 ? "ALL PASS" : fail + " FAILED"}`);
   process.exit(fail === 0 ? 0 : 1);
 })();
