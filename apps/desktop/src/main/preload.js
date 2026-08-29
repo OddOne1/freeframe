@@ -100,6 +100,10 @@ contextBridge.exposeInMainWorld("freeframe", {
   /** No id cancels every running and queued job — what the single-job
    *  Cancel button used to mean. An id cancels just that one. */
   cancelCopy: (id) => ipcRenderer.invoke("copy:cancel", { id }),
+  /** §95 — in-session pause. Stops after the current file; the job stays
+   *  alive and Resume continues from the next one. */
+  pauseCopy: (id) => ipcRenderer.invoke("copy:pause", { id }),
+  resumeCopy: (id) => ipcRenderer.invoke("copy:resume", { id }),
 
   /** The job queue (§18c). State lives in main and is broadcast, so the
    *  docked panel and the detached window can never disagree. */

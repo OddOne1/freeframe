@@ -272,10 +272,19 @@ async function hashFileOnDisk(filePath, algorithm = null) {
  * source provider it reads from. A cascaded leg is always a local one; only
  * the primary leg can be reading from FreeFrame.
  */
-async function runLeg({ from, toRoots, relFiles, sizes, onFileEvent, isCancelled, mapRel }) {
+async function runLeg({ from, toRoots, relFiles, sizes, onFileEvent, isCancelled, mapRel, waitIfPaused }) {
   const fileResults = [];
 
   for (const rel of relFiles) {
+    // §95 — the same boundary the cancel check uses, and for the same
+    // reason: between files, never inside one. A file interrupted mid-copy
+    // leaves a partial destination and a hash of nothing, so pause waits
+    // for the current file to finish copying AND verifying.
+    //
+    // Awaited BEFORE the cancel check as well as after: cancelling a
+    // paused job resolves this, and the check below then sees it. A paused
+    // job that could not be cancelled would be the worse bug.
+    if (waitIfPaused) await waitIfPaused();
     if (isCancelled()) break;
 
     // `mapRel` applies the job's naming template. Only the ROOT leg gets
@@ -430,6 +439,10 @@ async function runCopyJob({
   // `allowFragileRename` is the user's explicit per-job acknowledgement.
   renamesFiles = false,
   allowFragileRename = false,
+  // §95 — resolves immediately unless the job is paused, in which case it
+  // resolves on resume or on cancel. Omitted by every existing caller and
+  // every test, which is why runLeg treats it as optional.
+  waitIfPaused = null,
   // §86 — the optional second pass. Null (the default, and what every
   // existing caller and test produces) means it does not run at all.
   finalizedAlgorithm = null,
@@ -662,6 +675,7 @@ async function runCopyJob({
           relFiles,
           sizes,
           isCancelled,
+          waitIfPaused,
           onFileEvent: (ev) => {
             if (ev.type === "bytes") {
               overallCopiedBytes += ev.delta;

@@ -296,6 +296,120 @@ function makeQueue() {
     }
   }
 
+  // ── §95: in-session pause/resume ─────────────────────────────────────
+  console.log("\n\u00a795. Pause and resume a running job");
+  {
+    // A queue whose jobs expose the same _pause/_resume/_cancel callbacks
+    // main.js's copy:start payload sets, so what is exercised is the
+    // handshake between the two rather than the queue talking to itself.
+    const mk = () => {
+      const events = [];
+      const q = new JobQueue({
+        onChange: () => {},
+        run: (job) => new Promise((resolve) => {
+          let paused = false;
+          let waiters = [];
+          const wake = () => { const w = waiters; waiters = []; for (const r of w) r(); };
+          job._pause = () => { paused = true; events.push(`pause:${job.label}`); };
+          job._resume = () => { paused = false; events.push(`resume:${job.label}`); wake(); };
+          job._cancel = () => { paused = false; events.push(`cancel:${job.label}`); wake(); resolve({ cancelled: true }); };
+          job._finishNow = () => resolve({ ok: true });
+          job._waitIfPaused = () => (paused ? new Promise((r) => waiters.push(r)) : Promise.resolve());
+        }),
+      });
+      return { q, events };
+    };
+
+    {
+      const { q, events } = mk();
+      q.add({ id: "a", label: "A", payload: {} });
+      await sleep(0);
+      check(q.jobs[0].status === "running", "a job is running");
+      check(q.pause("a") === true, "pause takes");
+      check(q.jobs[0].status === "paused", "…and the status says so", q.jobs[0].status);
+      check(events.includes("pause:A"), "…having called the job's own _pause");
+
+      // The loop really parks, and really unparks.
+      let unparked = false;
+      q.jobs[0]._waitIfPaused().then(() => { unparked = true; });
+      await sleep(0);
+      check(unparked === false, "the copy loop is parked while paused");
+      check(q.resume("a") === true, "resume takes");
+      await sleep(0);
+      check(unparked === true, "…and the loop continues");
+      check(q.jobs[0].status === "running", "…back to running", q.jobs[0].status);
+    }
+
+    {
+      // A paused job must not hold a concurrency slot.
+      const { q } = mk();
+      q.add({ id: "a", label: "A", mode: "exclusive", payload: {} });
+      await sleep(0);
+      q.add({ id: "b", label: "B", mode: "free", payload: {} });
+      await sleep(0);
+      check(q.jobs[1].status === "queued", "an exclusive job blocks a second one", q.jobs[1].status);
+      q.pause("a");
+      await sleep(0);
+      check(q.jobs[1].status === "running",
+        "pausing it frees the slot — even for \"Single Transfer\"", q.jobs[1].status);
+
+      // …and resuming into a state that mode forbids is REFUSED rather
+      // than silently allowed. Visible beats broken.
+      check(q.resume("a") === false, "resuming back into the conflict is refused");
+      check(q.jobs[0].status === "paused", "…the job stays paused", q.jobs[0].status);
+      check(/waiting on/.test(q.jobs[0].statusNote || ""),
+        "…and says what it is waiting on", q.jobs[0].statusNote);
+    }
+
+    {
+      // Cancel must always win. A paused job that could not be cancelled
+      // would be a trap with no way out.
+      const { q, events } = mk();
+      q.add({ id: "a", label: "A", payload: {} });
+      await sleep(0);
+      q.pause("a");
+      check(q.cancel("a") === true, "a PAUSED job is still cancellable");
+      check(events.includes("cancel:A"), "…reaching the job's own _cancel");
+      await sleep(0);
+      check(q.jobs[0].status === "cancelled",
+        "…and it actually settles rather than sitting paused forever", q.jobs[0].status);
+    }
+
+    {
+      // History must not swallow work that is merely parked.
+      const { q } = mk();
+      q.add({ id: "a", label: "A", payload: {} });
+      await sleep(0);
+      q.pause("a");
+      check(JobQueue.isFinished(q.jobs[0]) === false, "a paused job is not history");
+      check(q.removeFinished("a") === false, "…so Remove refuses it, same as a running one");
+      q.clearFinished();
+      check(q.jobs.length === 1, "…and Clear leaves it alone");
+
+      // _trimHistory only fires past maxHistory, so a single paused job
+      // could never reach it — the fixture has to be big enough for the
+      // trim to actually run.
+      for (let i = 0; i < 80; i++) {
+        q.jobs.push({ id: `h${i}`, label: `H${i}`, status: "done", finishedAt: i + 1 });
+      }
+      q._trimHistory();
+      check(q.jobs.some((j) => j.id === "a" && j.status === "paused"),
+        "…and history trimming past its cap never drops it either",
+        String(q.jobs.length));
+    }
+
+    {
+      // Nothing to pause, nothing to resume.
+      const { q } = mk();
+      q.add({ id: "a", label: "A", payload: {} });
+      await sleep(0);
+      check(q.resume("a") === false, "resume on a RUNNING job does nothing");
+      check(q.pause("nope") === false, "pause on an unknown id does nothing");
+      q.pause("a");
+      check(q.pause("a") === false, "pausing an already-paused job does nothing");
+    }
+  }
+
   console.log(`\n${fail === 0 ? "ALL PASS" : fail + " FAILED"}`);
   process.exit(fail === 0 ? 0 : 1);
 })();

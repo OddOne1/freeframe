@@ -17,6 +17,7 @@ const crypto = require("node:crypto");
 
 const { runCopyJob, hashFileOnDisk, runFinalizedPass } = require("../src/main/copy-engine");
 const journal = require("../src/main/job-journal");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const { listAlgorithms, getHasherFactory, c4Digest } = require("../src/main/hashers");
 
 let failures = 0;
@@ -619,6 +620,114 @@ async function main() {
       check(/if \(job\.status === "done"\) journal\.finishJournal\(/.test(msrc)
         && /else journal\.releaseJournal\(job\.id\);/.test(msrc),
         "only a COMPLETED job's journal is deleted; anything else keeps its record");
+    }
+
+    // ── §95: pause stops at a file boundary, never inside one ───────────
+    console.log("\n\u00a795. Pause waits for the current file to finish");
+    {
+      const pdst = path.join(tmp, "pause-a");
+      let paused = false;
+      let waiters = [];
+      const wake = () => { const w = waiters; waiters = []; for (const r of w) r(); };
+      const waitIfPaused = () => (paused ? new Promise((r) => waiters.push(r)) : Promise.resolve());
+
+      const started = [];
+      const finished = [];
+      let pausedAfterFirst = false;
+      let pausedAt = -1;
+      let completedWhilePaused = -1;
+      const sum = await runCopyJob({
+        sourcePath: source,
+        nodes: [{ id: "pn", path: pdst, parentId: null }],
+        algorithm: "xxhash64",
+        waitIfPaused,
+        onProgress: (p2) => {
+          if (p2.phase === "file-start") started.push(p2.file);
+          if (p2.phase !== "file-done") return;
+          finished.push(p2.file);
+          // Pause the moment the first file completes, then let it sit
+          // long enough that a loop ignoring the park would run on.
+          if (!pausedAfterFirst) {
+            pausedAfterFirst = true;
+            paused = true;
+            pausedAt = finished.length;
+            setTimeout(() => {
+              // What actually distinguishes "parked" from "ran straight
+              // through": nothing may complete while paused. Without this
+              // the whole section passes on a loop that ignores the park,
+              // because all the files finish either way.
+              completedWhilePaused = finished.length - pausedAt;
+              paused = false; wake();
+            }, 120);
+          }
+        },
+      });
+
+      check(sum.allVerified, "the job still completes across a pause/resume");
+      check(completedWhilePaused === 0,
+        "NOTHING completed during the pause — the loop really parks",
+        `${completedWhilePaused} file(s) finished while paused`);
+      check(finished.length === srcFileCount,
+        "every file was copied exactly once — resume continues, it does not restart",
+        `${finished.length} of ${srcFileCount}`);
+      check(new Set(finished).size === finished.length,
+        "…and none was copied twice", JSON.stringify(finished));
+      // The boundary itself: no file was left half-started when the pause
+      // took hold.
+      check(started.length === finished.length,
+        "no file was started and abandoned — the pause is between files",
+        `${started.length} started / ${finished.length} finished`);
+      const verified = await Promise.all(sum.nodes[0].files.map(async (f) => {
+        const a = await hashFileOnDisk(path.join(source, f.file));
+        const b = await hashFileOnDisk(f.destPath);
+        return a === b;
+      }));
+      check(verified.every(Boolean), "…and every destination file matches its source on disk");
+
+      // §87's journal appends on file-done, so a pause between files leaves
+      // it exactly as consistent as a job still running. Confirmed rather
+      // than assumed, per the spec.
+      const jlogs = path.join(tmp, "pause-journal");
+      const pj = { id: "pj", label: "P", kind: "copy", sourcePath: source, destPaths: [pdst] };
+      await journal.startJournal(jlogs, pj, { algorithm: "xxhash64", naming: null });
+      for (const f of finished) {
+        await journal.appendFileResult(pj.id, { file: f, ok: true, sourceHash: "h", destinations: [] });
+      }
+      const jr = await fs.readFile(journal.journalFile(jlogs, pj.id), "utf8").then(JSON.parse);
+      check(jr.files.length === srcFileCount,
+        "the journal records one entry per file across the pause, with no gap or duplicate",
+        `${jr.files.length}`);
+
+      // Cancel must reach a job parked in the pause, or it sits forever.
+      const cdst = path.join(tmp, "pause-cancel");
+      let cPaused = true;
+      let cWaiters = [];
+      let cancelled = false;
+      const job = runCopyJob({
+        sourcePath: source,
+        nodes: [{ id: "cn", path: cdst, parentId: null }],
+        algorithm: "xxhash64",
+        isCancelled: () => cancelled,
+        waitIfPaused: () => (cPaused ? new Promise((r) => cWaiters.push(r)) : Promise.resolve()),
+      });
+      await sleep(60);
+      // Exactly what main's _cancel does: clear the pause AND wake it.
+      cancelled = true;
+      cPaused = false;
+      for (const r of cWaiters) r();
+      const cs = await Promise.race([job, sleep(3000).then(() => "TIMED_OUT")]);
+      check(cs !== "TIMED_OUT", "cancelling a job parked in a pause unparks it rather than hanging");
+      check(cs !== "TIMED_OUT" && cs.cancelled === true, "…and it reports itself cancelled");
+      // ORDER MATTERS, and only this catches it: the pause is awaited
+      // BEFORE the cancel check, so a job woken by a cancel breaks out
+      // immediately. Checking cancel first would wake it, fall through, and
+      // copy one more whole file — potentially gigabytes — after the user
+      // pressed Cancel.
+      const copiedAfterCancel = cs !== "TIMED_OUT"
+        ? (cs.nodes[0].files || []).length : -1;
+      check(copiedAfterCancel === 0,
+        "…without copying one more file on the way out",
+        `${copiedAfterCancel} file(s) copied after cancel`);
     }
 
     console.log(

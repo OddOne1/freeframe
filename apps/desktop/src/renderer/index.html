@@ -1229,7 +1229,11 @@
     function busyPaths() {
       const set = new Set();
       for (const j of jobSnapshot) {
-        if (j.status !== "running" && j.status !== "queued") continue;
+        // §95 — a PAUSED job still holds its source and destinations. It is
+        // parked between files and will read and write those exact paths
+        // again on resume, so ejecting a drive out from under it is the
+        // same mistake as doing it mid-copy.
+        if (j.status !== "running" && j.status !== "queued" && j.status !== "paused") continue;
         if (j.sourcePath) set.add(j.sourcePath);
         for (const p of j.destPaths || []) set.add(p);
       }
@@ -1246,7 +1250,10 @@
     function currentJobPending() {
       const dests = destNodes.map((n) => n.path).sort().join("|");
       return jobSnapshot.some((j) =>
-        (j.status === "running" || j.status === "queued") &&
+        // §95 — paused counts: the job is still in flight, so pressing
+        // Start on the same source and destinations would queue a second
+        // copy of work that is only parked.
+        (j.status === "running" || j.status === "queued" || j.status === "paused") &&
         j.sourcePath === sourcePath &&
         [...(j.destPaths || [])].sort().join("|") === dests);
     }
@@ -4119,6 +4126,8 @@
         onCancel: (id) => window.freeframe.cancelCopy(id),
         onOpenLog: (id) => window.freeframe.openJobLog(id),
         onRemove: (id) => window.freeframe.removeJob(id),
+        onPause: (id) => window.freeframe.pauseCopy(id),
+        onResume: (id) => window.freeframe.resumeCopy(id),
       });
 
       const running = jobSnapshot.filter((j) => j.status === "running").length;
@@ -4424,7 +4433,7 @@
         drawJobs();
         // Open the panel the first time something is actually running, so
         // a job never runs with no visible sign of it.
-        if (snapshot.some((j) => j.status === "running" || j.status === "queued")) {
+        if (snapshot.some((j) => j.status === "running" || j.status === "queued" || j.status === "paused")) {
           setJobsPanelOpen(true);
         }
       });

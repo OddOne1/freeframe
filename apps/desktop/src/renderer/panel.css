@@ -17,6 +17,10 @@
 .job-dot.done      { background: var(--status-success); }
 .job-dot.failed    { background: var(--status-error); }
 .job-dot.cancelled { background: var(--status-warning); }
+/* §95 — paused: in flight but not moving. Warning-coloured like cancelled
+   rather than info-coloured like running, because the thing it has to say
+   is "this is not progressing". */
+.job-dot.paused    { background: var(--status-warning); }
 
 .job-label { font-size: 12px; font-weight: 500; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
 .job-status { font-size: 10px; color: var(--text-secondary); flex-shrink: 0; }
@@ -62,6 +66,15 @@
    Hover fills rather than brightens, matching button.primary exactly
    (accent ground, #08080b text — 6.0:1 dark, 5.0:1 light), so the change is
    unmistakable instead of marginal. */
+/* §95 — beside Cancel, deliberately not styled as destructive: pausing is
+   reversible and cancelling is not. */
+.job-pause {
+  flex-shrink: 0; border: 1px solid var(--border); background: transparent;
+  font-family: inherit; font-size: 10px; color: var(--text-secondary);
+  padding: 1px 7px; border-radius: 4px; margin-right: 4px; cursor: pointer;
+}
+.job-pause:hover { background: var(--bg-hover); color: var(--text-primary); }
+
 .job-log {
   flex-shrink: 0; border: 1px solid var(--accent); background: transparent;
   font-family: inherit; font-size: 10px; color: var(--accent);

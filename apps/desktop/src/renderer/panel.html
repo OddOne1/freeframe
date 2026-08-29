@@ -54,6 +54,8 @@
         onCancel: (id) => window.freeframe.cancelCopy(id),
         onOpenLog: (id) => window.freeframe.openJobLog(id),
         onRemove: (id) => window.freeframe.removeJob(id),
+        onPause: (id) => window.freeframe.pauseCopy(id),
+        onResume: (id) => window.freeframe.resumeCopy(id),
       });
       const running = snapshot.filter((j) => j.status === "running").length;
       const queued = snapshot.filter((j) => j.status === "queued").length;

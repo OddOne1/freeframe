@@ -131,8 +131,23 @@ class JobQueue {
     this.rate = new RateTracker();
   }
 
+  /**
+   * Jobs actually moving bytes. §95 — a PAUSED job is deliberately not one
+   * of these, so _schedule() stops treating it as occupying a concurrency
+   * slot and other queued work can start while it sits.
+   *
+   * Every concurrency mode exists to manage contention for a drive, and a
+   * paused job contends for nothing. Resuming is where that stops being
+   * true, which is why resume() re-checks (see there).
+   */
   get running() {
     return this.jobs.filter((j) => j.status === "running");
+  }
+
+  /** In flight: running OR paused. Neither is history, and neither may be
+   *  trimmed, cleared, or have its drives pulled out from under it. */
+  get active() {
+    return this.jobs.filter((j) => j.status === "running" || j.status === "paused");
   }
 
   get queued() {
@@ -184,6 +199,10 @@ class JobQueue {
       finishedAt: null,
       logPath: null,
       _cancel: null,
+      _pause: null,
+      _resume: null,
+      /** §95 — why a resume was refused, shown in the row. */
+      statusNote: null,
     };
 
     const settled = new Promise((resolve, reject) => {
@@ -211,15 +230,65 @@ class JobQueue {
       this._schedule();
       return true;
     }
-    if (job.status === "running" && job._cancel) {
+    if ((job.status === "running" || job.status === "paused") && job._cancel) {
+      // §95 — a paused job must still be cancellable. Its loop is parked
+      // in waitIfPaused, so _cancel also has to wake it; main's
+      // implementation resolves the waiters. Without that the job would
+      // sit paused forever with a cancel flag nobody ever reads.
       job._cancel();
       return true;
     }
     return false;
   }
 
+  /**
+   * §95 — stop after the current file, keep the job alive.
+   *
+   * Nothing is unwound and nothing is written differently: the job's own
+   * loop parks between files, so the destination is exactly as consistent
+   * as it is at any other file boundary.
+   */
+  pause(id) {
+    const job = this.jobs.find((j) => j.id === id);
+    if (!job || job.status !== "running" || !job._pause) return false;
+    job._pause();
+    job.status = "paused";
+    job.statusNote = null;
+    this.onChange();
+    // The slot it was holding is free now, so anything queued behind it
+    // can go.
+    this._schedule();
+    return true;
+  }
+
+  /**
+   * §95 — continue from the next file.
+   *
+   * REFUSED, rather than silently allowed, when something incompatible is
+   * running. Pausing frees the slot for every mode including "Single
+   * Transfer", because a paused job moves no bytes and so contends for
+   * nothing — but resuming INTO a state the chosen mode forbids would
+   * break the guarantee the user picked, quietly. A refusal that says so
+   * is the honest half of that trade.
+   */
+  resume(id) {
+    const job = this.jobs.find((j) => j.id === id);
+    if (!job || job.status !== "paused" || !job._resume) return false;
+    const blockers = this.running.filter((r) => !canCoexist(job, r));
+    if (blockers.length) {
+      job.statusNote = `waiting on ${blockers.map((b) => b.label).join(", ")}`;
+      this.onChange();
+      return false;
+    }
+    job.statusNote = null;
+    job.status = "running";
+    job._resume();
+    this.onChange();
+    return true;
+  }
+
   cancelAll() {
-    for (const j of [...this.queued, ...this.running]) this.cancel(j.id);
+    for (const j of [...this.queued, ...this.active]) this.cancel(j.id);
   }
 
   /** Finished means done, failed or cancelled — the states a row is
@@ -344,7 +413,11 @@ class JobQueue {
   }
 
   _finish(job, { summary, error }) {
-    if (job.status !== "running") return;
+    // §95 — "paused" counts here. A job cancelled while paused unparks,
+    // breaks out of its loop and settles with that status still set; a
+    // check for "running" alone would drop it on the floor, leaving a row
+    // that never finishes and a promise nobody resolves.
+    if (job.status !== "running" && job.status !== "paused") return;
     job.finishedAt = Date.now();
     job.summary = summary || null;
     job._cancel = null;
@@ -386,7 +459,8 @@ class JobQueue {
   }
 
   _trimHistory() {
-    const finished = this.jobs.filter((j) => j.status !== "running" && j.status !== "queued");
+    const finished = this.jobs.filter(
+      (j) => j.status !== "running" && j.status !== "queued" && j.status !== "paused");
     if (finished.length <= this.maxHistory) return;
     const drop = new Set(
       finished
@@ -404,6 +478,8 @@ class JobQueue {
       kind: j.kind,
       mode: j.mode,
       status: j.status,
+      // §95 — why a resume was refused, if it was.
+      statusNote: j.statusNote || null,
       label: j.label,
       sourceLabel: j.sourceLabel,
       destLabels: j.destLabels,

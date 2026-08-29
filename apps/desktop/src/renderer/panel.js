@@ -47,7 +47,7 @@
   }
 
   const STATUS_LABEL = {
-    queued: "Queued", running: "Running", done: "Done",
+    queued: "Queued", running: "Running", paused: "Paused", done: "Done",
     failed: "Failed", cancelled: "Cancelled",
   };
 
@@ -218,7 +218,7 @@
    * hazard the click-toggle had: the verification verdict, the one thing
    * this app exists to report, was hidden behind a click.
    */
-  function renderJobs(host, snapshot, { onCancel, onOpenLog, onRemove } = {}) {
+  function renderJobs(host, snapshot, { onCancel, onOpenLog, onRemove, onPause, onResume } = {}) {
     host.replaceChildren();
 
     if (!snapshot || snapshot.length === 0) {
@@ -263,13 +263,32 @@
       if (j.status === "queued" && j.blockedBy && j.blockedBy.length) {
         bits.push(`waiting on ${j.blockedBy.join(", ")}`);
       }
-      if (j.status !== "queued" && j.status !== "running") {
+      // §95 — why a resume was refused, said in the row rather than left
+      // as a button that appears to do nothing.
+      if (j.statusNote) bits.push(j.statusNote);
+      // A paused job has not finished, so it has no duration to report —
+      // subtracting from a null finishedAt would print the epoch.
+      if (j.status !== "queued" && j.status !== "running" && j.status !== "paused") {
         const d = fmtDuration((j.finishedAt || 0) - (j.startedAt || 0));
         if (d) bits.push(d);
       }
       head.appendChild(el("span", { class: "job-meta", text: bits.join(" · ") }));
 
-      if (j.status === "running" || j.status === "queued") {
+      if (j.status === "running" || j.status === "queued" || j.status === "paused") {
+        // §95 — Pause on a running job, Resume on a paused one. Only ever
+        // one of the two, beside Cancel, which stays available in both
+        // states: a paused job that could not be cancelled would be a trap.
+        if (j.status === "running" && onPause) {
+          head.appendChild(el("button", {
+            class: "job-pause", text: "Pause", title: "Stop after the current file",
+            onClick: (e) => { e.stopPropagation(); onPause(j.id); },
+          }));
+        } else if (j.status === "paused" && onResume) {
+          head.appendChild(el("button", {
+            class: "job-pause", text: "Resume", title: "Continue from the next file",
+            onClick: (e) => { e.stopPropagation(); onResume(j.id); },
+          }));
+        }
         head.appendChild(el("button", {
           class: "job-cancel", text: "Cancel",
           onClick: (e) => { e.stopPropagation(); onCancel && onCancel(j.id); },

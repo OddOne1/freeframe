@@ -1209,7 +1209,22 @@ ipcMain.handle("copy:start", async (event, payload) => {
     cardNumber: renamesFiles && naming ? presets.normalizeCounter(naming.sourceCounter) : null,
     payload: { run: async (self) => {
       let cancelled = false;
-      self._cancel = () => { cancelled = true; };
+      // §95 — in-session pause. The job stays alive in this process; its
+      // copy loop parks between files rather than unwinding, so there is
+      // nothing to journal, nothing to reconcile and no partial file.
+      let paused = false;
+      let resumeWaiters = [];
+      const wake = () => { const w = resumeWaiters; resumeWaiters = []; for (const r of w) r(); };
+      self._pause = () => { paused = true; };
+      self._resume = () => { paused = false; wake(); };
+      self._cancel = () => {
+        cancelled = true;
+        // Cancel ALWAYS wins over pause. A paused job's loop is parked in
+        // waitIfPaused; without waking it, the cancel flag would be set and
+        // never read, and the job would sit paused forever.
+        paused = false;
+        wake();
+      };
       // §87 — opened here rather than at queue time: a job sitting in the
       // queue has copied nothing, and a journal for it would claim an
       // interrupted transfer that never started. Awaited so the file
@@ -1236,6 +1251,7 @@ ipcMain.handle("copy:start", async (event, payload) => {
         allowFragileRename,
         finalizedAlgorithm,
         isCancelled: () => cancelled,
+        waitIfPaused: () => (paused ? new Promise((res) => { resumeWaiters.push(res); }) : Promise.resolve()),
         onProgress: (p) => {
           // §87 — one append per finished file, so the file on disk is
           // never more than one file behind reality. Deliberately not
@@ -1286,6 +1302,19 @@ ipcMain.handle("copy:cancel", async (_e, { id } = {}) => {
   const n = jobs.running.length + jobs.queued.length;
   jobs.cancelAll();
   return { cancelling: n > 0 };
+});
+
+// §95 — in-session pause/resume. Deliberately id-only, unlike cancel's
+// no-id "everything" form: pausing every job at once is not a thing anyone
+// asked for, and Cancel's blanket form exists only for backwards
+// compatibility with the single-job button that predated the queue.
+ipcMain.handle("copy:pause", async (_e, { id } = {}) => ({ ok: jobs.pause(id) }));
+ipcMain.handle("copy:resume", async (_e, { id } = {}) => {
+  const ok = jobs.resume(id);
+  // The refusal reason travels with the answer, so a caller that wants to
+  // say something does not have to re-derive why.
+  const job = jobs.jobs.find((j) => j.id === id);
+  return { ok, note: (job && job.statusNote) || null };
 });
 
 ipcMain.handle("jobs:list", async () => jobs.snapshot());
