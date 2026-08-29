@@ -292,7 +292,11 @@
         // §95 — Pause on a running job, Resume on a paused one. Only ever
         // one of the two, beside Cancel, which stays available in both
         // states: a paused job that could not be cancelled would be a trap.
-        if (j.status === "running" && onPause) {
+        // AUDIT FIX — and the button goes with it. A control that is
+        // offered and silently refuses is the exact shape of §98's bug;
+        // the row already says "Cancelling…", so there is nothing to
+        // pause.
+        if (j.status === "running" && !j.cancelling && onPause) {
           head.appendChild(el("button", {
             class: "job-pause", text: "Pause", title: "Stop after the current file",
             onClick: (e) => { e.stopPropagation(); onPause(j.id); },

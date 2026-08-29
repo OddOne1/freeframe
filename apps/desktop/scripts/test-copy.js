@@ -848,8 +848,36 @@ async function main() {
       const catchBlock = up.slice(up.indexOf("checkExistingAssets(claimed)"));
       check(/catch \(err\) \{[\s\S]{0,300}resume-check-failed/.test(catchBlock),
         "…and a failed check leaves the skip set empty rather than assuming success");
-      check(/const already = skip\.get\(r\);[\s\S]{0,300}continue;/.test(up),
+      // The window is generous because this block grew when the audit fix
+      // added a journal write to it; what is being asserted is that the
+      // skip path exists and ends in a `continue`, not its length.
+      check(/const already = skip\.get\(r\);[\s\S]{0,1400}continue;/.test(up),
         "…which is what the loop consults per file");
+      // AUDIT FIX — a skipped file is recorded in THIS run's journal.
+      // Without it the new journal claimed fewer files than the job
+      // covered, and a cancel → resume → cancel → resume chain re-uploaded
+      // the originals.
+      const skipBlock = up.slice(up.indexOf("const already = skip.get(r);"),
+                                 up.indexOf('send({ phase: "file-start"'));
+      check(/journal\.appendFileResult\(self\.id, \{[\s\S]{0,240}assetId: already\.assetId/.test(skipBlock),
+        "a skipped file is journaled as present, with the asset id the server confirmed");
+      // AUDIT FIX — and the journal this run resumed FROM is retired, but
+      // only on an uncancelled completion.
+      check(/claimed\.every\(\(f\) => journaledOk\.has\(f\)\)[\s\S]{0,140}discardJournal\(LOG_DIR\(\), resumeJobId\)/.test(up),
+        "the predecessor journal is discarded once THIS run's journal covers everything "
+        + "it claimed — superseded-ness, not merely completion");
+      const discardAt = up.indexOf("discardJournal(LOG_DIR(), resumeJobId)");
+      const loopEndAt = up.indexOf("const summary = {");
+      check(discardAt > 0 && discardAt < loopEndAt,
+        "…after the loop and before the summary, not in a finally that would also "
+        + "fire on an early throw", `discard@${discardAt} summary@${loopEndAt}`);
+      // A cancel that never reached the predecessor's files must KEEP it —
+      // those files would otherwise have no record anywhere, and losing a
+      // record means re-uploading, which is the direction to err in.
+      check(/const journaledOk = new Set\(\);/.test(up)
+        && (up.match(/journaledOk\.add\(r\);/g) || []).length === 2,
+        "…and both the uploaded and the skipped path record into that set",
+        String((up.match(/journaledOk\.add\(r\);/g) || []).length));
 
       // Only on a resume. A normal job must be untouched.
       check(/let resumeVerification = null;\s*\n\s*if \(resumeFrom\) \{/.test(up),

@@ -1110,6 +1110,10 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
     // had. Reported rather than invisible: a job that uploaded 3 of 975
     // files should say why.
     const resumedSkips = [];
+    // Which files THIS run has recorded as present — uploaded or confirmed
+    // already there. Read once after the loop to decide whether the
+    // predecessor journal is now redundant.
+    const journaledOk = new Set();
     let doneBytes = 0;
 
     for (const r of rel) {
@@ -1131,6 +1135,23 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
       const already = skip.get(r);
       if (already) {
         doneBytes += sizes.get(r) || 0;
+        // AUDIT FIX — this journal must record the file too.
+        //
+        // A resumed job writes a NEW journal under a new id. Skipping a
+        // file without recording it left the new journal claiming fewer
+        // files than the job actually covered, so a cancel → resume →
+        // cancel → resume chain re-uploaded the originals: the second
+        // resume reads the newest journal, sees nothing about them, and
+        // sends them again. The file IS on the server and its asset id is
+        // known — that is exactly what an ok:true row means.
+        journal.appendFileResult(self.id, {
+          file: r,
+          ok: true,
+          bytes: sizes.get(r) || 0,
+          assetId: already.assetId,
+          sourceHash: already.sourceHash || undefined,
+        }).catch(() => {});
+        journaledOk.add(r);
         send({ phase: "file-done", file: r, ok: true, skipped: true, copiedBytes: doneBytes, totalBytes });
         resumedSkips.push({ file: r, assetId: already.assetId, sourceHash: already.sourceHash });
         continue;
@@ -1162,6 +1183,7 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
           assetId: res && res.assetId,
           versionId: res && res.versionId,
         }).catch(() => {});
+        journaledOk.add(r);
         send({ phase: "file-done", file: r, ok: true, copiedBytes: doneBytes, totalBytes });
       } catch (err) {
         errors.push({ file: r, error: String(err.message || err) });
@@ -1170,6 +1192,31 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
           error: String(err.message || err),
         }).catch(() => {});
         send({ phase: "file-done", file: r, ok: false });
+      }
+    }
+
+    // AUDIT FIX — retire the journal this run resumed FROM, once this
+    // run's own journal has superseded it.
+    //
+    // A resumed job is a new job with a new id and its own journal; the
+    // old one was never finished, discarded or released by anything. It
+    // stayed on disk marked "running", kept being offered, and accepting
+    // it later re-uploaded everything the resumed run had sent — the
+    // duplicate this whole feature exists to prevent.
+    //
+    // The condition is superseded-ness, not completion. The predecessor's
+    // entire value is "these files are already on the server"; once this
+    // run has recorded every one of them itself, it says everything the
+    // old one did and the old one is redundant. A run cancelled before
+    // reaching them all keeps it, because those files would otherwise
+    // have no record at all — and losing a record means re-uploading,
+    // which is the direction to err in.
+    if (resumeJobId && resumeFrom) {
+      const claimed = (resumeFrom.files || [])
+        .filter((f) => f.ok === true && f.assetId)
+        .map((f) => f.file);
+      if (claimed.every((f) => journaledOk.has(f))) {
+        await journal.discardJournal(LOG_DIR(), resumeJobId).catch(() => {});
       }
     }
 

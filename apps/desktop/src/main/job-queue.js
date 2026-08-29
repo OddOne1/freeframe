@@ -267,6 +267,19 @@ class JobQueue {
   pause(id) {
     const job = this.jobs.find((j) => j.id === id);
     if (!job || job.status !== "running" || !job._pause) return false;
+    // AUDIT FIX — a job already told to cancel cannot be paused.
+    //
+    // Cancel leaves the status "running" while the engine finishes the
+    // current file (§96), so without this the Pause button was still live
+    // on a cancelling row. Pressing it parked the loop BEFORE the cancel
+    // check it was about to reach, and nothing would ever wake it: the
+    // cancel had already fired and does not fire twice. The job sat at
+    // "Cancelling…" until Cancel was pressed a second time.
+    //
+    // §95 already states the rule in the other direction — cancel always
+    // wins over pause. This is the same rule, applied to the order nobody
+    // had tried.
+    if (job.cancelling) return false;
     job._pause();
     job.status = "paused";
     job.statusNote = null;

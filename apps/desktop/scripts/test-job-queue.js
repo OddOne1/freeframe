@@ -618,6 +618,56 @@ function makeQueue() {
     check(q2.jobs[0].status === "cancelled", "…and settles", q2.jobs[0].status);
   }
 
+  // ── AUDIT (§94-§98 combined): Cancel then Pause must not hang ────────
+  console.log("\nAUDIT. A job already cancelling cannot be paused");
+  {
+    // Found by the §86-§99 verification sweep, not by any single commit's
+    // own tests: §95 built pause before §96's flag existed, and §96
+    // layered the flag onto "running" without knowing pause could then
+    // move the status out from under the loop's cancel check.
+    let settled = false;
+    const q = new JobQueue({
+      onChange: () => {},
+      run: (job) => new Promise((resolve) => {
+        let paused = false, waiters = [], cancelled = false;
+        const wake = () => { const w = waiters; waiters = []; for (const r of w) r(); };
+        job._pause = () => { paused = true; };
+        job._resume = () => { paused = false; wake(); };
+        job._cancel = () => { cancelled = true; paused = false; wake(); };
+        // runLeg/runUpload's real shape: park, THEN check cancel.
+        ;(async () => {
+          for (let i = 0; i < 5; i++) {
+            await (paused ? new Promise((r) => waiters.push(r)) : Promise.resolve());
+            if (cancelled) { settled = true; return resolve({ cancelled: true }); }
+            await sleep(2);
+          }
+          settled = true; resolve({ ok: true });
+        })()
+      }),
+    });
+    q.add({ id: "j", label: "J", payload: {} });
+    await sleep(0);
+
+    q.cancel("j");
+    check(q.jobs[0].status === "running" && q.jobs[0].cancelling === true,
+      "cancel leaves the status running while the engine finishes its file");
+    check(q.pause("j") === false, "pause is REFUSED on a job already cancelling");
+    check(q.jobs[0].status === "running",
+      "…so the status is not moved out from under the loop's cancel check",
+      q.jobs[0].status);
+    await sleep(40);
+    check(settled === true,
+      "…and the job actually settles rather than parking forever");
+
+    // The button must not be offered either — a control that silently
+    // refuses is what §98 was.
+    const fs = require("node:fs");
+    const psrc = fs.readFileSync(
+      path.join(__dirname, "..", "src", "renderer", "panel.js"), "utf8");
+    check(/j\.status === "running" && !j\.cancelling && onPause/.test(psrc),
+      "…and panel.js stops offering Pause on a cancelling row");
+  }
+
   console.log(`\n${fail === 0 ? "ALL PASS" : fail + " FAILED"}`);
   process.exit(fail === 0 ? 0 : 1);
 })();
