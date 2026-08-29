@@ -88,6 +88,24 @@ function normalizeMode(mode) {
   return MODES.has(mode) ? mode : "free";
 }
 
+/**
+ * §94 — the floor between two broadcasts caused by byte ticks alone.
+ *
+ * ~8/second: smooth for a percent bar, and far enough apart that a click
+ * lands on a button that still exists when it completes.
+ *
+ * GLOBAL, not per job, and that is deliberate rather than simpler:
+ * broadcastJobs sends the WHOLE snapshot, so one broadcast already carries
+ * every job's latest state. Throttling per job would multiply the
+ * identical message by the number of running jobs to convey nothing extra.
+ *
+ * Leading edge only, with no trailing timer. Safe because a bytes tick is
+ * never the last word: file-done, node-status and the job's own completion
+ * all pass through unthrottled, so the final state always lands. The most
+ * that can be stale is a percentage, for one interval, mid-file.
+ */
+const BYTES_BROADCAST_MS = 125;
+
 class JobQueue {
   /**
    * @param {object} opts
@@ -98,6 +116,8 @@ class JobQueue {
   constructor({ run, onChange = () => {}, onFinish = () => {} }) {
     this.run = run;
     this.onChange = onChange;
+    /** §94 — when a bytes tick last caused a broadcast. */
+    this._lastBytesBroadcast = 0;
     // Writing the transfer log is main-process work (a filesystem write),
     // and this class stays I/O-free so the scheduler remains testable with
     // fake jobs. So it hands the finished job back out instead.
@@ -255,7 +275,33 @@ class JobQueue {
     const { speed, eta } = this.rate.update(id, merged.copiedBytes, merged.totalBytes);
     merged.speed = speed;
     merged.eta = eta;
+    // The STATE is always current. Only the broadcast is rate-limited, so a
+    // throttled tick's numbers are coalesced into the next one rather than
+    // lost, and the returned object is unaffected — the docked footer reads
+    // it over its own channel and never sees the throttle at all.
     job.progress = merged;
+
+    // §94 — bytes ticks arrive many times a second, and onChange sends
+    // jobs:changed, whose renderer calls host.replaceChildren() on the
+    // whole Transfers panel. A click spans mousedown → rebuild → click, so
+    // the Cancel button a gesture started on no longer exists when `click`
+    // fires: exactly §85's bug, in a different file, and unreachable from
+    // that fix.
+    //
+    // Throttled HERE rather than in panel.js because this is the one place
+    // every tick from every job already passes through. Patching the
+    // renderer would leave the choke point firing unthrottled for whatever
+    // consumes jobs:changed next.
+    //
+    // Every OTHER phase is a real transition — queued→running, file-done,
+    // node-status, done — and fires immediately. Delaying one of those
+    // would be worse than the bug: Cancel lingering on a job that already
+    // finished.
+    if (progress && progress.phase === "bytes") {
+      const now = Date.now();
+      if (now - this._lastBytesBroadcast < BYTES_BROADCAST_MS) return merged;
+      this._lastBytesBroadcast = now;
+    }
     this.onChange();
     return merged;
   }
@@ -382,4 +428,4 @@ class JobQueue {
   }
 }
 
-module.exports = { JobQueue, canCoexist, tolerates, normalizeMode, MODES };
+module.exports = { JobQueue, BYTES_BROADCAST_MS, canCoexist, tolerates, normalizeMode, MODES };

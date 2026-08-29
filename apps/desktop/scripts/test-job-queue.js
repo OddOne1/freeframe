@@ -8,7 +8,7 @@
 // Run: node scripts/test-job-queue.js
 const assert = require("node:assert");
 const path = require("node:path");
-const { JobQueue, canCoexist, tolerates, normalizeMode } = require(
+const { JobQueue, BYTES_BROADCAST_MS, canCoexist, tolerates, normalizeMode } = require(
   path.join(__dirname, "..", "src", "main", "job-queue.js"),
 );
 
@@ -232,6 +232,68 @@ function makeQueue() {
     await sleep(30);
     check(q.jobs.length === 3, "old finished rows are dropped", `${q.jobs.length} kept`);
     check(q.jobs.every((j) => j.status === "done"), "and only finished ones were eligible");
+  }
+
+  // ── §94: byte ticks must not rebuild the panel on every frame ────────
+  console.log("\n\u00a794. Broadcasts are throttled for byte ticks only");
+  {
+    // A controlled clock, matching test-rate-settings' own convention —
+    // a test that slept for real would be slow and flaky.
+    const realNow = Date.now;
+    let t = 1_000_000;
+    Date.now = () => t;
+    try {
+      let broadcasts = 0;
+      const q = new JobQueue({ onChange: () => { broadcasts += 1; }, run: () => new Promise(() => {}) });
+      q.add({ id: "j", label: "J", payload: {} });
+      await sleep(0);
+      const job = q.jobs[0];
+      check(job.status === "running", "a job is running to update", job.status);
+
+      broadcasts = 0;
+      // The real shape: many ticks inside one interval.
+      for (let i = 1; i <= 50; i++) {
+        t += 1;   // 1ms apart
+        q.updateProgress("j", { phase: "bytes", copiedBytes: i * 1000, totalBytes: 100000 });
+      }
+      check(broadcasts === 1,
+        "50 byte ticks inside one interval cause ONE broadcast, not 50", String(broadcasts));
+      // The whole point: what the panel rebuild was destroying mid-click.
+      check(job.progress.copiedBytes === 50000,
+        "…while the state itself is fully current, not coalesced away",
+        String(job.progress.copiedBytes));
+
+      t += BYTES_BROADCAST_MS;
+      q.updateProgress("j", { phase: "bytes", copiedBytes: 60000, totalBytes: 100000 });
+      check(broadcasts === 2, "once the interval passes, the next tick broadcasts", String(broadcasts));
+
+      // Every real transition is immediate. Throttling one of these would
+      // be worse than the bug — Cancel lingering on a finished job.
+      broadcasts = 0;
+      for (const phase of ["file-start", "file-done", "node-status", "verifying", "source-released", "done"]) {
+        q.updateProgress("j", { phase, copiedBytes: 60000, totalBytes: 100000 });
+      }
+      check(broadcasts === 6,
+        "six non-bytes updates in the same instant all broadcast immediately", String(broadcasts));
+
+      // A progress object with no phase at all must not be mistaken for a
+      // bytes tick and silently swallowed.
+      broadcasts = 0;
+      q.updateProgress("j", { copiedBytes: 61000 });
+      check(broadcasts === 1, "an update with no phase is treated as a real one");
+
+      // The returned object feeds the docked footer over its own channel,
+      // which never sees the throttle.
+      t += 1;
+      const returned = q.updateProgress("j", { phase: "bytes", copiedBytes: 62000, totalBytes: 100000 });
+      check(returned && returned.copiedBytes === 62000,
+        "a throttled tick still returns its enriched numbers to the caller",
+        returned && String(returned.copiedBytes));
+      check("speed" in returned && "eta" in returned,
+        "…including speed/ETA, so the footer is unaffected");
+    } finally {
+      Date.now = realNow;
+    }
   }
 
   console.log(`\n${fail === 0 ? "ALL PASS" : fail + " FAILED"}`);
