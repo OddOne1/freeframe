@@ -1730,11 +1730,13 @@
      * would silently restructure the chain — and a cascaded child being
      * added must not evict the parent whose device it necessarily shares.
      *
-     * Projects are excluded in BOTH directions, and that exclusion is
-     * load-bearing rather than tidiness: deviceFor() falls back to the
-     * internal volume for any path it cannot place, so a `freeframe://id`
-     * URI resolves to a real mount point. Without this, assigning a project
-     * would evict a destination folder on the boot drive, and vice versa.
+     * Projects are excluded in BOTH directions. That used to be
+     * load-bearing here: deviceFor() fell back to the internal volume for
+     * any path it could not place, so a `freeframe://id` URI resolved to a
+     * real mount point, and without this a project would evict a
+     * destination folder on the boot drive. §93 moved that guard into
+     * deviceFor, which now answers null for a project — so these are
+     * belt-and-braces rather than the only thing standing in the way.
      */
     function narrowingTarget(p, parentId) {
       // An EXPLICIT cascade parent means the caller is building a chain,
@@ -1742,6 +1744,11 @@
       // only such caller. Keyed off a named parent, not off the
       // inherit-sentinel: `undefined` reaches here as `null` (see addDest).
       if (parentId !== null) return null;
+      // §93 moved this rule into deviceFor itself, so this line is now
+      // redundant. Kept: removing a working guard because the function
+      // underneath should handle it is the exact confidence that produced
+      // §89. It also states the intent locally, where the reasoning below
+      // depends on it.
       if (isProject(p)) return null;
       const dev = deviceFor(p);
       if (!dev) return null;
@@ -2139,6 +2146,21 @@
      * other than "Macintosh HD", which a /Users special case would not.
      */
     function deviceFor(p) {
+      // §93 — a project has NO device, and saying "the boot drive" is worse
+      // than saying nothing.
+      //
+      // The fallback below is deliberate for a local folder whose parent
+      // volume cannot be resolved. A `freeframe://<id>` URI is not a
+      // filesystem path at all, so it reached that fallback by accident and
+      // came back as Macintosh HD — which then made roleFor() tint the boot
+      // drive as Source or Destination for a project with no relationship
+      // to it whatsoever.
+      //
+      // Fixed HERE rather than at the caller that showed the symptom: §73
+      // already had to write this guard once, inside narrowingTarget, and
+      // one guard at one of eight call sites is precisely the shape that
+      // let §69 → §73 → §89 be the same bug three times.
+      if (isProject(p)) return null;
       let best = null;
       let internal = null;
       for (const v of volumes) {

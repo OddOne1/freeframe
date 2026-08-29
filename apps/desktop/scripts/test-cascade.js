@@ -58,13 +58,16 @@ function world(devices) {
     let ids = 0;
     const isProject = (p) => typeof p === "string" && p.startsWith("freeframe://");
     const newId = () => "id" + (++ids);
-    // Mirrors the REAL deviceFor, fallback included: it ends in
-    // \`best || internal\`, so a path it cannot place — a freeframe:// URI
-    // among them — resolves to the INTERNAL volume rather than to null.
-    // A stub returning null there would hide the project hazard entirely,
-    // which is the mistake §73's own test made before it was caught.
+    // Mirrors the REAL deviceFor, INCLUDING §93: a project resolves to no
+    // device, and anything else it cannot place falls back to the internal
+    // volume (devices[0] here). Both halves matter. Dropping the fallback
+    // would hide the hazard §73 documented; keeping the pre-§93 behaviour
+    // for projects would be a stub asserting something the real function
+    // stopped doing, which manufactures coverage for guards that are now
+    // belt-and-braces — see section 8, which uses the real deviceFor.
     const deviceFor = (p) => {
       if (typeof p !== "string") return null;
+      if (p.startsWith("freeframe://")) return null;
       for (const d of devices) if (p === d || p.startsWith(d + "/")) return d;
       return devices[0] || null;
     };
@@ -156,6 +159,16 @@ console.log("\n4. null still means root, explicitly");
     moved && String(moved.parentId));
 }
 
+// §93 CHANGED WHAT THIS SECTION PROVES, and it is worth saying so.
+// narrowingTarget's two isProject guards used to be the only thing keeping
+// a project from evicting a boot-drive destination; deviceFor returning
+// null for a project now does that one level down. Mutating either guard
+// away no longer fails anything — they are belt-and-braces, kept
+// deliberately (§89's lesson about removing working guards), and untested
+// by construction because the case they catch can no longer arise.
+// What this section still proves is the OUTCOME, which is what matters:
+// a project and a real destination coexist. Do not "restore coverage" for
+// those guards by making the deviceFor stub above lie about projects.
 console.log("\n5. Projects are still excluded in both directions");
 {
   const w = scenario(["/Volumes/MAIN"]);
@@ -244,6 +257,64 @@ console.log("\n7. (§92) The button counts the two kinds separately");
     "…and cascades counts the hops");
   check(!/Copy & Verify \(\$\{destNodes\.length\}/.test(src),
     "…and the old mixed-total label is gone, not merely bypassed");
+}
+
+console.log("\n8. (§93) A project has no device, and deviceFor says so");
+{
+  // The REAL deviceFor and roleFor, not the prefix stub the scenarios above
+  // use — the whole bug lives in deviceFor's fallback, which a stub would
+  // have to reproduce to be worth anything, and reproducing it is how §73's
+  // and §89's tests both went blind to exactly this.
+  const build = (volumes, sourcePath, destNodes) => new Function(
+    "volumes", "sourcePath", "destNodes",
+    `
+    const isProject = (p) => typeof p === "string" && p.startsWith("freeframe://");
+    const isAssigned = () => false;
+    ${grab("deviceFor")}
+    ${grab("roleFor")}
+    return { deviceFor, roleFor };
+    `,
+  )(volumes, sourcePath, destNodes);
+
+  const vols = [
+    { mountPoint: "/Volumes/Macintosh HD", type: "internal" },
+    { mountPoint: "/Volumes/LUMIX", type: "removable" },
+  ];
+  const PROJ = "freeframe://abc";
+
+  const src0 = build(vols, PROJ, []);
+  check(src0.deviceFor(PROJ) === null,
+    "a freeframe:// URI resolves to no device at all", JSON.stringify(src0.deviceFor(PROJ)));
+
+  // The fallback this narrows must survive: it exists so a local folder
+  // whose parent volume cannot be resolved keeps a tile instead of
+  // vanishing. Narrowed to exclude projects, not removed.
+  check(src0.deviceFor("/private/var/x") === "/Volumes/Macintosh HD",
+    "…while an unplaceable LOCAL path still falls back to the internal volume",
+    JSON.stringify(src0.deviceFor("/private/var/x")));
+  check(src0.deviceFor("/Volumes/LUMIX/DCIM") === "/Volumes/LUMIX",
+    "…and a real path still resolves to its own drive");
+
+  // The reported symptom: a dashed Source outline around Macintosh HD with
+  // no relationship to the project whatsoever.
+  check(src0.roleFor("/Volumes/Macintosh HD").isSource === false,
+    "a project as SOURCE does not tint the boot drive");
+  check(src0.roleFor(PROJ).isSource === true,
+    "…while the project's own tile still shows the role it holds");
+  check(src0.roleFor("/Volumes/LUMIX").isSource === false, "…and no other drive is touched");
+
+  const dst = build(vols, null, [{ path: PROJ, parentId: null }]);
+  check(dst.roleFor("/Volumes/Macintosh HD").isDest === false,
+    "a project as DESTINATION does not tint it either");
+  check(dst.roleFor(PROJ).isDest === true, "…and its own tile still does");
+
+  // The behaviour roleFor's deviceFor call is actually FOR, unchanged.
+  const sub = build(vols, "/Volumes/LUMIX/DCIM", []);
+  check(sub.roleFor("/Volumes/LUMIX").isSource === true,
+    "a real subfolder still moves the highlight onto its drive");
+  const orphan = build(vols, "/private/var/x", []);
+  check(orphan.roleFor("/Volumes/Macintosh HD").isSource === true,
+    "…and an unplaceable local folder still highlights the internal volume");
 }
 
 console.log(fail === 0 ? "\nALL PASS" : `\n${fail} FAILED`);
