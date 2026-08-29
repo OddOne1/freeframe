@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { X, Download, MoreHorizontal, Layers, Share2, Trash2, FolderInput, FolderIcon, Check, Film, Music, Image as ImageIcon, Images, Link as LinkIcon, Pencil, FolderPlus, Upload } from 'lucide-react'
+import { X, Download, MoreHorizontal, Layers, Share2, Trash2, FolderInput, FolderIcon, Check, Film, Music, Image as ImageIcon, Images, Link as LinkIcon, Pencil, FolderPlus, Upload, CheckSquare } from 'lucide-react'
 import { cn, formatRelativeTime, formatBytes } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/shared/avatar'
@@ -144,6 +144,14 @@ export function AssetGrid({
   const [selectedAssetIds, setSelectedAssetIds] = React.useState<Set<string>>(new Set())
   const [selectedFolderIds, setSelectedFolderIds] = React.useState<Set<string>>(new Set())
   const [moveDialogOpen, setMoveDialogOpen] = React.useState(false)
+  /**
+   * §99 — the anchor a shift-click measures its range from.
+   *
+   * Set by every deliberate single-item click, modified or not, which is
+   * what makes a second shift-click extend from where you last were rather
+   * than from wherever the previous range happened to end.
+   */
+  const [lastClickedId, setLastClickedId] = React.useState<string | null>(null)
 
   /**
    * Right-click menu state (§28). Lives here, not on the card, because the
@@ -200,6 +208,7 @@ export function AssetGrid({
   const clearSelection = () => {
     setSelectedAssetIds(new Set())
     setSelectedFolderIds(new Set())
+    setLastClickedId(null)
   }
 
   /**
@@ -258,6 +267,111 @@ export function AssetGrid({
   }, [assets, sortKey, sortDirection])
 
   const showFolders = !flattenFolders && folders && folders.length > 0
+
+  /**
+   * §99 — what a click on a card body means.
+   *
+   * Plain click is unchanged and deliberately so: it opens the side panel,
+   * which is what this grid has always done and what the parent's
+   * `selectedAsset` state exists for. Only the modified cases are new.
+   *
+   * ONE handler for both the grid and list views. They render separately
+   * and each had its own inline onClick; two copies of a selection rule is
+   * how the two would come to disagree about what shift-click does.
+   */
+  const handleCardClick = (asset: Asset, e: React.MouseEvent) => {
+    if (e.shiftKey) {
+      // Stops the browser turning a shift-click near text into a text
+      // selection sweep across the page.
+      e.preventDefault()
+      const ids = filtered.map((a) => a.id)
+      const to = ids.indexOf(asset.id)
+      const from = lastClickedId ? ids.indexOf(lastClickedId) : -1
+      setSelectedAssetIds((prev) => {
+        const next = new Set(prev)
+        if (to < 0) return next
+        // No anchor yet — nothing has been clicked, or the anchor has been
+        // filtered out from under us. Behaves as a plain single-select
+        // rather than doing nothing, which would read as a broken click.
+        if (from < 0) {
+          next.add(asset.id)
+          return next
+        }
+        const [lo, hi] = from <= to ? [from, to] : [to, from]
+        for (let i = lo; i <= hi; i++) next.add(ids[i])
+        return next
+      })
+      // ADDITIVE, and the range is measured over `filtered` — the array
+      // actually rendered, in the active sort order. Over the raw `assets`
+      // prop a range would join whatever happens to sit between them in
+      // load order, which is not what is on screen under any non-default
+      // sort.
+      //
+      // Re-anchoring here is for consistency rather than observable
+      // behaviour: because ranges are additive, the union of
+      // range(anchor, x) with what is already selected is the same
+      // whichever of two already-selected endpoints the anchor is. It is
+      // kept because the alternative — an anchor that only some clicks
+      // move — is the kind of rule that becomes wrong the moment ranges
+      // stop being purely additive.
+      setLastClickedId(asset.id)
+      return
+    }
+    if (e.metaKey || e.ctrlKey) {
+      // The checkbox's behaviour, reachable from the card itself.
+      toggleAssetSelect(asset.id)
+      setLastClickedId(asset.id)
+      return
+    }
+    setLastClickedId(asset.id)
+    onAssetSelect?.(asset, e)
+  }
+
+  /**
+   * §99 — "all" means all VISIBLE.
+   *
+   * Over `filtered` because that is the rendered list. Worth being exact
+   * about what that does and does not buy: `filtered` only SORTS — the
+   * search and status filters live in page.tsx and narrow `assets` before
+   * it ever arrives here. So today this selects the same SET as the raw
+   * prop would, and the guarantee §99 asks for ("all visible, not all in
+   * the project") is delivered upstream, not by this line. It reads from
+   * the rendered list anyway, so it stays correct if filtering ever moves
+   * into this component.
+   *
+   * Folders are included when they are actually on screen. Bulk delete and
+   * move already accept both, and a Select All that quietly skipped the
+   * folders sitting right above the assets would be lying about the word.
+   * `showFolders` is the same condition that renders them, so a flattened
+   * view selects only assets.
+   */
+  const selectAllVisible = React.useCallback(() => {
+    setSelectedAssetIds(new Set(filtered.map((a) => a.id)))
+    setSelectedFolderIds(new Set(showFolders ? folders!.map((f) => f.id) : []))
+  }, [filtered, showFolders, folders])
+
+  /**
+   * Cmd/Ctrl+A, scoped so it never steals a real field's select-all.
+   *
+   * A `window` listener is the right place — the grid has no focusable
+   * container of its own, and scoping to one would mean the shortcut only
+   * worked after clicking the grid, which is not how select-all behaves
+   * anywhere else. The guard is on what currently has focus instead.
+   */
+  React.useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'a' && e.key !== 'A') return
+      if (!(e.metaKey || e.ctrlKey)) return
+      const el = document.activeElement as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
+      if (shareMode) return
+      e.preventDefault()
+      selectAllVisible()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [selectAllVisible, shareMode])
+
 
   if (isLoading) {
     return (
@@ -426,7 +540,7 @@ export function AssetGrid({
                 'rounded-lg transition-all cursor-pointer',
                 selectedAssetId === asset.id && 'ring-2 ring-accent ring-offset-1 ring-offset-bg-primary',
               )}
-              onClick={(e) => onAssetSelect?.(asset, e)}
+              onClick={(e) => handleCardClick(asset, e)}
               onDoubleClick={() => onAssetOpen?.(asset)}
             >
               <AssetCard
@@ -602,7 +716,7 @@ export function AssetGrid({
             return (
               <div
                 key={asset.id}
-                onClick={(e) => onAssetSelect?.(asset, e)}
+                onClick={(e) => handleCardClick(asset, e)}
                 onDoubleClick={() => onAssetOpen?.(asset)}
                 className={cn(
                   'group flex items-center gap-4 px-3 py-2 transition-colors hover:bg-bg-hover cursor-pointer',
@@ -749,6 +863,18 @@ export function AssetGrid({
             </span>
           )}
           <div className="flex-1" />
+          {/* §99 — extends the current selection to everything visible.
+              NOTE: this bar only exists once something is selected, so from
+              a standing start the shortcut is the way in. Deliberate rather
+              than overlooked — see the build report. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5"
+            onClick={selectAllVisible}
+          >
+            <CheckSquare className="h-4 w-4" /> Select all
+          </Button>
           <Button
             variant="ghost"
             size="sm"
