@@ -196,6 +196,28 @@ async function finishJournal(dir, jobId) {
   }
 }
 
+/**
+ * §87 Phase 2 — the user looked at this interrupted job and said no.
+ *
+ * Distinct from finishJournal, which means "the job completed and the real
+ * log is now the record", and from releaseJournal, which only drops the
+ * in-memory handle and leaves the file exactly where it was. Neither one
+ * says "this will never be resumed", and without a third verb a declined
+ * journal would prompt again at every launch forever.
+ *
+ * Best-effort: a journal that will not delete means the prompt may
+ * reappear, which is a nuisance, not a failure.
+ */
+async function discardJournal(dir, jobId) {
+  open.delete(jobId);
+  try {
+    await fsp.rm(journalFile(dir, jobId), { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Abandon the in-memory handle without touching the file on disk. */
 function releaseJournal(jobId) {
   open.delete(jobId);
@@ -232,6 +254,7 @@ module.exports = {
   startJournal,
   appendFileResult,
   finishJournal,
+  discardJournal,
   releaseJournal,
   readJournal,
   uploadedAssetIds,

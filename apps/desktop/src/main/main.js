@@ -938,11 +938,31 @@ ipcMain.handle("freeframe:interrupted-uploads", async () => {
     jobId: d.jobId,
     label: d.label,
     projectId: d.projectId || null,
+    // §87 Phase 2 — needed to RESUME, not just to describe: a resumed job
+    // goes where the original was going, which is the journal's own
+    // destination rather than whatever is selected in the UI now.
+    folderId: d.folderId || null,
     sourcePath: d.sourcePath || null,
+    // …and to MATCH: an upload of individually-picked files has no
+    // sourcePath at all, so without this such a job could never be
+    // recognised on reselection.
+    sourceFiles: Array.isArray(d.sourceFiles) ? d.sourceFiles : null,
     startedAt: d.startedAt,
     uploadedCount: journal.uploadedAssetIds(d).length,
     fileCount: (d.files || []).length,
   }));
+});
+
+/**
+ * §87 Phase 2 — the user declined to resume this one.
+ *
+ * Its own verb: finishJournal means the job completed, releaseJournal only
+ * drops an in-memory handle. Without this, a declined journal would prompt
+ * again at every launch forever.
+ */
+ipcMain.handle("freeframe:discard-interrupted-upload", async (_e, { jobId } = {}) => {
+  if (typeof jobId !== "string" || !jobId) return { ok: false };
+  return { ok: await journal.discardJournal(LOG_DIR(), jobId) };
 });
 
 ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, projectId, folderId, concurrencyMode, resumeJobId } = {}) => {

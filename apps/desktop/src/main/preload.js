@@ -185,6 +185,10 @@ contextBridge.exposeInMainWorld("freeframe", {
   /** §97A — upload jobs whose journal says they died mid-flight. §87
    *  Phase 2 will decide how these are surfaced; this is the reader. */
   interruptedUploads: () => ipcRenderer.invoke("freeframe:interrupted-uploads"),
+  /** §87 Phase 2 — the user said no. Deletes that journal so it stops
+   *  being offered. */
+  discardInterruptedUpload: (jobId) =>
+    ipcRenderer.invoke("freeframe:discard-interrupted-upload", { jobId }),
 
   /** Cosmetic in-app display name per volume/folder. Never renames
    *  anything on disk. */

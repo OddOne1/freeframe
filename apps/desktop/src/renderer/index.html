@@ -725,6 +725,17 @@
     /* §23d. Same shape as the values backdrop above; styled by id and
        toggled with .open, matching every other modal in this file. Without
        its own rule it would inherit nothing and sit permanently on screen. */
+    #resume-backdrop {
+      position: fixed; inset: 0; z-index: 1200; display: none;
+      background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
+      align-items: center; justify-content: center;
+    }
+    #resume-backdrop.open { display: flex; }
+    #resume-detail {
+      font-size: 11px; color: var(--text-tertiary); line-height: 1.6;
+      margin-top: 6px;
+    }
+
     #fragile-backdrop {
       position: fixed; inset: 0; z-index: 1200; display: none;
       background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
@@ -1095,6 +1106,25 @@
        is referenced from inside the file or a card-level index. Not a
        silent skip and not a silent proceed: the user is told what would
        break and decides, per job. -->
+  <!-- §87 Phase 2 — an interrupted upload was found. Its own id-scoped
+       backdrop rule above, like every other modal here: the shared
+       .ff-backdrop class carries no styles, and a backdrop relying on it
+       alone would sit permanently over the app (§65c). -->
+  <div id="resume-backdrop" class="ff-backdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="resume-title">
+      <div class="modal-head">
+        <span class="icon" data-icon="warning"></span>
+        <h3 id="resume-title">An interrupted upload was found</h3>
+      </div>
+      <p id="resume-body"></p>
+      <div id="resume-detail"></div>
+      <div class="modal-actions"><div class="row2">
+        <button id="resume-discard">Discard</button>
+        <button id="resume-go" class="primary">Resume upload</button>
+      </div></div>
+    </div>
+  </div>
+
   <div id="fragile-backdrop" class="ff-backdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="fragile-title">
       <div class="modal-head">
@@ -1639,6 +1669,11 @@
       // sources, and must not share one card number.
       claimedForPath = null;
       setSource(FILESET);
+      // §87 Phase 2 — setSource's own trigger cannot fire for a re-picked
+      // file set: the path is the same sentinel either way, so
+      // `p !== previous` is false. Asked here, where the selection really
+      // changed.
+      maybeOfferResume("source").catch(() => {});
     }
 
     /**
@@ -1727,6 +1762,15 @@
         });
       }
       render();
+      // §87 Phase 2, trigger 2 — the case that actually bites: cancel an
+      // upload, pick the same source again, press Copy & Verify, and every
+      // file already sent goes up twice. Asked here rather than inside the
+      // start flow, per the decision that the prompt is proactive and not
+      // gated behind pressing Start.
+      //
+      // Fire-and-forget: selecting a source must not wait on a journal
+      // read, and a failure to look must never break the selection.
+      if (p !== previous) maybeOfferResume("source").catch(() => {});
     }
     /**
      * The existing top-level destination that adding `p` should REPLACE
@@ -3501,6 +3545,133 @@
      * choice is per job and is never stored: a decision made for one card
      * shouldn't quietly apply to the next one.
      */
+    /**
+     * §87 Phase 2 — offer to continue an upload that was interrupted.
+     *
+     * The gap this closes: cancel an upload, press Copy & Verify again,
+     * and every file already sent goes up a second time — the new click
+     * starts a brand new job with a new id and a fresh journal, unlinked
+     * to the old one. §97A built the skip machinery and wired
+     * `resumeJobId` end to end; nothing ever called it.
+     *
+     * MATCHING is on the source alone, deliberately, not on source +
+     * project. The journal carries its own projectId and folderId, and a
+     * resumed job goes where the ORIGINAL was going — so the destination
+     * currently selected in the UI is not part of the question. That also
+     * settles the ordering the spec asked about: a source can be picked
+     * before any project is chosen, and this still works, because the
+     * project was never needed to identify the job.
+     *
+     * MULTIPLE journals are offered one at a time, newest first, and only
+     * ones matching the current source. Listing several at once would ask
+     * someone to compare interrupted jobs they cannot see the contents of;
+     * one question with two answers is the smaller ask, and declining is
+     * one click that makes it stop.
+     */
+    let resumeOffered = new Set();      // jobIds already put to the user
+    let resumePromptOpen = false;
+
+    function sameFileSet(a, b) {
+      if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+      const x = [...a].sort(); const y = [...b].sort();
+      return x.every((v, i) => v === y[i]);
+    }
+
+    /** Does this leftover journal describe the source now selected? */
+    function journalMatchesSource(doc) {
+      if (isFileSet(sourcePath)) return sameFileSet(doc.sourceFiles, sourceFiles);
+      if (!sourcePath || isProject(sourcePath)) return false;
+      return Boolean(doc.sourcePath) && doc.sourcePath === sourcePath;
+    }
+
+    /**
+     * @param {"launch"|"source"} trigger
+     *   "launch" offers anything left on disk — nothing is selected yet,
+     *   so there is nothing to match against. "source" offers only what
+     *   matches the source just picked, which is the cancel-then-retry
+     *   case and the one that actually bites.
+     */
+    async function maybeOfferResume(trigger) {
+      if (resumePromptOpen) return;
+      let docs = [];
+      try {
+        docs = (await window.freeframe.interruptedUploads()) || [];
+      } catch { return; }   // never let this break the thing that called it
+      const candidates = docs
+        .filter((d) => d && d.jobId && !resumeOffered.has(d.jobId))
+        .filter((d) => (trigger === "launch" ? true : journalMatchesSource(d)))
+        .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")));
+      if (!candidates.length) return;
+      await offerResume(candidates[0]);
+      // One at a time: if more remain, the next selection or launch asks
+      // again rather than stacking dialogs.
+    }
+
+    async function offerResume(doc) {
+      resumePromptOpen = true;
+      // Marked as asked BEFORE awaiting anything: a second trigger firing
+      // while the dialog is open must not queue the same job twice.
+      resumeOffered.add(doc.jobId);
+      const backdrop = $("resume-backdrop");
+      const label = doc.sourcePath
+        ? baseNameOf(doc.sourcePath)
+        : `${(doc.sourceFiles || []).length} files`;
+      // entryFor answers for any string, so an absent projectId would
+      // produce a name derived from the literal "freeframe://null".
+      const project = doc.projectId ? entryFor(`freeframe://${doc.projectId}`) : null;
+      const projectName = (project && project.name) || "a FreeFrame project";
+      $("resume-body").textContent =
+        `“${doc.label || label}” was uploading to ${projectName} and did not finish.`;
+      $("resume-detail").textContent =
+        `${doc.uploadedCount} of ${doc.fileCount} file(s) had uploaded. `
+        + "Resuming re-checks those with the server and only sends what is missing. "
+        + "Discarding forgets this job — the files already uploaded stay where they are.";
+      backdrop.classList.add("open");
+
+      const choice = await new Promise((resolve) => {
+        function close(result) {
+          backdrop.classList.remove("open");
+          $("resume-go").removeEventListener("click", onGo);
+          $("resume-discard").removeEventListener("click", onNo);
+          resolve(result);
+        }
+        const onGo = () => close("resume");
+        const onNo = () => close("discard");
+        $("resume-go").addEventListener("click", onGo);
+        $("resume-discard").addEventListener("click", onNo);
+      });
+      resumePromptOpen = false;
+
+      if (choice === "discard") {
+        // Deleted, not merely ignored: an ignored journal asks again at
+        // every launch forever.
+        await window.freeframe.discardInterruptedUpload(doc.jobId).catch(() => {});
+        return;
+      }
+
+      try {
+        // The journal's OWN destination, not the current selection — this
+        // is the same job continuing, and its files were already routed.
+        await window.freeframe.freeframeUpload(
+          doc.sourcePath || null,
+          doc.projectId,
+          doc.folderId || null,
+          doc.sourceFiles || null,
+          concurrencyMode,
+          doc.jobId,
+        );
+      } catch (err) {
+        const box = $("summary");
+        box.replaceChildren(
+          el("div", { class: "head" }, [el("h3", { class: "bad", text: "Could not resume that upload" })]),
+          el("div", { class: "verdict bad", text: String(err.message || err) }),
+        );
+        box.style.display = "block";
+      }
+    }
+
+    const baseNameOf = (p) => String(p || "").split("/").filter(Boolean).pop() || String(p || "");
+
     function openFragileDialog(message) {
       return new Promise((resolve) => {
         const backdrop = $("fragile-backdrop");
@@ -4719,6 +4890,16 @@
     });
 
     initStep("initial volume load", () => { refresh(); });
+
+    // §87 Phase 2, trigger 1 — a journal that was already on disk before
+    // this launch. Nothing is selected yet, so there is nothing to match
+    // against: anything left behind is offered.
+    //
+    // The renderer asks rather than main pushing, because the prompt is a
+    // renderer concern and a push would need main to know the window had
+    // finished building its DOM. Last in the init sequence, and in its own
+    // initStep, so a failure here cannot take the rest of startup with it.
+    initStep("interrupted uploads", () => { maybeOfferResume("launch").catch(() => {}); });
   </script>
 </body>
 </html>

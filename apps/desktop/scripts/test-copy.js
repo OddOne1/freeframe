@@ -870,6 +870,82 @@ async function main() {
         `resume@${resumeBlockStart} set@${setAt} loop@${loopStart}`);
     }
 
+    // ── §87 Phase 2: detection, matching, and discard ───────────────────
+    console.log("\n\u00a787 Phase 2. Resume detection for interrupted uploads");
+    {
+      const logs = path.join(tmp, "phase2-journals");
+      const mkJob = (id, extra = {}) => ({ id, label: id, kind: "upload", destPaths: [], ...extra });
+
+      // A CANCELLED job leaves exactly what a crashed one does. doc.status
+      // is written once at startJournal and never updated, so both read
+      // "running" — which is what marks either as resumable.
+      await journal.startJournal(logs, mkJob("cancelled-1", { sourcePath: "/src/A" }),
+        { projectId: "p1", folderId: "f1" });
+      await journal.appendFileResult("cancelled-1", { file: "a.MOV", ok: true, assetId: "A1" });
+      journal.releaseJournal("cancelled-1");     // what a cancel does
+      const left = await journal.readJournal(logs, "cancelled-1");
+      check(Boolean(left) && left.status === "running",
+        "a cancelled job's journal survives and still reads as resumable",
+        left && left.status);
+      check(left.projectId === "p1" && left.folderId === "f1",
+        "…carrying the destination the ORIGINAL job was going to, not a current selection");
+
+      // A COMPLETED job leaves nothing to offer.
+      await journal.startJournal(logs, mkJob("done-1", { sourcePath: "/src/B" }), { projectId: "p1" });
+      await journal.finishJournal(logs, "done-1");
+      check((await journal.readJournal(logs, "done-1")) === null,
+        "a job that finished cleanly leaves nothing — it is never offered");
+
+      // Discard: a third verb, distinct from both of those.
+      await journal.startJournal(logs, mkJob("decline-1", { sourcePath: "/src/C" }), { projectId: "p1" });
+      check(Boolean(await journal.readJournal(logs, "decline-1")), "a journal to decline exists");
+      journal.releaseJournal("decline-1");
+      check(Boolean(await journal.readJournal(logs, "decline-1")),
+        "releaseJournal does NOT delete it — it only drops the in-memory handle, "
+        + "which is why a third verb was needed");
+      check((await journal.discardJournal(logs, "decline-1")) === true, "discardJournal reports success");
+      check((await journal.readJournal(logs, "decline-1")) === null,
+        "…and the file is really gone, so it stops being offered");
+      check((await journal.discardJournal(logs, "never-existed")) === true,
+        "discarding something already gone is not an error");
+
+      // The matching rule, exercised against the shapes the renderer uses.
+      const sameSet = (a, b) => {
+        if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+        const x = [...a].sort(); const y = [...b].sort();
+        return x.every((v, i) => v === y[i]);
+      };
+      check(sameSet(["b", "a"], ["a", "b"]), "a picked file set matches regardless of order");
+      check(!sameSet(["a"], ["a", "b"]), "…but not a different set");
+      check(!sameSet(["a", "b"], ["a", "c"]), "…nor one that merely has the same size");
+
+      // The renderer's own matcher and triggers, pinned at the source:
+      // index.html cannot be run here, and all of the above would keep
+      // passing against a renderer that never calls any of it.
+      const rsrc = fssync.readFileSync(
+        path.join(__dirname, "..", "src", "renderer", "index.html"), "utf8");
+      check(/initStep\("interrupted uploads", \(\) => \{ maybeOfferResume\("launch"\)/.test(rsrc),
+        "trigger 1: the renderer asks once at launch");
+      check((rsrc.match(/maybeOfferResume\("source"\)/g) || []).length === 2,
+        "trigger 2: on a new source AND on a new file set — the sentinel path means "
+        + "setSource's own check cannot see a re-picked file set change",
+        String((rsrc.match(/maybeOfferResume\("source"\)/g) || []).length));
+      check(/freeframeUpload\([\s\S]{0,400}doc\.jobId,/.test(rsrc),
+        "Resume passes the found journal's jobId as resumeJobId — the whole point");
+      check(/doc\.projectId,\s*\n\s*doc\.folderId \|\| null,/.test(rsrc),
+        "…and sends it to the journal's OWN destination, not the current selection");
+      check(/discardInterruptedUpload\(doc\.jobId\)/.test(rsrc),
+        "Discard deletes the journal rather than ignoring it");
+      check(/resumeOffered\.add\(doc\.jobId\);/.test(rsrc),
+        "…and a job is marked as asked BEFORE any await, so two triggers cannot "
+        + "queue the same one twice");
+      // §65c's lesson: .ff-backdrop carries no styles, so a new modal
+      // relying on it alone sits permanently over the app.
+      check(/#resume-backdrop \{[\s\S]{0,200}display: none;/.test(rsrc)
+        && /#resume-backdrop\.open \{ display: flex; \}/.test(rsrc),
+        "the new modal has its own id-scoped rule, not just the styleless shared class");
+    }
+
     console.log(
       failures === 0
         ? `\nALL CHECKS PASSED (${summary.totalFiles} files, ${(srcTotal / 1024 / 1024).toFixed(1)} MB, ${summary.durationMs}ms for 2 destinations)`
