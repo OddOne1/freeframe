@@ -18,6 +18,14 @@ const crypto = require("node:crypto");
 const { runCopyJob, hashFileOnDisk, runFinalizedPass } = require("../src/main/copy-engine");
 const journal = require("../src/main/job-journal");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Hash a file, or report why not. A missing file is exactly what a
+ *  destination-layout regression produces, and letting it throw kills this
+ *  harness mid-run — the failure then reads as a crash rather than as the
+ *  check that was meant to catch it, and a mutation sweep cannot tell the
+ *  two apart. */
+async function hashOrNull(p) {
+  try { return await hashFileOnDisk(p); } catch { return null; }
+}
 const { listAlgorithms, getHasherFactory, c4Digest } = require("../src/main/hashers");
 
 let failures = 0;
@@ -60,6 +68,19 @@ async function makeTree(root) {
 async function main() {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "ff-copy-test-"));
   const source = path.join(tmp, "SOURCE_CARD");
+  /**
+   * §100 — a folder source now copies INTO its own name, so every
+   * destination path gained one segment. These assertions used to build
+   * `path.join(destRoot, rel)`; that was correct for the old flat
+   * behaviour and is the thing §100 deliberately changed, so they are
+   * updated rather than dropped.
+   *
+   * The wrapper is the source folder's basename, and stating it once here
+   * is what stops the harness and the engine drifting on what it should
+   * be.
+   */
+  const WRAP = path.basename(source);
+  const inDest = (root, rel) => path.join(root, WRAP, rel);
   const destA = path.join(tmp, "DEST_A");
   const destB = path.join(tmp, "DEST_B");
   await fs.mkdir(source, { recursive: true });
@@ -100,10 +121,10 @@ async function main() {
     console.log("\n2. Independently re-hash both destinations off disk");
     let allIdentical = true;
     for (const rel of expectedFiles) {
-      const sHash = await hashFileOnDisk(path.join(source, rel));
-      const aHash = await hashFileOnDisk(path.join(destA, rel));
-      const bHash = await hashFileOnDisk(path.join(destB, rel));
-      if (sHash !== aHash || sHash !== bHash) {
+      const sHash = await hashOrNull(path.join(source, rel));
+      const aHash = await hashOrNull(inDest(destA, rel));
+      const bHash = await hashOrNull(inDest(destB, rel));
+      if (!sHash || sHash !== aHash || sHash !== bHash) {
         allIdentical = false;
         console.log(`        ${rel}: src=${sHash} A=${aHash} B=${bHash}`);
       }
@@ -119,7 +140,7 @@ async function main() {
     check(engineAgrees, "hash computed during copy == hash of source re-read afterwards");
 
     check(
-      fssync.existsSync(path.join(destA, "CLIPS", "day one", "notes ünïcode.txt")),
+      fssync.existsSync(inDest(destA, path.join("CLIPS", "day one", "notes ünïcode.txt"))),
       "relative directory structure + unicode/space names preserved"
     );
     check(!fssync.existsSync(path.join(destA, "DCIM", ".DS_Store")), ".DS_Store not written to destination");
@@ -143,7 +164,7 @@ async function main() {
     const destC = path.join(tmp, "DEST_C");
     await runCopyJob({ sourcePath: source, destPaths: [destC] });
 
-    const victim = path.join(destC, "DCIM", "100CANON", "A001C002.MOV");
+    const victim = inDest(destC, path.join("DCIM", "100CANON", "A001C002.MOV"));
     const buf = await fs.readFile(victim);
     buf[1000] = buf[1000] ^ 0xff; // flip one byte in ~1MB
     await fs.writeFile(victim, buf);
@@ -159,7 +180,7 @@ async function main() {
     // so instead assert the comparison logic directly on a truncation.
     const destD = path.join(tmp, "DEST_D");
     await runCopyJob({ sourcePath: source, destPaths: [destD] });
-    const truncTarget = path.join(destD, "DCIM/100CANON/A001C002.MOV");
+    const truncTarget = inDest(destD, "DCIM/100CANON/A001C002.MOV");
     await fs.truncate(truncTarget, 500);
     const truncHash = await hashFileOnDisk(truncTarget);
     check(truncHash !== srcHash, "truncated file fails the hash comparison");
@@ -173,7 +194,8 @@ async function main() {
     // through the engine by parking a directory where a file needs to go.
     console.log("\n4b. runCopyJob itself must report failure, not just return allVerified:true");
     const destE = path.join(tmp, "DEST_E");
-    await fs.mkdir(path.join(destE, "DCIM", "100CANON", "A001C001.MOV"), { recursive: true });
+    // The blocker has to sit where the file will now actually land.
+    await fs.mkdir(inDest(destE, path.join("DCIM", "100CANON", "A001C001.MOV")), { recursive: true });
     const failed = await runCopyJob({ sourcePath: source, destPaths: [destE] });
     check(failed.allVerified === false, "allVerified is false when a file cannot be written");
     check(failed.errors.length > 0, "the failure is recorded in errors[]", `${failed.errors.length} error(s)`);
@@ -228,9 +250,9 @@ async function main() {
 
     let cascadeIdentical = true;
     for (const rel of expectedFiles) {
-      const s1 = await hashFileOnDisk(path.join(source, rel));
-      const s2 = await hashFileOnDisk(path.join(cB, rel));
-      if (s1 !== s2) cascadeIdentical = false;
+      const s1 = await hashOrNull(path.join(source, rel));
+      const s2 = await hashOrNull(inDest(cB, rel));
+      if (!s1 || s1 !== s2) cascadeIdentical = false;
     }
     check(cascadeIdentical, "cascaded copy is byte-identical to the ORIGINAL source");
 
@@ -239,7 +261,9 @@ async function main() {
     const fA = path.join(tmp, "FAIL_A");
     const fB = path.join(tmp, "FAIL_B");
     // Park a directory where a file needs to go, so leg A genuinely fails.
-    await fs.mkdir(path.join(fA, "DCIM", "100CANON", "A001C001.MOV"), { recursive: true });
+    // §100 — under the wrapper now, or the blocker misses and the leg
+    // succeeds, which would make this whole section pass vacuously.
+    await fs.mkdir(inDest(fA, path.join("DCIM", "100CANON", "A001C001.MOV")), { recursive: true });
     const badCasc = await runCopyJob({
       sourcePath: source,
       nodes: [
@@ -972,6 +996,82 @@ async function main() {
       check(/#resume-backdrop \{[\s\S]{0,200}display: none;/.test(rsrc)
         && /#resume-backdrop\.open \{ display: flex; \}/.test(rsrc),
         "the new modal has its own id-scoped rule, not just the styleless shared class");
+    }
+
+    // ── §100: a folder source copies into its own name ──────────────────
+    console.log("\n\u00a7100. A folder wraps in its own name when no preset is active");
+    {
+      const w = path.join(tmp, "w");
+      const wsrc = path.join(w, "00001040");
+      await fs.mkdir(path.join(wsrc, "DCIM"), { recursive: true });
+      for (const n of ["a", "b", "c"]) await fs.writeFile(path.join(wsrc, "DCIM", `${n}.jpg`), n.repeat(200));
+      const walk = async (root, pre = "") => {
+        let out = [];
+        for (const e of await fs.readdir(root, { withFileTypes: true }).catch(() => [])) {
+          const q = path.join(root, e.name);
+          out = out.concat(e.isDirectory() ? await walk(q, path.join(pre, e.name)) : [path.join(pre, e.name)]);
+        }
+        return out.sort();
+      };
+
+      const d1 = path.join(w, "D1");
+      const s1 = await runCopyJob({ sourcePath: wsrc, nodes: [{ id: "n", path: d1, parentId: null }] });
+      const g1 = await walk(d1);
+      check(s1.allVerified && g1.length === 3 && g1.every((f) => f.startsWith("00001040/")),
+        "a no-preset folder copy lands under the source folder's name, not spilled flat",
+        g1.join(", "));
+
+      // A cascade must not wrap twice. Before §100 this leg was ALREADY
+      // broken whenever a mapper existed — it read the source's unmapped
+      // rels out of a parent that had written mapped ones.
+      const cA = path.join(w, "A"), cB = path.join(w, "B");
+      const s2 = await runCopyJob({ sourcePath: wsrc, nodes: [
+        { id: "A", path: cA, parentId: null }, { id: "B", path: cB, parentId: "A" }] });
+      const gA = await walk(cA), gB = await walk(cB);
+      check(s2.allVerified, "a cascade of that copy verifies end to end",
+        `${s2.errors.length} error(s)`);
+      check(JSON.stringify(gA) === JSON.stringify(gB), "parent and child hold identical layouts");
+      check(!gB.some((f) => f.includes("00001040/00001040")), "…and nothing is double-wrapped");
+
+      // With a template the wrapper must not appear beside it — and the
+      // cascade must work, which is the pre-existing bug §100 surfaced.
+      const pA = path.join(w, "PA"), pB = path.join(w, "PB");
+      const s3 = await runCopyJob({
+        sourcePath: wsrc,
+        nodes: [{ id: "A", path: pA, parentId: null }, { id: "B", path: pB, parentId: "A" }],
+        mapRel: (rel) => path.join("SHOOT_01", rel),
+      });
+      const gPA = await walk(pA);
+      check(gPA.every((f) => f.startsWith("SHOOT_01/")) && !gPA.some((f) => f.includes("00001040")),
+        "a naming template still governs structure alone — no wrapper beside it", gPA.join(", "));
+      check(s3.allVerified, "…and cascading WITH a template verifies, which it did not before \u00a7100",
+        `${s3.errors.length} error(s)`);
+      check(JSON.stringify(gPA) === JSON.stringify(await walk(pB)), "…with identical layouts");
+
+      // The three shapes that must stay flat.
+      const d4 = path.join(w, "D4");
+      await runCopyJob({
+        sourceFiles: ["a", "b"].map((n) => path.join(wsrc, "DCIM", `${n}.jpg`)),
+        nodes: [{ id: "n", path: d4, parentId: null }] });
+      check(JSON.stringify(await walk(d4)) === JSON.stringify(["a.jpg", "b.jpg"]),
+        "individually-picked files stay flat — there is no one folder to name them after");
+
+      const d5 = path.join(w, "D5");
+      await runCopyJob({ sourcePath: path.join(wsrc, "DCIM", "a.jpg"),
+        nodes: [{ id: "n", path: d5, parentId: null }] });
+      check(JSON.stringify(await walk(d5)) === JSON.stringify(["a.jpg"]),
+        "a single FILE handed over as sourcePath is not wrapped in a folder named after itself");
+
+      const d6 = path.join(w, "D6");
+      await runCopyJob({
+        // freeframeSource's shape: root is explicitly null.
+        source: { kind: "freeframe", label: "freeframe://7b3e-uuid", root: null, skipped: [],
+                  list: async () => [{ rel: "clip.jpg", size: 200 }],
+                  open: () => fssync.createReadStream(path.join(wsrc, "DCIM", "a.jpg")) },
+        nodes: [{ id: "n", path: d6, parentId: null }] });
+      const g6 = await walk(d6);
+      check(!g6.some((f) => f.includes("7b3e") || f.includes("freeframe")),
+        "a PROJECT source is not wrapped — its only available name is a raw UUID", g6.join(", "));
     }
 
     console.log(

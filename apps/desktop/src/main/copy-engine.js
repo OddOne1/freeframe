@@ -467,6 +467,41 @@ async function runCopyJob({
   // identity, whatever kind it is.
   sourcePath = src.root || src.label;
 
+  // §100 — a folder copies INTO its own name, not spilled across the
+  // destination root.
+  //
+  // `rel` is relative to the picked folder, so with no mapper the folder's
+  // own name never appears in the destination at all: every file lands
+  // directly in the destination root. Finder, OffShoot and Hedge all wrap;
+  // this did not. A naming preset masks it, because its folderTemplate
+  // takes over structure entirely — so the gap is exactly the no-preset
+  // case, and this only fills in when nothing else has.
+  //
+  // KEYED ON `src.root`, which is the one thing that means "this source is
+  // a single real directory": localSource sets it, localFilesSource has no
+  // such field, and freeframeSource sets it to null. That is not a
+  // convenience — the alternatives cannot be told apart upstream. A
+  // sourcePath that turns out to be a FILE is quietly converted to a
+  // one-file set a few lines above, so a caller deciding this from the
+  // path string alone would wrap a single dragged clip in a folder named
+  // after the clip. Deciding it here, after that resolution, is the only
+  // place the answer is actually known.
+  //
+  // A project source is therefore not wrapped, deliberately: the only name
+  // available for one is its UUID (path.basename of a freeframe:// URI),
+  // and a folder called 7b3e-… is worse than no folder.
+  //
+  // Assigned to the SAME `mapRel` a naming template would use, so it
+  // inherits the root-leg-only gate below without a second rule: a
+  // cascaded leg reads from an already-wrapped destination and must not
+  // wrap again.
+  if (!mapRel && src.root) {
+    const wrapper = path.basename(src.root);
+    // Empty for a filesystem root ("/"), where join() would no-op anyway —
+    // guarded so the intent is stated rather than left to arithmetic.
+    if (wrapper) mapRel = (rel) => path.join(wrapper, rel);
+  }
+
   // Resolved once, up front, so every leg of this job — copy and verify
   // alike — uses the same algorithm. Throws here rather than mid-copy if
   // the name is unknown.
@@ -667,13 +702,42 @@ async function runCopyJob({
         }
 
         const toRoots = groupNodes.map((n) => n.path);
+
+        // A cascaded leg reads from a destination the ROOT leg already
+        // mapped, so it has to ask for the mapped paths — not the source's
+        // original ones.
+        //
+        // PRE-EXISTING BUG, surfaced by §100 rather than caused by it.
+        // With a naming template active the root leg writes
+        // `A/SHOOT/DCIM/x.MOV`, and the cascade then tried to open
+        // `A/DCIM/x.MOV` — every file ENOENT'd and the leg wrote empty
+        // files it then reported as failures. Verified against a clean
+        // tree before touching anything: cascade + preset was already
+        // broken. It only escaped notice because cascading is rare and
+        // cascading WITH a preset rarer still; §100 makes every no-preset
+        // folder job take the same path, which would have turned an
+        // unnoticed corner case into the default.
+        //
+        // Mapping the rels rather than re-applying mapRel inside the leg
+        // keeps the wrapper applied exactly once: the cascade reads
+        // `A/<mapped>` and writes `B/<mapped>`, so parent and child hold
+        // the identical layout and the leg's byte-for-byte verification
+        // still compares like with like. buildRelMapper caches per rel, so
+        // asking it again here returns what the root leg already used
+        // rather than advancing a counter.
+        const isRootLeg = groupNodes[0].parentId === null;
+        const legRels = isRootLeg || !mapRel ? relFiles : relFiles.map((r) => mapRel(r));
+        const legSizes = isRootLeg || !mapRel
+          ? sizes
+          : new Map(relFiles.map((r) => [mapRel(r), sizes.get(r)]));
+
         const fileResults = await runLeg({
           from,
           // Root leg only -- see the note in runLeg.
-          mapRel: groupNodes[0].parentId === null ? mapRel : null,
+          mapRel: isRootLeg ? mapRel : null,
           toRoots,
-          relFiles,
-          sizes,
+          relFiles: legRels,
+          sizes: legSizes,
           isCancelled,
           waitIfPaused,
           onFileEvent: (ev) => {
