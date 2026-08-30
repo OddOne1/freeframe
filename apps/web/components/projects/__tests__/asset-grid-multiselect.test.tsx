@@ -284,6 +284,102 @@ describe('select all', () => {
   })
 })
 
+/**
+ * §101 — the same rules, reached through the CHECKBOX.
+ *
+ * §99 put shift/cmd only on the card body. The checkbox is the visible
+ * "select" control and the more natural target, and it plain-toggled
+ * whatever modifier was held — in two separate implementations, one per
+ * view, that each ignored the event.
+ */
+function checkboxFor(name: string) {
+  return screen.getByRole('button', { name: new RegExp(`^(Select|Deselect) ${name}$`) })
+}
+
+describe.each([
+  ['grid', 'grid' as const],
+  ['list', 'list' as const],
+])('checkbox modifier clicks — %s view', (_label, layout) => {
+  beforeEach(() => {
+    useViewStore.setState({ layout, flattenFolders: false, sortKey: 'name', sortDirection: 'asc' })
+  })
+
+  it('plain click toggles and does NOT open the side panel', async () => {
+    const user = userEvent.setup()
+    const { handlers } = setup()
+    await user.click(checkboxFor('B Two'))
+    expect(selectedCount()).toBe(1)
+    // The one behaviour that must stay checkbox-specific.
+    expect(handlers.onAssetSelect).not.toHaveBeenCalled()
+    await user.click(checkboxFor('B Two'))
+    expect(selectedCount()).toBeNull()
+    expect(handlers.onAssetSelect).not.toHaveBeenCalled()
+  })
+
+  it('shift-click selects the range', async () => {
+    const user = userEvent.setup()
+    const { handlers } = setup()
+    await user.click(checkboxFor('B Two'))
+    await user.keyboard('{Shift>}')
+    await user.click(checkboxFor('D Four'))
+    await user.keyboard('{/Shift}')
+    expect(selectedCount()).toBe(3)     // a-2, a-3, a-4
+    // Still never the panel, even with a modifier held.
+    expect(handlers.onAssetSelect).not.toHaveBeenCalled()
+  })
+
+  // Documentation, not discrimination, and worth being straight about: on
+  // the CHECKBOX a cmd-click and a plain click are the same operation —
+  // both toggle one item and neither opens the panel. This asserts the
+  // intent holds, but it cannot fail if the modifier branch is removed,
+  // because the fallback does the same thing. The shift case above is what
+  // actually proves the modifier is read.
+  it('cmd-click adds without disturbing an existing range', async () => {
+    const user = userEvent.setup()
+    setup()
+    await user.click(checkboxFor('A One'))
+    await user.keyboard('{Shift>}')
+    await user.click(checkboxFor('B Two'))
+    await user.keyboard('{/Shift}')
+    expect(selectedCount()).toBe(2)
+    await user.keyboard('{Meta>}')
+    await user.click(checkboxFor('E Five'))
+    await user.keyboard('{/Meta}')
+    expect(selectedCount()).toBe(3)
+  })
+
+})
+
+describe('the checkbox and the card body share one anchor', () => {
+  // Grid only, because cardFor() reads data-asset-card, which AssetCard
+  // sets and the list row does not. The rule under test is view-agnostic
+  // state, so proving it once is enough — asserting it in list view would
+  // need a second selector for no extra confidence.
+  beforeEach(() => {
+    useViewStore.setState({ layout: 'grid', flattenFolders: false, sortKey: 'name', sortDirection: 'asc' })
+  })
+
+  it('a card-body shift-click continues from where a checkbox click left off', async () => {
+    const user = userEvent.setup()
+    setup()
+    await user.click(checkboxFor('B Two'))
+    await user.keyboard('{Shift>}')
+    await user.click(cardFor('a-4'))
+    await user.keyboard('{/Shift}')
+    expect(selectedCount()).toBe(3)
+  })
+
+  it('…and the reverse', async () => {
+    const user = userEvent.setup()
+    setup()
+    await user.click(cardFor('a-2'))
+    await user.keyboard('{Shift>}')
+    await user.click(checkboxFor('D Four'))
+    await user.keyboard('{/Shift}')
+    expect(selectedCount()).toBe(3)
+  })
+})
+
 describe('bulk actions act on exactly what was selected', () => {
   it('delete receives the range, nothing more', async () => {
     const user = userEvent.setup()

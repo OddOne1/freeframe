@@ -279,7 +279,21 @@ export function AssetGrid({
    * and each had its own inline onClick; two copies of a selection rule is
    * how the two would come to disagree about what shift-click does.
    */
-  const handleCardClick = (asset: Asset, e: React.MouseEvent) => {
+  /**
+   * §101 — the modifier half of a click, shared by every entry point.
+   *
+   * Returns true when a modifier was held and the selection has been
+   * changed; false for a plain click, which each caller then finishes in
+   * its own way. That split is the whole point: the card body opens the
+   * side panel on a plain click and the checkbox must never do that, but
+   * shift and cmd have to mean the same thing on both.
+   *
+   * §99 put this logic only on the card body. The checkbox — the visible
+   * "select" control, and the more natural target — silently plain-toggled
+   * whatever was held, in two separate implementations that each ignored
+   * the event.
+   */
+  const applyModifierSelection = (asset: Asset, e: React.MouseEvent): boolean => {
     if (e.shiftKey) {
       // Stops the browser turning a shift-click near text into a text
       // selection sweep across the page.
@@ -315,16 +329,36 @@ export function AssetGrid({
       // move — is the kind of rule that becomes wrong the moment ranges
       // stop being purely additive.
       setLastClickedId(asset.id)
-      return
+      return true
     }
     if (e.metaKey || e.ctrlKey) {
-      // The checkbox's behaviour, reachable from the card itself.
       toggleAssetSelect(asset.id)
       setLastClickedId(asset.id)
-      return
+      return true
     }
+    return false
+  }
+
+  /** A click on the card BODY. Plain clicks open the side panel — which is
+   *  what makes this different from the checkbox, and why the modifier
+   *  logic above is shared rather than this function reused. */
+  const handleCardClick = (asset: Asset, e: React.MouseEvent) => {
+    if (applyModifierSelection(asset, e)) return
     setLastClickedId(asset.id)
     onAssetSelect?.(asset, e)
+  }
+
+  /**
+   * A click on the selection CHECKBOX, in either view.
+   *
+   * Never opens the side panel, under any modifier or none — that is the
+   * one behaviour that has to stay checkbox-specific no matter how much of
+   * the rest is shared.
+   */
+  const handleCheckboxClick = (asset: Asset, e: React.MouseEvent) => {
+    if (applyModifierSelection(asset, e)) return
+    toggleAssetSelect(asset.id)
+    setLastClickedId(asset.id)
   }
 
   /**
@@ -552,7 +586,7 @@ export function AssetGrid({
                 thumbnailUrl={thumbnails[asset.id]}
                 fileSize={fileSizes[asset.id] ?? null}
                 selected={selectedAssetIds.has(asset.id)}
-                onSelect={() => toggleAssetSelect(asset.id)}
+                onSelect={(e) => handleCheckboxClick(asset, e)}
                 showInfo={showCardInfo}
                 showFileSize={showFileSize}
                 showUploader={showUploader}
@@ -733,11 +767,18 @@ export function AssetGrid({
                     <TypeIcon className="h-6 w-6 text-text-tertiary/60" />
                   )}
                   <button
+                    // §101 — the grid's checkbox has carried this label
+                    // since it was written; the list's had none at all, so
+                    // it announced as an unnamed button. Matching them is
+                    // both the fix and the only semantic handle a test has
+                    // on this control.
+                    aria-label={selectedAssetIds.has(asset.id)
+                      ? `Deselect ${asset.name}` : `Select ${asset.name}`}
                     className={cn(
                       'absolute inset-0 flex items-center justify-center transition-all',
                       selectedAssetIds.has(asset.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
                     )}
-                    onClick={(e) => { e.stopPropagation(); toggleAssetSelect(asset.id) }}
+                    onClick={(e) => { e.stopPropagation(); handleCheckboxClick(asset, e) }}
                   >
                     <div className={cn(
                       'h-4 w-4 rounded border flex items-center justify-center transition-all',
