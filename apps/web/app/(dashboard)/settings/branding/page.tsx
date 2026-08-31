@@ -166,7 +166,48 @@ function ThemeColorEditor({
   )
 }
 
+
 type UploadSlot = 'dark' | 'light' | 'login'
+
+/**
+ * §106 — one image slot's staged state.
+ *
+ * `keep` is not the same as "no file": it means "whatever is committed
+ * stays", which is what makes Discard a pure local operation and lets Save
+ * send nothing for a slot nobody touched. `removed` has to be its own state
+ * for the same reason — it is a change, and a null URL alone could not tell
+ * "cleared it" from "never had one".
+ */
+type SlotDraft =
+  | { kind: 'keep' }
+  | { kind: 'file'; file: File; url: string }
+  | { kind: 'removed' }
+
+const KEEP: SlotDraft = { kind: 'keep' }
+
+type DraftColors = { light: Partial<ThemeColorTokens> | null; dark: Partial<ThemeColorTokens> | null }
+
+/** Committed theme colors, flattened to the shape the draft holds.
+ *
+ * `theme_colors` is typed `Record<string, unknown>` on the wire (the
+ * backend stores free-form JSON), and this page has always read it as
+ * per-theme token maps. The cast is where that assumption is stated once,
+ * rather than at each of the five places that need it. */
+function seedColors(themeColors: Record<string, unknown> | null): DraftColors {
+  const at = (k: string) => (themeColors?.[k] as Partial<ThemeColorTokens> | undefined) ?? null
+  return { light: at('light'), dark: at('dark') }
+}
+
+/** Stable, comparable form — so an SWR revalidation that returns identical
+ *  data does not count as an external change and blow away an edit in
+ *  progress. Object identity would; the values are what matter. */
+function colorsKey(c: DraftColors): string {
+  const norm = (t: Partial<ThemeColorTokens> | null) =>
+    t && Object.keys(t).length > 0
+      ? Object.keys(t).sort().map((k) => `${k}:${(t as Record<string, string>)[k]}`).join(',')
+      : ''
+  return `${norm(c.light)}|${norm(c.dark)}`
+}
 
 export default function BrandingPage() {
   const { user, isSuperAdmin } = useAuthStore()
@@ -189,14 +230,78 @@ export default function BrandingPage() {
   } = useSiteSettings()
   const { resolvedTheme } = useThemeStore()
 
-  const [nameValue, setNameValue] = React.useState(orgName)
-  const [nameSaved, setNameSaved] = React.useState(false)
-  const [savingName, setSavingName] = React.useState(false)
-  const [uploadingSide, setUploadingSide] = React.useState<UploadSlot | null>(null)
-  const [uploadingFavicon, setUploadingFavicon] = React.useState(false)
-  const [resetting, setResetting] = React.useState(false)
+  const committedLogos: Record<UploadSlot, string | null> = React.useMemo(
+    () => ({ dark: logoDarkUrl, light: logoLightUrl, login: logoLoginUrl }),
+    [logoDarkUrl, logoLightUrl, logoLoginUrl],
+  )
 
-  React.useEffect(() => { setNameValue(orgName) }, [orgName])
+  // ── Draft state (§106) ────────────────────────────────────────────────
+  //
+  // Every control on this page used to call straight through to the hook,
+  // which PATCHes immediately. SiteSettings is instance-wide, so picking
+  // through colour swatches applied each one live, for every signed-in
+  // user, while the admin was still deciding. Nothing below touches the
+  // network until Save.
+  const [draftName, setDraftName] = React.useState(orgName)
+  const [draftLogos, setDraftLogos] = React.useState<Record<UploadSlot, SlotDraft>>({
+    dark: KEEP, light: KEEP, login: KEEP,
+  })
+  const [draftFavicon, setDraftFavicon] = React.useState<SlotDraft>(KEEP)
+  const [draftColors, setDraftColors] = React.useState<DraftColors>(() => seedColors(themeColors))
+
+  const [saving, setSaving] = React.useState(false)
+  const [saved, setSaved] = React.useState(false)
+  const [saveError, setSaveError] = React.useState<string | null>(null)
+  const [uploadingSide, setUploadingSide] = React.useState<UploadSlot | 'favicon' | null>(null)
+
+  // Blob URLs are not garbage-collected — an unrevoked one pins its File
+  // for the life of the document. Tracked in a ref so they can be revoked
+  // deterministically on replace, discard and unmount rather than hoped
+  // about.
+  const objectUrls = React.useRef(new Set<string>())
+  const trackUrl = React.useCallback((file: File) => {
+    const url = URL.createObjectURL(file)
+    objectUrls.current.add(url)
+    return url
+  }, [])
+  const revoke = React.useCallback((slot: SlotDraft) => {
+    if (slot.kind === 'file') {
+      URL.revokeObjectURL(slot.url)
+      objectUrls.current.delete(slot.url)
+    }
+  }, [])
+  React.useEffect(() => {
+    const urls = objectUrls.current
+    return () => { urls.forEach((u) => URL.revokeObjectURL(u)); urls.clear() }
+  }, [])
+
+  const resetDraft = React.useCallback(
+    (name: string, colors: DraftColors) => {
+      setDraftLogos((prev) => { Object.values(prev).forEach(revoke); return { dark: KEEP, light: KEEP, login: KEEP } })
+      setDraftFavicon((prev) => { revoke(prev); return KEEP })
+      setDraftName(name)
+      setDraftColors(colors)
+      setSaveError(null)
+    },
+    [revoke],
+  )
+
+  // Re-seed when the COMMITTED values genuinely change — after a save here,
+  // or an edit from elsewhere. Keyed on the values rather than on object
+  // identity, so SWR revalidating to the same data does not discard an edit
+  // in progress.
+  const committedKey = `${orgName}|${logoDarkUrl}|${logoLightUrl}|${logoLoginUrl}|${faviconUrl}|${colorsKey(seedColors(themeColors))}`
+  const savingRef = React.useRef(false)
+  const lastSeeded = React.useRef(committedKey)
+  React.useEffect(() => {
+    // Save issues several PATCHes in sequence and each one mutates the
+    // cache. Without this the draft would be re-seeded halfway through its
+    // own save, and the changes not yet sent would be dropped.
+    if (savingRef.current) return
+    if (lastSeeded.current === committedKey) return
+    lastSeeded.current = committedKey
+    resetDraft(orgName, seedColors(themeColors))
+  }, [committedKey, orgName, themeColors, resetDraft])
 
   // This page is admin-only. The settings nav already hides the link for
   // everyone else, but that doesn't stop direct navigation — redirect away
@@ -208,85 +313,122 @@ export default function BrandingPage() {
     }
   }, [user, isSuperAdmin, router])
 
-  async function handleSaveName() {
-    const trimmed = nameValue.trim()
-    if (!trimmed) return
-    setSavingName(true)
-    try {
-      await updateOrgName(trimmed)
-      setNameSaved(true)
-      setTimeout(() => setNameSaved(false), 2000)
-    } catch {
-      // no-op — leave the input as-is so the user can retry
-    } finally {
-      setSavingName(false)
-    }
+  // ── What the page SHOWS: draft first, committed underneath ────────────
+  function effectiveLogo(side: UploadSlot): string | null {
+    const d = draftLogos[side]
+    if (d.kind === 'file') return d.url
+    if (d.kind === 'removed') return null
+    return committedLogos[side]
+  }
+  const effectiveFavicon =
+    draftFavicon.kind === 'file' ? draftFavicon.url : draftFavicon.kind === 'removed' ? null : faviconUrl
+
+  function pickLogo(side: UploadSlot, file: File) {
+    setDraftLogos((prev) => { revoke(prev[side]); return { ...prev, [side]: { kind: 'file', file, url: trackUrl(file) } } })
+  }
+  function clearLogo(side: UploadSlot) {
+    setDraftLogos((prev) => { revoke(prev[side]); return { ...prev, [side]: { kind: 'removed' } } })
+  }
+  function pickFavicon(file: File) {
+    setDraftFavicon((prev) => { revoke(prev); return { kind: 'file', file, url: trackUrl(file) } })
+  }
+  function clearFavicon() {
+    setDraftFavicon((prev) => { revoke(prev); return { kind: 'removed' } })
   }
 
-  async function handleUpload(side: UploadSlot, file: File) {
-    setUploadingSide(side)
+  function changeColor(theme: 'light' | 'dark', key: keyof ThemeColorTokens, value: string) {
+    setDraftColors((prev) => ({ ...prev, [theme]: { ...(prev[theme] ?? {}), [key]: value } }))
+  }
+  function resetThemeDraft(theme: 'light' | 'dark') {
+    setDraftColors((prev) => ({ ...prev, [theme]: null }))
+  }
+
+  /** Stage "clear everything" rather than doing it. §106: a reset should be
+   *  as reversible as any other edit until Save. */
+  function stageResetAll() {
+    setDraftLogos((prev) => { Object.values(prev).forEach(revoke); return { dark: { kind: 'removed' }, light: { kind: 'removed' }, login: { kind: 'removed' } } })
+    setDraftFavicon((prev) => { revoke(prev); return { kind: 'removed' } })
+    setDraftName('FreeFrame')
+    setDraftColors({ light: null, dark: null })
+    setSaveError(null)
+  }
+
+  // ── What actually differs ─────────────────────────────────────────────
+  const nameChanged = draftName.trim() !== '' && draftName.trim() !== orgName
+  const changedLogoSides = (['dark', 'light', 'login'] as UploadSlot[]).filter((s) => {
+    const d = draftLogos[s]
+    if (d.kind === 'file') return true
+    // Removing a slot that is already empty is not a change.
+    if (d.kind === 'removed') return committedLogos[s] !== null
+    return false
+  })
+  const faviconChanged =
+    draftFavicon.kind === 'file' || (draftFavicon.kind === 'removed' && faviconUrl !== null)
+  const committedColors = seedColors(themeColors)
+  const changedThemes = (['light', 'dark'] as const).filter(
+    (t) => colorsKey({ ...committedColors, [t]: draftColors[t] }) !== colorsKey(committedColors),
+  )
+  const isDirty =
+    nameChanged || changedLogoSides.length > 0 || faviconChanged || changedThemes.length > 0
+
+  // "Everything cleared" collapses to the one endpoint that says exactly
+  // that, instead of five separate PATCHes that happen to add up to it.
+  // Derived rather than a flag set by the Reset button: a flag goes stale
+  // the moment the user edits something afterwards.
+  const stagedAsFullReset =
+    isDirty &&
+    draftName.trim() === 'FreeFrame' &&
+    (['dark', 'light', 'login'] as UploadSlot[]).every((s) => effectiveLogo(s) === null) &&
+    effectiveFavicon === null &&
+    draftColors.light === null &&
+    draftColors.dark === null
+
+  async function handleSave() {
+    if (!isDirty || saving) return
+    setSaving(true)
+    savingRef.current = true
+    setSaveError(null)
     try {
-      await uploadLogo(side, file)
-    } catch {
-      // no-op — upload failed, slot just stays as it was
+      if (stagedAsFullReset) {
+        await resetAll()
+      } else {
+        for (const side of changedLogoSides) {
+          const d = draftLogos[side]
+          setUploadingSide(side)
+          if (d.kind === 'file') await uploadLogo(side, d.file)
+          else if (d.kind === 'removed') await removeLogo(side)
+        }
+        if (faviconChanged) {
+          setUploadingSide('favicon')
+          if (draftFavicon.kind === 'file') await uploadFavicon(draftFavicon.file)
+          else await removeFavicon()
+        }
+        setUploadingSide(null)
+        if (nameChanged) await updateOrgName(draftName.trim())
+        for (const theme of changedThemes) {
+          const tokens = draftColors[theme]
+          if (tokens && Object.keys(tokens).length > 0) await updateThemeColors(theme, tokens)
+          else await resetThemeColors(theme)
+        }
+      }
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+      // Re-seeded from whatever the server actually returned, not from the
+      // draft: if the backend normalised anything, the form should show
+      // what was really stored.
+      savingRef.current = false
+      lastSeeded.current = ''
+    } catch (err) {
+      savingRef.current = false
+      setSaveError(err instanceof Error ? err.message : 'Could not save those changes.')
     } finally {
       setUploadingSide(null)
+      setSaving(false)
     }
   }
 
-  async function handleRemove(side: UploadSlot) {
-    try {
-      await removeLogo(side)
-    } catch {
-      // no-op
-    }
-  }
-
-  async function handleFaviconUpload(file: File) {
-    setUploadingFavicon(true)
-    try {
-      await uploadFavicon(file)
-    } catch {
-      // no-op — upload failed, slot just stays as it was
-    } finally {
-      setUploadingFavicon(false)
-    }
-  }
-
-  async function handleFaviconRemove() {
-    try {
-      await removeFavicon()
-    } catch {
-      // no-op
-    }
-  }
-
-  async function handleColorChange(theme: 'light' | 'dark', key: keyof ThemeColorTokens, value: string) {
-    try {
-      await updateThemeColors(theme, { [key]: value })
-    } catch {
-      // no-op
-    }
-  }
-
-  async function handleColorReset(theme: 'light' | 'dark') {
-    try {
-      await resetThemeColors(theme)
-    } catch {
-      // no-op
-    }
-  }
-
-  async function handleReset() {
-    setResetting(true)
-    try {
-      await resetAll()
-      setNameValue('FreeFrame')
-    } catch {
-      // no-op
-    } finally {
-      setResetting(false)
-    }
+  function handleDiscard() {
+    resetDraft(orgName, seedColors(themeColors))
   }
 
   if (!isSuperAdmin) {
@@ -294,18 +436,24 @@ export default function BrandingPage() {
   }
 
   const hasCustomBranding =
-    orgName !== 'FreeFrame' ||
-    logoDarkUrl !== null ||
-    logoLightUrl !== null ||
-    logoLoginUrl !== null ||
-    faviconUrl !== null ||
-    themeColors !== null
+    effectiveLogo('dark') !== null ||
+    effectiveLogo('light') !== null ||
+    effectiveLogo('login') !== null ||
+    effectiveFavicon !== null ||
+    draftName.trim() !== 'FreeFrame' ||
+    draftColors.light !== null ||
+    draftColors.dark !== null
 
-  // Which logo is active right now
-  const activeLogo = resolvedTheme === 'light' ? (logoLightUrl ?? logoDarkUrl) : (logoDarkUrl ?? logoLightUrl)
+  // Which logo is active right now — from the DRAFT, so the preview shows
+  // what is staged rather than mirroring what was already saved.
+  const activeLogo =
+    resolvedTheme === 'light'
+      ? (effectiveLogo('light') ?? effectiveLogo('dark'))
+      : (effectiveLogo('dark') ?? effectiveLogo('light'))
+  const previewName = draftName.trim() || 'FreeFrame'
 
   return (
-    <div className="p-6 max-w-2xl space-y-8">
+    <div className="p-6 max-w-2xl space-y-8 pb-24">
       <div className="flex items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-muted">
           <Palette className="h-5 w-5 text-accent" />
@@ -320,29 +468,13 @@ export default function BrandingPage() {
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-text-primary">Workspace name</h2>
         <div className="p-4 rounded-lg border border-border bg-bg-secondary space-y-3">
-          <div className="flex items-center gap-2">
-            <Input
-              value={nameValue}
-              onChange={(e) => setNameValue(e.target.value)}
-              placeholder="e.g. Acme Studio"
-              onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
-              className="max-w-xs"
-              disabled={savingName}
-            />
-            <Button
-              size="sm"
-              onClick={handleSaveName}
-              disabled={!nameValue.trim() || nameValue.trim() === orgName || savingName}
-            >
-              {savingName ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : nameSaved ? (
-                <Check className="h-3.5 w-3.5" />
-              ) : (
-                'Save'
-              )}
-            </Button>
-          </div>
+          <Input
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
+            placeholder="e.g. Acme Studio"
+            className="max-w-xs"
+            disabled={saving}
+          />
           <p className="text-xs text-text-tertiary">
             Shown in the sidebar for everyone in this workspace. Defaults to &ldquo;FreeFrame&rdquo;.
           </p>
@@ -364,10 +496,10 @@ export default function BrandingPage() {
           <LogoUploadSlot
             label="Dark theme logo"
             description="Shown when the app is in dark mode. Use a light-colored logo."
-            logoUrl={logoDarkUrl}
+            logoUrl={effectiveLogo('dark')}
             uploading={uploadingSide === 'dark'}
-            onUpload={(file) => handleUpload('dark', file)}
-            onRemove={() => handleRemove('dark')}
+            onUpload={(file) => pickLogo('dark', file)}
+            onRemove={() => clearLogo('dark')}
             previewBg="bg-zinc-900"
           />
 
@@ -378,10 +510,10 @@ export default function BrandingPage() {
           <LogoUploadSlot
             label="Light theme logo"
             description="Shown when the app is in light mode. Use a dark-colored logo."
-            logoUrl={logoLightUrl}
+            logoUrl={effectiveLogo('light')}
             uploading={uploadingSide === 'light'}
-            onUpload={(file) => handleUpload('light', file)}
-            onRemove={() => handleRemove('light')}
+            onUpload={(file) => pickLogo('light', file)}
+            onRemove={() => clearLogo('light')}
             previewBg="bg-white"
           />
         </div>
@@ -400,10 +532,10 @@ export default function BrandingPage() {
         <LogoUploadSlot
           label="Login page logo"
           description="Shown on the sign-in and password-setup screens."
-          logoUrl={logoLoginUrl}
+          logoUrl={effectiveLogo('login')}
           uploading={uploadingSide === 'login'}
-          onUpload={(file) => handleUpload('login', file)}
-          onRemove={() => handleRemove('login')}
+          onUpload={(file) => pickLogo('login', file)}
+          onRemove={() => clearLogo('login')}
           previewBg="bg-zinc-900"
         />
       </section>
@@ -412,15 +544,15 @@ export default function BrandingPage() {
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-text-primary">Favicon</h2>
         <p className="text-xs text-text-tertiary -mt-1">
-          Shown in the browser tab. Use a square image — it's scaled down automatically.
+          Shown in the browser tab. Use a square image — it&apos;s scaled down automatically.
         </p>
         <LogoUploadSlot
           label="Favicon"
           description="Shown in the browser tab for everyone in this workspace."
-          logoUrl={faviconUrl}
-          uploading={uploadingFavicon}
-          onUpload={handleFaviconUpload}
-          onRemove={handleFaviconRemove}
+          logoUrl={effectiveFavicon}
+          uploading={uploadingSide === 'favicon'}
+          onUpload={pickFavicon}
+          onRemove={clearFavicon}
           previewBg="bg-bg-tertiary"
           accept="image/png"
           hint="PNG only · Max 2 MB"
@@ -432,39 +564,40 @@ export default function BrandingPage() {
         <h2 className="text-sm font-semibold text-text-primary">Theme colors</h2>
         <p className="text-xs text-text-tertiary -mt-1">
           Customize the background, text, accent, and nav colors for each theme independently. A theme with no
-          custom colors keeps FreeFrame's original palette.
+          custom colors keeps FreeFrame&apos;s original palette.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <ThemeColorEditor
             label="Light theme"
             icon={Sun}
             defaults={DEFAULT_LIGHT_TOKENS}
-            overrides={themeColors?.light ?? null}
-            onChange={(key, value) => handleColorChange('light', key, value)}
-            onReset={() => handleColorReset('light')}
+            overrides={draftColors.light}
+            onChange={(key, value) => changeColor('light', key, value)}
+            onReset={() => resetThemeDraft('light')}
           />
           <ThemeColorEditor
             label="Dark theme"
             icon={Moon}
             defaults={DEFAULT_DARK_TOKENS}
-            overrides={themeColors?.dark ?? null}
-            onChange={(key, value) => handleColorChange('dark', key, value)}
-            onReset={() => handleColorReset('dark')}
+            overrides={draftColors.dark}
+            onChange={(key, value) => changeColor('dark', key, value)}
+            onReset={() => resetThemeDraft('dark')}
           />
         </div>
       </section>
 
-      {/* Live preview */}
+      {/* Live preview — of the DRAFT */}
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-text-primary">Preview</h2>
         <p className="text-xs text-text-tertiary -mt-1">
           Currently showing the <strong>{resolvedTheme === 'light' ? 'light' : 'dark'}</strong> theme logo.
+          {isDirty && <span className="text-status-warning"> Includes unsaved changes.</span>}
         </p>
         <div className="rounded-lg border border-border bg-bg-secondary p-4 flex items-center gap-2.5">
           <div className="h-7 w-7 rounded-md overflow-hidden flex items-center justify-center bg-bg-tertiary shrink-0">
             {activeLogo ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={activeLogo} alt={orgName} className="h-full w-full object-contain" />
+              <img src={activeLogo} alt={previewName} className="h-full w-full object-contain" />
             ) : (
               <>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -474,24 +607,47 @@ export default function BrandingPage() {
               </>
             )}
           </div>
-          <span className="text-sm font-semibold text-text-primary tracking-tight">{orgName}</span>
+          <span className="text-sm font-semibold text-text-primary tracking-tight">{previewName}</span>
         </div>
       </section>
 
-      {/* Reset */}
+      {/* Reset — stages, like everything else here */}
       {hasCustomBranding && (
         <section className="pt-2 border-t border-border">
           <Button
             variant="ghost"
             size="sm"
             className="text-status-error hover:text-status-error hover:bg-status-error/10 gap-1.5"
-            onClick={handleReset}
-            disabled={resetting}
+            onClick={stageResetAll}
+            disabled={saving}
           >
-            {resetting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+            <RotateCcw className="h-3.5 w-3.5" />
             Reset to defaults
           </Button>
+          <p className="text-2xs text-text-tertiary mt-1.5">
+            Staged like any other change — nothing is cleared until you save.
+          </p>
         </section>
+      )}
+
+      {/* Save / Discard. Nothing above this has touched the server. */}
+      {isDirty && (
+        <div className="sticky bottom-0 -mx-6 px-6 py-3 border-t border-border bg-bg-primary/95 backdrop-blur flex items-center gap-2">
+          <span className="text-xs text-text-secondary flex-1">
+            {saveError ? <span className="text-status-error">{saveError}</span> : 'Unsaved changes'}
+          </span>
+          <Button variant="ghost" size="sm" onClick={handleDiscard} disabled={saving}>
+            Discard
+          </Button>
+          <Button size="sm" onClick={handleSave} disabled={saving}>
+            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Save changes'}
+          </Button>
+        </div>
+      )}
+      {saved && !isDirty && (
+        <p className="text-xs text-status-success flex items-center gap-1.5">
+          <Check className="h-3.5 w-3.5" /> Branding saved.
+        </p>
       )}
     </div>
   )
