@@ -84,6 +84,17 @@ async function startJournal(dir, job, meta = {}) {
     sourcePath: job.sourcePath ?? null,
     sourceFiles: meta.sourceFiles ?? null,
     destPaths: Array.isArray(job.destPaths) ? [...job.destPaths] : [],
+    // §105B — the destination TOPOLOGY, not just the paths.
+    //
+    // destPaths is a flat list, and a resumed copy rebuilt from it alone
+    // would turn every cascaded leg into a parallel one. That is not a
+    // cosmetic difference: a cascade reads from its parent destination
+    // rather than the card, and §100's rel mapping differs between a root
+    // leg and a cascaded one, so the resumed job would copy different
+    // bytes to different paths than the run it claims to be continuing.
+    nodes: Array.isArray(meta.nodes)
+      ? meta.nodes.map((n) => ({ id: n.id, path: n.path, parentId: n.parentId ?? null }))
+      : null,
     algorithm: meta.algorithm ?? null,
     finalizedAlgorithm: meta.finalizedAlgorithm ?? null,
     // §103 — which timing the job actually ran under, so a log read later
@@ -250,8 +261,63 @@ function uploadedAssetIds(doc) {
   return [...new Set(doc.files.filter((f) => f.ok === true && f.assetId).map((f) => f.assetId))];
 }
 
+/**
+ * §105B — the destination files a resumed LOCAL COPY may skip.
+ *
+ * Lives here, next to the shape it reads, rather than in main.js: main
+ * cannot be required by a test (it pulls in electron), so a copy of this
+ * written for the test would be a second implementation of the one rule
+ * that decides whether footage gets copied — the drift this project keeps
+ * paying for (§30, §32, §61).
+ *
+ * The upload path asks the server which assets still exist. A copy has no
+ * server: the destination is a filesystem, so the equivalent check is to
+ * stat the files the journal claims and confirm they are still there at
+ * the size it recorded.
+ *
+ * STAT + SIZE, not a re-hash, and that is a deliberate trade rather than a
+ * shortcut. Re-hashing every claimed file would read every byte of the
+ * work the resume exists to avoid repeating — resuming would cost about
+ * what starting over costs. Size catches what actually happens after an
+ * interrupted run (a file deleted, a truncated write, a destination that
+ * was never really there); it cannot catch a file silently rewritten at
+ * exactly the same length, which is what a full re-verify is for.
+ *
+ * Keyed by ABSOLUTE DESTINATION PATH, not by rel. The root leg journals
+ * source-relative rels while a cascaded leg journals rels the root already
+ * mapped, so one physical file is recorded twice under two different names
+ * — the destination path is the only key that means the same thing to both.
+ *
+ * Only rows the previous run marked ok, and within them only destinations
+ * it marked ok: a file that failed, or a destination that mismatched, is
+ * exactly what the resume is supposed to do over.
+ */
+async function confirmedDestinations(doc) {
+  const skip = new Map();
+  if (!doc || !Array.isArray(doc.files)) return skip;
+  for (const f of doc.files) {
+    if (!f || f.ok !== true || !Array.isArray(f.destinations)) continue;
+    for (const d of f.destinations) {
+      if (!d || d.ok !== true || typeof d.path !== "string" || !d.path) continue;
+      try {
+        const st = await fsp.stat(d.path);
+        // The destination's own recorded size, falling back to the file's.
+        // They agree for a verified copy, but the destination's is the one
+        // being checked.
+        const expected = d.bytes ?? f.bytes;
+        if (typeof expected === "number" && st.size !== expected) continue;
+        skip.set(d.path, { sourceHash: f.sourceHash ?? null, hash: d.hash ?? null, bytes: st.size });
+      } catch {
+        // Gone, unreadable, or never written — copy it again.
+      }
+    }
+  }
+  return skip;
+}
+
 module.exports = {
   JOURNAL_VERSION,
+  confirmedDestinations,
   journalFile,
   namingSnapshot,
   startJournal,

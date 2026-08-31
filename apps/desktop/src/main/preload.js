@@ -19,9 +19,12 @@ contextBridge.exposeInMainWorld("freeframe", {
   // that project (null = the whole project).
   // `sourceFiles` is the alternative to `sourcePath`: individually-chosen
   // files with no directory to walk.
-  startCopy: (sourcePath, nodes, algorithm, sourceFolderId, sourceFiles, naming, concurrencyMode, allowFragileRename) =>
+  // `resumeJobId` (§105B) continues an interrupted copy: files still
+  // present at the size that job's journal recorded are not copied again.
+  startCopy: (sourcePath, nodes, algorithm, sourceFolderId, sourceFiles, naming, concurrencyMode, allowFragileRename, resumeJobId) =>
     ipcRenderer.invoke("copy:start", {
       sourcePath, nodes, algorithm, sourceFolderId, sourceFiles,
+      resumeJobId: typeof resumeJobId === "string" && resumeJobId ? resumeJobId : null,
       // "free" | "source" | "destination" (§18c). Anything else is
       // treated as the most restrictive option by the scheduler.
       concurrencyMode,

@@ -1203,6 +1203,275 @@ async function main() {
         "a PROJECT source is not wrapped — its only available name is a raw UUID", g6.join(", "));
     }
 
+    // ── §105B: resuming an interrupted LOCAL COPY ───────────────────────
+    // A port of §87 Phase 2's upload mechanism to the copy engine. The
+    // upload asks a server which assets survived; a copy has no server, so
+    // it stats the destination files the journal claims.
+    console.log("\n\u00a7105B. Local-copy resume — skip what is still on the destination");
+    {
+      const rlogs = path.join(tmp, "resume-logs");
+      const rsrc = path.join(tmp, "resume-card");
+      await fs.mkdir(path.join(rsrc, "DCIM"), { recursive: true });
+      for (const n of ["a", "b", "c", "d", "e", "f"]) {
+        await fs.writeFile(path.join(rsrc, "DCIM", `${n}.mov`), n.repeat(2048));
+      }
+      // appendFileResult returns its flush promise. Discarding it reads the
+      // journal before the last write lands — which showed up here as every
+      // count being short by exactly one. A real crash genuinely can lose
+      // that append (the journal is "never more than one file behind
+      // reality" by design); a test asserting what was written must wait.
+      const pending = [];
+      const note = (id, p) => pending.push(journal.appendFileResult(id, p));
+      const settle = () => Promise.all(pending.splice(0));
+
+      /** Run a copy that stops after `stopAfter` files, the way a crash
+       *  does: mid-job, with no finishJournal and no chance to tidy up. */
+      async function crashAfter(jobId, nodes, stopAfter, resumeSkip = null) {
+        const job = { id: jobId, kind: "copy", label: "CARD", sourcePath: rsrc,
+                      destPaths: nodes.map((n) => n.path) };
+        await journal.startJournal(rlogs, job, { algorithm: "xxhash64", nodes });
+        let done = 0;
+        const seen = { started: [], resumed: [] };
+        const summary = await runCopyJob({
+          sourcePath: rsrc, nodes, algorithm: "xxhash64", resumeSkip,
+          isCancelled: () => stopAfter !== null && done >= stopAfter,
+          onProgress: (p) => {
+            if (p.phase === "file-start") seen.started.push(p.file);
+            if (p.phase === "file-done") {
+              done++;
+              if (p.resumed) seen.resumed.push(p.file);
+              note(jobId, p);
+            }
+          },
+        });
+        await settle();
+        journal.releaseJournal(jobId);
+        return { summary, seen, doc: await journal.readJournal(rlogs, jobId) };
+      }
+
+      const D1 = [{ id: "n1", path: path.join(tmp, "resume-D1"), parentId: null }];
+      const first = await crashAfter("r-job-1", D1, 3);
+      check(first.doc && first.doc.status === "running",
+        "an interrupted copy leaves a journal still marked running — what makes it resumable");
+      check(first.doc.files.length === 3, "…recording exactly what finished", `${first.doc.files.length}`);
+      // destPaths is a flat list and cannot express which leg cascades from
+      // which. A resume rebuilt from it alone would turn a cascaded leg
+      // into a parallel one, changing what is copied from where.
+      check(Array.isArray(first.doc.nodes) && first.doc.nodes[0].id === "n1",
+        "…and the destination TOPOLOGY, which destPaths alone cannot express",
+        JSON.stringify(first.doc.nodes));
+
+      const skip1 = await journal.confirmedDestinations(first.doc);
+      check(skip1.size === 3, "three destination files still check out on disk", String(skip1.size));
+      const resumed = await crashAfter("r-job-2", D1, null, skip1);
+      check(resumed.seen.resumed.length === 3,
+        "the already-verified files are skipped", resumed.seen.resumed.join(", "));
+      // The real measure of a resume: what was READ. A pass that skipped
+      // the copy but still re-read every source byte would look identical
+      // in the summary and be worth nothing.
+      check(resumed.seen.started.length === 3,
+        "…and only the remaining files are read at all", resumed.seen.started.join(", "));
+      check(!resumed.seen.started.some((f) => resumed.seen.resumed.includes(f)),
+        "no file was both skipped and copied");
+      check(resumed.summary.allVerified === true
+        && resumed.summary.nodes[0].filesVerified === 6,
+        "the resumed job verifies as a whole, crediting all six",
+        String(resumed.summary.nodes[0].filesVerified));
+
+      // The check exists for exactly this: a destination that changed
+      // since the crash must not be skipped on the journal's word.
+      const D2 = [{ id: "n2", path: path.join(tmp, "resume-D2"), parentId: null }];
+      const second = await crashAfter("r-job-3", D2, 3);
+      const victim = path.join(tmp, "resume-D2", "resume-card", "DCIM", "a.mov");
+      check(fssync.existsSync(victim), "the file about to be tampered with is really there", victim);
+      await fs.writeFile(victim, "TRUNCATED");
+      const skip2 = await journal.confirmedDestinations(second.doc);
+      check(skip2.size === 2 && !skip2.has(victim),
+        "a truncated destination drops out of the skip set", String(skip2.size));
+      const repaired = await crashAfter("r-job-4", D2, null, skip2);
+      check(repaired.seen.resumed.length === 2,
+        "…so only the untouched files are skipped", String(repaired.seen.resumed.length));
+      check(fssync.readFileSync(victim, "utf8") === "a".repeat(2048),
+        "…and the truncated one is rewritten in full");
+      await fs.rm(path.join(tmp, "resume-D2", "resume-card", "DCIM", "b.mov"));
+      const skip3 = await journal.confirmedDestinations(second.doc);
+      check(!skip3.has(path.join(tmp, "resume-D2", "resume-card", "DCIM", "b.mov")),
+        "a destination DELETED since the crash is not skipped either");
+
+      // THE KEYING. The root leg journals source-relative rels, a cascaded
+      // leg journals rels the root already mapped — so one physical file
+      // appears twice under two different names. A rel-keyed skip map
+      // would have to translate between namespaces to answer what the
+      // destination path answers directly.
+      const casc = [{ id: "cA", path: path.join(tmp, "resume-cA"), parentId: null },
+                    { id: "cB", path: path.join(tmp, "resume-cB"), parentId: "cA" }];
+      const done = await crashAfter("r-job-5", casc, null);
+      const names = new Set(done.doc.files.map((f) => f.file));
+      check(names.has("DCIM/a.mov") && names.has("resume-card/DCIM/a.mov"),
+        "one physical file really is journaled under two different rels",
+        [...names].filter((n) => n.endsWith("a.mov")).join(" and "));
+      const skipC = await journal.confirmedDestinations(done.doc);
+      check(skipC.size === 12, "the destination-keyed map covers both legs", String(skipC.size));
+      const again = await crashAfter("r-job-6", casc, null, skipC);
+      check(again.seen.started.length === 0,
+        "a fully-copied cascade re-reads nothing at all", again.seen.started.join(", "));
+      check(again.summary.nodes.every((n) => n.filesVerified === 6),
+        "…while both nodes still credit all six",
+        again.summary.nodes.map((n) => n.filesVerified).join("/"));
+
+      // The bug the upload path had to be patched for after the fact: a
+      // resumed run writes a NEW journal, and a skipped file missing from
+      // it makes the NEXT resume copy the originals all over again.
+      const D3 = [{ id: "n3", path: path.join(tmp, "resume-D3"), parentId: null }];
+      const one = await crashAfter("r-job-7", D3, 2);
+      const two = await crashAfter("r-job-8", D3, 4, await journal.confirmedDestinations(one.doc));
+      check(two.doc.files.length === 4,
+        "a resumed run journals the files it SKIPPED as well as the ones it copied",
+        String(two.doc.files.length));
+      const claimed = new Set(two.doc.files.filter((f) => f.ok).map((f) => f.file));
+      check(one.doc.files.every((f) => claimed.has(f.file)),
+        "…so it says everything its predecessor did — which is what retires the predecessor");
+      check((await journal.confirmedDestinations(two.doc)).size === 4,
+        "…and a third attempt would skip all four, not re-copy the original two");
+
+      // PARTIAL COVERAGE. Two parallel destinations, one of which loses a
+      // file. Skipping on "any destination still has it" would leave the
+      // other one permanently short — and every single-destination fixture
+      // above passes either way, which is why this one has to exist.
+      const par = [{ id: "p1", path: path.join(tmp, "resume-P1"), parentId: null },
+                   { id: "p2", path: path.join(tmp, "resume-P2"), parentId: null }];
+      const parDone = await crashAfter("r-job-10", par, null);
+      const lost = path.join(tmp, "resume-P2", "resume-card", "DCIM", "c.mov");
+      await fs.rm(lost);
+      const skipP = await journal.confirmedDestinations(parDone.doc);
+      check(!skipP.has(lost) && skipP.has(path.join(tmp, "resume-P1", "resume-card", "DCIM", "c.mov")),
+        "one destination's copy can survive while the other's does not",
+        `P1 ${skipP.has(path.join(tmp, "resume-P1", "resume-card", "DCIM", "c.mov"))}, P2 ${skipP.has(lost)}`);
+      const parAgain = await crashAfter("r-job-11", par, null, skipP);
+      check(parAgain.seen.started.includes("DCIM/c.mov"),
+        "…and the file is copied AGAIN, because not every destination has it",
+        parAgain.seen.started.join(", ") || "(nothing re-read)");
+      check(fssync.existsSync(lost), "…restoring the destination that lost it");
+      check(parAgain.seen.started.length === 1,
+        "…while the five that are intact everywhere stay skipped",
+        `${parAgain.seen.started.length} re-read`);
+
+      // PROGRESS. A skipped file is still part of the job the user
+      // started; dropping its bytes would report a job smaller than it is,
+      // and every count-based assertion above would still pass.
+      const D5 = [{ id: "n5", path: path.join(tmp, "resume-D5"), parentId: null }];
+      const half = await crashAfter("r-job-12", D5, 3);
+      let lastBytes = 0, totalSeen = 0;
+      const skipH = await journal.confirmedDestinations(half.doc);
+      await runCopyJob({
+        sourcePath: rsrc, nodes: D5, algorithm: "xxhash64", resumeSkip: skipH,
+        onProgress: (p) => {
+          if (p.phase === "bytes") { lastBytes = p.copiedBytes; totalSeen = p.totalBytes; }
+        },
+      });
+      check(totalSeen > 0 && lastBytes === totalSeen,
+        "a resumed job's progress still reaches 100% — skipped bytes are counted, not dropped",
+        `${lastBytes} of ${totalSeen}`);
+
+      // A journal's own VERDICTS are respected, not just the presence of a
+      // file on disk. Both of these rows point at files that really exist,
+      // so a check that only stats would happily skip them.
+      const realFile = path.join(tmp, "resume-D5", "resume-card", "DCIM", "a.mov");
+      const realSize = (await fs.stat(realFile)).size;
+      const failedRow = await journal.confirmedDestinations({
+        files: [{ file: "DCIM/a.mov", ok: false, bytes: realSize, sourceHash: "x",
+                  destinations: [{ destRoot: path.join(tmp, "resume-D5"), path: realFile,
+                                   hash: "x", bytes: realSize, ok: true }] }],
+      });
+      check(failedRow.size === 0,
+        "a file the previous run recorded as FAILED is not skipped, even though it is on disk");
+      const badDest = await journal.confirmedDestinations({
+        files: [{ file: "DCIM/a.mov", ok: true, bytes: realSize, sourceHash: "x",
+                  destinations: [{ destRoot: path.join(tmp, "resume-D5"), path: realFile,
+                                   hash: "x", bytes: realSize, ok: false }] }],
+      });
+      check(badDest.size === 0,
+        "…nor a destination it recorded as MISMATCHED — the file being present is not the question");
+
+      // A normal job must be untouched by any of this.
+      const plain = await crashAfter("r-job-9", [{ id: "n4", path: path.join(tmp, "resume-D4"), parentId: null }], null);
+      check(plain.seen.started.length === 6 && plain.seen.resumed.length === 0,
+        "a job that is not resuming reads and copies every file, exactly as before",
+        `${plain.seen.started.length} read, ${plain.seen.resumed.length} skipped`);
+      check(plain.summary.allVerified === true, "…and verifies");
+
+      // Detection, wiring and the renderer's own branch. main.js and
+      // index.html cannot be run here, and every check above would keep
+      // passing against a build where a copy journal is never OFFERED —
+      // which is precisely the gap §105B exists to close, and precisely
+      // what the engine tests cannot see.
+      const msrc = fssync.readFileSync(path.join(__dirname, "..", "src", "main", "main.js"), "utf8");
+      check(/RESUMABLE_KINDS = new Set\(\["upload", "copy"\]\)/.test(msrc),
+        "detection now covers copy journals, not uploads alone");
+      check(/RESUMABLE_KINDS\.has\(doc\.kind\) && doc\.status === "running"/.test(msrc),
+        "…filtered by that set rather than by a hardcoded kind");
+      // Downloads are excluded ON PURPOSE: resuming one needs the source
+      // folder id inside the project, which the journal does not record.
+      check(!/RESUMABLE_KINDS = new Set\(\[[^\]]*"download"/.test(msrc),
+        "…and a project-source download is deliberately NOT offered");
+      check(/payload\?\.resumeJobId/.test(msrc),
+        "copy:start accepts a resumeJobId, the way the upload handler already did");
+      check(/resumeSkip = resumeFrom \? await journal\.confirmedDestinations\(resumeFrom\) : null/.test(msrc),
+        "…and builds its skip set from the journal's own reader, not a second copy of that rule");
+      check(/resumeSkip,\s*isCancelled/.test(msrc),
+        "…which is handed to the engine");
+      // The retirement rule, same shape and same reasoning as the upload
+      // path's: superseded-ness, not completion.
+      const copyTail = msrc.slice(msrc.indexOf("§105B — retire the journal this run resumed FROM"));
+      check(/claimed\.every\(\(f\) => journaledOk\.has\(f\)\)/.test(copyTail.slice(0, 900)),
+        "a resumed copy retires its predecessor only once it has recorded everything it claimed");
+      check(/journaledOk\.add\(p\.file\)/.test(msrc),
+        "…with that set fed by the same file-done the journal is written from");
+      check(/nodes,\s*\}\)\.catch/.test(msrc),
+        "the copy journal records its node topology");
+
+      // A journal written before §105B has no topology. One destination is
+      // still unambiguous — one root node — so it is reconstructed; several
+      // is not, and stays refused rather than guessed. Without this, every
+      // copy interrupted before this shipped would be offered and then
+      // decline to resume.
+      const summaryBlock = msrc.slice(msrc.indexOf('nodes: Array.isArray(d.nodes)'),
+                                      msrc.indexOf("naming: d.naming"));
+      check(/d\.destPaths\.length === 1/.test(summaryBlock)
+        && /parentId: null/.test(summaryBlock),
+        "a pre-§105B journal with ONE destination is still resumable — its topology is not ambiguous");
+      check(/: null\)/.test(summaryBlock),
+        "…while several destinations stay refused, because parallel and cascaded look identical there");
+
+      const psrc = fssync.readFileSync(path.join(__dirname, "..", "src", "main", "preload.js"), "utf8");
+      // The PARAMETER alone proves nothing: a bridge that accepts
+      // resumeJobId and never puts it on the payload has the same
+      // signature and forwards nothing. Assert the forwarding.
+      const bridge = psrc.slice(psrc.indexOf("startCopy: ("), psrc.indexOf("allowFragileRename:"));
+      check(/startCopy: \([^)]*resumeJobId\)/.test(psrc) && /resumeJobId:/.test(bridge),
+        "the preload bridge carries resumeJobId through onto the copy:start payload");
+
+      const rsrc2 = fssync.readFileSync(
+        path.join(__dirname, "..", "src", "renderer", "index.html"), "utf8");
+      check(/const isCopy = doc\.kind === "copy";/.test(rsrc2),
+        "the resume prompt distinguishes a copy from an upload");
+      check(/startCopy\(\s*doc\.sourcePath \|\| null,\s*doc\.nodes,/.test(rsrc2),
+        "…and resumes a copy to the JOURNAL's destinations, not whatever is selected now");
+      check(/doc\.naming \|\| null,/.test(rsrc2),
+        "…with the journal's naming state, so the remaining files are named like the ones already there");
+      check(/doc\.algorithm \|\| algorithm,/.test(rsrc2),
+        "…hashing the way the run it continues hashed");
+      // A journal written before nodes were recorded would otherwise be
+      // resumed with an empty destination list, which reads as "no
+      // destination selected" from inside main rather than as this.
+      check(/were not recorded, so it cannot be resumed/.test(rsrc2),
+        "…and refuses outright when the topology was never journaled");
+      const goIdx = rsrc2.indexOf("if (isCopy) {", rsrc2.indexOf("resumeOffered.add(doc.jobId)"));
+      const upIdx = rsrc2.indexOf("freeframeUpload(", goIdx);
+      check(goIdx !== -1 && upIdx !== -1 && goIdx < upIdx,
+        "…while an upload still takes the upload path it always did");
+    }
+
     console.log(
       failures === 0
         ? `\nALL CHECKS PASSED (${summary.totalFiles} files, ${(srcTotal / 1024 / 1024).toFixed(1)} MB, ${summary.durationMs}ms for 2 destinations)`

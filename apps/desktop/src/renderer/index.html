@@ -3620,12 +3620,37 @@
       // produce a name derived from the literal "freeframe://null".
       const project = doc.projectId ? entryFor(`freeframe://${doc.projectId}`) : null;
       const projectName = (project && project.name) || "a FreeFrame project";
-      $("resume-body").textContent =
-        `“${doc.label || label}” was uploading to ${projectName} and did not finish.`;
-      $("resume-detail").textContent =
-        `${doc.uploadedCount} of ${doc.fileCount} file(s) had uploaded. `
-        + "Resuming re-checks those with the server and only sends what is missing. "
-        + "Discarding forgets this job — the files already uploaded stay where they are.";
+      // §105B — a copy and an upload are interrupted the same way and
+      // resumed by the same mechanism, but they are not the same event to
+      // describe. An upload was going to a project and is re-checked with
+      // the server; a copy was going to drives and is re-checked against
+      // what is actually on them.
+      const isCopy = doc.kind === "copy";
+      if (isCopy) {
+        const where = (doc.nodes || []).length === 1
+          ? baseNameOf(doc.nodes[0].path)
+          : `${(doc.nodes || []).length} destinations`;
+        $("resume-body").textContent =
+          `“${doc.label || label}” was copying to ${where} and did not finish.`;
+        // No denominator, deliberately. A journal only ever holds what
+        // FINISHED — the job's total file count is decided inside the
+        // engine, after the journal is opened — so every row being ok
+        // renders as "8 of 8", which reads as a completed job. Saying how
+        // many are known-good, and nothing about a total nobody recorded,
+        // is the honest version.
+        $("resume-detail").textContent =
+          `${doc.verifiedCount} file(s) had copied and verified before it stopped. `
+          + "Resuming checks each of those is still on the destination at the size it "
+          + "was recorded, copies anything missing or changed, and copies the rest. "
+          + "Discarding forgets this job — the files already copied stay where they are.";
+      } else {
+        $("resume-body").textContent =
+          `“${doc.label || label}” was uploading to ${projectName} and did not finish.`;
+        $("resume-detail").textContent =
+          `${doc.uploadedCount} of ${doc.fileCount} file(s) had uploaded. `
+          + "Resuming re-checks those with the server and only sends what is missing. "
+          + "Discarding forgets this job — the files already uploaded stay where they are.";
+      }
       backdrop.classList.add("open");
 
       const choice = await new Promise((resolve) => {
@@ -3650,20 +3675,48 @@
       }
 
       try {
-        // The journal's OWN destination, not the current selection — this
-        // is the same job continuing, and its files were already routed.
-        await window.freeframe.freeframeUpload(
-          doc.sourcePath || null,
-          doc.projectId,
-          doc.folderId || null,
-          doc.sourceFiles || null,
-          concurrencyMode,
-          doc.jobId,
-        );
+        if (isCopy) {
+          // §105B — every input comes from the JOURNAL, not from what is
+          // selected now. That is the whole point: the naming values, the
+          // claimed card number and any date override produced the names
+          // already sitting on the destination, and re-deriving them would
+          // rename the remaining files inconsistently with the ones that
+          // are already there — which looks like it worked.
+          //
+          // `nodes` carries the cascade topology for the same reason;
+          // rebuilding it from a flat path list would turn a cascaded leg
+          // into a parallel one and change what gets copied from where.
+          if (!Array.isArray(doc.nodes) || !doc.nodes.length) {
+            throw new Error("That job's destinations were not recorded, so it cannot be resumed.");
+          }
+          await window.freeframe.startCopy(
+            doc.sourcePath || null,
+            doc.nodes,
+            doc.algorithm || algorithm,
+            null,
+            doc.sourceFiles || null,
+            doc.naming || null,
+            concurrencyMode,
+            false,
+            doc.jobId,
+          );
+        } else {
+          // The journal's OWN destination, not the current selection — this
+          // is the same job continuing, and its files were already routed.
+          await window.freeframe.freeframeUpload(
+            doc.sourcePath || null,
+            doc.projectId,
+            doc.folderId || null,
+            doc.sourceFiles || null,
+            concurrencyMode,
+            doc.jobId,
+          );
+        }
       } catch (err) {
         const box = $("summary");
         box.replaceChildren(
-          el("div", { class: "head" }, [el("h3", { class: "bad", text: "Could not resume that upload" })]),
+          el("div", { class: "head" }, [el("h3", { class: "bad",
+            text: isCopy ? "Could not resume that copy" : "Could not resume that upload" })]),
           el("div", { class: "verdict bad", text: String(err.message || err) }),
         );
         box.style.display = "block";

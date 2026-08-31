@@ -922,15 +922,28 @@ function freeframeSource(projectId, folderId) {
 // is explicitly out of scope for this pass, so nothing can copy *from* a
 // project.
 /**
- * §97A — the interrupted upload jobs a resume could continue.
+ * §97A / §105B — the interrupted jobs a resume could continue.
  *
- * §87 Phase 2 (detection at mount/launch, with its own prompt) is not
- * built, so this is the minimal reader that makes part A exercisable:
- * every journal on disk that belongs to an upload job and is still marked
- * running. A journal is only left behind when a job did NOT finish
- * cleanly — finishJournal removes it — so anything here died mid-flight.
+ * Every journal on disk still marked running. A journal is only left
+ * behind when a job did NOT finish cleanly — finishJournal removes it —
+ * so anything here died mid-flight, whether by crash or by cancel.
+ *
+ * §105B widened this from uploads to local copies. A crashed copy's
+ * journal was invisible to every reader: it was written, then never
+ * offered, never resumed and never cleaned up, so it sat on disk
+ * accumulating forever.
+ *
+ * DOWNLOADS ARE DELIBERATELY EXCLUDED. A project-source job (`kind:
+ * "download"`) is journaled like any other, but resuming one needs the
+ * source folder id inside the project, which the journal does not record
+ * — reconstructing it from `freeframe://<id>` alone would silently resume
+ * against the whole project instead of the folder that was chosen. That
+ * is §87 Phase 3's territory, and offering a resume that quietly changed
+ * the job's source would be worse than not offering one.
  */
-async function interruptedUploadJournals() {
+const RESUMABLE_KINDS = new Set(["upload", "copy"]);
+
+async function interruptedJournals() {
   const out = [];
   let names = [];
   try {
@@ -940,13 +953,13 @@ async function interruptedUploadJournals() {
   }
   for (const n of names) {
     const doc = await journal.readJournal(LOG_DIR(), n.replace(/\.journal\.json$/, ""));
-    if (doc && doc.kind === "upload" && doc.status === "running") out.push(doc);
+    if (doc && RESUMABLE_KINDS.has(doc.kind) && doc.status === "running") out.push(doc);
   }
   return out;
 }
 
 ipcMain.handle("freeframe:interrupted-uploads", async () => {
-  const docs = await interruptedUploadJournals();
+  const docs = await interruptedJournals();
   // A serializable summary, not the whole journal: the renderer decides
   // whether to resume, it does not need the per-file record to do that.
   return docs.map((d) => ({
@@ -965,6 +978,36 @@ ipcMain.handle("freeframe:interrupted-uploads", async () => {
     startedAt: d.startedAt,
     uploadedCount: journal.uploadedAssetIds(d).length,
     fileCount: (d.files || []).length,
+    // §105B — which kind this is, so the prompt can say what actually
+    // happened rather than describing every interrupted job as an upload.
+    kind: d.kind || null,
+    // …and what a COPY needs to restart: its destination topology (not
+    // just paths — see the note in job-journal.js) and the naming state
+    // that produced the names already sitting on those destinations.
+    //
+    // A journal written before §105B has no `nodes` at all. With exactly
+    // ONE destination the topology is not actually ambiguous — one root
+    // node, no cascade possible — so it is reconstructed rather than
+    // written off, which is what makes an already-interrupted job on a
+    // real machine resumable instead of merely visible.
+    //
+    // With several, it stays null on purpose: parallel and cascaded are
+    // indistinguishable from a flat path list, and guessing "parallel"
+    // would have every leg read the card instead of its parent — a
+    // different job than the one being continued.
+    nodes: Array.isArray(d.nodes) && d.nodes.length
+      ? d.nodes
+      : (Array.isArray(d.destPaths) && d.destPaths.length === 1
+          ? [{ id: "resume-root", path: d.destPaths[0], parentId: null }]
+          : null),
+    naming: d.naming || null,
+    // Reused rather than re-read from Settings: a resumed job should hash
+    // the way the run it continues hashed, not the way the app is
+    // configured now.
+    algorithm: d.algorithm || null,
+    // How much of a copy was already done. uploadedCount is asset-based
+    // and reads 0 for a copy, which would tell someone nothing.
+    verifiedCount: (d.files || []).filter((f) => f && f.ok === true).length,
   }));
 });
 
@@ -974,6 +1017,12 @@ ipcMain.handle("freeframe:interrupted-uploads", async () => {
  * Its own verb: finishJournal means the job completed, releaseJournal only
  * drops an in-memory handle. Without this, a declined journal would prompt
  * again at every launch forever.
+ *
+ * §105B — serves local copies too, with no change needed: discardJournal
+ * deletes by job id and has never known or cared what kind of job wrote
+ * it. Only this channel's NAME still says "upload"; renaming it would
+ * ripple through preload, the renderer and several harnesses to rename a
+ * string, so it is recorded here instead.
  */
 ipcMain.handle("freeframe:discard-interrupted-upload", async (_e, { jobId } = {}) => {
   if (typeof jobId !== "string" || !jobId) return { ok: false };
@@ -1379,6 +1428,18 @@ ipcMain.handle("copy:start", async (event, payload) => {
     throw new Error("A project can't be both the source and a destination of one job");
   }
 
+  // §105B — resuming means starting the SAME job again with the previous
+  // attempt's journal in hand, exactly as the upload path does. Nothing
+  // about the job's inputs changes; what changes is that files still
+  // present at their recorded size are not copied a second time.
+  //
+  // Read here, before the job is queued, so a missing or corrupt journal
+  // simply means "no resume" and the job runs as a normal, complete copy
+  // rather than failing.
+  const resumeJobId = typeof payload?.resumeJobId === "string" && payload.resumeJobId
+    ? payload.resumeJobId : null;
+  const resumeFrom = resumeJobId ? await journal.readJournal(LOG_DIR(), resumeJobId) : null;
+
   // Validated rather than passed through: an unknown name would otherwise
   // surface as a mid-copy throw after files had already been written.
   const algorithm = isSupported(payload?.algorithm) ? payload.algorithm : DEFAULT_ALGORITHM;
@@ -1542,7 +1603,20 @@ ipcMain.handle("copy:start", async (event, payload) => {
         finalizedTiming,
         naming,
         sourceFiles,
+        // §105B — the cascade topology, which destPaths cannot express.
+        nodes,
       }).catch(() => {});
+
+      // §105B — built AFTER the new journal is open and BEFORE any bytes
+      // move. Statting here rather than at handler entry keeps the check
+      // as close as possible to the copy it gates: a destination deleted
+      // while the job sat queued must not be skipped on the strength of a
+      // stat taken before it was queued.
+      const resumeSkip = resumeFrom ? await journal.confirmedDestinations(resumeFrom) : null;
+      // Which files THIS run has recorded as done — copied or skipped.
+      // Read once at the end to decide whether the predecessor journal has
+      // been fully superseded.
+      const journaledOk = new Set();
       const summary = await runCopyJob({
         sourcePath,
         sourceFiles,
@@ -1555,6 +1629,7 @@ ipcMain.handle("copy:start", async (event, payload) => {
         allowFragileRename,
         finalizedAlgorithm,
         finalizedTiming,
+        resumeSkip,
         isCancelled: () => cancelled,
         waitIfPaused: () => (paused ? new Promise((res) => { resumeWaiters.push(res); }) : Promise.resolve()),
         onProgress: (p) => {
@@ -1564,6 +1639,11 @@ ipcMain.handle("copy:start", async (event, payload) => {
           // that cannot be written is a lost resume, not a failed job.
           if (p.phase === "file-done") {
             journal.appendFileResult(self.id, p).catch(() => {});
+            // §105B — what this run has on record, skipped files included.
+            // A skipped file IS recorded (runLeg emits a normal file-done
+            // for it), which is what lets a resume-of-a-resume know about
+            // the originals instead of copying them a third time.
+            if (p.ok === true && typeof p.file === "string") journaledOk.add(p.file);
           }
           // Enriched with speed/ETA (§58) before it goes anywhere, so both
           // listeners see one set of numbers rather than two.
@@ -1578,6 +1658,42 @@ ipcMain.handle("copy:start", async (event, payload) => {
       });
       if (projectSource && projectSource.skipped.length) {
         summary.skippedAssets = projectSource.skipped;
+      }
+
+      // §105B — retire the journal this run resumed FROM, once this run's
+      // own journal has superseded it. Same rule and same reasoning as the
+      // upload path: the condition is superseded-ness, not completion.
+      //
+      // The predecessor's entire value is "these files are already at the
+      // destination". Once this run has recorded every one of them itself,
+      // it says everything the old one did and the old one is redundant. A
+      // run cancelled before reaching them all keeps it, because those
+      // files would otherwise have no record at all — and losing a record
+      // means copying again, which is the direction to err in.
+      if (resumeJobId && resumeFrom) {
+        const claimed = (resumeFrom.files || [])
+          .filter((f) => f && f.ok === true)
+          .map((f) => f.file);
+        if (claimed.every((f) => journaledOk.has(f))) {
+          await journal.discardJournal(LOG_DIR(), resumeJobId).catch(() => {});
+        }
+      }
+
+      // §105B — recorded on the summary so the log and the panel can say a
+      // job was a continuation rather than a fresh copy, and how much of it
+      // was taken on the journal's word.
+      if (resumeFrom) {
+        summary.resumedFrom = {
+          jobId: resumeJobId,
+          startedAt: resumeFrom.startedAt || null,
+          // Destination FILES skipped, which is what was not re-read. With
+          // several destinations one source file can account for several.
+          skippedDestinations: resumeSkip ? resumeSkip.size : 0,
+          claimedFiles: (resumeFrom.files || []).filter((f) => f && f.ok === true).length,
+          // Said plainly rather than left to inference: this is what the
+          // resume actually checked before trusting the journal.
+          check: "stat + size against the journal's recorded destination size",
+        };
       }
       return summary;
     } },

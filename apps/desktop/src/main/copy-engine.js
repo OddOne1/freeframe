@@ -291,6 +291,19 @@ async function runLeg({
   // one. Joining it onto the card would look for CARD/CARD/DCIM/x.
   // Null on the root leg, where the two are the same thing.
   sourceRelOf = null,
+  // §105B — what a RESUMED job may skip, keyed by ABSOLUTE DESTINATION
+  // PATH rather than by rel, and that choice is load-bearing rather than
+  // stylistic. The root leg journals source-relative rels while a cascaded
+  // leg journals rels the root already mapped, so ONE physical file is
+  // recorded twice under two different names (`DCIM/a.mov` and
+  // `CARD/DCIM/a.mov`). A rel-keyed skip map would have to translate
+  // between those namespaces to answer a question the destination path
+  // already answers unambiguously.
+  //
+  // Map of destPath -> { sourceHash, hash, bytes } from the predecessor
+  // journal, already confirmed present on disk at the recorded size by
+  // whoever built it. runLeg does not re-adjudicate that.
+  resumeSkip = null,
 }) {
   const fileResults = [];
 
@@ -314,6 +327,64 @@ async function runLeg({
     const destRel = mapRel ? mapRel(rel) : rel;
     const destFiles = toRoots.map((d) => path.join(d, destRel));
     const size = sizes.get(rel) ?? 0;
+
+    // §105B — every destination this leg would write is already on disk at
+    // the size the previous attempt recorded, so this file is not read or
+    // written a second time.
+    //
+    // ALL of them, not any: a leg with two destinations where only one
+    // survived must copy again, and re-writing the one that was already
+    // fine is a far smaller harm than leaving the other one missing. Same
+    // direction to err in as the upload path's server check.
+    const skipped = resumeSkip && destFiles.length
+      && destFiles.every((f) => resumeSkip.has(f))
+      ? destFiles.map((f) => resumeSkip.get(f))
+      : null;
+    if (skipped) {
+      // The bytes still count. From the user's point of view the file IS
+      // at the destination, and a progress bar that ignored it would
+      // report a job smaller than the one they started — the same
+      // reasoning the upload path applies to a server-confirmed file.
+      onFileEvent({ type: "bytes", file: rel, delta: size });
+      const entry = {
+        file: rel,
+        bytes: size,
+        // Carried from the journal rather than recomputed: recomputing it
+        // would mean reading the file, which is the whole cost this
+        // exists to avoid. The verdict being reused is the one the
+        // original copy made, not a fresh claim.
+        sourceHash: skipped[0] ? skipped[0].sourceHash ?? null : null,
+        destinations: destFiles.map((f, i) => ({
+          destRoot: toRoots[i],
+          path: f,
+          hash: skipped[i] ? skipped[i].hash ?? null : null,
+          bytes: skipped[i] ? skipped[i].bytes ?? null : null,
+          ok: true,
+          error: null,
+        })),
+        ok: true,
+        error: null,
+        resumed: true,
+      };
+      fileResults.push(entry);
+      // Emitted like any other finished file, so the new journal records
+      // it too. A resumed run writes a NEW journal under a new id; a
+      // skipped file missing from it would make a second resume copy the
+      // originals all over again, which is the exact duplicate this
+      // feature exists to prevent (the upload path had to be patched for
+      // this after the fact — here it falls out of using the same event).
+      onFileEvent({
+        type: "file-done",
+        file: rel,
+        ok: true,
+        bytes: entry.bytes,
+        sourceHash: entry.sourceHash,
+        destinations: entry.destinations,
+        resumed: true,
+        error: null,
+      });
+      continue;
+    }
 
     onFileEvent({ type: "file-start", file: rel, bytes: size });
 
@@ -525,6 +596,10 @@ async function runCopyJob({
   // not mention timing gets what it always got. main.js always passes an
   // explicit value.
   finalizedTiming = "after",
+  // §105B — the predecessor journal's confirmed destination files, keyed
+  // by absolute path. Null on a normal job, which is every job that is not
+  // continuing an interrupted one.
+  resumeSkip = null,
   // §95 — resolves immediately unless the job is paused, in which case it
   // resolves on resume or on cancel. Omitted by every existing caller and
   // every test, which is why runLeg treats it as optional.
@@ -836,6 +911,9 @@ async function runCopyJob({
           finalizedTiming,
           jobSourcePath: src.root || null,
           sourceRelOf: legSourceRels,
+          // §105B — one map for the whole job, since it is keyed by
+          // destination path and every leg writes distinct ones.
+          resumeSkip,
           // Root leg only -- see the note in runLeg.
           mapRel: isRootLeg ? mapRel : null,
           toRoots,
@@ -878,6 +956,9 @@ async function runCopyJob({
                 // §103 — enumerated, not spread, so this has to be named
                 // or the inline result never reaches a listener.
                 finalCheck: ev.finalCheck,
+                // §105B — same reason: a skipped file that did not say so
+                // would be indistinguishable from one copied again.
+                resumed: ev.resumed,
                 error: ev.error,
                 nodeIds: groupNodes.map((n) => n.id),
               });
