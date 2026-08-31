@@ -190,6 +190,10 @@ contextBridge.exposeInMainWorld("freeframe", {
   interruptedUploads: () => ipcRenderer.invoke("freeframe:interrupted-uploads"),
   /** §87 Phase 2 — the user said no. Deletes that journal so it stops
    *  being offered. */
+  // §105A — park one without deleting it. `discardInterruptedUpload`
+  // deletes; this only stops the blocking modal offering it again.
+  hideInterrupted: (jobId, hidden = true) =>
+    ipcRenderer.invoke("freeframe:hide-interrupted", { jobId, hidden }),
   discardInterruptedUpload: (jobId) =>
     ipcRenderer.invoke("freeframe:discard-interrupted-upload", { jobId }),
 

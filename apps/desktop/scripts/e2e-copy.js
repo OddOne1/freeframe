@@ -174,10 +174,13 @@ async function main() {
       // so it stops being offered.
       // pauseCopy / resumeCopy with §95: in-session pause on a running
       // job. Deliberately id-only — there is no "pause everything".
+      // hideInterrupted with §105A: park an interrupted job — keep the
+      // journal, stop the blocking modal. Distinct from
+      // discardInterruptedUpload, which deletes it.
       // This list is an allowlist, not a snapshot: it is here so a new
       // channel has to be a deliberate act rather than something that
       // arrives unnoticed.
-      bridge === "appInfo,bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearFinishedJobs,clearRecentFolders,dailyOverview,deletePreset,detachPanel,discardInterruptedUpload,dockPanel,ejectVolume,exportDailyOverview,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,getSettings,hideWebView,interruptedUploads,listJobs,listPresets,listVolumes,onAccountChanged,onCopyProgress,onDailyOverviewChanged,onJobsChanged,onPanelDockChanged,onPresetsChanged,onSettingsChanged,onSettingsTab,onVolumesChanged,openJobLog,openLogsFolder,openSettingsWindow,pathForFile,pauseCopy,previewNaming,reloadWebView,rememberFolder,removeJob,renamesFiles,resetDailyOverview,resumeCopy,savePreset,setDisplayName,setSettings,setSourceCounter,setWebViewInset,showWebView,startCopy,validateFolderPattern",
+      bridge === "appInfo,bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearFinishedJobs,clearRecentFolders,dailyOverview,deletePreset,detachPanel,discardInterruptedUpload,dockPanel,ejectVolume,exportDailyOverview,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,getSettings,hideInterrupted,hideWebView,interruptedUploads,listJobs,listPresets,listVolumes,onAccountChanged,onCopyProgress,onDailyOverviewChanged,onJobsChanged,onPanelDockChanged,onPresetsChanged,onSettingsChanged,onSettingsTab,onVolumesChanged,openJobLog,openLogsFolder,openSettingsWindow,pathForFile,pauseCopy,previewNaming,reloadWebView,rememberFolder,removeJob,renamesFiles,resetDailyOverview,resumeCopy,savePreset,setDisplayName,setSettings,setSourceCounter,setWebViewInset,showWebView,startCopy,validateFolderPattern",
       "contextBridge exposes exactly the intended API", bridge);
     check(await cdp.eval("typeof window.require") === "undefined", "no window.require");
     check(await cdp.eval("typeof window.process") === "undefined", "no window.process");

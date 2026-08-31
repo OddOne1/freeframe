@@ -140,6 +140,8 @@ function buildJobLog(job) {
   }
 
   const fin = (job.summary && job.summary.finalized) || null;
+  // §105E — present only when this job continued an interrupted one.
+  const resumed = (job.summary && job.summary.resumedFrom) || null;
   const failed = files.filter((f) => !f.verified);
   // A card is only safe to wipe if EVERY destination verified. Stated as a
   // sentence as well as a boolean, because the sentence is the reason
@@ -189,6 +191,26 @@ function buildJobLog(job) {
               + (fin.errors.length ? `, ${fin.errors.length} error(s)` : "")
               + (fin.cancelled ? " (cancelled part-way)" : ""))
         : "Off",
+      // §105E — a resumed job says so, and says how much it took on the
+      // previous run's word.
+      //
+      // "Resumed" on its own is ambiguous about the thing that matters:
+      // whether the files it skipped were re-verified or merely found. So
+      // the check is named. A stat+size check is a real check and a weaker
+      // one than a re-hash, and someone reading this log to decide whether
+      // to wipe a card is entitled to know which they got.
+      ...(resumed ? { resumedFrom: {
+        previousJob: resumed.jobId,
+        previousStarted: resumed.startedAt,
+        originalStoppedAfter: resumed.stoppedAfter
+          || "(the interrupted run recorded no completed file)",
+        resumedFrom: resumed.resumedAt
+          || "(nothing needed copying — every file was already in place)",
+        skipped: `${resumed.skippedDestinations} destination file(s) were left in place`,
+        howChecked: `Skipped files were confirmed by ${resumed.check} — NOT re-hashed. `
+          + "A file rewritten since at exactly its original size would not be caught by "
+          + "that; everything this run copied itself was verified normally.",
+      } } : {}),
       // Listed first and separately, so a problem is not something you have
       // to notice by scanning a long list of successes.
       notVerified: failed.map((f) => ({ destination: f.destination, from: f.from, to: f.to })),
@@ -1008,7 +1030,22 @@ ipcMain.handle("freeframe:interrupted-uploads", async () => {
     // How much of a copy was already done. uploadedCount is asset-based
     // and reads 0 for a copy, which would tell someone nothing.
     verifiedCount: (d.files || []).filter((f) => f && f.ok === true).length,
+    // §105A — parked by the user. The blocking modal must skip these; the
+    // notification bell exists precisely to list them.
+    hiddenFromPrompt: d.hiddenFromPrompt === true,
   }));
+});
+
+/**
+ * §105A — "Not now": keep the journal, stop the modal.
+ *
+ * Deliberately NOT a discard. The job is still resumable and the files it
+ * already copied are still there; what the user declined was being asked
+ * about it right now. Discard is the bell's own action, and it deletes.
+ */
+ipcMain.handle("freeframe:hide-interrupted", async (_e, { jobId, hidden } = {}) => {
+  if (typeof jobId !== "string" || !jobId) return { ok: false };
+  return { ok: await journal.setHiddenFromPrompt(LOG_DIR(), jobId, hidden !== false) };
 });
 
 /**
@@ -1617,6 +1654,8 @@ ipcMain.handle("copy:start", async (event, payload) => {
       // Read once at the end to decide whether the predecessor journal has
       // been fully superseded.
       const journaledOk = new Set();
+      // §105E — the first file this run genuinely copied, for the log.
+      let resumedFirstCopied = null;
       const summary = await runCopyJob({
         sourcePath,
         sourceFiles,
@@ -1644,6 +1683,15 @@ ipcMain.handle("copy:start", async (event, payload) => {
             // for it), which is what lets a resume-of-a-resume know about
             // the originals instead of copying them a third time.
             if (p.ok === true && typeof p.file === "string") journaledOk.add(p.file);
+            // §105E — where the resumed run actually picked up. The first
+            // file it COPIED, not the first it saw: a resume's early
+            // file-done events are the skipped ones, and reporting one of
+            // those as the resume point would name a file this run never
+            // read.
+            if (resumeFrom && !resumedFirstCopied && p.resumed !== true
+                && typeof p.file === "string") {
+              resumedFirstCopied = p.file;
+            }
           }
           // Enriched with speed/ETA (§58) before it goes anywhere, so both
           // listeners see one set of numbers rather than two.
@@ -1690,6 +1738,14 @@ ipcMain.handle("copy:start", async (event, payload) => {
           // several destinations one source file can account for several.
           skippedDestinations: resumeSkip ? resumeSkip.size : 0,
           claimedFiles: (resumeFrom.files || []).filter((f) => f && f.ok === true).length,
+          // §105E — the two ends of the gap. The last thing the original
+          // run got through before it died, and the first thing this one
+          // had to do itself.
+          stoppedAfter: (() => {
+            const ok = (resumeFrom.files || []).filter((f) => f && f.ok === true);
+            return ok.length ? ok[ok.length - 1].file : null;
+          })(),
+          resumedAt: resumedFirstCopied,
           // Said plainly rather than left to inference: this is what the
           // resume actually checked before trusting the journal.
           check: "stat + size against the journal's recorded destination size",
@@ -2030,7 +2086,67 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on("before-quit", () => {
+/**
+ * §105C — quitting while a transfer is running.
+ *
+ * NATIVE dialog, deviating from this app's own convention that every
+ * confirmation is a renderer modal (`ff-backdrop`). Those are all
+ * mid-session decisions with a healthy window to render them; this one
+ * fires while the app is tearing down, and `before-quit` has to decide
+ * synchronously — a renderer round-trip needs a window that may already
+ * be going away, and a confirmation that fails to appear would let the
+ * quit through silently, which is the exact outcome it exists to prevent.
+ *
+ * DEVIATION FROM THE SPEC, stated rather than buried: §105C says to
+ * block on running and NOT on paused. This uses JobQueue's own `active`
+ * getter, which is running OR paused, for three reasons. A paused job's
+ * transfer is interrupted by a quit exactly as much as a running one's —
+ * the bytes are equally not copied. The queue already defines `active`
+ * with precisely this meaning ("neither is history, and neither may be
+ * trimmed, cleared, or have its drives pulled out from under it"), and a
+ * quit is that. And the failure mode of the narrower reading is silent:
+ * someone pauses a transfer, quits, and is never told. `queued` still
+ * does not block — it has copied nothing.
+ */
+let quitConfirmed = false;
+
+const activeJobsForQuit = () => jobs.active;
+
+app.on("before-quit", (event) => {
+  // Set by "Quit anyway" below. Without it, the app.quit() that carries
+  // out the user's own decision re-enters this handler and asks again,
+  // forever.
+  if (!quitConfirmed) {
+    const active = activeJobsForQuit();
+    if (active.length) {
+      event.preventDefault();
+      const names = active.map((j) => j.label || j.id).join(", ");
+      const choice = dialog.showMessageBoxSync(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+        type: "warning",
+        buttons: ["Cancel", "Quit anyway"],
+        defaultId: 0,
+        cancelId: 0,
+        message: active.length === 1
+          ? "A transfer is still running."
+          : `${active.length} transfers are still running.`,
+        // §105B is what makes the second sentence true for BOTH kinds.
+        // Deliberately not promising an instant, unchecked continuation:
+        // a resume re-checks every file it means to skip against what is
+        // actually on disk first, and saying otherwise would oversell it.
+        detail: `${names}\n\nQuitting now interrupts it. You can resume it next time you `
+          + "open the app — FreeFrame re-checks what is actually on the destination against "
+          + "what the job recorded before trusting any of it, and copies anything that is "
+          + "missing or has changed.",
+      });
+      if (choice !== 1) return;    // Cancel: the job keeps running, untouched.
+      quitConfirmed = true;
+      // Re-issued rather than falling through: this handler already
+      // called preventDefault() for this attempt, and that cannot be
+      // taken back.
+      setImmediate(() => app.quit());
+      return;
+    }
+  }
   clearTimeout(volumeDebounce);
   volumeWatcher?.close();
   volumeWatcher = null;

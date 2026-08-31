@@ -22,7 +22,16 @@ const os = require("node:os");
 const { spawnElectron } = require("./lib/electron-harness");
 
 const APP = path.join(__dirname, "..");
-const PORT = 9451;
+// One port PER INSTANCE. This harness deliberately keeps several apps
+// alive at once (the crashed one, the one that finds it, a fresh launch
+// that must not have been told anything yet). On a single shared port the
+// second instance cannot bind it, /json/list keeps answering for the
+// FIRST, and the WebSocket silently attaches to the wrong app — at which
+// point "a fresh launch does not reopen the modal" passes because the
+// instance being asked already dismissed it, not because the behaviour is
+// right.
+const PORT_BASE = 9451;
+let portSeq = 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let fail = 0;
@@ -32,14 +41,15 @@ const check = (ok, label, detail = "") => {
 };
 
 async function launch() {
+  const port = PORT_BASE + (portSeq++);
   const child = spawnElectron(
     path.join(APP, "node_modules", ".bin", "electron"),
-    [APP, `--remote-debugging-port=${PORT}`], { stdio: "ignore" },
+    [APP, `--remote-debugging-port=${port}`], { stdio: "ignore" },
   );
   let page;
   for (let i = 0; i < 80; i++) {
     try {
-      const t = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
+      const t = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
       page = t.find((x) => x.type === "page" && x.url.includes("index.html"));
       if (page?.webSocketDebuggerUrl) break;
     } catch {}
@@ -70,7 +80,7 @@ async function launch() {
     return r.result.value;
   };
   await sleep(1500);
-  return { child, ws, ev, errs };
+  return { child, ws, ev, errs, port };
 }
 
 /** SIGKILL the whole group. The .bin/electron shim spawns the real binary
@@ -87,7 +97,7 @@ const journalsIn = (dir) => {
 };
 
 (async () => {
-  try { execSync(`pkill -f 'apps/desktop.*remote-debugging-port=${PORT}' || true`); } catch {}
+  try { execSync(`pkill -f 'apps/desktop.*remote-debugging-port=94[5-9]' || true`); } catch {}
   await sleep(800);
 
   const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ff-resume-"));
@@ -215,8 +225,106 @@ const journalsIn = (dir) => {
     && !/of \d+ file/.test(prompt.detail),
     "…without inventing a total it never recorded", prompt.detail);
 
+  console.log("\n2b. (\u00a7105A) \"Not now\" parks it instead of deleting it");
+  {
+    // The complaint this exists for: Discard was the only way to stop
+    // being asked, and it deletes the job.
+    await B.ev(`(() => { document.getElementById("resume-later").click(); return true; })()`);
+    await sleep(600);
+    const closed = await B.ev(`document.getElementById("resume-backdrop").classList.contains("open")`);
+    check(closed === false, "the modal closes");
+    check(fss.existsSync(jFile), "…and the journal is still on disk — parked, not discarded");
+    const doc2 = JSON.parse(fss.readFileSync(jFile, "utf8"));
+    check(doc2.hiddenFromPrompt === true,
+      "…with the flag written to DISK, which is the whole point: resumeOffered forgets at every launch",
+      String(doc2.hiddenFromPrompt));
+    // The bell is where it goes instead.
+    //
+    // EVERY assertion here is scoped to this test's OWN job id, and that
+    // is not fastidiousness: this app's e2e harnesses share the real
+    // userData with whatever the developer is running, so the bell can
+    // legitimately hold their jobs too. An earlier version of this asserted
+    // a badge count of 1 and clicked "the first Resume button" — which,
+    // with a real interrupted job parked, would have resumed THEIRS.
+    await B.ev(`refreshNotifications()`);
+    const bell = await B.ev(`(() => {
+      const item = document.querySelector('#notif-card .notif-item[data-notif-id="${crashedId}"]');
+      return {
+        hidden: document.getElementById("notif-btn").hidden,
+        badge: document.getElementById("notif-badge").textContent,
+        mine: !!item,
+      };
+    })()`);
+    check(bell.hidden === false, "the bell appears");
+    check(Number(bell.badge) >= 1, "…with a count", bell.badge);
+    await B.ev(`(() => { document.getElementById("notif-btn").click(); return true; })()`);
+    await sleep(500);
+    const panel = await B.ev(`(() => {
+      const c = document.getElementById("notif-card");
+      const item = c.querySelector('.notif-item[data-notif-id="${crashedId}"]');
+      return { open: c.classList.contains("open"),
+               present: !!item,
+               text: item ? item.textContent : "",
+               actions: item ? [...item.querySelectorAll(".notif-actions button")].map(b => b.textContent) : [] };
+    })()`);
+    check(panel.open, "the panel opens");
+    check(panel.present, "…listing THIS test's parked job specifically");
+    check(/interrupted copy/.test(panel.text),
+      "…describing it by kind", panel.text.slice(0, 80));
+    check(panel.actions.join(",") === "Resume,Dismiss",
+      "…offering Resume and Dismiss", panel.actions.join(","));
+  }
+
+  console.log("\n2c. A parked job no longer seizes the window");
+  {
+    const C = await launch();
+    // The claim is about THIS job, not about the modal being absent: this
+    // machine can legitimately hold other interrupted jobs (the developer's
+    // own), and one of those being offered is the feature working. What
+    // must not happen is the PARKED one seizing the window again.
+    const shown = await C.ev(`(async () => {
+      await maybeOfferResume("launch");
+      await new Promise(r => setTimeout(r, 400));
+      const open = document.getElementById("resume-backdrop").classList.contains("open");
+      return { open, body: document.getElementById("resume-body").textContent };
+    })()`);
+    check(!shown.open || !shown.body.includes("CARD01"),
+      "on a FRESH LAUNCH the parked journal does not reopen the blocking modal",
+      shown.open ? `a modal is open, for: ${shown.body.slice(0, 60)}` : "no modal at all");
+    const stillThere = await C.ev(`window.freeframe.interruptedUploads().then(d =>
+      d.filter(x => x.jobId === ${JSON.stringify(crashedId)}).map(x => x.hiddenFromPrompt))`);
+    check(stillThere.length === 1 && stillThere[0] === true,
+      "…because it is still there, still parked — not because it was deleted",
+      JSON.stringify(stillThere));
+    // The click handler is async (it re-reads from disk before painting),
+    // so querying in the same synchronous expression races it — which is
+    // what made this read as a missing item rather than a slow one.
+    await C.ev(`(() => { document.getElementById("notif-btn").click(); return true; })()`);
+    await sleep(600);
+    check(await C.ev(`!!document.querySelector('#notif-card .notif-item[data-notif-id="${crashedId}"]')`),
+      "…and the bell still lists it after the restart");
+    hardKill(C.child);
+    await sleep(800);
+  }
+
   console.log("\n3. Resuming copies what is missing and re-reads nothing else");
-  await B.ev(`(() => { document.getElementById("resume-go").click(); return true; })()`);
+  // From the BELL this time, not the modal — the spec's requirement that
+  // both entry points run the same flow. runResume is literally the same
+  // function; this proves the button reaches it.
+  const D = await launch();
+  await D.ev(`(async () => { await refreshNotifications(); return true; })()`);
+  await D.ev(`(() => {
+    document.getElementById("notif-btn").click(); return true;
+  })()`);
+  await sleep(400);
+  const clicked = await D.ev(`(() => {
+    const item = document.querySelector('#notif-card .notif-item[data-notif-id="${crashedId}"]');
+    if (!item) return false;
+    const b = [...item.querySelectorAll(".notif-actions button")].find(x => x.textContent === "Resume");
+    if (!b) return false;
+    b.click(); return true;
+  })()`);
+  check(clicked, "Resume is clicked on THIS test's own bell item, not whichever sorted first");
   // Wait for the destination to hold everything, or give up.
   let landed = [];
   for (let i = 0; i < 300; i++) {
@@ -244,10 +352,27 @@ const journalsIn = (dir) => {
     "the predecessor journal is retired once the resumed run covers it",
     after.join(", ") || "(none left)");
 
-  const errs = B.errs.filter((e) => !/ResizeObserver/.test(e));
+  const errs = [...B.errs, ...D.errs].filter((e) => !/ResizeObserver/.test(e));
   check(errs.length === 0, "no uncaught exception across the whole run", errs.join(" | "));
 
+  // Clean up after ourselves. A parked journal is kept ON PURPOSE — that
+  // is the feature — so nothing retires one automatically, and every run
+  // of this harness would otherwise leave another entry in the real
+  // notification bell for good. Scoped by source path so it can only ever
+  // remove journals this file created.
+  let swept = 0;
+  for (const n of journalsIn(logDir)) {
+    try {
+      const d = JSON.parse(fss.readFileSync(path.join(logDir, n), "utf8"));
+      if (typeof d.sourcePath === "string" && d.sourcePath.includes("ff-resume-")) {
+        fss.rmSync(path.join(logDir, n)); swept++;
+      }
+    } catch {}
+  }
+  console.log(`  (swept ${swept} journal(s) this harness created)`);
+
   hardKill(B.child);
+  hardKill(D.child);
   await fsp.rm(tmp, { recursive: true, force: true });
   console.log(fail === 0 ? "\nALL PASS" : `\n${fail} FAILED`);
   process.exit(fail ? 1 : 0);

@@ -1249,6 +1249,7 @@ async function main() {
         return { summary, seen, doc: await journal.readJournal(rlogs, jobId) };
       }
 
+      const msrcEarly = fssync.readFileSync(path.join(__dirname, "..", "src", "main", "main.js"), "utf8");
       const D1 = [{ id: "n1", path: path.join(tmp, "resume-D1"), parentId: null }];
       const first = await crashAfter("r-job-1", D1, 3);
       check(first.doc && first.doc.status === "running",
@@ -1393,6 +1394,27 @@ async function main() {
       check(badDest.size === 0,
         "…nor a destination it recorded as MISMATCHED — the file being present is not the question");
 
+      // §105D — a resume that ITSELF crashes must report where the SECOND
+      // attempt got to, not the first one's stale numbers. The two
+      // journals above are exactly that scenario, so the claim is checked
+      // rather than assumed.
+      check(two.doc.files.filter((f) => f.ok).length > one.doc.files.filter((f) => f.ok).length,
+        "a crashed resume's own journal reports MORE progress than the run it continued",
+        `${two.doc.files.filter((f) => f.ok).length} vs ${one.doc.files.filter((f) => f.ok).length}`);
+      // …and the predecessor is gone, so there is no stale record left for
+      // a prompt to pick up by accident. Its claims are all covered, which
+      // is the retirement condition main.js applies.
+      const oneClaims = one.doc.files.filter((f) => f.ok).map((f) => f.file);
+      const twoClaims = new Set(two.doc.files.filter((f) => f.ok).map((f) => f.file));
+      check(oneClaims.every((f) => twoClaims.has(f)),
+        "…and fully supersedes it, which is what retires the older journal");
+      // The reading has to be from DISK each time. A list computed before
+      // a resume started would still hold the original crash's numbers —
+      // which is the precise failure §105D describes.
+      check(/interruptedJournals\(\)[\s\S]{0,80}readdir/.test(msrcEarly)
+        || /async function interruptedJournals[\s\S]{0,400}readdir\(LOG_DIR\(\)\)/.test(msrcEarly),
+        "detection re-reads the journal directory on every call, never a cached list");
+
       // A normal job must be untouched by any of this.
       const plain = await crashAfter("r-job-9", [{ id: "n4", path: path.join(tmp, "resume-D4"), parentId: null }], null);
       check(plain.seen.started.length === 6 && plain.seen.resumed.length === 0,
@@ -1443,6 +1465,52 @@ async function main() {
       check(/: null\)/.test(summaryBlock),
         "…while several destinations stay refused, because parallel and cascaded look identical there");
 
+      // ── §105C: the quit-guard ─────────────────────────────────────
+      // before-quit did nothing job-aware at all; quitting mid-transfer
+      // just killed it silently.
+      const bq = msrc.slice(msrc.indexOf('app.on("before-quit"'),
+                            msrc.indexOf('app.on("window-all-closed"'));
+      check(bq.length > 0 && /event\.preventDefault\(\)/.test(bq),
+        "quitting is actually blocked while a transfer is in flight");
+      // A guard that re-entered itself on the user's own "Quit anyway"
+      // would ask forever.
+      check(/quitConfirmed/.test(bq) && /if \(!quitConfirmed\)/.test(bq),
+        "…with a flag so \"Quit anyway\" is not asked again by the quit it triggers");
+      check(/setImmediate\(\(\) => app\.quit\(\)\)/.test(bq),
+        "…re-issuing the quit rather than falling through a preventDefault it cannot take back");
+      // JobQueue's own vocabulary, checked rather than assumed: `active`
+      // is running OR paused, and its own comment says neither may have
+      // its drives pulled out from under it — which is what a quit is.
+      check(/jobs\.active/.test(msrc),
+        "…keyed on the queue's own `active` set, so a PAUSED transfer is not silently lost");
+      const qsrc = fssync.readFileSync(path.join(__dirname, "..", "src", "main", "job-queue.js"), "utf8");
+      check(/get active\(\)[\s\S]{0,160}"running" \|\| j\.status === "paused"/.test(qsrc),
+        "…and that set really is running-or-paused, not a synonym for running");
+      check(!/status === "queued"/.test(bq),
+        "a QUEUED job does not block the quit — it has copied nothing");
+      // Matched in fragments: the sentence spans a string-concatenation
+      // boundary in the source, so a single contiguous regex fails against
+      // wording that is perfectly correct on screen.
+      check(/resume it next time you/.test(bq)
+        && /re-checks what is actually on the destination/.test(bq)
+        && /copies anything that is/.test(bq),
+        "…and the wording promises a re-checked resume, not an unchecked one");
+
+      // ── §105E: a resumed job says so in its log ────────────────────
+      const logBlock = msrc.slice(msrc.indexOf("resumedFrom: {"), msrc.indexOf("notVerified:"));
+      check(logBlock.length > 0 && /originalStoppedAfter/.test(logBlock) && /resumedFrom:/.test(logBlock),
+        "the log names both ends of the gap — where the original stopped and where the resume began");
+      check(/NOT re-hashed/.test(logBlock),
+        "…and says plainly that skipped files were confirmed by stat+size, not re-hashed");
+      // The block must not appear on a job that never resumed.
+      check(/\.\.\.\(resumed \? \{ resumedFrom/.test(msrc),
+        "…and is absent entirely from a job that was not a continuation");
+      // The resume point is the first file actually COPIED. A resume's
+      // early file-done events are the SKIPPED ones, and naming one of
+      // those would report a file this run never read.
+      check(/p\.resumed !== true/.test(msrc),
+        "the resume point is the first file this run copied, not the first it saw");
+
       const psrc = fssync.readFileSync(path.join(__dirname, "..", "src", "main", "preload.js"), "utf8");
       // The PARAMETER alone proves nothing: a bridge that accepts
       // resumeJobId and never puts it on the payload has the same
@@ -1466,10 +1534,54 @@ async function main() {
       // destination selected" from inside main rather than as this.
       check(/were not recorded, so it cannot be resumed/.test(rsrc2),
         "…and refuses outright when the topology was never journaled");
-      const goIdx = rsrc2.indexOf("if (isCopy) {", rsrc2.indexOf("resumeOffered.add(doc.jobId)"));
-      const upIdx = rsrc2.indexOf("freeframeUpload(", goIdx);
-      check(goIdx !== -1 && upIdx !== -1 && goIdx < upIdx,
+      // ── §105A: parking an interrupted job ─────────────────────────
+      // A fourth verb was needed. finishJournal deletes on completion,
+      // discardJournal deletes on refusal, releaseJournal drops a handle —
+      // none can say "keep this, stop asking".
+      const hlogs = path.join(tmp, "hide-journals");
+      const hjob = { id: "hide-1", kind: "copy", label: "CARD", sourcePath: "/src/H", destPaths: ["/d"] };
+      await journal.startJournal(hlogs, hjob, { nodes: [{ id: "h", path: "/d", parentId: null }] });
+      await journal.appendFileResult("hide-1", { file: "a.MOV", ok: true, bytes: 1 });
+      check((await journal.readJournal(hlogs, "hide-1")).hiddenFromPrompt === undefined,
+        "a fresh journal is not hidden — the flag is absent, not false");
+
+      // OPEN path: the journal's job is still live in this process, so the
+      // flag has to go into the in-memory doc. Writing only to disk would
+      // be undone by the very next append, which rewrites the whole file
+      // from memory.
+      check(await journal.setHiddenFromPrompt(hlogs, "hide-1", true), "hiding an OPEN journal reports success");
+      await journal.appendFileResult("hide-1", { file: "b.MOV", ok: true, bytes: 1 });
+      const afterAppend = await journal.readJournal(hlogs, "hide-1");
+      check(afterAppend.hiddenFromPrompt === true,
+        "…and the flag survives the next append, rather than being rewritten away");
+      check(afterAppend.files.length === 2, "…with the record itself untouched", String(afterAppend.files.length));
+
+      // CLOSED path: the usual case. The app relaunched, so nothing here
+      // owns the journal and it can only be reached on disk.
+      journal.releaseJournal("hide-1");
+      check(await journal.setHiddenFromPrompt(hlogs, "hide-1", false),
+        "a journal only on DISK can be un-hidden too");
+      check((await journal.readJournal(hlogs, "hide-1")).hiddenFromPrompt === false,
+        "…and the change really landed");
+      check((await journal.readJournal(hlogs, "hide-1")).files.length === 2,
+        "…without disturbing anything else on the doc");
+      check((await journal.setHiddenFromPrompt(hlogs, "nope", true)) === false,
+        "hiding a journal that does not exist reports failure rather than throwing");
+
+      // Parking must not be mistaken for discarding: the whole point is
+      // that the job stays resumable.
+      check(Boolean(await journal.readJournal(hlogs, "hide-1")),
+        "parking never deletes the journal — that is Discard's job");
+
+      // §105A moved the resume ACTION out of the modal into runResume, so
+      // the bell and the modal share one implementation. The branch is
+      // asserted where it now lives rather than where it used to.
+      const rr = rsrc2.slice(rsrc2.indexOf("async function runResume(doc)"),
+                             rsrc2.indexOf("async function offerResume(doc)"));
+      check(rr.length > 0 && /if \(isCopy\) \{/.test(rr) && /freeframeUpload\(/.test(rr),
         "…while an upload still takes the upload path it always did");
+      check(rr.indexOf("startCopy(") < rr.indexOf("freeframeUpload("),
+        "…with the two kinds branching in ONE place, not two");
     }
 
     console.log(

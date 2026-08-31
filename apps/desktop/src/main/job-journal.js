@@ -232,6 +232,53 @@ async function discardJournal(dir, jobId) {
   }
 }
 
+/**
+ * §105A — park an interrupted job: keep the journal, stop the blocking
+ * modal offering it.
+ *
+ * A fourth verb, and it has to be one. finishJournal deletes on
+ * completion, discardJournal deletes on refusal, releaseJournal only
+ * drops a handle — none of them can say "keep this, but stop asking".
+ * The flag lives on the journal doc rather than in a side file so the
+ * journal stays the single record of what state an interrupted job is
+ * in; a parallel list would be one more thing to keep in step with a
+ * file that gets deleted out from under it.
+ *
+ * TWO PATHS, because a hide can arrive in either situation:
+ *  - the journal is OPEN in this process (its job is mid-flight, and the
+ *    user parked a DIFFERENT interrupted job's prompt): mutate the
+ *    in-memory doc and flush, or the next append would rewrite the whole
+ *    file from memory and silently drop the flag.
+ *  - the journal is only on DISK (the usual case — the app was relaunched,
+ *    so nothing here owns it): read, set, write whole.
+ *
+ * Best-effort. A flag that will not persist means the prompt reappears,
+ * which is a nuisance, not a failure.
+ */
+async function setHiddenFromPrompt(dir, jobId, hidden = true) {
+  const entry = open.get(jobId);
+  if (entry) {
+    entry.doc.hiddenFromPrompt = hidden === true;
+    await flush(jobId);
+    return true;
+  }
+  try {
+    const target = journalFile(dir, jobId);
+    const doc = JSON.parse(await fsp.readFile(target, "utf8"));
+    if (!doc || !doc.freeframeJobJournal) return false;
+    doc.hiddenFromPrompt = hidden === true;
+    // Same write-whole-then-rename as flush(): a reader opening this file
+    // mid-write would otherwise see half a document, and a torn journal
+    // and a missing one are the same outcome for resume.
+    const tmp = `${target}.tmp`;
+    await fsp.writeFile(tmp, JSON.stringify(doc, null, 2), "utf8");
+    await fsp.rename(tmp, target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Abandon the in-memory handle without touching the file on disk. */
 function releaseJournal(jobId) {
   open.delete(jobId);
@@ -324,6 +371,7 @@ module.exports = {
   appendFileResult,
   finishJournal,
   discardJournal,
+  setHiddenFromPrompt,
   releaseJournal,
   readJournal,
   uploadedAssetIds,

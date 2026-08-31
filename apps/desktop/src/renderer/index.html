@@ -816,6 +816,11 @@
     .modal-actions { display: flex; flex-direction: column; gap: 8px; }
     .modal-actions .row2 { display: flex; gap: 8px; }
     .modal-actions .row2 button { flex: 1; justify-content: center; }
+    /* §105A — three answers rather than two. Same shape as .row2; it
+       wraps rather than squeezing three buttons past legibility in a
+       narrow window (§25b's lesson). */
+    .modal-actions .row3 { display: flex; gap: 8px; flex-wrap: wrap; }
+    .modal-actions .row3 button { flex: 1 1 120px; justify-content: center; }
     .modal-actions button { display: flex; align-items: center; gap: 6px; }
     .modal-chosen { font-size: 11px; color: var(--status-success); }
 
@@ -833,6 +838,33 @@
     #menu button:hover:not(:disabled) { background: var(--bg-hover); }
     #menu .sep { height: 1px; background: var(--border); margin: 4px 0; }
     #menu .label { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-tertiary); padding: 5px 10px 3px; }
+
+    /* §105A — the notification centre. Same positioning family as
+       #daily-card and #menu: fixed, anchored under its own button. A
+       glance, not a destination. */
+    .notif-badge {
+      display: inline-block; min-width: 16px; padding: 0 4px; margin-left: 6px;
+      border-radius: 8px; background: var(--status-warning); color: #1a1a1a;
+      font-size: 10px; font-weight: 600; line-height: 16px; text-align: center;
+    }
+    #notif-card {
+      position: fixed; z-index: 1000; display: none;
+      background: var(--bg-elevated); border: 1px solid var(--border);
+      border-radius: 10px; width: 380px; max-width: calc(100vw - 24px);
+      box-shadow: 0 16px 40px rgba(0,0,0,.6); overflow: hidden;
+    }
+    #notif-card.open { display: block; }
+    .notif-head { padding: 10px 12px 8px; border-bottom: 1px solid var(--border); }
+    .notif-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
+    .notif-head .notif-sub { font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
+    .notif-list { max-height: 320px; overflow-y: auto; }
+    .notif-item { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    .notif-item:last-child { border-bottom: 0; }
+    .notif-title { font-size: 12px; font-weight: 600; }
+    .notif-detail { font-size: 10px; color: var(--text-tertiary); margin-top: 3px; }
+    .notif-actions { display: flex; gap: 6px; margin-top: 8px; }
+    .notif-actions button { font-size: 10px; height: 22px; padding: 0 8px; }
+    .notif-empty { padding: 14px 12px; font-size: 11px; color: var(--text-tertiary); }
 
     /* §72 — the daily overview card. Same positioning family as #menu
        (fixed, anchored under its button), just wider and with structure
@@ -966,6 +998,13 @@
     <span class="spacer"></span>
     <button id="refresh"><span class="icon" data-icon="refresh"></span> Refresh</button>
     <button id="daily-btn" title="What has been offloaded today">Daily overview</button>
+    <!-- §105A — parked interrupted jobs. Hidden when there are none: an
+         empty notification centre is noise in a header that already wraps
+         at narrow widths (§25b), and it has nothing to show. -->
+    <button id="notif-btn" title="Parked interrupted jobs" hidden>
+      <span class="icon" data-icon="warning"></span>
+      <span id="notif-badge" class="notif-badge">0</span>
+    </button>
     <button id="settings-btn" title="Settings">Settings</button>
   </header>
 
@@ -1114,13 +1153,20 @@
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="resume-title">
       <div class="modal-head">
         <span class="icon" data-icon="warning"></span>
-        <h3 id="resume-title">An interrupted upload was found</h3>
+        <!-- §105B — filled in per kind: this modal offers copies now too,
+             and calling a copy an upload in its own title is worse than
+             saying nothing. -->
+        <h3 id="resume-title">An interrupted job was found</h3>
       </div>
       <p id="resume-body"></p>
       <div id="resume-detail"></div>
-      <div class="modal-actions"><div class="row2">
+      <div class="modal-actions"><div class="row3">
         <button id="resume-discard">Discard</button>
-        <button id="resume-go" class="primary">Resume upload</button>
+        <!-- §105A — the third answer. Discard was the only way to stop
+             being asked, and it deletes; this keeps the job and parks it
+             in the notification bell instead. -->
+        <button id="resume-later">Not now</button>
+        <button id="resume-go" class="primary">Resume</button>
       </div></div>
     </div>
   </div>
@@ -1173,6 +1219,7 @@
   <!-- §72 — a dropdown anchored under its button, not a window: this is a
        glance at today, and a BrowserWindow would make it a destination. -->
   <div id="daily-card"></div>
+  <div id="notif-card"></div>
 
   <script>
     // No Node access here (contextIsolation + sandbox: true in main.js) —
@@ -2749,6 +2796,11 @@
       const card = $("daily-card");
       if (card && !card.contains(e.target) && e.target !== $("daily-btn")
           && !$("daily-btn").contains(e.target)) closeDaily();
+      // §105A — same rule for the notification card. Without it the panel
+      // stays open behind whatever the next click opened.
+      const ncard = $("notif-card");
+      if (ncard && !ncard.contains(e.target) && e.target !== $("notif-btn")
+          && !$("notif-btn").contains(e.target)) closeNotif();
     });
 
     // ── Rendering ──
@@ -3599,6 +3651,11 @@
       } catch { return; }   // never let this break the thing that called it
       const candidates = docs
         .filter((d) => d && d.jobId && !resumeOffered.has(d.jobId))
+        // §105A — the actual fix for "it keeps coming back". `resumeOffered`
+        // is in-memory and forgets at every launch, which is why parking
+        // needed a flag on the journal itself. These are still listed in
+        // the notification bell; they just stop seizing the window.
+        .filter((d) => d.hiddenFromPrompt !== true)
         .filter((d) => (trigger === "launch" ? true : journalMatchesSource(d)))
         .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")));
       if (!candidates.length) return;
@@ -3607,73 +3664,121 @@
       // again rather than stacking dialogs.
     }
 
-    async function offerResume(doc) {
-      resumePromptOpen = true;
-      // Marked as asked BEFORE awaiting anything: a second trigger firing
-      // while the dialog is open must not queue the same job twice.
-      resumeOffered.add(doc.jobId);
-      const backdrop = $("resume-backdrop");
-      const label = doc.sourcePath
-        ? baseNameOf(doc.sourcePath)
-        : `${(doc.sourceFiles || []).length} files`;
-      // entryFor answers for any string, so an absent projectId would
-      // produce a name derived from the literal "freeframe://null".
-      const project = doc.projectId ? entryFor(`freeframe://${doc.projectId}`) : null;
-      const projectName = (project && project.name) || "a FreeFrame project";
-      // §105B — a copy and an upload are interrupted the same way and
-      // resumed by the same mechanism, but they are not the same event to
-      // describe. An upload was going to a project and is re-checked with
-      // the server; a copy was going to drives and is re-checked against
-      // what is actually on them.
+    /**
+     * §105A — the notification centre.
+     *
+     * Scoped now to parked interrupted jobs, which are the only kind of
+     * notification that exists. Built as a list of {type, ...} items with
+     * one renderer per type, so a later "update available" is a new type
+     * and a new renderer — not a second bell with its own badge, panel and
+     * poll. Deliberately no more infrastructure than that: a registry of
+     * two entries where one is hypothetical would be worse.
+     */
+    let notifOpen = false;
+    let notifItems = [];
+
+    const closeNotif = () => { notifOpen = false; $("notif-card").classList.remove("open"); };
+
+    /** One renderer per item type. */
+    const NOTIF_RENDERERS = {
+      "interrupted-job": (item) => {
+        const doc = item.doc;
+        const isCopy = doc.kind === "copy";
+        const where = isCopy
+          ? ((doc.nodes || []).length === 1
+              ? baseNameOf(doc.nodes[0].path)
+              : `${(doc.nodes || []).length} destinations`)
+          : "a FreeFrame project";
+        const count = isCopy ? doc.verifiedCount : doc.uploadedCount;
+        // Addressable per item. Nothing in the app needs this, but a
+        // panel whose rows can only be reached as "the first one" cannot
+        // be driven safely by anything — including a test, which would
+        // otherwise act on whichever job happened to sort first.
+        return el("div", { class: "notif-item", dataset: { notifId: item.id } }, [
+          el("div", { class: "notif-title",
+            text: `${doc.label || baseNameOf(doc.sourcePath || "")} — interrupted ${isCopy ? "copy" : "upload"}` }),
+          el("div", { class: "notif-detail",
+            text: `${count} file(s) done before it stopped · to ${where}` }),
+          el("div", { class: "notif-actions" }, [
+            el("button", { class: "primary", text: "Resume",
+              onClick: async () => {
+                closeNotif();
+                // The same action the modal's Resume runs — not a second
+                // implementation of it.
+                await runResume(doc);
+              } }),
+            el("button", { text: "Dismiss",
+              title: "Forget this job. Files already transferred stay where they are.",
+              onClick: async () => {
+                // §105's decision: dismiss from the bell means discard.
+                // Parking already happened when it landed here; a second
+                // "not now" would be a button that does nothing.
+                await window.freeframe.discardInterruptedUpload(doc.jobId).catch(() => {});
+                // Removed from the list we already hold rather than
+                // re-polled, so the row goes as the click lands.
+                notifItems = notifItems.filter((i) => i.id !== item.id);
+                paintNotifications();
+              } }),
+          ]),
+        ]);
+      },
+    };
+
+    function paintNotifications() {
+      const btn = $("notif-btn");
+      const badge = $("notif-badge");
+      if (!btn || !badge) return;
+      badge.textContent = String(notifItems.length);
+      // An empty notification centre has nothing to say, and the header
+      // already wraps at narrow widths (§25b).
+      btn.hidden = notifItems.length === 0;
+      if (!notifItems.length) closeNotif();
+
+      const host = $("notif-card");
+      if (!host || !notifOpen) return;
+      host.replaceChildren();
+      host.appendChild(el("div", { class: "notif-head" }, [
+        el("h3", { text: "Notifications" }),
+        el("div", { class: "notif-sub",
+          text: "Interrupted jobs you parked. They stay resumable until dismissed." }),
+      ]));
+      const list = el("div", { class: "notif-list" });
+      for (const item of notifItems) {
+        const render = NOTIF_RENDERERS[item.type];
+        if (render) list.appendChild(render(item));
+      }
+      host.appendChild(notifItems.length
+        ? list
+        : el("div", { class: "notif-empty", text: "Nothing parked." }));
+    }
+
+    /**
+     * Always read fresh from disk (§105D). A resume writes its own journal
+     * live, so a cached list computed before a resume attempted anything
+     * would show the ORIGINAL crash's numbers after a second interruption
+     * — stale in exactly the situation the panel exists for.
+     */
+    async function refreshNotifications() {
+      let docs = [];
+      try { docs = (await window.freeframe.interruptedUploads()) || []; }
+      catch { docs = []; }
+      notifItems = docs
+        .filter((d) => d && d.jobId && d.hiddenFromPrompt === true)
+        .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))
+        .map((d) => ({ type: "interrupted-job", id: d.jobId, doc: d }));
+      paintNotifications();
+    }
+
+    /**
+     * §105A — the resume ACTION, separate from the modal that offers it.
+     *
+     * Extracted rather than duplicated because the notification bell
+     * resumes the same jobs by the same rules; two copies of "how a resume
+     * is started" would drift on the first change to either, and this app
+     * has paid for that shape repeatedly (§30, §32, §61).
+     */
+    async function runResume(doc) {
       const isCopy = doc.kind === "copy";
-      if (isCopy) {
-        const where = (doc.nodes || []).length === 1
-          ? baseNameOf(doc.nodes[0].path)
-          : `${(doc.nodes || []).length} destinations`;
-        $("resume-body").textContent =
-          `“${doc.label || label}” was copying to ${where} and did not finish.`;
-        // No denominator, deliberately. A journal only ever holds what
-        // FINISHED — the job's total file count is decided inside the
-        // engine, after the journal is opened — so every row being ok
-        // renders as "8 of 8", which reads as a completed job. Saying how
-        // many are known-good, and nothing about a total nobody recorded,
-        // is the honest version.
-        $("resume-detail").textContent =
-          `${doc.verifiedCount} file(s) had copied and verified before it stopped. `
-          + "Resuming checks each of those is still on the destination at the size it "
-          + "was recorded, copies anything missing or changed, and copies the rest. "
-          + "Discarding forgets this job — the files already copied stay where they are.";
-      } else {
-        $("resume-body").textContent =
-          `“${doc.label || label}” was uploading to ${projectName} and did not finish.`;
-        $("resume-detail").textContent =
-          `${doc.uploadedCount} of ${doc.fileCount} file(s) had uploaded. `
-          + "Resuming re-checks those with the server and only sends what is missing. "
-          + "Discarding forgets this job — the files already uploaded stay where they are.";
-      }
-      backdrop.classList.add("open");
-
-      const choice = await new Promise((resolve) => {
-        function close(result) {
-          backdrop.classList.remove("open");
-          $("resume-go").removeEventListener("click", onGo);
-          $("resume-discard").removeEventListener("click", onNo);
-          resolve(result);
-        }
-        const onGo = () => close("resume");
-        const onNo = () => close("discard");
-        $("resume-go").addEventListener("click", onGo);
-        $("resume-discard").addEventListener("click", onNo);
-      });
-      resumePromptOpen = false;
-
-      if (choice === "discard") {
-        // Deleted, not merely ignored: an ignored journal asks again at
-        // every launch forever.
-        await window.freeframe.discardInterruptedUpload(doc.jobId).catch(() => {});
-        return;
-      }
-
       try {
         if (isCopy) {
           // §105B — every input comes from the JOURNAL, not from what is
@@ -3721,6 +3826,96 @@
         );
         box.style.display = "block";
       }
+      // Whatever happened, the bell's contents may have: a successful
+      // resume retires the journal it continued.
+      await refreshNotifications();
+    }
+
+    async function offerResume(doc) {
+      resumePromptOpen = true;
+      // Marked as asked BEFORE awaiting anything: a second trigger firing
+      // while the dialog is open must not queue the same job twice.
+      resumeOffered.add(doc.jobId);
+      const backdrop = $("resume-backdrop");
+      const label = doc.sourcePath
+        ? baseNameOf(doc.sourcePath)
+        : `${(doc.sourceFiles || []).length} files`;
+      // entryFor answers for any string, so an absent projectId would
+      // produce a name derived from the literal "freeframe://null".
+      const project = doc.projectId ? entryFor(`freeframe://${doc.projectId}`) : null;
+      const projectName = (project && project.name) || "a FreeFrame project";
+      // §105B — a copy and an upload are interrupted the same way and
+      // resumed by the same mechanism, but they are not the same event to
+      // describe. An upload was going to a project and is re-checked with
+      // the server; a copy was going to drives and is re-checked against
+      // what is actually on them.
+      const isCopy = doc.kind === "copy";
+      $("resume-title").textContent = isCopy
+        ? "An interrupted copy was found"
+        : "An interrupted upload was found";
+      $("resume-go").textContent = isCopy ? "Resume copy" : "Resume upload";
+      if (isCopy) {
+        const where = (doc.nodes || []).length === 1
+          ? baseNameOf(doc.nodes[0].path)
+          : `${(doc.nodes || []).length} destinations`;
+        $("resume-body").textContent =
+          `“${doc.label || label}” was copying to ${where} and did not finish.`;
+        // No denominator, deliberately. A journal only ever holds what
+        // FINISHED — the job's total file count is decided inside the
+        // engine, after the journal is opened — so every row being ok
+        // renders as "8 of 8", which reads as a completed job. Saying how
+        // many are known-good, and nothing about a total nobody recorded,
+        // is the honest version.
+        $("resume-detail").textContent =
+          `${doc.verifiedCount} file(s) had copied and verified before it stopped. `
+          + "Resuming checks each of those is still on the destination at the size it "
+          + "was recorded, copies anything missing or changed, and copies the rest. "
+          + "Discarding forgets this job — the files already copied stay where they are.";
+      } else {
+        $("resume-body").textContent =
+          `“${doc.label || label}” was uploading to ${projectName} and did not finish.`;
+        $("resume-detail").textContent =
+          `${doc.uploadedCount} of ${doc.fileCount} file(s) had uploaded. `
+          + "Resuming re-checks those with the server and only sends what is missing. "
+          + "Discarding forgets this job — the files already uploaded stay where they are.";
+      }
+      backdrop.classList.add("open");
+
+      const choice = await new Promise((resolve) => {
+        function close(result) {
+          backdrop.classList.remove("open");
+          $("resume-go").removeEventListener("click", onGo);
+          $("resume-discard").removeEventListener("click", onNo);
+          $("resume-later").removeEventListener("click", onLater);
+          resolve(result);
+        }
+        const onGo = () => close("resume");
+        const onNo = () => close("discard");
+        const onLater = () => close("later");
+        $("resume-go").addEventListener("click", onGo);
+        $("resume-discard").addEventListener("click", onNo);
+        $("resume-later").addEventListener("click", onLater);
+      });
+      resumePromptOpen = false;
+
+      if (choice === "discard") {
+        // Deleted, not merely ignored: an ignored journal asks again at
+        // every launch forever.
+        await window.freeframe.discardInterruptedUpload(doc.jobId).catch(() => {});
+        await refreshNotifications();
+        return;
+      }
+
+      if (choice === "later") {
+        // §105A — the journal is untouched. Only the flag that decides
+        // whether this modal may seize the window again is set, and it is
+        // set ON DISK, because the whole complaint was that it came back.
+        await window.freeframe.hideInterrupted(doc.jobId, true).catch(() => {});
+        await refreshNotifications();
+        return;
+      }
+
+      await runResume(doc);
     }
 
     const baseNameOf = (p) => String(p || "").split("/").filter(Boolean).pop() || String(p || "");
@@ -4809,6 +5004,31 @@
       // Redrawn on the same broadcast the completion point fires, so a job
       // finishing while the card is open updates it rather than going stale.
       window.freeframe.onDailyOverviewChanged(() => { if (dailyOpen) drawDaily(); });
+    });
+
+    initStep("notifications", () => {
+      on("notif-btn", "click", async (e) => {
+        e.stopPropagation();
+        // §65c — captured before the await. currentTarget is only valid
+        // during synchronous dispatch, and reading it afterwards is what
+        // made the preset pill silently do nothing for weeks.
+        const btn = e.currentTarget;
+        if (notifOpen) { closeNotif(); return; }
+        notifOpen = true;
+        const host = $("notif-card");
+        host.classList.add("open");
+        // Re-read on open rather than trusting what the badge was built
+        // from: a job may have finished, or a resume retired a journal,
+        // since the last paint.
+        await refreshNotifications();
+        if (!notifOpen) return;
+        const r = btn.getBoundingClientRect();
+        host.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - host.offsetWidth - 8))}px`;
+        host.style.top = `${r.bottom + 6}px`;
+      });
+      // Parked jobs are found the same way the launch prompt finds its
+      // own: fresh from disk, every time.
+      refreshNotifications();
     });
 
     initStep("naming presets", () => {
