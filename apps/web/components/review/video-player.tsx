@@ -74,8 +74,13 @@ interface VideoPlayerProps {
 /**
  * Wraps children so they are positioned exactly over the visible video frame,
  * excluding the black letterbox bars created by object-contain.
+ *
+ * Exported for the compare overlay (§107), which mounts its own <video> per
+ * pane and needs annotations to land in the SAME coordinate space the normal
+ * player authors them in. A second measurement implementation would put a
+ * drawing in a different place depending on which viewer opened it.
  */
-function VideoFrameConstraint({
+export function VideoFrameConstraint({
   videoRef,
   children,
 }: {

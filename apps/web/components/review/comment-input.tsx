@@ -20,6 +20,7 @@ import {
   Lock,
 } from "lucide-react";
 import { cn, formatTime, formatTimecode, formatFrames } from "@/lib/utils";
+import { resolveSubmitTimecode } from "@/lib/resolve-submit-timecode";
 import { useReviewStore } from "@/stores/review-store";
 import { useReview } from "./review-provider";
 import { useDrawing } from "@/hooks/use-drawing";
@@ -45,6 +46,19 @@ interface CommentInputProps {
   ) => Promise<void>;
   onCancelReply?: () => void;
   onPauseVideo?: () => void;
+  /** Compare mode: pane-local playhead seconds; replaces the global store playheadTime. */
+  playheadTimeOverride?: number;
+  /** Compare mode: hide drawing tools and never attach annotation payloads. */
+  disableAnnotations?: boolean;
+  /**
+   * Compare mode: this input's drawing state, controlled by the parent (which
+   * pane is the single active drawing side). When provided it REPLACES the
+   * global store `isDrawingMode` for every drawing-UI decision in this input,
+   * so only the active pane shows the drawing toolbar and captures the canvas.
+   */
+  annotationActive?: boolean;
+  /** Compare mode: called instead of the global toggle when the pencil / exit is clicked. */
+  onToggleAnnotation?: () => void;
   className?: string;
 }
 
@@ -183,13 +197,17 @@ export function CommentInput({
   onSubmit,
   onCancelReply,
   onPauseVideo,
+  playheadTimeOverride,
+  disableAnnotations,
+  annotationActive,
+  onToggleAnnotation,
   className,
 }: CommentInputProps) {
   const {
     isDrawingMode,
     drawingTool,
     drawingColor,
-    playheadTime,
+    playheadTime: storePlayheadTime,
     timeFormat,
     pendingAnnotation,
     toggleDrawingMode,
@@ -203,6 +221,19 @@ export function CommentInput({
   const { pauseVideo } = useReview();
 
   const { clear, undo, getJSON } = useDrawing();
+
+  // §107 — compare mode drives all three of these per-pane. Each falls back to
+  // the global store when its prop is absent, which is the normal viewer, so
+  // behaviour there is unchanged by construction.
+  //
+  // The Fabric canvas is a module-level SINGLETON: at most one pane may own
+  // drawing at a time. `captureAnnotation` is what encodes that ownership —
+  // an inactive pane must not read the shared canvas (it may hold the other
+  // pane's in-progress drawing) and must not clear it on submit.
+  const playheadTime = playheadTimeOverride ?? storePlayheadTime;
+  const drawingActive = annotationActive ?? isDrawingMode;
+  const captureAnnotation = annotationActive ?? !disableAnnotations;
+  const toggleAnnotation = onToggleAnnotation ?? toggleDrawingMode;
 
   const [body, setBody] = React.useState("");
   const [mentionUserIds, setMentionUserIds] = React.useState<string[]>([]);
@@ -245,7 +276,7 @@ export function CommentInput({
     return () => document.removeEventListener("mousedown", handleClick);
   }, [visDropdownOpen, emojiOpen]);
 
-  const canAnnotate = assetType !== "audio";
+  const canAnnotate = assetType !== "audio" && !disableAnnotations;
   const hasTimecode = assetType === "video" || assetType === "audio";
 
   function displayTime(seconds: number): string {
@@ -262,13 +293,17 @@ export function CommentInput({
   }
   const hasAnnotation =
     !!(annotationData && Object.keys(annotationData).length > 0) ||
-    !!(pendingAnnotation && (pendingAnnotation as any)?.objects?.length > 0);
+    // Only reflect the shared pending drawing for the pane that OWNS drawing —
+    // otherwise an inactive compare pane's pencil lights up while the other
+    // pane is being drawn on. Always true in the normal viewer.
+    (captureAnnotation &&
+      !!(pendingAnnotation && (pendingAnnotation as any)?.objects?.length > 0));
 
   // Exit drawing mode and clear all annotation state
   function exitDrawingMode() {
     setPendingAnnotation(null);
     clear();
-    toggleDrawingMode();
+    toggleAnnotation();
   }
 
   function handleTextChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
@@ -320,7 +355,10 @@ export function CommentInput({
       // Grab canvas state: try live canvas first, then store, then prop
       let finalAnnotation: Record<string, unknown> | undefined = undefined;
 
-      if (isDrawingMode) {
+      // In compare, captureAnnotation is true ONLY for the active drawing
+      // pane, so an inactive pane never reads the shared singleton canvas —
+      // no cross-pane leak.
+      if (captureAnnotation) {
         try {
           const json = getJSON();
           const objects = (json as any)?.objects;
@@ -330,35 +368,28 @@ export function CommentInput({
         } catch {
           /* canvas may not exist */
         }
-        exitDrawingMode();
-      } else {
-        try {
-          const json = getJSON();
-          const objects = (json as any)?.objects;
-          if (objects && Array.isArray(objects) && objects.length > 0) {
-            finalAnnotation = json;
+        if (drawingActive) exitDrawingMode();
+
+        if (!finalAnnotation && pendingAnnotation) {
+          const objs = (pendingAnnotation as any)?.objects;
+          if (objs && Array.isArray(objs) && objs.length > 0) {
+            finalAnnotation = pendingAnnotation;
           }
-        } catch {
-          /* canvas may not exist */
         }
-      }
 
-      if (!finalAnnotation && pendingAnnotation) {
-        const objs = (pendingAnnotation as any)?.objects;
-        if (objs && Array.isArray(objs) && objs.length > 0) {
-          finalAnnotation = pendingAnnotation;
+        if (!finalAnnotation && annotationData) {
+          finalAnnotation = annotationData;
         }
-      }
-
-      if (!finalAnnotation && annotationData) {
-        finalAnnotation = annotationData;
       }
 
       await onSubmit(
         trimmed,
-        hasTimecode && timecodeAttached && playheadTime > 0
-          ? playheadTime
-          : undefined,
+        resolveSubmitTimecode({
+          hasTimecode,
+          timecodeAttached,
+          hasAnnotation: !!finalAnnotation,
+          playheadTime,
+        }),
         undefined,
         finalAnnotation,
         replyToId ?? undefined,
@@ -368,10 +399,16 @@ export function CommentInput({
 
       setBody("");
       setMentionUserIds([]);
-      setPendingAnnotation(null);
-      clear(); // Clear Fabric.js canvas so stale annotations don't attach to next comment
-      setIsDrawingMode(false); // Exit drawing mode after submitting annotation
-      setActiveAnnotation(null); // Clear any active annotation overlay
+      // Touches the SHARED singleton canvas and the global store, so gate it
+      // on ownership: an inactive compare pane must not clear the other
+      // pane's in-progress drawing or flip isDrawingMode out from under it.
+      // captureAnnotation is always true in the normal viewer.
+      if (captureAnnotation) {
+        setPendingAnnotation(null);
+        clear(); // Clear Fabric.js canvas so stale annotations don't attach to next comment
+        setIsDrawingMode(false); // Exit drawing mode after submitting annotation
+        setActiveAnnotation(null); // Clear any active annotation overlay
+      }
       if (replyToId && onCancelReply) onCancelReply();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to post comment");
@@ -405,7 +442,7 @@ export function CommentInput({
         <div className="relative">
           <div className="flex items-start gap-0 rounded-lg border border-border bg-bg-tertiary focus-within:border-accent/50 focus-within:ring-1 focus-within:ring-accent/20">
             {/* Inline timecode badge — show when timecode attached (normal mode) or in drawing mode */}
-            {hasTimecode && (timecodeAttached || isDrawingMode) && (
+            {hasTimecode && (timecodeAttached || drawingActive) && (
               <span className="shrink-0 ml-2.5 mt-[9px] rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[11px] text-amber-400 leading-none select-none">
                 {displayTime(playheadTime)}
               </span>
@@ -445,7 +482,7 @@ export function CommentInput({
 
       {/* Bottom toolbar */}
       <div className="px-4 pb-3">
-        {canAnnotate && isDrawingMode ? (
+        {canAnnotate && drawingActive ? (
           /* ─── Drawing toolbar ─── */
           <div className="flex items-center gap-1">
             <button
@@ -541,7 +578,7 @@ export function CommentInput({
                       ? "text-accent bg-accent/10"
                       : "text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary",
                   )}
-                  onClick={() => toggleDrawingMode()}
+                  onClick={() => toggleAnnotation()}
                   title="Draw annotation"
                 >
                   <Pencil className="h-4 w-4" />

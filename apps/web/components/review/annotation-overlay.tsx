@@ -3,12 +3,27 @@
 import React, { useEffect, useRef } from 'react'
 import { useReviewStore } from '@/stores/review-store'
 
+interface AnnotationOverlayProps {
+  /**
+   * Compare panes: render THIS drawing instead of the store's activeAnnotation.
+   * Pass null to render nothing. Omit entirely for store-driven behavior.
+   *
+   * The store holds ONE active annotation, which is exactly what compare
+   * cannot use: two panes showing different versions each need their own.
+   * `undefined` (prop omitted) means "read the store", so every existing
+   * single-view call site is unaffected — null has to stay distinguishable
+   * from absent for that to work, which is why this is not `?? store`.
+   */
+  annotation?: Record<string, unknown> | null
+}
+
 /**
  * Read-only overlay that renders a saved Fabric.js annotation on top of the media.
  * Shown when a comment with an annotation is focused/hovered.
  */
-export function AnnotationOverlay() {
-  const activeAnnotation = useReviewStore((s) => s.activeAnnotation)
+export function AnnotationOverlay({ annotation }: AnnotationOverlayProps = {}) {
+  const storeAnnotation = useReviewStore((s) => s.activeAnnotation)
+  const activeAnnotation = annotation !== undefined ? annotation : storeAnnotation
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
@@ -90,6 +105,10 @@ export function AnnotationOverlay() {
   return (
     <div
       ref={containerRef}
+      // Compare's tests assert WHICH pane an annotation mounted in — the
+      // per-pane isolation is the feature, and it is invisible without a
+      // handle to count and locate these by.
+      data-testid="annotation-overlay"
       className="absolute inset-0 z-10 pointer-events-none"
       style={{ overflow: 'hidden' }}
     >

@@ -47,7 +47,24 @@ export interface UseVideoPlayerReturn extends VideoPlayerControls, VideoPlayerSt
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
-export function useVideoPlayer(src: string | null): UseVideoPlayerReturn {
+export interface UseVideoPlayerOptions {
+  /**
+   * Compare panes: don't touch global review-store signals
+   * (seekTarget / playheadTime / activeAnnotation).
+   *
+   * §107 — the store holds ONE playhead and ONE seek target. Two compare
+   * players both writing them would fight: each would broadcast its own
+   * position as the page's, and each would obey a seek meant for the other.
+   * Detached players are driven entirely by useSyncedTransport instead.
+   */
+  detached?: boolean
+}
+
+export function useVideoPlayer(
+  src: string | null,
+  options?: UseVideoPlayerOptions,
+): UseVideoPlayerReturn {
+  const detached = options?.detached === true
   const videoRef = useRef<HTMLVideoElement>(null)
   const hlsRef = useRef<Hls | null>(null)
   const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -69,6 +86,7 @@ export function useVideoPlayer(src: string | null): UseVideoPlayerReturn {
 
   // Sync playhead to store at ~4fps to avoid excessive re-renders
   useEffect(() => {
+    if (detached) return
     syncIntervalRef.current = setInterval(() => {
       const video = videoRef.current
       if (video && !video.paused) {
@@ -78,10 +96,11 @@ export function useVideoPlayer(src: string | null): UseVideoPlayerReturn {
     return () => {
       if (syncIntervalRef.current) clearInterval(syncIntervalRef.current)
     }
-  }, [setPlayheadTime])
+  }, [setPlayheadTime, detached])
 
   // React to external seek requests (e.g. clicking comment timecode)
   useEffect(() => {
+    if (detached) return
     if (!seekTarget) return
     const video = videoRef.current
     if (!video) return
@@ -113,7 +132,7 @@ export function useVideoPlayer(src: string | null): UseVideoPlayerReturn {
       video.addEventListener('loadedmetadata', onLoaded)
       return () => video.removeEventListener('loadedmetadata', onLoaded)
     }
-  }, [seekTarget])
+  }, [seekTarget, detached])
 
   // Fullscreen change listener
   useEffect(() => {
@@ -145,7 +164,7 @@ export function useVideoPlayer(src: string | null): UseVideoPlayerReturn {
       }
     }
 
-    const onPlay = () => { setIsPlaying(true); setActiveAnnotation(null) }
+    const onPlay = () => { setIsPlaying(true); if (!detached) setActiveAnnotation(null) }
     const onPause = () => setIsPlaying(false)
     const onWaiting = () => setIsLoading(true)
     const onCanPlay = () => setIsLoading(false)
@@ -155,7 +174,7 @@ export function useVideoPlayer(src: string | null): UseVideoPlayerReturn {
     }
     const onEnded = () => {
       setIsPlaying(false)
-      setPlayheadTime(video.duration)
+      if (!detached) setPlayheadTime(video.duration)
     }
     const onError = () => {
       setIsLoading(false)
@@ -266,8 +285,8 @@ export function useVideoPlayer(src: string | null): UseVideoPlayerReturn {
     const clamped = Math.max(0, Math.min(time, video.duration || 0))
     video.currentTime = clamped
     setCurrentTime(clamped)
-    setPlayheadTime(clamped)
-  }, [setPlayheadTime])
+    if (!detached) setPlayheadTime(clamped)
+  }, [setPlayheadTime, detached])
 
   const setPlaybackRate = useCallback((rate: number) => {
     const video = videoRef.current

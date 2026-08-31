@@ -43,6 +43,15 @@ interface CommentPanelProps {
   onRemoveReaction: (commentId: string, emoji: string) => Promise<void>;
   onReply: (parentId: string) => void;
   onSubmitReply?: (parentId: string, body: string) => Promise<void>;
+  /** Compare mode: route comment-timecode clicks to a pane-scoped transport instead of the global store. */
+  onSeekToTimecode?: (time: number, pause?: boolean) => void;
+  /** Compare mode: route annotation display to a pane-scoped overlay instead of the global store. */
+  onShowAnnotation?: (drawingData: Record<string, unknown> | null) => void;
+  // NOTE: upstream also takes `exportVersionId` here, for its comment-EXPORT
+  // feature (CSV/EDL). This fork has no comment export at all, so the prop
+  // would be one that silently does nothing — deliberately omitted rather
+  // than accepted and ignored. If comment export is ever ported, this is
+  // where its per-pane version override belongs.
   className?: string;
 }
 
@@ -355,6 +364,10 @@ interface CommentItemProps {
   onReply: (parentId: string) => void;
   onCancelReply: () => void;
   onSubmitReply?: (parentId: string, body: string) => Promise<void>;
+  /** Compare mode: route comment-timecode clicks to a pane-scoped transport instead of the global store. */
+  onSeekToTimecode?: (time: number, pause?: boolean) => void;
+  /** Compare mode: route annotation display to a pane-scoped overlay instead of the global store. */
+  onShowAnnotation?: (drawingData: Record<string, unknown> | null) => void;
 }
 
 function CommentItem({
@@ -371,9 +384,16 @@ function CommentItem({
   onReply,
   onCancelReply,
   onSubmitReply,
+  onSeekToTimecode,
+  onShowAnnotation,
 }: CommentItemProps) {
-  const seekTo = useReviewStore((s) => s.seekTo);
-  const setActiveAnnotation = useReviewStore((s) => s.setActiveAnnotation);
+  const storeSeekTo = useReviewStore((s) => s.seekTo);
+  const storeSetActiveAnnotation = useReviewStore((s) => s.setActiveAnnotation);
+  // §107 — a compare pane owns its own transport and its own annotation
+  // overlay. Absent (the normal viewer) these fall back to the store, so
+  // every existing call site behaves exactly as before.
+  const seekTo = onSeekToTimecode ?? storeSeekTo;
+  const setActiveAnnotation = onShowAnnotation ?? storeSetActiveAnnotation;
   const setFocusedCommentId = useReviewStore((s) => s.setFocusedCommentId);
   const itemRef = React.useRef<HTMLDivElement>(null);
   const [showReplies, setShowReplies] = React.useState(true);
@@ -699,6 +719,8 @@ function CommentItem({
             <div>
               {comment.replies.map((reply) => (
                 <CommentItem
+                  onSeekToTimecode={onSeekToTimecode}
+                  onShowAnnotation={onShowAnnotation}
                   key={reply.id}
                   comment={reply}
                   depth={depth + 1}
@@ -756,6 +778,8 @@ export function CommentPanel({
   onRemoveReaction,
   onReply,
   onSubmitReply,
+  onSeekToTimecode,
+  onShowAnnotation,
   className,
 }: CommentPanelProps) {
   const focusedCommentId = useReviewStore((s) => s.focusedCommentId);
@@ -1177,6 +1201,8 @@ export function CommentPanel({
           sorted.map((comment, index) => (
             <div key={comment.id} className="px-3 pt-2 first:pt-3">
               <CommentItem
+                onSeekToTimecode={onSeekToTimecode}
+                onShowAnnotation={onShowAnnotation}
                 comment={comment}
                 commentNumber={index + 1}
                 currentUserId={currentUserId}

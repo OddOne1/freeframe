@@ -1,11 +1,13 @@
 'use client'
 
 import { useState, useEffect, useMemo, useRef, type ElementType, type ReactNode } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useRouter, useSearchParams, usePathname } from 'next/navigation'
 import useSWR from 'swr'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { ReviewProvider, useReview } from '@/components/review/review-provider'
 import { VideoPlayer } from '@/components/review/video-player'
+import { CompareOverlay } from '@/components/review/compare/compare-overlay'
+import { canCompare } from '@/lib/compare-time'
 import { AudioPlayer } from '@/components/review/audio-player'
 import { ImageViewer } from '@/components/review/image-viewer'
 import { StatusDropdown } from '@/components/shared/status-dropdown'
@@ -59,6 +61,7 @@ import {
   Pencil,
   CalendarDays,
   X,
+  GitCompareArrows,
 } from 'lucide-react'
 import Link from 'next/link'
 import { cn, formatBytes, formatRelativeTime, formatTime, resolveApiMediaUrl } from '@/lib/utils'
@@ -304,6 +307,35 @@ const acceptByType: Record<string, string> = {
 function ReviewScreenInner({ projectId }: { projectId: string }) {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const pathname = usePathname()
+
+  // §107 — the compare overlay is driven entirely by URL params, so it
+  // survives a refresh and a pasted link. closeCompare strips ALL of them,
+  // `compareRight` included: leaving that behind would restore a compare
+  // pair the next time the param was set, with no visible cause.
+  const compareOpen = Boolean(searchParams.get('compare'))
+  const closeCompare = () => {
+    const p = new URLSearchParams(searchParams.toString())
+    for (const k of ['compare', 'compareRight', 'mode', 'offA', 'offB']) p.delete(k)
+    router.replace(`${pathname}?${p.toString()}`, { scroll: false })
+  }
+  const openCompare = () => {
+    const readyVersions = versions
+      .filter((v) => v.processing_status === 'ready')
+      .sort((a, b) => a.version_number - b.version_number)
+    const cur = currentVersion ?? readyVersions[readyVersions.length - 1]
+    if (!cur) return
+    const prev =
+      [...readyVersions].reverse().find((v) => v.version_number < cur.version_number) ??
+      readyVersions.find((v) => v.id !== cur.id)
+    if (!prev) return
+    const p = new URLSearchParams(searchParams.toString())
+    p.set('compare', prev.id)
+    // Both sides named up front (#299), so the pair this opened with is the
+    // pair a reload restores.
+    p.set('compareRight', cur.id)
+    router.replace(`${pathname}?${p.toString()}`, { scroll: false })
+  }
   const { asset, versions, isLoading, refetchComments, refetchVersions } = useReview()
   const { currentVersion, isDrawingMode, focusedCommentId, playheadTime, seekTo, setFocusedCommentId, setActiveAnnotation } = useReviewStore()
   const { user, isSuperAdmin } = useAuthStore()
@@ -1028,6 +1060,16 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             }}
           />
           <VersionSwitcher versions={versions} />
+          {asset && canCompare(asset.asset_type, versions) && (
+            <button
+              onClick={openCompare}
+              className="inline-flex items-center gap-1.5 rounded-md px-2.5 h-8 text-xs font-medium border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
+              title="Compare versions"
+            >
+              <GitCompareArrows className="h-3.5 w-3.5" />
+              Compare
+            </button>
+          )}
           <button
             onClick={() => versionFileInputRef.current?.click()}
             className="inline-flex items-center gap-1.5 rounded-md px-2.5 h-8 text-xs font-medium border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
@@ -1129,6 +1171,19 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
       </div>
 
       {/* ─── Main content: viewer + sidebar ────────────────────────────── */}
+      {/* Compare REPLACES the viewer rather than layering over it: leaving the
+          normal player mounted would keep a third <video> alive behind the
+          overlay, still driving the shared review store both compare panes
+          are deliberately detached from. */}
+      {compareOpen && asset && currentVersion && canCompare(asset.asset_type, versions) ? (
+        <CompareOverlay
+          asset={asset}
+          versions={versions}
+          rightVersion={currentVersion}
+          onClose={closeCompare}
+          canComment={canComment}
+        />
+      ) : (
       <div className="flex flex-1 overflow-hidden min-h-0">
         {/* Left: viewer column */}
         <div className="flex-1 flex flex-col bg-bg-primary overflow-hidden min-w-0">
@@ -1460,6 +1515,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
           </div>
         )}
       </div>
+      )}
     </div>
   )
 }
