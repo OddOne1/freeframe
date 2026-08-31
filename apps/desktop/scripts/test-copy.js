@@ -15,7 +15,7 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 
-const { runCopyJob, hashFileOnDisk, runFinalizedPass } = require("../src/main/copy-engine");
+const { runCopyJob, hashFileOnDisk, runFinalizedPass, recheckOneFile } = require("../src/main/copy-engine");
 const journal = require("../src/main/job-journal");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Hash a file, or report why not. A missing file is exactly what a
@@ -517,6 +517,135 @@ async function main() {
       const reasonLine = esrc.split("\n").find((l) => l.includes("there is no local copy to re-read"));
       check(Boolean(reasonLine) && !/upload/i.test(reasonLine),
         "the reason string itself carries no upload framing", (reasonLine || "(absent)").trim());
+    }
+
+    // ── §103: WHEN the finalized pass runs ──────────────────────────────
+    // Off / after / during. All three do the same full source+destination
+    // re-read; only the timing differs, so the interesting question is not
+    // "does during find things" but "does during find exactly what after
+    // finds, and does it read from the right place".
+    console.log("\n§103. Finalized timing — off / after / during");
+    {
+      const N = (name) => [{ id: name, path: path.join(tmp, name), parentId: null }];
+      const both = { algorithm: "xxhash64", finalizedAlgorithm: "sha1" };
+
+      // "off" means off even when an algorithm is supplied. The gate used
+      // to key on the algorithm alone, so a job configured off still ran
+      // the batched pass whenever a caller passed one — invisible from the
+      // app, where main.js nulls the algorithm too.
+      const t103off = await runCopyJob({
+        sourcePath: source, nodes: N("t103-off"), ...both, finalizedTiming: "off" });
+      check(t103off.finalized === null,
+        "off runs nothing, even when an algorithm is handed over");
+      check(t103off.nodes[0].files.every((f) => !f.finalCheck),
+        "…and leaves no per-file finalCheck behind");
+
+      // A caller that names an algorithm and no timing is every pre-§103
+      // caller, including §86's own tests above. It has to keep working.
+      const t103legacy = await runCopyJob({
+        sourcePath: source, nodes: N("t103-legacy"), ...both });
+      check(t103legacy.finalized?.mode === "after",
+        "a caller that never mentions timing still gets the pass it always got",
+        t103legacy.finalized?.mode);
+
+      const t103after = await runCopyJob({
+        sourcePath: source, nodes: N("t103-after"), ...both, finalizedTiming: "after" });
+      const t103during = await runCopyJob({
+        sourcePath: source, nodes: N("t103-during"), ...both, finalizedTiming: "during" });
+
+      check(t103after.finalized?.mode === "after" && t103during.finalized?.mode === "during",
+        "each mode reports which one it was",
+        `${t103after.finalized?.mode} / ${t103during.finalized?.mode}`);
+      // The verdict is the point. Same files, same algorithm, same answer —
+      // a timing choice must not change what counts as verified.
+      check(t103during.finalized.checked === t103after.finalized.checked
+        && t103during.finalized.verified === t103after.finalized.verified
+        && t103during.finalized.ok === t103after.finalized.ok,
+        "during reaches exactly the verdict after reaches, for the same files",
+        `during ${t103during.finalized.verified}/${t103during.finalized.checked}`
+        + ` vs after ${t103after.finalized.verified}/${t103after.finalized.checked}`);
+      check(t103during.finalized.verified === srcFileCount,
+        "…and that verdict covers every file", `${t103during.finalized.verified} of ${srcFileCount}`);
+
+      const dfile = t103during.nodes[0].files[0];
+      check(dfile.finalCheck?.algorithm === "sha1",
+        "during attaches each file's own result as it goes");
+      check(typeof dfile.sourceHash === "string" && dfile.sourceHash !== dfile.finalCheck.sourceHash,
+        "…beside the live hash, neither overwriting the other");
+
+      // What "during" MEANS: the re-read lands before the next file starts.
+      // Without this, "during" could be a batched pass wearing a label —
+      // identical counts, identical block, and none of the behaviour.
+      const order = [];
+      await runCopyJob({
+        sourcePath: source, nodes: N("t103-order"), ...both, finalizedTiming: "during",
+        onProgress: (p) => {
+          if (p.phase === "file-start") order.push(`start:${p.file}`);
+          if (p.phase === "file-done") order.push(`done:${p.file}:${p.finalCheck ? "checked" : "UNCHECKED"}`);
+        },
+      });
+      const firstStart = order.findIndex((o) => o.startsWith("start:"));
+      const firstDone = order.findIndex((o) => o.startsWith("done:"));
+      const secondStart = order.findIndex((o, i) => i > firstStart && o.startsWith("start:"));
+      check(firstDone > firstStart && (secondStart === -1 || firstDone < secondStart),
+        "the first file's check lands before the second file starts",
+        order.slice(0, 3).join(" | "));
+      check(order.filter((o) => o.endsWith(":checked")).length === srcFileCount
+        && !order.some((o) => o.endsWith(":UNCHECKED")),
+        "…and every file carried one, not just the first",
+        order.filter((o) => o.startsWith("done:")).length + " done events");
+
+      // THE TRAP. A leg is handed rels that have already been mapped for
+      // the DESTINATION — §100's wrapper folder for the root leg, and the
+      // parent's own layout for a cascaded one. Joining those onto the card
+      // looks for CARD/CARD/DCIM/x and quietly fails every check. Only a
+      // reverse map back to the source-relative path reads the real card.
+      const casc = await runCopyJob({
+        sourcePath: source,
+        nodes: [{ id: "cA", path: path.join(tmp, "t103-cA"), parentId: null },
+                { id: "cB", path: path.join(tmp, "t103-cB"), parentId: "cA" }],
+        ...both, finalizedTiming: "during",
+      });
+      check(casc.finalized.ok === true && casc.finalized.errors.length === 0,
+        "a cascade re-reads the CARD for every leg, not the mapped destination path",
+        JSON.stringify(casc.finalized.errors.slice(0, 1)));
+      check(casc.finalized.checked === srcFileCount * 2,
+        "…on both the root leg and the cascaded one",
+        `${casc.finalized.checked} of ${srcFileCount * 2}`);
+
+      // Same damage, both modes, same verdict — the one comparison that
+      // shows the tiers are equivalent rather than merely both present.
+      const injected = await runCopyJob({
+        sourcePath: source, nodes: N("t103-inject"), algorithm: "xxhash64" });
+      const victim2 = injected.nodes[0].files[0];
+      await fs.writeFile(victim2.destPath, "TAMPERED");
+      const afterSees = await runFinalizedPass({
+        sourcePath: source, nodes: injected.nodes, algorithm: "sha1",
+        isCancelled: () => false, onProgress: () => {},
+      });
+      const duringSees = await recheckOneFile({
+        algorithm: "sha1",
+        sourceFile: path.join(source, victim2.file),
+        destFiles: [victim2.destPath],
+        toRoots: [injected.nodes[0].path],
+        bytes: victim2.bytes,
+      });
+      check(afterSees.ok === false && duringSees.ok === false,
+        "a destination damaged for real fails under both timings");
+      check(duringSees.sourceHash === afterSees.mismatches[0]?.sourceHash,
+        "…having hashed the same source bytes, so the two verdicts are comparable",
+        `${duringSees.sourceHash?.slice(0, 12)} vs ${afterSees.mismatches[0]?.sourceHash?.slice(0, 12)}`);
+
+      // recheckOneFile is the inline path's whole implementation, and it
+      // runs per file inside the copy loop. A throw there would take the
+      // copy down with it, so it reports instead.
+      const vanished = await recheckOneFile({
+        algorithm: "sha1", sourceFile: path.join(tmp, "__no_such_source__"),
+        destFiles: [victim2.destPath], toRoots: [injected.nodes[0].path], bytes: 1,
+      });
+      check(vanished.ok === false && typeof vanished.error === "string",
+        "an unreadable source reports rather than throwing mid-copy",
+        vanished.error || "(no error recorded)");
     }
 
     // ── §87 Phase 1: the live per-job journal ───────────────────────────

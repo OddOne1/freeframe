@@ -72,6 +72,17 @@ function stampFor(ms) {
 }
 
 /**
+ * §103 — how a finalized block names itself in the log.
+ *
+ * A job written before §103 has no `mode`; it can only have been the
+ * batched pass, since that was the only one there was.
+ */
+function finalizedModeLabel(fin) {
+  const when = fin && fin.mode === "during" ? "during transfer" : "after transfer";
+  return `Source & Destination verification — ${when}`;
+}
+
+/**
  * §84 — the transfer log, human-readable part first.
  *
  * "Open Log" calls shell.openPath(): this file IS the viewer, opened in
@@ -166,10 +177,14 @@ function buildJobLog(job) {
       // §86 — its own labelled line, never folded into the live numbers.
       // "42/42 verified" means nothing unless you can tell which pass and
       // which algorithm produced it.
+      // §103 — the block names WHEN it ran. Someone comparing two job logs
+      // has to be able to tell which setting was in force without going
+      // back through Settings history, and "finalized" alone does not say.
       finalizedChecksum: fin
         ? (fin.skipped
-            ? `Not run — ${fin.reason}.`
-            : `${fin.algorithmLabel}: ${fin.verified}/${fin.checked} verified`
+            ? `${finalizedModeLabel(fin)} — not run: ${fin.reason}.`
+            : `${finalizedModeLabel(fin)} — ${fin.algorithmLabel}: `
+              + `${fin.verified}/${fin.checked} verified`
               + (fin.mismatches.length ? `, ${fin.mismatches.length} MISMATCHED` : "")
               + (fin.errors.length ? `, ${fin.errors.length} error(s)` : "")
               + (fin.cancelled ? " (cancelled part-way)" : ""))
@@ -1372,7 +1387,11 @@ ipcMain.handle("copy:start", async (event, payload) => {
   // live algorithm is. Changing the setting mid-copy must not retune a
   // job already running.
   const jobSettings = await settings.readSettings();
-  const finalizedAlgorithm = jobSettings.finalizedChecksumEnabled
+  // §103 — three settings, not two: off / after / during. Captured here
+  // with the algorithm, so changing the setting mid-copy cannot retune a
+  // job already running.
+  const finalizedTiming = jobSettings.finalizedTiming || "off";
+  const finalizedAlgorithm = finalizedTiming !== "off"
     ? (isSupported(settings.finalizedAlgoFor(jobSettings))
         ? settings.finalizedAlgoFor(jobSettings)
         : DEFAULT_ALGORITHM)
@@ -1520,6 +1539,7 @@ ipcMain.handle("copy:start", async (event, payload) => {
       await journal.startJournal(LOG_DIR(), self, {
         algorithm,
         finalizedAlgorithm,
+        finalizedTiming,
         naming,
         sourceFiles,
       }).catch(() => {});
@@ -1534,6 +1554,7 @@ ipcMain.handle("copy:start", async (event, payload) => {
         renamesFiles,
         allowFragileRename,
         finalizedAlgorithm,
+        finalizedTiming,
         isCancelled: () => cancelled,
         waitIfPaused: () => (paused ? new Promise((res) => { resumeWaiters.push(res); }) : Promise.resolve()),
         onProgress: (p) => {

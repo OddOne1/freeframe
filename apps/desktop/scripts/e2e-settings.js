@@ -188,10 +188,19 @@ async function waitFor(ev, expr, tries = 40) {
     "the explanations survive as a read-only reference, not as a second picker");
   check(await sev(`getComputedStyle(document.querySelector("#algo-reference")).backgroundColor !== "rgb(255, 255, 255)"`),
     "and it is themed with the app's own colours");
-  check(await sev(`!!document.getElementById("settings-finalized-enabled")`),
-    "the finalized pass has its own toggle");
+  // §103 — the on/off checkbox became a three-way timing. All three modes
+  // do the same full re-read; only WHEN differs, so this is one control
+  // with three values rather than a toggle plus a mode.
+  check(await sev(`!!document.getElementById("settings-finalized-timing")`),
+    "the finalized pass has its own timing control");
+  check(await sev(`
+    JSON.stringify([...document.getElementById("settings-finalized-timing").options].map(o => o.value))
+      === JSON.stringify(["off", "after", "during"])`),
+    "…offering off / after / during, and nothing else");
+  check(await sev(`!document.getElementById("settings-finalized-enabled")`),
+    "…with the old boolean toggle gone rather than left beside it");
   check(await sev(`document.getElementById("settings-finalized-checksum").disabled === true`),
-    "…and its dropdown is inert while the toggle is off, rather than hidden");
+    "…and its dropdown is inert while the timing is off, rather than hidden");
 
   // Day boundary moved above the checksum section (§86's reorder).
   check(await sev(`(() => {
@@ -221,20 +230,37 @@ async function waitFor(ev, expr, tries = 40) {
     "picking one writes it straight away, with no Save step to forget",
     `${builtIn} → ${persisted}`);
 
-  // The finalized tier persists on its own, and turning it on must not
-  // disturb the live one.
+  // The finalized tier persists on its own, and choosing a timing must not
+  // disturb the live one. §103 turned the old on/off checkbox into a
+  // three-way timing, so this drives the select.
   await sev(`(() => {
-    const t = document.getElementById("settings-finalized-enabled");
-    t.checked = true; t.dispatchEvent(new Event("change"));
+    const t = document.getElementById("settings-finalized-timing");
+    t.value = "during"; t.dispatchEvent(new Event("change"));
     return true;
   })()`);
   await sleep(600);
-  const finOn = await ev(`window.freeframe.getSettings().then(s => s.finalizedChecksumEnabled)`);
-  check(finOn === true, "the finalized toggle persists");
+  const finOn = await ev(`window.freeframe.getSettings().then(s => s.finalizedTiming)`);
+  check(finOn === "during", "the finalized timing persists", String(finOn));
   check(await sev(`document.getElementById("settings-finalized-checksum").disabled === false`),
     "…and its dropdown becomes usable");
+  // The mode that costs real time has to say so where it is chosen, not
+  // only in a build report nobody reading Settings will ever see.
+  check(await sev(`(() => {
+    const n = document.getElementById("settings-finalized-note");
+    return !!n && n.offsetParent !== null && /slower/i.test(n.textContent);
+  })()`), "…and picking \"during\" shows a visible warning that it is slower");
   check(await ev(`window.freeframe.getSettings().then(s => s.liveChecksumAlgo)`) === persisted,
     "…without disturbing the live algorithm");
+  // Back to off, so the rest of the suite is not silently running a second
+  // full read of everything it copies.
+  await sev(`(() => {
+    const t = document.getElementById("settings-finalized-timing");
+    t.value = "off"; t.dispatchEvent(new Event("change"));
+    return true;
+  })()`);
+  await sleep(600);
+  check(await ev(`window.freeframe.getSettings().then(s => s.finalizedTiming)`) === "off",
+    "…and it can be turned back off");
 
   // §72 — the day-boundary control lives here, not in the panel it drives.
   console.log("2b. (\u00a772) Day boundary");

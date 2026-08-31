@@ -367,12 +367,21 @@ const check = (ok, label, detail = "") => {
       "re-picking the folder already set keeps it — it does not empty the Destination column",
       JSON.stringify(narrow.samePath.tops));
 
-    const cascaded = narrow.cascadeKept.nodes.find((n) => n.p === "/Volumes/S69_Shuttle");
+    // INVERTED BY §89, not deleted. §73 exempted cascaded nodes from
+    // narrowing on the reasoning that a cascade copies from another
+    // destination rather than the source. §89 found that leaves the same
+    // duplicate-tile bug reachable through the cascade's own "Destination
+    // Folder" item, and made it narrow like any other node — keeping its
+    // parent, so it still copies from that parent, just into a subfolder.
+    const cascaded = narrow.cascadeKept.nodes.find((n) => n.p === "/Volumes/S69_Shuttle/Leg");
     check(Boolean(cascaded) && cascaded.hasParent,
-      "a cascaded node is never narrowed away — it copies from another destination, not the source",
+      "a cascaded node narrows into the picked folder AND stays cascaded (§89)",
       JSON.stringify(narrow.cascadeKept.nodes));
-    check(narrow.cascadeKept.total === 3,
-      "so picking a folder on its drive adds a new destination instead",
+    check(!narrow.cascadeKept.nodes.some((n) => n.p === "/Volumes/S69_Shuttle"),
+      "…with the unnarrowed node gone rather than left beside it",
+      JSON.stringify(narrow.cascadeKept.nodes));
+    check(narrow.cascadeKept.total === 2,
+      "so picking a folder on its drive narrows rather than adding a third leg",
       String(narrow.cascadeKept.total));
 
     // Recorded rather than discovered later: narrowing a node that IS a
@@ -391,9 +400,19 @@ const check = (ok, label, detail = "") => {
     // destination populated rather than empty.
     const src = require("node:fs").readFileSync(
       path.join(APP, "src", "renderer", "index.html"), "utf8");
-    const block = src.slice(src.indexOf("\u00a773 — picking a folder on a drive"),
-                            src.indexOf("\u00a773 — picking a folder on a drive") + 1400);
-    check(block.indexOf("destNodes.push(") < block.indexOf("removeDest(narrowed.path)"),
+    // Bounded by the end of addDest, NOT by a byte count. The previous
+    // version took a fixed 1400-char window, which §89 pushed the second
+    // marker out of: indexOf then returned -1 and `1182 < -1` failed while
+    // the code was correct the whole time. Both markers are asserted found,
+    // so a marker that moves fails as a missing marker rather than as a
+    // false ordering verdict.
+    const addDestAt = src.indexOf("\u00a773 — picking a folder on a drive");
+    const block = src.slice(addDestAt, src.indexOf("\n    function ", addDestAt));
+    const pushAt = block.indexOf("destNodes.push(");
+    const dropAt = block.indexOf("removeDest(narrowed.path)");
+    check(pushAt !== -1 && dropAt !== -1,
+      "addDest still both adds and drops (markers present)", `push ${pushAt}, drop ${dropAt}`);
+    check(pushAt !== -1 && dropAt !== -1 && pushAt < dropAt,
       "the new destination is added BEFORE the old one is dropped (source-level check)");
 
     // ── §73 — the rule lives in addDest(), so every entry point has it ───
@@ -628,9 +647,17 @@ const check = (ok, label, detail = "") => {
     // e2e-copy.js's own header records). Asserted at the source instead,
     // and labelled as such: what matters is that it reaches addDest()
     // plainly, i.e. that it has no private copy of the rule to drift.
+    // §89 changed the call from `addDest(folder, null)` to `addDest(folder)`:
+    // the omitted argument is a sentinel meaning "narrow if there is
+    // something to narrow, and let the replacement inherit that node's
+    // parent", which an explicit null would have overridden. Matched on the
+    // call rather than on its exact arity, since the property under test is
+    // that this path holds no private copy of the rule.
     const dropHandler = src.slice(src.indexOf("A destination has to be a folder to copy into"));
-    const dropBody = dropHandler.slice(0, dropHandler.indexOf("addDest(folder, null);") + 30);
-    check(dropBody.includes("addDest(folder, null);") && !dropBody.includes("removeDest"),
+    const callAt = dropHandler.search(/addDest\(folder[,)]/);
+    check(callAt !== -1, "the OS drop handler still reaches addDest at all", String(callAt));
+    const dropBody = dropHandler.slice(0, callAt + 30);
+    check(callAt !== -1 && !dropBody.includes("removeDest"),
       "the OS drop handler adds plainly and inherits the rule (source-level check)");
 
     check(every.differentDrive.tops.length === 2,
@@ -662,8 +689,16 @@ const check = (ok, label, detail = "") => {
       path.join(APP, "src", "renderer", "panel.js"), "utf8");
     check(/job-remove/.test(js) && /onRemove/.test(js),
       "renderJobs emits a per-row remove");
-    check(/status === "running" \|\| j\.status === "queued"[\s\S]{0,400}else if \(onRemove\)/.test(js),
-      "and only ever instead of Cancel, never alongside it");
+    // Ordering again, and again NOT by a fixed gap: §95's Pause/Resume and
+    // §96's "Cancelling…" landed between these two markers and grew the
+    // distance from under 400 characters to over 1200. What matters is that
+    // the remove branch is an `else if` reached only when the job is not
+    // running or queued — the distance between them is not the property.
+    const cancelAt = js.indexOf(`status === "running" || j.status === "queued"`);
+    const removeAt = js.indexOf("else if (onRemove)", cancelAt);
+    check(cancelAt !== -1 && removeAt !== -1 && cancelAt < removeAt,
+      "and only ever instead of Cancel, never alongside it",
+      `cancel ${cancelAt}, remove ${removeAt}`);
   } finally {
     try { ws.close(); } catch {}
     try { child.kill(); } catch {}

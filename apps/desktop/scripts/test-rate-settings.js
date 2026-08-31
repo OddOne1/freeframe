@@ -179,11 +179,24 @@ check(normalize({ defaultChecksumAlgo: "md5" }).liveChecksumAlgo === "md5",
 check(normalize({ liveChecksumAlgo: "c4", defaultChecksumAlgo: "md5" }).liveChecksumAlgo === "c4",
       "…and the new key wins when both are present");
 
-// The finalized tier.
-check(normalize({}).finalizedChecksumEnabled === false,
+// The finalized tier. §103 replaced the boolean with a timing.
+check(normalize({}).finalizedTiming === "off",
       "the finalized pass is off unless asked for — it is a full second read");
-check(normalize({ finalizedChecksumEnabled: "yes" }).finalizedChecksumEnabled === false,
-      "…and only a real true turns it on, not anything truthy");
+check(normalize({ finalizedTiming: "sometimes" }).finalizedTiming === "off",
+      "…and an unrecognised timing falls back to off rather than being trusted");
+check(normalize({ finalizedTiming: "during" }).finalizedTiming === "during",
+      "…while each real mode survives a round trip");
+// §103's migration. The old boolean meant "run the batched pass afterwards",
+// so it maps to "after" — dropping it would silently switch off a
+// verification step someone deliberately enabled.
+check(normalize({ finalizedChecksumEnabled: true }).finalizedTiming === "after",
+      "an existing settings.json with the OLD boolean on upgrades to after, not off");
+check(normalize({ finalizedChecksumEnabled: false }).finalizedTiming === "off",
+      "…and one with it off stays off");
+check(normalize({ finalizedChecksumEnabled: "yes" }).finalizedTiming === "off",
+      "…with only a real true counting, as before");
+check(normalize({ finalizedChecksumEnabled: true, finalizedTiming: "during" }).finalizedTiming === "during",
+      "…and once a real timing is stored, the legacy boolean stops mattering");
 check(finalizedAlgoFor(normalize({ liveChecksumAlgo: "md5" })) === "md5",
       "an unset finalized algorithm follows live rather than a hardcoded default");
 check(finalizedAlgoFor(normalize({ liveChecksumAlgo: "md5", finalizedChecksumAlgo: "sha1" })) === "sha1",

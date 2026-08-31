@@ -289,17 +289,23 @@
       <div class="setting">
         <div class="setting-label">Finalized checksum</div>
         <div class="setting-sub">
-          An optional second pass once every file has copied: the source and
-          every destination are read from disk again and hashed with the
-          algorithm below. It is a full extra read of everything, so it
-          roughly doubles the time a job spends hashing. It covers local
-          destinations; a job reading from a FreeFrame project has no local
-          copy to re-read and is skipped.
+          An optional second pass: the source and every destination are read
+          from disk again and hashed with the algorithm below. It is a full
+          extra read of everything, so it roughly doubles the time a job
+          spends hashing — what the setting chooses is WHEN that happens,
+          not what it checks. It covers local destinations; a job reading
+          from a FreeFrame project, or from individually-picked files, has
+          no source folder to re-read and is skipped.
         </div>
-        <label class="settings-toggle">
-          <input id="settings-finalized-enabled" type="checkbox" />
-          <span>Also run a finalized checksum after copy</span>
-        </label>
+        <select id="settings-finalized-timing" class="settings-select">
+          <option value="off">Off</option>
+          <option value="after">After transfer</option>
+          <option value="during">During transfer</option>
+        </select>
+        <!-- §103 — stated on the pane, not in a tooltip: the cost is the
+             whole difference between the two ON settings, and burying it
+             would make the slower one look like a free upgrade. -->
+        <div id="settings-finalized-note" class="setting-sub"></div>
         <select id="settings-finalized-checksum" class="settings-select"></select>
       </div>
 

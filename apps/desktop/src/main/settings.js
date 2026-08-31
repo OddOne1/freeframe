@@ -21,9 +21,19 @@ const DEFAULTS = Object.freeze({
   // the copy; `finalized` is an optional SECOND full read of the source and
   // every destination afterwards, with its own algorithm.
   liveChecksumAlgo: "xxhash64",
+  // §103 — WHEN the finalized pass runs, not whether it checks something
+  // different. All three modes do the same full source+destination
+  // re-read; they differ only in timing.
+  //
+  //   "off"    — never. Today's default, unchanged.
+  //   "after"  — one separate phase once every file has copied.
+  //   "during" — each file re-checked immediately after its own copy,
+  //              before the next file starts. Slower in wall clock: the
+  //              two read passes no longer overlap with anything.
+  //
   // Off by default: it is a genuine second read of everything, so it costs
   // real time and real disk wear. Opting in has to be deliberate.
-  finalizedChecksumEnabled: false,
+  finalizedTiming: "off",
   // Empty means "whatever live resolves to" — so a user who turns the
   // toggle on without touching the dropdown gets a coherent pass rather
   // than a hardcoded second algorithm they never chose.
@@ -51,6 +61,14 @@ function normalizeDayBoundary(raw) {
   const h = Number(m[1]), min = Number(m[2]);
   if (!(h >= 0 && h <= 23 && min >= 0 && min <= 59)) return DEFAULTS.dayBoundary;
   return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+}
+
+/** §103 — "off" | "after" | "during", with the pre-§103 boolean as the
+ *  fallback so an existing settings.json upgrades rather than resetting. */
+const FINALIZED_TIMINGS = new Set(["off", "after", "during"]);
+function normalizeFinalizedTiming(raw, legacyEnabled) {
+  if (typeof raw === "string" && FINALIZED_TIMINGS.has(raw)) return raw;
+  return legacyEnabled === true ? "after" : "off";
 }
 
 /** Strings only, trimmed, de-duplicated, empties dropped. A malformed
@@ -96,7 +114,12 @@ function normalize(raw) {
     // algorithm id from an older build must not leave the picker with
     // nothing selected.
     if (typeof algo === "string" && algo.trim()) out.liveChecksumAlgo = algo.trim();
-    out.finalizedChecksumEnabled = raw.finalizedChecksumEnabled === true;
+    // §103 — a valid new value wins; failing that, the OLD boolean maps to
+    // "after", which is exactly what it used to do. Anyone who already had
+    // the finalized pass on keeps it, doing the same thing, without being
+    // asked again — the alternative is silently turning off a verification
+    // step someone deliberately enabled.
+    out.finalizedTiming = normalizeFinalizedTiming(raw.finalizedTiming, raw.finalizedChecksumEnabled);
     const fin = raw.finalizedChecksumAlgo;
     if (typeof fin === "string" && fin.trim()) out.finalizedChecksumAlgo = fin.trim();
     out.dayBoundary = normalizeDayBoundary(raw.dayBoundary);
@@ -126,4 +149,4 @@ async function writeSettings(patch) {
   return next;
 }
 
-module.exports = { readSettings, writeSettings, normalize, finalizedAlgoFor, normalizeIdList, normalizeDayBoundary, DEFAULTS, settingsFile };
+module.exports = { readSettings, writeSettings, normalize, finalizedAlgoFor, normalizeFinalizedTiming, normalizeIdList, normalizeDayBoundary, DEFAULTS, settingsFile };

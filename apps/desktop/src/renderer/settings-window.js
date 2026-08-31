@@ -57,7 +57,9 @@ window.freeframe.onSettingsTab(showTab);
 let algorithms = [];
 let algorithm = null;            // live
 let finalizedAlgorithm = null;   // finalized, when enabled
-let finalizedEnabled = false;
+// §103 — "off" | "after" | "during". Replaces a boolean: the question was
+// never whether to verify, but when.
+let finalizedTiming = "off";
 let builtInAlgo = null;
 
 /**
@@ -83,17 +85,29 @@ function fillAlgoSelect(sel, selected) {
 function renderAlgoList() {
   const live = $("settings-live-checksum");
   const fin = $("settings-finalized-checksum");
-  const toggle = $("settings-finalized-enabled");
-  if (!live || !fin || !toggle) return;
+  const timing = $("settings-finalized-timing");
+  if (!live || !fin || !timing) return;
 
   fillAlgoSelect(live, algorithm);
   // Empty stored value means "follow live" (settings.js's finalizedAlgoFor),
   // so the dropdown shows what would actually run rather than nothing.
   fillAlgoSelect(fin, finalizedAlgorithm || algorithm);
-  toggle.checked = finalizedEnabled;
-  // Visible but inert while off: hiding it would make the toggle look like
-  // it does nothing, and the algorithm is what the toggle is about.
-  fin.disabled = !finalizedEnabled;
+  timing.value = finalizedTiming;
+  // Visible but inert while off: hiding it would make the setting look
+  // like it does nothing, and the algorithm is what it is about.
+  fin.disabled = finalizedTiming === "off";
+
+  const note = $("settings-finalized-note");
+  if (note) {
+    note.textContent = finalizedTiming === "during"
+      ? "Slower. Each file is re-read and re-hashed immediately after it copies, "
+        + "before the next one starts, so the second read never overlaps with the "
+        + "rest of the job. How much slower depends on the drive — largest on slow "
+        + "media and large files, small when the file is still in cache."
+      : finalizedTiming === "after"
+        ? "Runs once, after every file has copied."
+        : "";
+  }
 
   const ref = $("algo-reference");
   if (ref) {
@@ -118,8 +132,8 @@ function renderAlgoList() {
 function wireChecksumControls() {
   const live = $("settings-live-checksum");
   const fin = $("settings-finalized-checksum");
-  const toggle = $("settings-finalized-enabled");
-  if (!live || !fin || !toggle) return;
+  const timing = $("settings-finalized-timing");
+  if (!live || !fin || !timing) return;
 
   live.addEventListener("change", async () => {
     algorithm = live.value;
@@ -130,10 +144,10 @@ function wireChecksumControls() {
     finalizedAlgorithm = fin.value;
     await window.freeframe.setSettings({ finalizedChecksumAlgo: finalizedAlgorithm });
   });
-  toggle.addEventListener("change", async () => {
-    finalizedEnabled = toggle.checked;
+  timing.addEventListener("change", async () => {
+    finalizedTiming = timing.value;
     renderAlgoList();
-    await window.freeframe.setSettings({ finalizedChecksumEnabled: finalizedEnabled });
+    await window.freeframe.setSettings({ finalizedTiming });
   });
 }
 
@@ -347,7 +361,7 @@ async function loadSettings() {
   finalizedAlgorithm = algorithms.some((a) => a.id === s.finalizedChecksumAlgo)
     ? s.finalizedChecksumAlgo
     : null;
-  finalizedEnabled = s.finalizedChecksumEnabled === true;
+  finalizedTiming = s.finalizedTiming || "off";
   renderAlgoList();
   renderHideList();
   // §72 — the Daily overview's day boundary. Saved on change like the
@@ -408,7 +422,7 @@ window.freeframe.onSettingsChanged((s) => {
   finalizedAlgorithm = algorithms.some((a) => a.id === s.finalizedChecksumAlgo)
     ? s.finalizedChecksumAlgo
     : null;
-  finalizedEnabled = s.finalizedChecksumEnabled === true;
+  finalizedTiming = s.finalizedTiming || "off";
   renderAlgoList();
   renderHideList();
 });

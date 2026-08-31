@@ -272,7 +272,26 @@ async function hashFileOnDisk(filePath, algorithm = null) {
  * source provider it reads from. A cascaded leg is always a local one; only
  * the primary leg can be reading from FreeFrame.
  */
-async function runLeg({ from, toRoots, relFiles, sizes, onFileEvent, isCancelled, mapRel, waitIfPaused }) {
+async function runLeg({
+  from, toRoots, relFiles, sizes, onFileEvent, isCancelled, mapRel, waitIfPaused,
+  // §103 — "during" mode re-checks each file inline, right after its own
+  // live verify, before the next file starts.
+  //
+  // `jobSourcePath` is the ORIGINAL card, NOT this leg's `from`, and the
+  // distinction is the whole point. A cascaded leg reads from its parent
+  // destination, so re-checking against `from` would only re-confirm what
+  // the live check just proved — that the child matches the parent — while
+  // "after" mode has always compared every node against the card itself.
+  // Reading from `from` here would silently give "during" a WEAKER
+  // guarantee than "after" for exactly the jobs where the extra pass
+  // matters most.
+  finalizedAlgorithm = null, finalizedTiming = "off", jobSourcePath = null,
+  // A cascaded leg is handed rels the ROOT leg already mapped (§100/§10),
+  // so `rel` here is a destination-relative path, not a source-relative
+  // one. Joining it onto the card would look for CARD/CARD/DCIM/x.
+  // Null on the root leg, where the two are the same thing.
+  sourceRelOf = null,
+}) {
   const fileResults = [];
 
   for (const rel of relFiles) {
@@ -335,6 +354,24 @@ async function runLeg({ from, toRoots, relFiles, sizes, onFileEvent, isCancelled
 
       entry.destinations = verifications;
       entry.ok = verifications.every((v) => v.ok);
+
+      // §103 — the inline second pass. Two full reads of this file back to
+      // back, still inside the transfer; that is the cost, not a bug.
+      //
+      // Gated on entry.ok: a file whose live check already failed gains
+      // nothing from a second read confirming what is already known bad.
+      // The ambiguity the second pass exists to resolve — genuinely good,
+      // or a transient read error hashed consistently twice — only exists
+      // for a clean live result.
+      if (finalizedTiming === "during" && finalizedAlgorithm && entry.ok && jobSourcePath) {
+        entry.finalCheck = await recheckOneFile({
+          algorithm: finalizedAlgorithm,
+          sourceFile: path.join(jobSourcePath, sourceRelOf ? (sourceRelOf.get(rel) ?? rel) : rel),
+          destFiles,
+          toRoots,
+          bytes: entry.bytes,
+        });
+      }
     } catch (err) {
       entry.error = String(err.message || err);
       entry.ok = false;
@@ -354,11 +391,52 @@ async function runLeg({ from, toRoots, relFiles, sizes, onFileEvent, isCancelled
       bytes: entry.bytes,
       sourceHash: entry.sourceHash,
       destinations: entry.destinations,
+      // §103 — present only in "during" mode; the batched pass attaches
+      // its own results after every leg instead.
+      finalCheck: entry.finalCheck,
       error: entry.error,
     });
   }
 
   return fileResults;
+}
+
+/**
+ * §103 — re-read one file's source and every destination from disk and
+ * compare, with the finalized algorithm.
+ *
+ * Shaped like `entry.destinations` rather than like runFinalizedPass's
+ * per-node split: a single runLeg call already fans out to every toRoots
+ * entry in one place, exactly as the live check does, so there is nothing
+ * to split by node here.
+ *
+ * Never throws. A file that cannot be re-read is a failed check, not a
+ * failed job — the copy itself already happened and already reported.
+ */
+async function recheckOneFile({ algorithm, sourceFile, destFiles, toRoots, bytes }) {
+  let sourceHash = null;
+  try {
+    sourceHash = await hashFileOnDisk(sourceFile, algorithm);
+  } catch (err) {
+    return {
+      algorithm, sourceHash: null, destinations: [], ok: false,
+      error: `source re-read failed: ${String(err.message || err)}`,
+    };
+  }
+  const destinations = await Promise.all(destFiles.map(async (destFile, i) => {
+    try {
+      const hash = await hashFileOnDisk(destFile, algorithm);
+      const size = (await fsp.stat(destFile)).size;
+      // Size alongside the hash, for the same reason the live check does
+      // it: a zero-byte file has a perfectly stable hash of its own.
+      return { destRoot: toRoots[i], path: destFile, hash, bytes: size,
+               ok: hash === sourceHash && (bytes == null || size === bytes), error: null };
+    } catch (err) {
+      return { destRoot: toRoots[i], path: destFile, hash: null, bytes: null,
+               ok: false, error: String(err.message || err) };
+    }
+  }));
+  return { algorithm, sourceHash, destinations, ok: destinations.every((d) => d.ok) };
 }
 
 /** Per-destination-root outcome extracted from one leg's file results. */
@@ -439,6 +517,14 @@ async function runCopyJob({
   // `allowFragileRename` is the user's explicit per-job acknowledgement.
   renamesFiles = false,
   allowFragileRename = false,
+  // §103 — WHEN the finalized pass runs: "off" | "after" | "during".
+  //
+  // Defaults to "after", NOT "off", and that is deliberate: before §103 the
+  // contract was simply "an algorithm means run the batched pass", and
+  // every existing caller and test still says only that. A caller who does
+  // not mention timing gets what it always got. main.js always passes an
+  // explicit value.
+  finalizedTiming = "after",
   // §95 — resolves immediately unless the job is paused, in which case it
   // resolves on resume or on cancel. Omitted by every existing caller and
   // every test, which is why runLeg treats it as optional.
@@ -730,9 +816,26 @@ async function runCopyJob({
         const legSizes = isRootLeg || !mapRel
           ? sizes
           : new Map(relFiles.map((r) => [mapRel(r), sizes.get(r)]));
+        // §103 — how a cascaded leg's rel maps BACK to the card, so its
+        // inline re-check reads the original file rather than a path that
+        // does not exist.
+        const legSourceRels = isRootLeg || !mapRel
+          ? null
+          : new Map(relFiles.map((r) => [mapRel(r), r]));
 
         const fileResults = await runLeg({
           from,
+          // §103 — threaded into EVERY leg, cascaded ones included. A
+          // cascade's `from` is its parent destination; re-checking against
+          // that would only re-prove what its live check already showed.
+          // `src.root` is the original card, and the only value that is
+          // genuinely a directory to join a rel onto — a fileset and a
+          // project source both have none, and get no inline check rather
+          // than a fabricated path.
+          finalizedAlgorithm,
+          finalizedTiming,
+          jobSourcePath: src.root || null,
+          sourceRelOf: legSourceRels,
           // Root leg only -- see the note in runLeg.
           mapRel: isRootLeg ? mapRel : null,
           toRoots,
@@ -772,6 +875,9 @@ async function runCopyJob({
                 bytes: ev.bytes,
                 sourceHash: ev.sourceHash,
                 destinations: ev.destinations,
+                // §103 — enumerated, not spread, so this has to be named
+                // or the inline result never reaches a listener.
+                finalCheck: ev.finalCheck,
                 error: ev.error,
                 nodeIds: groupNodes.map((n) => n.id),
               });
@@ -801,6 +907,10 @@ async function runCopyJob({
               bytes: f.bytes,
               sourceHash: f.sourceHash,
               ok: d?.ok ?? false,
+              // §103 — "during" attaches this inline; "after" writes it
+              // onto these same entries later, from runFinalizedPass. One
+              // field, either producer.
+              ...(f.finalCheck ? { finalCheck: f.finalCheck } : {}),
             };
           });
           onProgress({ phase: "node-status", node: publicNode(n) });
@@ -838,7 +948,20 @@ async function runCopyJob({
   // never runs this engine. The two reachable triggers are cancellation
   // and a project SOURCE, and those are what the reason now says.
   let finalized = null;
-  if (finalizedAlgorithm && sourcePath && !source && !cancelled) {
+  // "off" means off even if an algorithm was handed over. The branch below
+  // used to key on the algorithm alone, which made a job configured "off"
+  // still run the batched pass whenever a caller passed one — invisible
+  // from the app, where main.js nulls the algorithm too, and exactly the
+  // kind of thing that only shows up when the engine is driven directly.
+  if (finalizedTiming === "off") {
+    finalized = null;
+  } else if (finalizedAlgorithm && finalizedTiming === "during") {
+    // §103 — nothing to run here: every file was re-checked inline, right
+    // after its own copy. This only tallies what those checks already
+    // found, into the same shape the batched pass returns, so the summary
+    // and the log do not have to know which mode produced it.
+    finalized = tallyInlineChecks([...state.values()], finalizedAlgorithm, cancelled, src.root);
+  } else if (finalizedAlgorithm && sourcePath && !source && !cancelled) {
     finalized = await runFinalizedPass({
       sourcePath,
       nodes: [...state.values()],
@@ -846,6 +969,7 @@ async function runCopyJob({
       isCancelled,
       onProgress,
     });
+    finalized.mode = "after";
   } else if (finalizedAlgorithm) {
     // Said out loud rather than left absent: "no finalized block" and "the
     // finalized pass could not run here" are different facts, and only one
@@ -853,6 +977,7 @@ async function runCopyJob({
     finalized = {
       algorithm: finalizedAlgorithm,
       algorithmLabel: ALGORITHMS[finalizedAlgorithm]?.label || finalizedAlgorithm,
+      mode: finalizedTiming === "during" ? "during" : "after",
       skipped: true,
       reason: cancelled
         ? "the job was cancelled"
@@ -909,6 +1034,63 @@ async function runCopyJob({
 
   onProgress({ phase: "done", summary });
   return summary;
+}
+
+/**
+ * §103 — the job-level summary for "during" mode.
+ *
+ * No work happens here: every file was already re-checked inline, right
+ * after its own copy. This only tallies those results into the SAME shape
+ * runFinalizedPass returns, so the summary and the job log never have to
+ * ask which mode produced the block they are formatting.
+ *
+ * Counted per (file, destination) pair, matching the batched pass — one
+ * file verified into three destinations is three checks, not one.
+ */
+function tallyInlineChecks(nodes, algorithm, cancelled, sourceRoot) {
+  const out = {
+    algorithm,
+    algorithmLabel: ALGORITHMS[algorithm]?.label || algorithm,
+    mode: "during",
+    checked: 0, verified: 0, mismatches: [], errors: [],
+    cancelled: Boolean(cancelled),
+  };
+
+  // A source with no directory to re-read — a set of individually-picked
+  // files, or a project — gets no inline check, so say that rather than
+  // reporting a silent 0/0 that reads like a clean pass.
+  if (!sourceRoot) {
+    out.skipped = true;
+    out.reason = "this job has no source folder to re-read (picked files or a FreeFrame project)";
+    out.ok = false;
+    return out;
+  }
+
+  const seen = new Set();
+  for (const n of nodes) {
+    for (const f of n.files || []) {
+      const fc = f.finalCheck;
+      if (!fc) continue;
+      // n.files is per node, but a runLeg entry's finalCheck already
+      // covers every destination of that leg — so the same object appears
+      // once per node in the group. Tally it once.
+      const key = `${n.id}\u0000${f.file}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const mine = (fc.destinations || []).filter((d) => d.destRoot === n.path);
+      for (const d of mine) {
+        out.checked += 1;
+        if (d.ok) out.verified += 1;
+        else if (d.error) out.errors.push({ file: f.file, destRoot: n.path, stage: "destination", error: d.error });
+        else out.mismatches.push({ file: f.file, destRoot: n.path, destPath: d.path, sourceHash: fc.sourceHash, destHash: d.hash });
+      }
+      if (fc.error) out.errors.push({ file: f.file, stage: "source", error: fc.error });
+    }
+  }
+
+  out.ok = !out.cancelled && out.errors.length === 0
+    && out.mismatches.length === 0 && out.checked > 0;
+  return out;
 }
 
 /**
@@ -1013,6 +1195,9 @@ module.exports = {
   listFilesRecursive,
   hashFileOnDisk,
   runFinalizedPass,
+  // §103 — the per-file half of the finalized pass, exported so a test can
+  // point it at a deliberately damaged destination.
+  recheckOneFile,
   copyOneFileFanOut,
   // The default provider, and the shape main.js's FreeFrame one implements.
   localSource,

@@ -86,6 +86,9 @@ async function startJournal(dir, job, meta = {}) {
     destPaths: Array.isArray(job.destPaths) ? [...job.destPaths] : [],
     algorithm: meta.algorithm ?? null,
     finalizedAlgorithm: meta.finalizedAlgorithm ?? null,
+    // §103 — which timing the job actually ran under, so a log read later
+    // says what was in force rather than what Settings holds now.
+    finalizedTiming: meta.finalizedTiming ?? null,
     // §97A — where an upload was going. A resume has to send the files to
     // the same project, and the job that would have known is gone.
     projectId: meta.projectId ?? null,

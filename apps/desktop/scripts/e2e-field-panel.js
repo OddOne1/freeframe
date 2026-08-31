@@ -433,14 +433,28 @@ async function walk(dir, base = "") {
       const aToggle = [...document.querySelectorAll("#fields-body .fv-toggle")][1].checked;
       setSource(${JSON.stringify(cardB)}); render();
       const backB = (document.querySelector('#fields-body input[data-fv-key="operator"]') || {}).value;
-      return { bSource, bOperator, aOperator, aToggle, backB };
+      return { bSource, bOperator, bToggle, aOperator, aToggle, backB };
     })()`);
     check(perSource.bSource === "B002", "the panel follows the newly-assigned source", perSource.bSource);
-    check(perSource.bOperator === "", "a fresh card starts empty, not with the other card's value",
+    // INVERTED BY §80, not deleted. This asserted that a brand-new card
+    // starts blank; §80 makes it seed from the card before it, because the
+    // values that change between cards on one shoot are the minority — the
+    // operator and the shoot rarely do. The per-card isolation the rest of
+    // this section checks is unchanged and still the point: seeding happens
+    // ONCE, at creation, from a shallow copy, so the two cards never share
+    // a values object. (§80's own spec calls that out as a bug it must not
+    // reintroduce.) A card that has been seen before is untouched by it.
+    check(perSource.bOperator === "Mathias",
+      "a brand-new card seeds from the previous card's values (§80)",
       JSON.stringify(perSource.bOperator));
+    check(perSource.bToggle === true,
+      "…but NOT its per-transfer toggles — a new card starts with every field enabled",
+      JSON.stringify(perSource.bToggle));
     check(perSource.aOperator === "Mathias", "switching back restores the first card's value", perSource.aOperator);
     check(perSource.aToggle === false, "…including its per-transfer toggle state");
-    check(perSource.backB === "Ana", "and the second card keeps its own", perSource.backB);
+    check(perSource.backB === "Ana",
+      "and the second card keeps its own — seeding is a starting value, not a shared reference",
+      perSource.backB);
 
     // ── 4. Nothing leaked into the saved preset ──────────────────────────
     console.log("\n4. The toggle never reaches the saved preset");

@@ -70,6 +70,15 @@ async function makeCard(root, { withRaw = false } = {}) {
   return root;
 }
 
+// §100 — a folder source with no naming template governing structure lands
+// under a folder named after the card, rather than spilling its contents
+// into the destination root. These filtering tests predate that and asserted
+// the flat layout; the subject here is WHICH files arrive, not where the
+// tree is rooted, so the expectation carries the wrapper rather than the
+// engine losing it. A test with a real folderTemplate (section 6) is not
+// wrapped and is left alone.
+const under = (card, files) => files.map((f) => `${card}/${f}`);
+
 const SOURCE_FILES = [
   "A002.rdc/leftover.txt",
   "DCIM/100MEDIA/C0001.MP4",
@@ -104,7 +113,7 @@ const SOURCE_FILES = [
     });
 
     const landed = await walk(dest);
-    check(JSON.stringify(landed) === JSON.stringify(SOURCE_FILES),
+    check(JSON.stringify(landed) === JSON.stringify(under("card1", SOURCE_FILES)),
       "every source file is in the destination", `got ${landed.length}: ${landed.join(", ")}`);
     check(summary.allVerified === true, "and every one verified");
     check(!summary.filteredOut || summary.filteredOut.length === 0, "nothing reported as filtered");
@@ -128,12 +137,12 @@ const SOURCE_FILES = [
     });
 
     const landed = await walk(dest);
-    check(JSON.stringify(landed) === JSON.stringify([
+    check(JSON.stringify(landed) === JSON.stringify(under("card2", [
       "DCIM/100MEDIA/C0001.MP4",
       "DCIM/100MEDIA/C0001.XML",
       "DCIM/100MEDIA/C0002.MP4",
       "DCIM/100MEDIA/C0002.XML",
-    ]), "only the footage and its sidecars landed", landed.join(", "));
+    ])), "only the footage and its sidecars landed", landed.join(", "));
     check(summary.filteredOut.length === 4, "four skips reported (two THMs, the index, the stub bundle)",
       `got ${summary.filteredOut.length}`);
     check(summary.filteredOut.every((f) => f.reason), "each skip states why");
