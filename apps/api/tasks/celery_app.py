@@ -20,6 +20,7 @@ celery_app = Celery(
         "apps.api.tasks.reminder_tasks",
         "apps.api.tasks.email_tasks",
         "apps.api.tasks.purge_tasks",
+        "apps.api.tasks.cleanup_tasks",
     ],
 )
 
@@ -33,6 +34,27 @@ celery_app.conf.update(
     broker_connection_retry=True,
     broker_connection_max_retries=5,
     broker_pool_limit=0,  # Disable connection pooling in web process to avoid stale connections
+    # §114 — a task is acked when it FINISHES, not when it is received.
+    #
+    # Celery's default acks a task the moment a worker picks it up. Every
+    # deploy runs `up -d --build`, which SIGTERM/SIGKILLs the worker, so a
+    # transcode in flight was already acked and simply vanished: nothing
+    # requeued it, and because the process was killed rather than raising,
+    # the except/finally that would have marked the version `failed` never
+    # ran either. The row sat at `processing` forever with no error anywhere.
+    # Traced live against production — `inspect active` and `inspect
+    # reserved` were both empty on all three nodes while a row claimed to be
+    # processing.
+    #
+    # reject_on_worker_lost completes the pair: without it a task whose
+    # worker dies is marked failed rather than redelivered.
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    # With acks_late, prefetched-but-unstarted tasks are also redelivered on
+    # a restart. Fetching one at a time keeps that set to the task actually
+    # running, and matters more here than throughput: these are minutes-long
+    # ffmpeg jobs, not a high-rate queue where prefetch earns anything.
+    worker_prefetch_multiplier=1,
     # Define queues
     task_queues=(
         Queue("default"),
@@ -61,6 +83,22 @@ celery_app.conf.update(
         "apps.api.tasks.email_tasks.send_share_email": {"queue": "email_low"},
         "apps.api.tasks.email_tasks.send_approval_email": {"queue": "email_low"},
         "apps.api.tasks.email_tasks.send_project_added_email": {"queue": "email_low"},
+        # §114 — a task with no route here falls through to
+        # task_default_queue="default", and NO CONTAINER CONSUMES "default".
+        # docker-compose.prod.yml starts exactly three consumers, for
+        # `transcoding`, `transcription` and `email_high,email_low`. Nothing
+        # listens on `default` at all, so an unrouted scheduled task is
+        # queued by beat and then simply sits there, forever, silently.
+        #
+        # `purge_expired_trash` and `send_due_date_reminders` are both in
+        # that state today and have never executed in production. They are
+        # deliberately NOT routed here -- see KNOWN_UNROUTED below, which
+        # records why that is a decision rather than an oversight.
+        #
+        # The sweeper sits with the transcoding worker: it needs the DB, it
+        # is not latency-sensitive, and that container is already the one
+        # whose stranded work it exists to clean up.
+        "apps.api.tasks.cleanup_tasks.*": {"queue": "transcoding"},
     },
     # Rate limiting for email queues (SES limits)
     task_annotations={
@@ -95,6 +133,15 @@ celery_app.conf.beat_schedule = {
     "purge-expired-trash": {
         "task": "purge_expired_trash",
         "schedule": crontab(minute="15", hour="3"),
+    },
+    # §114 — the backstop for anything acks_late still cannot save (a worker
+    # lost inside the ack window itself, or a task that hangs rather than
+    # dies). Every 15 minutes: frequent enough that a stuck row surfaces
+    # while the user still remembers uploading it, cheap enough to not care
+    # — it is one indexed query that normally matches nothing.
+    "sweep-stuck-processing": {
+        "task": "sweep_stuck_processing",
+        "schedule": crontab(minute="*/15"),
     },
 }
 
@@ -131,3 +178,29 @@ def send_task_safe(task, *args, **kwargs):
         daemon=True,
     )
     thread.start()
+
+# §114 — scheduled tasks knowingly left on the unconsumed `default` queue.
+#
+# Both are real bugs, found while wiring the stuck-processing sweeper, and
+# both are one line away from being fixed. Neither line is safe to add
+# without someone deciding to:
+#
+#   purge_expired_trash       Its first successful run permanently deletes
+#                             every asset and folder soft-deleted more than
+#                             30 days ago -- DB rows and the S3 objects with
+#                             them. Because the job has never run, that is
+#                             the entire accumulated Recently Deleted backlog
+#                             since the feature shipped, destroyed in one
+#                             tick at 03:15 with no preview and no undo.
+#
+#   send_due_date_reminders   Starts emailing real users on the hour. The
+#                             first runs would fire reminders for due dates
+#                             that are long past.
+#
+# Enabling either is an operational decision with a blast radius, not a
+# refactor. tests/test_celery_wiring.py asserts every OTHER scheduled task
+# reaches a consumed queue, and treats these two as known -- so the check
+# stays green and honest, and removing a name from this set is what turns
+# the fix on.
+KNOWN_UNROUTED = {"purge_expired_trash", "send_due_date_reminders"}
+

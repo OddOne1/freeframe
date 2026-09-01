@@ -118,6 +118,28 @@ services:
       redis:
         condition: service_healthy
     command: sh -c "celery -A apps.api.tasks.celery_app worker -Q transcoding -c $${TRANSCODING_CONCURRENCY:-2} --loglevel=warning"
+    # §114 — override the image's HEALTHCHECK, which is the API's
+    # `curl localhost:8000/health`. A Celery worker serves no HTTP, so that
+    # probe can never pass: all four Celery services have been permanently
+    # `(unhealthy)` since the day they were added, which is why nobody
+    # noticed the transcoding worker actually being gone.
+    #
+    # `inspect ping` is a real liveness check — it round-trips through the
+    # broker to this node's own mailbox and back, so it fails if the worker
+    # process is wedged OR if Redis is unreachable. Scoped to this container
+    # with -d so it cannot pass on a sibling worker's reply.
+    #
+    # A worker with every concurrency slot inside a long ffmpeg still
+    # answers: control messages are served by its pidbox consumer, not by
+    # the task pool, so this reports "wedged" only when it truly is.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A apps.api.tasks.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 > /dev/null 2>&1 || exit 1"]
+      interval: 60s
+      timeout: 15s
+      # A cold worker has to import ffmpeg-adjacent deps and connect to the
+      # broker before it can answer; failing it during that is noise.
+      start_period: 60s
+      retries: 3
     restart: unless-stopped
 
   # Separate from `worker` on purpose: a single CPU Whisper pass runs for
@@ -141,6 +163,15 @@ services:
       # multi-hundred-MB model every single time.
       - whisper_models:/root/.cache/huggingface
     command: sh -c "celery -A apps.api.tasks.celery_app worker -Q transcription -c $${TRANSCRIPTION_CONCURRENCY:-1} --loglevel=warning"
+    # §114 — same override and reasoning as `worker` above.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A apps.api.tasks.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 > /dev/null 2>&1 || exit 1"]
+      interval: 60s
+      timeout: 15s
+      # A cold worker has to import ffmpeg-adjacent deps and connect to the
+      # broker before it can answer; failing it during that is noise.
+      start_period: 60s
+      retries: 3
     restart: unless-stopped
 
   email_worker:
@@ -153,6 +184,15 @@ services:
       redis:
         condition: service_healthy
     command: sh -c "celery -A apps.api.tasks.celery_app worker -Q email_high,email_low -c $${EMAIL_CONCURRENCY:-2} --loglevel=warning"
+    # §114 — same override and reasoning as `worker` above.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A apps.api.tasks.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 > /dev/null 2>&1 || exit 1"]
+      interval: 60s
+      timeout: 15s
+      # A cold worker has to import ffmpeg-adjacent deps and connect to the
+      # broker before it can answer; failing it during that is noise.
+      start_period: 60s
+      retries: 3
     restart: unless-stopped
 
   beat:
@@ -165,6 +205,22 @@ services:
       redis:
         condition: service_healthy
     command: sh -c "celery -A apps.api.tasks.celery_app beat --loglevel=warning -s /tmp/celerybeat-schedule"
+    # §114 — beat answers no `inspect ping` (it is a scheduler, not a
+    # worker) and serves no HTTP, so the inherited API healthcheck is
+    # meaningless here too.
+    #
+    # What is actually worth checking is the one dependency whose loss stops
+    # beat dispatching anything while the process stays happily alive:
+    # the broker. A schedule-file mtime check would be a more direct proxy
+    # for "is it still ticking", but the shelve backend's real filename is
+    # not guaranteed to be exactly -s's argument, and a healthcheck that
+    # goes red on a filename detail is worse than none.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from apps.api.tasks.celery_app import celery_app; celery_app.connection().ensure_connection(max_retries=1)\" || exit 1"]
+      interval: 60s
+      timeout: 15s
+      start_period: 30s
+      retries: 3
     restart: unless-stopped
 
   web:

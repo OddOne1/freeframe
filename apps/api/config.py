@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     # transcodes are already using.
     transcription_concurrency: int = 1
 
+    # §114 -- how long a version may sit at `processing` without its
+    # updated_at moving before the sweeper calls it dead.
+    #
+    # It is a silence threshold, not a duration limit: the progress callback
+    # touches the row on every new whole percent, so a real transcode of any
+    # length keeps resetting the clock. 45 minutes is therefore generous
+    # against a worker that is alive but slow, while still clearing an
+    # orphaned row inside the hour. Override with STUCK_PROCESSING_MINUTES.
+    stuck_processing_minutes: int = 45
+
     # Speech-to-text (faster-whisper, CPU-only -- see CLAUDE.md).
     # MUST stay a multilingual checkpoint: the ".en" variants (small.en etc.)
     # exist and would silently break every non-English upload.

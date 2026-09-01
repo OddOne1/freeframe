@@ -86,6 +86,26 @@ def process_asset(self, asset_id: str, version_id: str):
         if not version:
             return  # version already cleaned up
 
+        # §114 — idempotency guard, required by task_acks_late.
+        #
+        # With late acks a task is redelivered if the worker dies before it
+        # finishes, and "finishes" includes the window between the last line
+        # of work and the ack itself. A redelivery in that window would redo
+        # a full transcode of something already done.
+        #
+        # The work below is otherwise safe to repeat -- output_prefix is
+        # derived from the ids, so a re-run overwrites its own objects rather
+        # than orphaning new ones -- but it is minutes of CPU, so it is worth
+        # not repeating. Only `ready` is skipped: `failed` must stay
+        # retryable, and `processing` is exactly the state a genuinely lost
+        # task is left in, which is what redelivery exists to rescue.
+        if version.processing_status == ProcessingStatus.ready:
+            logger.info(
+                "process_asset: version %s is already ready, skipping redelivered task",
+                version_id,
+            )
+            return
+
         asset = db.query(Asset).filter(Asset.id == uuid.UUID(asset_id)).first()
         if not asset:
             if version:

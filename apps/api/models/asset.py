@@ -88,6 +88,19 @@ class AssetVersion(Base):
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_by_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # §114 — heartbeat for the stuck-processing sweeper.
+    #
+    # The sweeper cannot key on created_at: a legitimate 4K transcode can run
+    # for well over an hour, and a threshold generous enough to never kill one
+    # of those is too generous to catch anything usefully. It needs to know
+    # when this row last showed a sign of life, not when it was created.
+    #
+    # `onupdate` makes that automatic rather than something every writer has
+    # to remember: §113's progress callback already commits this row on each
+    # new whole percent, so a genuinely running transcode touches it every few
+    # seconds without a single call site knowing about the sweeper. Matches
+    # Asset.updated_at's own definition deliberately.
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 class FileType(str, PyEnum):
