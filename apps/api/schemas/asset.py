@@ -60,6 +60,10 @@ class AssetResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     latest_version: Optional[AssetVersionResponse] = None
+    # §108 — this asset has more than one version and the caller has not
+    # opened the newest one. False for anonymous callers, who have no
+    # per-user seen state to compare against.
+    has_unseen_version: bool = False
     thumbnail_url: Optional[str] = None
     avg_rating: Optional[float] = None
     rating_count: int = 0

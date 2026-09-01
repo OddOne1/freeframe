@@ -7,6 +7,7 @@ import {
   UserCheck,
   MessageSquare,
   CheckCircle,
+  FileUp,
 } from 'lucide-react'
 import { useNotificationStore } from '@/stores/notification-store'
 import { usePageTitle } from '@/hooks/use-page-title'
@@ -22,6 +23,7 @@ const notificationIcons: Record<NotificationType, React.ElementType> = {
   due_soon: UserCheck,
   comment: MessageSquare,
   approval: CheckCircle,
+  new_version: FileUp,
 }
 
 const notificationLabels: Record<NotificationType, string> = {
@@ -30,6 +32,7 @@ const notificationLabels: Record<NotificationType, string> = {
   due_soon: 'asset due soon',
   comment: 'commented on an asset',
   approval: 'updated approval status',
+  new_version: 'uploaded a new version',
 }
 
 function NotificationItem({ notification }: { notification: Notification }) {

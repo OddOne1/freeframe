@@ -35,6 +35,7 @@ from ..services import s3_service
 from .hls_proxy import proxy_url_for
 from ..services.permissions import require_asset_access, validate_share_link
 from ..tasks.email_tasks import send_mention_email, send_comment_email
+from ..services.notification_prefs import should_create_notification, should_send_email
 from ..tasks.celery_app import send_task_safe
 
 router = APIRouter(tags=["comments"])
@@ -171,24 +172,31 @@ def _create_mentions(db: Session, comment: Comment, asset: Asset, body: str, aut
                 mentioned_users.append(user)
 
     for user in mentioned_users:
+        # The Mention row itself is a fact about the comment, not a
+        # notification: it is what @-highlights the name when anyone reads
+        # the thread. It is written regardless of preferences.
         mention = Mention(comment_id=comment.id, mentioned_user_id=user.id)
         db.add(mention)
-        notif = Notification(
-            user_id=user.id,
-            type=NotificationType.mention,
-            asset_id=asset.id,
-            comment_id=comment.id,
-        )
-        db.add(notif)
 
-        asset_link = f"{settings.frontend_url}/projects/{asset.project_id}/assets/{asset.id}"
-        send_task_safe(send_mention_email,
-            to_email=user.email,
-            mentioner_name=author_name,
-            asset_name=asset.name,
-            comment_preview=body[:200],
-            asset_link=asset_link,
-        )
+        # §108 — the settings page has offered these controls all along and
+        # nothing read them back.
+        if should_create_notification(user, "mentions"):
+            db.add(Notification(
+                user_id=user.id,
+                type=NotificationType.mention,
+                asset_id=asset.id,
+                comment_id=comment.id,
+            ))
+
+        if should_send_email(user, "mentions"):
+            asset_link = f"{settings.frontend_url}/projects/{asset.project_id}/assets/{asset.id}"
+            send_task_safe(send_mention_email,
+                to_email=user.email,
+                mentioner_name=author_name,
+                asset_name=asset.name,
+                comment_preview=body[:200],
+                asset_link=asset_link,
+            )
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -254,12 +262,14 @@ def create_comment(
 
     # Notify asset creator about the comment (unless they're the commenter)
     if asset.created_by and asset.created_by != current_user.id:
-        db.add(Notification(
-            user_id=asset.created_by,
-            type=NotificationType.comment,
-            asset_id=asset_id,
-            comment_id=comment.id,
-        ))
+        owner = db.query(User).filter(User.id == asset.created_by).first()
+        if should_create_notification(owner, "general_comments"):
+            db.add(Notification(
+                user_id=asset.created_by,
+                type=NotificationType.comment,
+                asset_id=asset_id,
+                comment_id=comment.id,
+            ))
 
     # Activity log
     activity = ActivityLog(user_id=current_user.id, asset_id=asset_id, action=ActivityAction.commented)
@@ -299,12 +309,14 @@ def reply_to_comment(
 
     # Notify parent comment author about the reply (unless they're the replier)
     if parent.author_id and parent.author_id != current_user.id:
-        db.add(Notification(
-            user_id=parent.author_id,
-            type=NotificationType.comment,
-            asset_id=asset_id,
-            comment_id=reply.id,
-        ))
+        parent_author = db.query(User).filter(User.id == parent.author_id).first()
+        if should_create_notification(parent_author, "comment_replies"):
+            db.add(Notification(
+                user_id=parent.author_id,
+                type=NotificationType.comment,
+                asset_id=asset_id,
+                comment_id=reply.id,
+            ))
 
     db.commit()
     db.refresh(reply)
@@ -641,13 +653,13 @@ def guest_comment(
         if user:
             mention = Mention(comment_id=comment.id, mentioned_user_id=user.id)
             db.add(mention)
-            notif = Notification(
-                user_id=user.id,
-                type=NotificationType.mention,
-                asset_id=asset.id,
-                comment_id=comment.id,
-            )
-            db.add(notif)
+            if should_create_notification(user, "mentions"):
+                db.add(Notification(
+                    user_id=user.id,
+                    type=NotificationType.mention,
+                    asset_id=asset.id,
+                    comment_id=comment.id,
+                ))
 
     if body.annotation:
         annotation = Annotation(

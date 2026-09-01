@@ -7,6 +7,7 @@ import {
   UserCheck,
   MessageSquare,
   CheckCircle,
+  FileUp,
   X,
   Settings,
 } from 'lucide-react'
@@ -22,6 +23,7 @@ const notificationIcons: Record<NotificationType, React.ElementType> = {
   due_soon: UserCheck,
   comment: MessageSquare,
   approval: CheckCircle,
+  new_version: FileUp,
 }
 
 function getNotificationText(n: Notification): { title: string; subtitle: string | null } {
@@ -38,6 +40,8 @@ function getNotificationText(n: Notification): { title: string; subtitle: string
       return { title: `${actor} updated approval on ${asset}`, subtitle: null }
     case 'due_soon':
       return { title: `${asset} is due soon`, subtitle: null }
+    case 'new_version':
+      return { title: `${actor} uploaded a new version of ${asset}`, subtitle: null }
     default:
       return { title: 'New notification', subtitle: null }
   }

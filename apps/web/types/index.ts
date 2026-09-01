@@ -18,7 +18,7 @@ export type ProjectType = "personal" | "team";
 
 export type SharePermission = "view" | "comment" | "approve";
 
-export type NotificationType = "mention" | "assignment" | "due_soon" | "comment" | "approval";
+export type NotificationType = "mention" | "assignment" | "due_soon" | "comment" | "approval" | "new_version";
 
 export type UserStatus = "active" | "deactivated" | "pending_invite" | "pending_verification";
 
@@ -164,6 +164,9 @@ export interface AdminProject extends Project {
 // ─── Asset & Media Entities ───────────────────────────────────────────────────
 
 export interface Asset {
+  /** §108 — more than one version exists and this user has not opened the
+   *  newest. Absent for anonymous callers, who have no seen-state. */
+  has_unseen_version?: boolean;
   id: string;
   project_id: string;
   name: string;
@@ -205,6 +208,8 @@ export interface AssetVersion {
 /** Backend returns AssetResponse with latest_version embedded */
 export interface AssetResponse extends Asset {
   latest_version: AssetVersion | null;
+  /** §108 — more than one version exists and this user has not opened the newest. */
+  has_unseen_version?: boolean;
   thumbnail_url: string | null;
 }
 

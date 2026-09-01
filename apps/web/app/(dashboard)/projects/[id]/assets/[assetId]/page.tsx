@@ -309,6 +309,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const searchParams = useSearchParams()
   const pathname = usePathname()
 
+
   // §107 — the compare overlay is driven entirely by URL params, so it
   // survives a refresh and a pasted link. closeCompare strips ALL of them,
   // `compareRight` included: leaving that behind would restore a compare
@@ -337,6 +338,19 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     router.replace(`${pathname}?${p.toString()}`, { scroll: false })
   }
   const { asset, versions, isLoading, refetchComments, refetchVersions } = useReview()
+
+  // §108 — mark this asset's latest version as seen, which is what clears the
+  // unseen-version badge on the grid.
+  //
+  // HERE, when the review view actually opens, not on hover or thumbnail
+  // load: the badge says "you have not looked at this", and scrolling past a
+  // card in a grid is not looking at it. Keyed on the asset id so navigating
+  // between assets marks each one, and fire-and-forget because failing to
+  // record a view must never break the viewer.
+  useEffect(() => {
+    if (!asset?.id) return
+    api.post(`/assets/${asset.id}/seen`, {}).catch(() => {})
+  }, [asset?.id])
   const { currentVersion, isDrawingMode, focusedCommentId, playheadTime, seekTo, setFocusedCommentId, setActiveAnnotation } = useReviewStore()
   const { user, isSuperAdmin } = useAuthStore()
   const startVersionUpload = useUploadStore((s) => s.startVersionUpload)

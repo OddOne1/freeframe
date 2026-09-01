@@ -29,6 +29,55 @@ def _run_async(coro):
 
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
+def _notify_new_version(db, asset, version) -> None:
+    """Notify the asset's assignee that a new version is ready (§108).
+
+    Scoped to the assignee, matching the only assignment concept this app
+    has (`Asset.assignee_id`, the same one the assignment-change
+    notification uses). Deliberately NOT the whole project: "other uploads"
+    on a busy project would be a firehose, and there is no per-project
+    subscription model to narrow it with.
+
+    Never fires for v1. Every asset's first version reaches `ready`, and a
+    "new version" notice for the upload someone just performed is noise.
+    """
+    from ..models.activity import Notification, NotificationType
+    from ..models.user import User
+    from ..services.notification_prefs import should_create_notification, should_send_email
+    from ..config import settings
+    from .celery_app import send_task_safe
+    from .email_tasks import send_new_version_email
+
+    if version.version_number <= 1:
+        return
+    assignee_id = getattr(asset, "assignee_id", None)
+    if not assignee_id or assignee_id == version.created_by:
+        # Nobody assigned, or the assignee uploaded it themselves.
+        return
+
+    assignee = db.query(User).filter(User.id == assignee_id).first()
+    if not assignee:
+        return
+
+    if should_create_notification(assignee, "other_uploads"):
+        db.add(Notification(
+            user_id=assignee_id,
+            type=NotificationType.new_version,
+            asset_id=asset.id,
+        ))
+        db.commit()
+
+    if should_send_email(assignee, "other_uploads"):
+        send_task_safe(
+            send_new_version_email,
+            to_email=assignee.email,
+            uploader_name=version.created_by_name or "Someone",
+            asset_name=asset.name,
+            version_number=version.version_number,
+            asset_link=f"{settings.frontend_url}/projects/{asset.project_id}/assets/{asset.id}",
+        )
+
+
 def process_asset(self, asset_id: str, version_id: str):
     """Main processing task dispatched after upload completes."""
     db = SessionLocal()
@@ -77,6 +126,19 @@ def process_asset(self, asset_id: str, version_id: str):
                 "asset_id": asset_id,
                 "version_id": version_id,
             })
+
+            # §108 — tell the asset's assignee a new version has landed.
+            #
+            # HERE rather than in initiate_new_version, and that is the whole
+            # timing question: a version that is still uploading or
+            # transcoding is not something a reviewer can open. This is the
+            # line that makes it playable, and the two side-effects above it
+            # are already best-effort for the same reason — nothing after the
+            # commit may fail the (successful) transcode.
+            try:
+                _notify_new_version(db, asset, version)
+            except Exception:
+                pass
 
             # Speech-to-text runs as a separate, much slower stage on its own
             # queue -- the asset is already `ready` and playable above, and

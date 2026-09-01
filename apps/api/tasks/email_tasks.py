@@ -214,6 +214,39 @@ def send_assignment_email(
 
 
 @shared_task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
+def send_new_version_email(
+    self,
+    to_email: str,
+    uploader_name: str,
+    asset_name: str,
+    version_number: int,
+    asset_link: str,
+    project_name: Optional[str] = None,
+):
+    """Send a new-version-uploaded notification email (§108)."""
+    try:
+        subject = f"New version of {asset_name} (v{version_number})"
+        html_body = render_template(
+            "email/new_version.html",
+            subject=subject,
+            uploader_name=uploader_name,
+            asset_name=asset_name,
+            version_number=version_number,
+            asset_link=asset_link,
+            project_name=project_name,
+        )
+        text_body = (
+            f"{uploader_name} uploaded v{version_number} of {asset_name}.\n\nReview: {asset_link}"
+        )
+        success = _send_email(to_email, subject, html_body, text_body)
+        if not success:
+            raise Exception("Email sending failed")
+        return {"status": "sent", "to": to_email}
+    except Exception as exc:
+        self.retry(exc=exc)
+
+
+@shared_task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
 def send_share_email(
     self,
     to_email: str,

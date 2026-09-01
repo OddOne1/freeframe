@@ -1,0 +1,12 @@
+{% extends "email/base.html" %}
+
+{% block content %}
+<h2>New Version Uploaded</h2>
+<p><strong>{{ uploader_name }}</strong> uploaded <strong>v{{ version_number }}</strong> of <strong>{{ asset_name }}</strong>.</p>
+{% if project_name %}
+<p><strong>Project:</strong> {{ project_name }}</p>
+{% endif %}
+<p>
+    <a href="{{ asset_link }}" class="button">Review New Version</a>
+</p>
+{% endblock %}

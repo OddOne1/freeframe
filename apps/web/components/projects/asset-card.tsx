@@ -179,6 +179,21 @@ export function AssetCard({
           </div>
         )}
 
+        {/* §108 — unseen new version. Top-left, above the thumbnail, using
+            the same chip language as the version pills elsewhere rather than
+            a new visual system. Only ever shown when a NEWER version exists
+            than the one this user opened, so a single-version asset and an
+            asset you have already looked at both show nothing. */}
+        {asset.has_unseen_version && versionCount > 1 && (
+          <span
+            data-testid="unseen-version-badge"
+            title={`New version (v${versionCount}) you have not opened yet`}
+            className="absolute left-2 top-2 inline-flex items-center gap-1 rounded bg-accent px-1.5 py-0.5 text-2xs font-semibold text-accent-foreground shadow-sm"
+          >
+            V{versionCount} · New Version
+          </span>
+        )}
+
         {/* Duration badge — bottom-right (for video/audio) */}
         {duration != null && duration > 0 && (
           <span className="absolute bottom-2 right-2 rounded bg-black/70 px-1.5 py-0.5 text-2xs font-medium text-white tabular-nums backdrop-blur-sm">

@@ -57,6 +57,7 @@ celery_app.conf.update(
         "apps.api.tasks.email_tasks.send_mention_email": {"queue": "email_low"},
         "apps.api.tasks.email_tasks.send_comment_email": {"queue": "email_low"},
         "apps.api.tasks.email_tasks.send_assignment_email": {"queue": "email_low"},
+        "apps.api.tasks.email_tasks.send_new_version_email": {"queue": "email_low"},
         "apps.api.tasks.email_tasks.send_share_email": {"queue": "email_low"},
         "apps.api.tasks.email_tasks.send_approval_email": {"queue": "email_low"},
         "apps.api.tasks.email_tasks.send_project_added_email": {"queue": "email_low"},

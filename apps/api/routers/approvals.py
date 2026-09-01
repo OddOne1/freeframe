@@ -13,6 +13,7 @@ from ..models.project import ProjectRole
 from ..schemas.approval import ApprovalCreate, ApprovalResponse
 from ..services.permissions import require_asset_access, require_project_role
 from ..tasks.email_tasks import send_approval_email
+from ..services.notification_prefs import should_create_notification, should_send_email
 from ..tasks.celery_app import send_task_safe
 from ..config import settings
 
@@ -78,10 +79,13 @@ def approve_asset(
     # Activity + notification to asset creator
     db.add(ActivityLog(user_id=current_user.id, asset_id=asset_id, action=ActivityAction.approved))
     if asset.created_by != current_user.id:
-        db.add(Notification(user_id=asset.created_by, type=NotificationType.approval, asset_id=asset_id))
-        # Send approval email
+        # §108 — approve/reject is the "Status Updates" category. Loaded up
+        # front now because the preference lives on the recipient, not the
+        # actor.
         creator = db.query(User).filter(User.id == asset.created_by).first()
-        if creator:
+        if should_create_notification(creator, "status_updates"):
+            db.add(Notification(user_id=asset.created_by, type=NotificationType.approval, asset_id=asset_id))
+        if creator and should_send_email(creator, "status_updates"):
             asset_link = f"{settings.frontend_url}/assets/{asset_id}"
             send_task_safe(
                 send_approval_email,
@@ -111,10 +115,13 @@ def reject_asset(
 
     db.add(ActivityLog(user_id=current_user.id, asset_id=asset_id, action=ActivityAction.rejected))
     if asset.created_by != current_user.id:
-        db.add(Notification(user_id=asset.created_by, type=NotificationType.approval, asset_id=asset_id))
-        # Send rejection email
+        # §108 — approve/reject is the "Status Updates" category. Loaded up
+        # front now because the preference lives on the recipient, not the
+        # actor.
         creator = db.query(User).filter(User.id == asset.created_by).first()
-        if creator:
+        if should_create_notification(creator, "status_updates"):
+            db.add(Notification(user_id=asset.created_by, type=NotificationType.approval, asset_id=asset_id))
+        if creator and should_send_email(creator, "status_updates"):
             asset_link = f"{settings.frontend_url}/assets/{asset_id}"
             send_task_safe(
                 send_approval_email,

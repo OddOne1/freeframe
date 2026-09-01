@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import json
@@ -9,11 +9,12 @@ from datetime import datetime, timezone
 from typing import Optional
 from ..database import get_db
 from ..middleware.auth import get_current_user
+from ..services.notification_prefs import should_create_notification, should_send_email
 from ..models.user import User, UserGlobalRole
 from ..models.asset import Asset, AssetVersion, MediaFile, AssetType, AssetStatus, FileType, ProcessingStatus, TranscriptionStatus
 from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.share import AssetShare
-from ..models.activity import Mention, Notification, NotificationType
+from ..models.activity import Mention, Notification, NotificationType, AssetView
 from ..models.vote import Vote
 from ..schemas.asset import AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, VoteToggleResponse, VoteRequest, TranscriptResponse, TranscriptSegment, CheckExistingRequest, CheckExistingResponse
 from ..schemas.notification import AssignmentUpdate
@@ -61,6 +62,14 @@ def _build_asset_response(asset: Asset, db: Session, current_user: User | None =
 
     resp = AssetResponse.model_validate(asset)
     resp.latest_version = version_response
+    # §108 — unseen only ever means "there is a newer version than the one I
+    # opened". A single-version asset can never be unseen, so a brand-new
+    # upload does not badge itself for the person who just made it.
+    if current_user is not None and latest_version is not None and latest_version.version_number > 1:
+        seen = db.query(AssetView).filter(
+            AssetView.user_id == current_user.id, AssetView.asset_id == asset.id,
+        ).first()
+        resp.has_unseen_version = (seen.last_seen_version_number if seen else 0) < latest_version.version_number
     resp.thumbnail_url = thumbnail_url
     avg_row = db.query(func.avg(Vote.stars), func.count(Vote.id)).filter(Vote.asset_id == asset.id).first()
     avg_rating = round(float(avg_row[0]), 2) if avg_row and avg_row[0] is not None else None
@@ -108,6 +117,16 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user: 
         .all()
     )
     version_by_asset = {v.asset_id: v for v in latest_versions}
+
+    # §108 — one query for the whole batch, matching the bulk-load pattern
+    # the rest of this function uses. A per-asset lookup here would be the
+    # N+1 this builder exists to avoid.
+    seen_by_asset: dict = {}
+    if current_user_id is not None:
+        for row in db.query(AssetView.asset_id, AssetView.last_seen_version_number).filter(
+            AssetView.user_id == current_user_id, AssetView.asset_id.in_(asset_ids),
+        ).all():
+            seen_by_asset[row[0]] = row[1] or 0
 
     # Bulk load media files for all those versions
     version_ids = [v.id for v in latest_versions]
@@ -183,6 +202,8 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user: 
 
         asset_resp = AssetResponse.model_validate(asset)
         asset_resp.latest_version = version_response
+        if version is not None and version.version_number > 1:
+            asset_resp.has_unseen_version = seen_by_asset.get(asset.id, 0) < version.version_number
         asset_resp.thumbnail_url = thumbnail_url
         if _can_see_aggregate(asset.project_id):
             asset_resp.avg_rating = avg_ratings.get(asset.id)
@@ -608,16 +629,68 @@ def update_assignment(
         asset.due_date = body.due_date
 
     if "assignee_id" in body.model_fields_set and body.assignee_id is not None:
-        notification = Notification(
-            user_id=body.assignee_id,
-            type=NotificationType.assignment,
-            asset_id=asset.id,
-        )
-        db.add(notification)
+        # §108 — "Assigned to You". No email exists on this path today
+        # (send_assignment_email is defined but has never had a caller), so
+        # only the in-app row is gated here.
+        assignee = db.query(User).filter(User.id == body.assignee_id).first()
+        if should_create_notification(assignee, "assigned_to_you"):
+            db.add(Notification(
+                user_id=body.assignee_id,
+                type=NotificationType.assignment,
+                asset_id=asset.id,
+            ))
 
     db.commit()
     db.refresh(asset)
     return _build_asset_response(asset, db, current_user)
+
+@router.post("/assets/{asset_id}/seen", status_code=204)
+def mark_asset_seen(
+    asset_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Record that this user has opened this asset's latest version (§108).
+
+    Called when the review view opens, not on hover or thumbnail load — the
+    badge claims "you have not looked at this", and a grid scroll is not
+    looking at it.
+
+    Idempotent, and deliberately upsert-by-hand rather than ON CONFLICT: the
+    unique constraint is what guarantees one row per pair, and re-opening the
+    same version must not accumulate rows or move the version number
+    backwards if an older version is opened directly.
+    """
+    asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    require_asset_access(db, asset, current_user)
+
+    latest = db.query(AssetVersion).filter(
+        AssetVersion.asset_id == asset_id, AssetVersion.deleted_at.is_(None),
+    ).order_by(AssetVersion.version_number.desc()).first()
+    if not latest:
+        return Response(status_code=204)
+
+    view = db.query(AssetView).filter(
+        AssetView.user_id == current_user.id, AssetView.asset_id == asset_id,
+    ).first()
+    if view is None:
+        db.add(AssetView(
+            user_id=current_user.id,
+            asset_id=asset_id,
+            last_seen_version_id=latest.id,
+            last_seen_version_number=latest.version_number,
+        ))
+    elif (view.last_seen_version_number or 0) < latest.version_number:
+        # Only ever forwards. Opening an older version from the switcher is
+        # not "unseeing" the newest one.
+        view.last_seen_version_id = latest.id
+        view.last_seen_version_number = latest.version_number
+        view.last_seen_at = func.now()
+    db.commit()
+    return Response(status_code=204)
+
 
 @router.get("/assets/{asset_id}/assignment")
 def get_assignment(
