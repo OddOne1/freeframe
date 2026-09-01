@@ -28,7 +28,6 @@ def _run_async(coro):
         loop.close()
 
 
-@celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
 def _notify_new_version(db, asset, version) -> None:
     """Notify the asset's assignee that a new version is ready (§108).
 
@@ -78,6 +77,11 @@ def _notify_new_version(db, asset, version) -> None:
         )
 
 
+# The decorator belongs HERE, on the task, and had drifted onto the helper
+# above when that helper was inserted between the two -- which left
+# process_asset a plain function with no .delay(), so every dispatch
+# raised AttributeError and no upload was ever processed.
+@celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
 def process_asset(self, asset_id: str, version_id: str):
     """Main processing task dispatched after upload completes."""
     db = SessionLocal()

@@ -22,6 +22,8 @@ import ast
 import re
 from pathlib import Path
 
+TASK_DECORATORS = ("celery_app.task", "shared_task", "app.task")
+
 API = Path(__file__).resolve().parents[1]
 REPO = API.parents[1]
 CELERY_APP = API / "tasks" / "celery_app.py"
@@ -80,6 +82,125 @@ def _queue_for(task_name: str, module: str) -> str:
     if best:
         return best[1]
     return re.search(r'task_default_queue="([^"]+)"', src).group(1)
+
+
+def _decorated_tasks() -> dict:
+    """{function name -> (module, decorator sources)} for every Celery task."""
+    out = {}
+    for path in (API / "tasks").glob("*.py"):
+        for node in ast.parse(path.read_text()).body:
+            if not isinstance(node, ast.FunctionDef) or not node.decorator_list:
+                continue
+            decs = [ast.unparse(d) for d in node.decorator_list]
+            if any(any(k in d for k in TASK_DECORATORS) for d in decs):
+                out[node.name] = (path.name, decs, node)
+    return out
+
+
+def test_no_task_decorator_sits_on_a_private_helper():
+    """The §115 outage, made impossible to reintroduce silently.
+
+    A decorator is applied to whatever `def` follows it, so inserting a
+    helper between the decorator and its intended task silently moves the
+    registration onto the helper -- and leaves the real task a plain
+    function with no .delay(). Nothing raises at import time; it fails only
+    at the first dispatch, in a background thread, in production.
+
+    A leading underscore is this codebase's own marker for "called
+    directly, not dispatched", so a decorated one is the signature of
+    exactly that drift.
+    """
+    private = {
+        name: mod for name, (mod, _decs, _node) in _decorated_tasks().items()
+        if name.startswith("_")
+    }
+    assert not private, f"private helper(s) registered as Celery tasks: {private}"
+
+
+def test_bound_tasks_take_self_first():
+    """`bind=True` injects the task instance as the first positional arg.
+
+    So a bound task whose first parameter is not `self` is either
+    mis-decorated or will be called with one argument too many. This is the
+    mechanical form of the same drift: _notify_new_version(db, asset,
+    version) carried bind=True, which would have shifted `db` into `asset`
+    had it ever actually been reached.
+    """
+    wrong = {}
+    for name, (mod, decs, node) in _decorated_tasks().items():
+        if not any("bind=True" in d for d in decs):
+            continue
+        first = node.args.args[0].arg if node.args.args else None
+        if first != "self":
+            wrong[name] = f"{mod}: first param is {first!r}"
+    assert not wrong, f"bind=True task(s) not taking self first: {wrong}"
+
+
+def test_send_task_safe_targets_are_registered_tasks():
+    """Dispatching a plain function raises AttributeError at runtime only.
+
+    send_task_safe calls .delay(), which a plain function does not have --
+    and it runs in a daemon thread, so the failure surfaces as a stray
+    traceback rather than a failed request. Checking the call sites
+    statically is the only place this is cheap to catch.
+    """
+    tasks = set(_decorated_tasks())
+    bad = {}
+    for folder in ("routers", "tasks", "services"):
+        d = API / folder
+        if not d.is_dir():
+            continue
+        for path in d.glob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.Call):
+                    continue
+                fn = node.func
+                if getattr(fn, "id", None) != "send_task_safe" or not node.args:
+                    continue
+                target = node.args[0]
+                # Only resolvable bare names; anything else is out of reach
+                # of a static check and is left alone rather than guessed at.
+                if isinstance(target, ast.Name) and target.id not in tasks:
+                    bad[f"{path.name}:{node.lineno}"] = target.id
+    assert not bad, f"send_task_safe called with non-task target(s): {bad}"
+
+
+def test_dispatch_error_handlers_cannot_throw():
+    """The logger must never be the thing that crashes.
+
+    `task.name` exists only on a registered task, so reading it inside the
+    handler that fires *because* the target was not one replaces the real
+    error with a second traceback from the reporting code. That is what
+    turned the §115 outage into two stacked tracebacks with the actual
+    AttributeError buried.
+
+    Asserted statically rather than behaviourally: exercising it means
+    importing celery_app, and the machine this is written on has no celery
+    (CLAUDE.md §37). A static check that runs is worth more here than a
+    behavioural one that does not.
+    """
+    # Parsed, not sliced out of the text: both of these functions explain
+    # the hazard in their own comments, which name `task.name` -- so a
+    # substring check over the source matches the prose rather than the
+    # code. (This bit me twice writing this file.)
+    module = ast.parse(CELERY_APP.read_text())
+    funcs = {
+        n.name: n for n in module.body
+        if isinstance(n, ast.FunctionDef)
+    }
+    for name in ("_task_label", "_dispatch_task"):
+        assert name in funcs, f"{name} is missing from celery_app.py"
+        body = ast.unparse(ast.Module(body=funcs[name].body[
+            1 if ast.get_docstring(funcs[name]) else 0:], type_ignores=[]))
+        assert "task.name" not in body, (
+            f"{name} reads task.name directly; on a non-task target that "
+            f"raises inside the very handler meant to report it"
+        )
+    dispatch_body = ast.unparse(funcs["_dispatch_task"])
+    assert "_task_label(task)" in dispatch_body, "handlers should label via _task_label"
+    assert dispatch_body.count("exc_info=True") == 2, (
+        "both handlers need exc_info, or the log names the task without saying why"
+    )
 
 
 def test_every_scheduled_task_exists():

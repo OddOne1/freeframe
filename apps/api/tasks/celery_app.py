@@ -152,6 +152,20 @@ import logging
 _task_logger = logging.getLogger("celery.dispatch")
 
 
+def _task_label(task):
+    """A name for the log line that cannot itself throw.
+
+    `task.name` only exists on a registered Celery task. When the thing
+    handed to send_task_safe is NOT one -- which is exactly the case worth
+    logging about -- reading `.name` raises inside the error handler, so the
+    real failure is replaced by a second traceback from the code trying to
+    report it. That happened for real: a decorator that had drifted onto the
+    wrong function left process_asset a plain function, and the resulting
+    AttributeError was reported only as a crash in this logger.
+    """
+    return getattr(task, "name", None) or getattr(task, "__name__", None) or repr(task)
+
+
 def _dispatch_task(task, args, kwargs):
     """Actually send the task to Celery broker (runs in background thread)."""
     try:
@@ -161,9 +175,17 @@ def _dispatch_task(task, args, kwargs):
             with celery_app.producer_or_acquire() as producer:
                 task.apply_async(args=args, kwargs=kwargs, producer=producer)
         except Exception:
-            _task_logger.warning("Failed to dispatch task %s after retry", task.name)
+            _task_logger.warning(
+                "Failed to dispatch task %s after retry", _task_label(task), exc_info=True
+            )
     except Exception:
-        _task_logger.warning("Failed to dispatch task %s", task.name)
+        # exc_info because the label alone does not say WHY. "Failed to
+        # dispatch task process_asset" with no traceback is what turned a
+        # one-line bug into a production outage nobody could see the cause
+        # of; the AttributeError underneath names it immediately.
+        _task_logger.warning(
+            "Failed to dispatch task %s", _task_label(task), exc_info=True
+        )
 
 
 def send_task_safe(task, *args, **kwargs):
