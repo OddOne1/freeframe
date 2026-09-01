@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import { ImageFrameConstraint } from '@/components/review/image-frame-constraint'
+import { COMPARE_MEDIA_CLASS } from './compare-pane'
 import { WipeStage, type WipeTransform } from './wipe-stage'
 
 interface WipeViewerProps {
@@ -26,7 +27,11 @@ interface WipeViewerProps {
  * The clip lives in SCREEN space (outside the shared transform) so the divider
  * line always matches the visible split, regardless of zoom/pan.
  *
- * The chrome itself lives in WipeStage, shared with the video stage.
+ * The chrome itself lives in WipeStage, shared with the video stage; the media
+ * sizing comes from compare-pane.tsx, shared with both. Wipe had the same
+ * `max-*` bug as side-by-side (§116) -- less visible only because a wipe pane
+ * is full-width, so fewer images are smaller than it -- and it is the same one
+ * line, so it is fixed in the same place rather than left to be found later.
  */
 export function WipeViewer({ urlA, urlB, badgeA, badgeB, transform, overlay, overlaySide }: WipeViewerProps) {
   // Annotations are authored in image-frame space, so display has to measure the
@@ -43,11 +48,11 @@ export function WipeViewer({ urlA, urlB, badgeA, badgeB, transform, overlay, ove
       overlaySide={overlaySide}
       layerA={
         // eslint-disable-next-line @next/next/no-img-element
-        <img ref={imgARef} src={urlA} alt={badgeA} className="max-h-full max-w-full object-contain" draggable={false} />
+        <img ref={imgARef} src={urlA} alt={badgeA} className={COMPARE_MEDIA_CLASS} draggable={false} />
       }
       layerB={
         // eslint-disable-next-line @next/next/no-img-element
-        <img ref={imgBRef} src={urlB} alt={badgeB} className="max-h-full max-w-full object-contain" draggable={false} />
+        <img ref={imgBRef} src={urlB} alt={badgeB} className={COMPARE_MEDIA_CLASS} draggable={false} />
       }
       constrainOverlay={(side, children) => (
         // Keyed by side so switching owner remounts the constraint against that

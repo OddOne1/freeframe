@@ -4,6 +4,7 @@ import * as React from 'react'
 import { Volume2, VolumeX } from 'lucide-react'
 import { VideoFrameConstraint } from '@/components/review/video-player'
 import { useWipeSplit, WipeDivider } from './use-wipe-split'
+import { COMPARE_MEDIA_CLASS, ComparePane } from './compare-pane'
 
 interface CompareVideoStageProps {
   mode: 'wipe' | 'sbs'
@@ -57,26 +58,15 @@ interface CompareVideoStageProps {
  * layer to arrange it.
  */
 /**
- * Matches the normal player's video sizing exactly (video-player.tsx), and
- * that is the fix for the "video is small / shrinks" report — not a tweak.
+ * Sizing and pane containment now live in compare-pane.tsx, shared with the
+ * image stage — see that file for why (§116: the same bug had to be fixed
+ * twice because these two kept private copies of the same markup).
  *
- * Compare used `max-h-full max-w-full`, which only ever scales DOWN: the
- * element never exceeds the media's own pixel size. Measured in a browser, a
- * 640x360 source in a 1398px-wide wipe pane rendered at 640px with the rest
- * black, and closing a comments panel widened the pane without the video
- * following — it stops growing at intrinsic size, which reads as "stuck
- * small". `w-full h-full object-contain` fills the pane and letterboxes,
- * scaling in both directions.
- *
- * It also fixes annotation alignment, which was quietly wrong:
- * VideoFrameConstraint computes the contain-box from the PARENT container's
- * size, i.e. it assumes the video fills its parent. Under `max-*` sizing the
- * video was smaller than the parent and centred, so the overlay was measured
- * against a box the video did not occupy. Filling the parent makes that
- * assumption true — the same one it has always been correct under on the
- * normal player, which is where drawings are authored.
+ * The rule itself is unchanged from §110: `w-full h-full object-contain`
+ * rather than `max-*`, which only scales down and left the video stuck at
+ * intrinsic size in a larger pane. It also keeps VideoFrameConstraint honest,
+ * since that computes the contain-box assuming the element fills its parent.
  */
-const VIDEO_CLASS = 'absolute inset-0 h-full w-full object-contain'
 
 export function CompareVideoStage({
   mode, videoRefA, videoRefB, badgeA, badgeB, transform,
@@ -91,15 +81,6 @@ export function CompareVideoStage({
   // picture, and object-contain already does the fitting per pane and per
   // mode. Converting a percentage into a scale needed the media's size and
   // its pane's; nothing does now.
-
-  // `overflow-hidden` on the SIDE-BY-SIDE pane, per pane rather than on the
-  // stage: a zoomed-in left pane spilling into the right one is not a
-  // comparison, and clipping at stage level would still let the two panes
-  // bleed into each other. Wipe needs none — its clip-path already contains
-  // each pane to its own side of the divider, and is left untouched.
-  const paneClass = isWipe
-    ? 'absolute inset-0 flex items-center justify-center'
-    : 'relative flex min-w-0 flex-1 items-center justify-center overflow-hidden bg-black'
 
   // Screen-space clips, one per pane, so everything inside a pane (video,
   // annotation overlay, drawing canvas) is clipped together.
@@ -133,35 +114,33 @@ export function CompareVideoStage({
           : 'relative flex min-h-0 flex-1 bg-black'
       }
     >
-      <div className={paneClass} style={clipA} onWheel={transform?.onWheel} onPointerDown={transform?.onPointerDown}>
-        {/* The zoom transform is applied INSIDE the pane, so the pane's
-            clip stays in screen space and the divider keeps matching the
-            visible split however far the media is zoomed or panned. */}
-        <div className="absolute inset-0" style={transform?.styleFor()}>
+      <ComparePane
+        isWipe={isWipe}
+        clip={clipA}
+        transform={transform}
+        chrome={errA ? <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeA}</span> : null}
+      >
         {/* Exclusive unmute: audioSide names the (at most one) audible side. */}
-        <video ref={videoRefA} data-testid="wipe-video-a" className={VIDEO_CLASS} playsInline preload="metadata" muted={audioSide !== 'a'} />
+        <video ref={videoRefA} data-testid="wipe-video-a" className={COMPARE_MEDIA_CLASS} playsInline preload="metadata" muted={audioSide !== 'a'} />
         {/* Drawings are AUTHORED inside VideoFrameConstraint on the normal
             player (video-frame coordinates, letterbox excluded) — displayed
             in the same space here. */}
         <VideoFrameConstraint videoRef={videoRefA}>{paneOverlayA}</VideoFrameConstraint>
-        </div>
-        {errA && <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeA}</span>}
-      </div>
+      </ComparePane>
 
       {/* The static seam between the two halves. sbs only — in wipe the
           draggable divider below is the boundary. */}
       {!isWipe && <div className="w-px bg-border" />}
 
-      <div className={paneClass} style={clipB} onWheel={transform?.onWheel} onPointerDown={transform?.onPointerDown}>
-        {/* The zoom transform is applied INSIDE the pane, so the pane's
-            clip stays in screen space and the divider keeps matching the
-            visible split however far the media is zoomed or panned. */}
-        <div className="absolute inset-0" style={transform?.styleFor()}>
-        <video ref={videoRefB} data-testid="wipe-video-b" className={VIDEO_CLASS} playsInline preload="metadata" muted={audioSide !== 'b'} />
+      <ComparePane
+        isWipe={isWipe}
+        clip={clipB}
+        transform={transform}
+        chrome={errB ? <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeB}</span> : null}
+      >
+        <video ref={videoRefB} data-testid="wipe-video-b" className={COMPARE_MEDIA_CLASS} playsInline preload="metadata" muted={audioSide !== 'b'} />
         <VideoFrameConstraint videoRef={videoRefB}>{paneOverlayB}</VideoFrameConstraint>
-        </div>
-        {errB && <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeB}</span>}
-      </div>
+      </ComparePane>
 
       {isWipe && <WipeDivider split={split} onPointerDown={onDividerDown} />}
 

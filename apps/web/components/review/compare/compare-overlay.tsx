@@ -14,6 +14,7 @@ import { CompareScrubber, type ScrubberMarker } from './compare-scrubber'
 import { useSyncedTransport } from './use-synced-transport'
 import { useSharedTransform } from './use-shared-transform'
 import { WipeViewer } from './wipe-viewer'
+import { CompareImageStage } from './compare-image-stage'
 import { CompareVideoStage } from './compare-video-stage'
 import { CompareZoomControls } from './compare-zoom-controls'
 import { AnnotationOverlay } from '@/components/review/annotation-overlay'
@@ -636,48 +637,27 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
               />
             ) : null
           ) : (
-            <div
-              className="relative flex min-h-0 flex-1 items-stretch overflow-hidden bg-black"
-              onWheel={(e) => transform.onWheel(e)}
-              onPointerDown={transform.onPointerDown}
-              onDoubleClick={transform.reset}
-            >
-              <div className="relative flex min-w-0 flex-1 items-center justify-center">
-                <span className="absolute left-3 top-3 z-10 rounded bg-sky-500/90 px-1.5 py-0.5 text-[11px] font-semibold text-white">{badgeA}</span>
-                {urlA && (
-                  // Transform lives on a DEFINITE-size (h-full w-full — never
-                  // max-*, whose content-sized box breaks the img's percentage
-                  // caps) wrapper so the annotation overlay zooms/pans with
-                  // the image — mirrors ImageViewer's inside-the-transform
-                  // placement. At scale 1 the img letterboxes in the same
-                  // available box as before.
-                  <div className="relative flex h-full w-full items-center justify-center" style={transform.styleFor()}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img ref={imgARef} src={urlA} alt={badgeA} className="max-h-full max-w-full object-contain" draggable={false} />
-                    {/* Image-frame space, not pane space — the two panes letterbox
-                        differently whenever the versions differ in aspect ratio. */}
-                    <ImageFrameConstraint imgRef={imgARef}>
-                      <AnnotationOverlay key={`a-${focusedCommentId ?? 'none'}`} annotation={annotationA} />
-                      {drawingSide === 'a' && <AnnotationCanvas />}
-                    </ImageFrameConstraint>
-                  </div>
-                )}
-              </div>
-              <div className="w-px bg-border" />
-              <div className="relative flex min-w-0 flex-1 items-center justify-center">
-                <span className="absolute right-3 top-3 z-10 rounded bg-emerald-500/90 px-1.5 py-0.5 text-[11px] font-semibold text-white">{badgeB}</span>
-                {urlB && (
-                  <div className="relative flex h-full w-full items-center justify-center" style={transform.styleFor()}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img ref={imgBRef} src={urlB} alt={badgeB} className="max-h-full max-w-full object-contain" draggable={false} />
-                    <ImageFrameConstraint imgRef={imgBRef}>
-                      <AnnotationOverlay key={`b-${focusedCommentId ?? 'none'}`} annotation={annotationB} />
-                      {drawingSide === 'b' && <AnnotationCanvas />}
-                    </ImageFrameConstraint>
-                  </div>
-                )}
-              </div>
-            </div>
+            <CompareImageStage
+              urlA={urlA}
+              urlB={urlB}
+              badgeA={badgeA}
+              badgeB={badgeB}
+              transform={transform}
+              imgARef={imgARef}
+              imgBRef={imgBRef}
+              paneOverlayA={
+                <>
+                  <AnnotationOverlay key={`a-${focusedCommentId ?? 'none'}`} annotation={annotationA} />
+                  {drawingSide === 'a' && <AnnotationCanvas />}
+                </>
+              }
+              paneOverlayB={
+                <>
+                  <AnnotationOverlay key={`b-${focusedCommentId ?? 'none'}`} annotation={annotationB} />
+                  {drawingSide === 'b' && <AnnotationCanvas />}
+                </>
+              }
+            />
           )}
           {!isVideo && controlRow}
 

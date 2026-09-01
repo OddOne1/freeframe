@@ -552,8 +552,11 @@ describe('CompareOverlay per-pane annotation display', () => {
   it('image side-by-side: the annotation layer is pinned to the picture, not the letterboxed pane', () => {
     searchParamsString = 'compare=v-1&mode=sbs'
     streamUrl = '/img.webp'
-    // Portrait image rendered at natural size in a wider pane: max-w-full does
-    // not upscale, so 350px of empty pane sits either side of the picture.
+    // A portrait picture letterboxed inside a wider pane, so 350px of empty
+    // pane sits either side of it. Since §116 the <img> FILLS the pane and
+    // object-contain does the letterboxing, so these are the picture's own
+    // measured offsets rather than the element's -- which is exactly what
+    // ImageFrameConstraint has to pin the overlay to either way.
     stubGeometry({
       naturalWidth: 100, naturalHeight: 200,
       offsetWidth: 100, offsetHeight: 200, offsetLeft: 350, offsetTop: 100,
