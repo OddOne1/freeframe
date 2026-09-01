@@ -14,6 +14,7 @@ import { CompareScrubber, type ScrubberMarker } from './compare-scrubber'
 import { useSyncedTransport } from './use-synced-transport'
 import { useSharedTransform } from './use-shared-transform'
 import { WipeViewer } from './wipe-viewer'
+import { VideoWipeViewer } from './video-wipe-viewer'
 import { AnnotationOverlay } from '@/components/review/annotation-overlay'
 import { AnnotationCanvas } from '@/components/review/annotation-canvas'
 import { VideoFrameConstraint } from '@/components/review/video-player'
@@ -103,7 +104,16 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
   }, [rightFromUrl, rightVersion.id, setCurrentVersion])
 
   const isVideo = asset.asset_type === 'video'
-  const mode = (searchParams.get('mode') === 'sbs' ? 'sbs' : 'wipe') as 'wipe' | 'sbs'
+  // The DEFAULT differs by media type, and deliberately so. Images have always
+  // opened in wipe; video has always opened side-by-side (it ignored `mode`
+  // entirely until video wipe existed). Now that video honours the param, a
+  // single shared default would silently change what every existing compare
+  // link and every plain Compare click shows for video. Explicit values in the
+  // URL win for both, so one `mode` param still drives both media types.
+  const modeParam = searchParams.get('mode')
+  const mode: 'wipe' | 'sbs' = isVideo
+    ? (modeParam === 'wipe' ? 'wipe' : 'sbs')
+    : (modeParam === 'sbs' ? 'sbs' : 'wipe')
   const offA = parseOffsetParam(searchParams.get('offA'))
   const offB = parseOffsetParam(searchParams.get('offB'))
 
@@ -377,8 +387,11 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-bg-primary">
       {/* Top bar — minimalist chrome only */}
-      <div className="flex items-center gap-3 border-b border-border px-4 py-2">
-        <div className="shrink-0">
+      {/* Three equal tracks rather than flex: the toggle is centred on the
+          stage itself, so it does not drift as version labels change width
+          ("v2" vs "v10") or as the asset title grows. */}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 border-b border-border px-4 py-2">
+        <div className="flex min-w-0 items-center gap-3">
           <CompareVersionSelect
             testId="compare-select-a"
             versions={versions}
@@ -387,32 +400,33 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
             accentClass="text-sky-400"
             onChange={handleSwitchLeft}
           />
-        </div>
-        {/* Center: asset title (flex-1 min-w-0 truncates without pushing either
-            side's chrome), plus the image-only mode toggle beside it. */}
-        <div className="flex min-w-0 flex-1 items-center justify-center gap-3">
-          <span className="min-w-0 flex-1 truncate text-center text-[13px] font-medium text-text-primary" title={asset.name}>
+          <span className="min-w-0 truncate text-[13px] font-medium text-text-primary" title={asset.name}>
             {asset.name}
           </span>
-          {!isVideo && (
-            <button
-              type="button"
-              aria-label={mode === 'wipe' ? 'Switch to side-by-side' : 'Switch to wipe'}
-              onClick={() => writeParams((p) => p.set('mode', mode === 'wipe' ? 'sbs' : 'wipe'))}
-              className="flex shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[13px] text-text-secondary hover:bg-bg-hover"
-            >
-              {mode === 'wipe' ? <Columns2 className="h-3.5 w-3.5" /> : <FlipHorizontal2 className="h-3.5 w-3.5" />}
-              {mode === 'wipe' ? 'Side-by-side' : 'Wipe'}
-            </button>
-          )}
         </div>
-        <div className="flex shrink-0 items-center gap-3">
+        {/* Centre track: the mode toggle, now for video as well as images —
+            the wipe stage is the same clip-path either way. */}
+        <div className="flex shrink-0 items-center justify-center">
+          <button
+            type="button"
+            data-testid="compare-mode-toggle"
+            aria-label={mode === 'wipe' ? 'Switch to side-by-side' : 'Switch to wipe'}
+            onClick={() => writeParams((p) => p.set('mode', mode === 'wipe' ? 'sbs' : 'wipe'))}
+            className="flex shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[13px] text-text-secondary hover:bg-bg-hover"
+          >
+            {mode === 'wipe' ? <Columns2 className="h-3.5 w-3.5" /> : <FlipHorizontal2 className="h-3.5 w-3.5" />}
+            {mode === 'wipe' ? 'Side-by-side' : 'Wipe'}
+          </button>
+        </div>
+        <div className="flex min-w-0 items-center justify-end gap-3">
           <CompareVersionSelect
             testId="compare-select-b"
             versions={versions}
             value={right.id}
             excludeId={left.id}
             accentClass="text-emerald-400"
+            // Top-right corner: a left-anchored menu grows off-screen.
+            align="end"
             onChange={handleSwitchRight}
           />
           <button
@@ -506,7 +520,38 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
 
           {isVideo ? (
             <>
+              {mode === 'wipe' ? (
+                <div className="flex min-h-0 flex-1">
+                  {/* Same two transport-driven elements as side-by-side, in the
+                      shared wipe stage. No new players and no new sync: the
+                      transport reaches these refs by currentTime/play/pause and
+                      never asks where they are painted. */}
+                  <VideoWipeViewer
+                    videoRefA={transport.playerA.videoRef}
+                    videoRefB={transport.playerB.videoRef}
+                    badgeA={badgeA}
+                    badgeB={badgeB}
+                    audioSide={audioSide}
+                    onAudioSideChange={setAudioSide}
+                    errA={errA}
+                    errB={errB}
+                    overlay={
+                      lastAnnotationSide || drawingSide ? (
+                        <>
+                          <AnnotationOverlay
+                            key={`${lastAnnotationSide ?? 'none'}-${focusedCommentId ?? 'none'}`}
+                            annotation={lastAnnotationSide === 'a' ? annotationA : lastAnnotationSide === 'b' ? annotationB : null}
+                          />
+                          {drawingSide && <AnnotationCanvas />}
+                        </>
+                      ) : null
+                    }
+                    overlaySide={drawingSide ?? lastAnnotationSide}
+                  />
+                </div>
+              ) : (
               <div className="flex min-h-0 flex-1">
+
                 <div className="relative flex min-w-0 flex-1 items-center justify-center bg-black">
                   <div className="absolute left-3 top-3 z-10 flex items-center gap-1.5">
                     <span className="rounded bg-sky-500/90 px-1.5 py-0.5 text-[11px] font-semibold text-white">{badgeA}</span>
@@ -553,6 +598,7 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
                   {errB && <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeB}</span>}
                 </div>
               </div>
+              )}
               <CompareScrubber
                 t={transport.t}
                 total={transport.total}

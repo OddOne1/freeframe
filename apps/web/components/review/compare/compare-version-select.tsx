@@ -15,10 +15,15 @@ interface CompareVersionSelectProps {
   /** Version shown on the OTHER pane — disabled here so both sides can't show the same version. */
   excludeId?: string | null
   testId?: string
+  /**
+   * Which edge the menu is anchored to. The right-pane pill sits in the
+   * top-right corner, so a left-anchored menu grows off-screen there.
+   */
+  align?: 'start' | 'end'
 }
 
 /** Controlled version dropdown for the compare overlay — never touches the review store. */
-export function CompareVersionSelect({ versions, value, onChange, accentClass, excludeId, testId }: CompareVersionSelectProps) {
+export function CompareVersionSelect({ versions, value, onChange, accentClass, excludeId, testId, align = 'start' }: CompareVersionSelectProps) {
   const [open, setOpen] = React.useState(false)
   const rootRef = React.useRef<HTMLDivElement>(null)
   const sorted = React.useMemo(
@@ -52,7 +57,10 @@ export function CompareVersionSelect({ versions, value, onChange, accentClass, e
       {open && (
         <div
           role="listbox"
-          className="absolute left-0 top-full z-[100] mt-1 min-w-[140px] rounded-lg border border-border bg-bg-elevated p-1 shadow-xl"
+          className={cn(
+            'absolute top-full z-[100] mt-1 min-w-[140px] rounded-lg border border-border bg-bg-elevated p-1 shadow-xl',
+            align === 'end' ? 'right-0' : 'left-0',
+          )}
         >
           {sorted.map((v) => {
             const status = versionStatusConfig[v.processing_status]
