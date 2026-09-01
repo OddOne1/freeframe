@@ -72,6 +72,19 @@ class AssetVersion(Base):
     asset_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("assets.id"), nullable=False, index=True)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     processing_status: Mapped[ProcessingStatus] = mapped_column(Enum(ProcessingStatus), default=ProcessingStatus.uploading)
+    # §113 — how far processing has got, 0-100.
+    #
+    # A plain column rather than a side table: it is one small, frequently
+    # overwritten number with exactly the same lifetime as processing_status,
+    # which already lives here. A separate table would mean a join on every
+    # asset listing to read a value that is meaningless without the status
+    # beside it.
+    #
+    # Nullable, and null is not zero: it means "no progress has ever been
+    # reported for this version", which is the honest state for an image (its
+    # processor has no progress callback at all) and for anything queued but
+    # not yet started. A reader must not present null as 0% of a running job.
+    processing_progress: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_by_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

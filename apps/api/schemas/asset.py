@@ -34,6 +34,10 @@ class AssetVersionResponse(BaseModel):
     asset_id: uuid.UUID
     version_number: int
     processing_status: ProcessingStatus
+    # §113 — 0-100 while transcoding, 100 when ready. NULL means no progress
+    # was ever reported (an image, or a job not yet started) — deliberately
+    # distinct from 0, which means a running job that has not advanced.
+    processing_progress: Optional[int] = None
     created_by: Optional[uuid.UUID] = None
     created_by_name: Optional[str] = None
     created_at: datetime

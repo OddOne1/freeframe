@@ -225,17 +225,25 @@ function UploadItem({ upload }: { upload: UploadFile }) {
 // ─── Panel ────────────────────────────────────────────────────────────────────
 
 export function UploadsPanel() {
-  const { files, panelOpen, setPanelOpen, clearCompleted, fetchHistory, fetchMoreHistory, historyHasMore, historyLoading } = useUploadStore()
+  const { files, panelOpen, setPanelOpen, clearCompleted, fetchHistory, fetchMoreHistory, fetchProcessing, historyHasMore, historyLoading } = useUploadStore()
   const [filter, setFilter] = React.useState<FilterTab>('all')
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const sentinelRef = React.useRef<HTMLDivElement>(null)
 
   // Fetch backend history when panel opens
+  //
+  // §113 — plus everything still in flight, which the recency pages can miss
+  // entirely: they load 20 at a time and only go further as the user scrolls,
+  // so a still-processing asset with 20+ newer ones behind it never re-enters
+  // the list after a reload. Not ordered relative to fetchHistory on purpose
+  // — both merge through the same path, and whichever lands second simply
+  // merges into the other's result.
   React.useEffect(() => {
     if (panelOpen) {
       fetchHistory()
+      fetchProcessing()
     }
-  }, [panelOpen, fetchHistory])
+  }, [panelOpen, fetchHistory, fetchProcessing])
 
   // Infinite scroll — IntersectionObserver on sentinel
   React.useEffect(() => {

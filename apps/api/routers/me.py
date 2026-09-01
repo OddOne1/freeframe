@@ -1,13 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from ..database import get_db
 from ..middleware.auth import get_current_user
 from ..models.user import User
-from ..models.asset import Asset
+from ..models.asset import Asset, AssetVersion, ProcessingStatus
 from ..models.folder import Folder
 from ..models.project import Project, ProjectMember
 from ..models.share import AssetShare
@@ -22,6 +22,10 @@ router = APIRouter(prefix="/me", tags=["me"])
 @router.get("/assets", response_model=list[AssetResponse])
 def list_my_assets(
     filter: Optional[str] = Query(default=None, description="owned|shared|mentioned|assigned|due_soon"),
+    processing: bool = Query(
+        default=False,
+        description="Only assets whose latest version is still processing, ignoring skip/limit",
+    ),
     q: Optional[str] = Query(default=None, description="Search by asset name"),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
@@ -98,6 +102,47 @@ def list_my_assets(
     # Apply search filter
     if q and q.strip():
         query = query.filter(Asset.name.ilike(f"%{q.strip()}%"))
+
+    # §113 — the uploads panel's discovery problem.
+    #
+    # The panel populates itself from this endpoint's RECENCY pages, 20 at a
+    # time, and only fetches further pages as the user scrolls. A still-
+    # processing asset that has fallen outside the fetched window therefore
+    # never re-enters the list after a reload — not stuck at 0%, absent
+    # entirely, while its own detail view shows the truth. Neither the 5s poll
+    # nor the SSE handlers can rescue it: both only update items already in
+    # the list.
+    #
+    # So this filter deliberately ignores skip/limit. The set is bounded by
+    # what is genuinely in flight for one user, which is small — and capping
+    # it by recency would reintroduce exactly the bug it exists to close.
+    if processing:
+        latest = (
+            db.query(
+                AssetVersion.asset_id.label("asset_id"),
+                func.max(AssetVersion.version_number).label("max_version"),
+            )
+            .filter(AssetVersion.deleted_at.is_(None))
+            .group_by(AssetVersion.asset_id)
+            .subquery()
+        )
+        in_flight = {ProcessingStatus.uploading, ProcessingStatus.processing}
+        processing_ids = (
+            db.query(AssetVersion.asset_id)
+            .join(
+                latest,
+                (AssetVersion.asset_id == latest.c.asset_id)
+                & (AssetVersion.version_number == latest.c.max_version),
+            )
+            .filter(AssetVersion.processing_status.in_(in_flight))
+            .subquery()
+        )
+        assets = (
+            query.filter(Asset.id.in_(processing_ids))
+            .order_by(Asset.created_at.desc())
+            .all()
+        )
+        return _build_asset_responses_bulk(assets, db, current_user)
 
     assets = query.order_by(Asset.created_at.desc()).offset(skip).limit(limit).all()
     return _build_asset_responses_bulk(assets, db, current_user)

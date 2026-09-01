@@ -239,3 +239,29 @@ describe('control row and zoom containment', () => {
     expect(screen.getByTestId('compare-zoom-label').textContent).toBe(zoomed)
   })
 })
+
+describe('control row sits above the scrubber', () => {
+  it('renders before the scrubber in document order, for video', () => {
+    // Nothing in this file uses order-* utilities, so plain source order
+    // decides what is drawn where — and the row was last, which put it BELOW
+    // the scrubber while a comment above it claimed otherwise.
+    renderOverlay(videoAsset)
+    const row = screen.getByTestId('compare-control-row')
+    const scrubber = screen.getByTestId('compare-track').closest('div')!.parentElement!
+    expect(row.compareDocumentPosition(scrubber) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('still renders for images, which have no scrubber at all', () => {
+    // The row used to sit outside the media branch; moving it above the
+    // scrubber put it inside the video branch, where images would never see
+    // it. One definition, rendered in both.
+    renderOverlay(imageAsset)
+    expect(screen.getByTestId('compare-control-row')).toBeInTheDocument()
+    expect(screen.queryByTestId('compare-track')).toBeNull()
+  })
+
+  it('is one shared definition, not two copies', () => {
+    renderOverlay(videoAsset)
+    expect(screen.getAllByTestId('compare-control-row')).toHaveLength(1)
+  })
+})

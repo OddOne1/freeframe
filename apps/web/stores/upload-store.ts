@@ -465,6 +465,8 @@ interface UploadStore {
   clearCompleted: () => void
   fetchHistory: () => Promise<void>
   fetchMoreHistory: () => Promise<void>
+  /** §113 — discover in-flight assets outside the recency window. */
+  fetchProcessing: () => Promise<void>
   // SSE-driven processing updates
   updateProcessingProgress: (assetId: string, percent: number) => void
   markProcessingComplete: (assetId: string) => void
@@ -513,7 +515,13 @@ function mergeHistoryAssets(
         projectId: a.project_id,
         assetName: a.name,
         progress: 100,
-        processingProgress: v.processing_status === 'ready' ? 100 : 0,
+        // §113 — the real, persisted percent when the server has one. It used
+        // to be a 0/100 guess from the status alone, so a rediscovered job
+        // always read 0% however far along it actually was. `?? ` and not
+        // `||`: 0 is a real percent and must survive.
+        processingProgress: v.processing_status === 'ready'
+          ? 100
+          : (v.processing_progress ?? 0),
         status: mapProcessingStatus(v.processing_status),
         assetId: a.id,
         versionId: v.id,
@@ -691,6 +699,30 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
     }))
   },
 
+  /**
+   * §113 — everything of this user's that is still in flight, regardless of
+   * how recent it is.
+   *
+   * The history pages below are ordered by recency, 20 at a time, and further
+   * pages only load as the user scrolls. A still-processing asset that has
+   * fallen outside the fetched window therefore never re-enters this list
+   * after a reload — absent entirely, not stuck at 0% — while its own detail
+   * view shows the truth. Neither the 5s poll nor the SSE handlers can
+   * recover it: both only update items already present.
+   *
+   * Runs IN ADDITION TO the history fetch, not instead of it, and merges
+   * through the same path, so nothing about the recency list changes.
+   */
+  fetchProcessing: async () => {
+    try {
+      const assets = await api.get<AssetResponse[]>('/me/assets?processing=true')
+      if (!assets.length) return
+      set((s) => ({ files: mergeHistoryAssets(s.files, assets, s.dismissedHistoryIds) }))
+    } catch {
+      // Discovery is best-effort: failing it must not stop the panel opening.
+    }
+  },
+
   fetchHistory: async () => {
     if (get().historyLoaded) return
     set({ historyLoading: true })
@@ -773,7 +805,13 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
           const asset = idx >= 0 ? results[idx] : null
           if (!asset?.latest_version) return f
           const status = mapProcessingStatus(asset.latest_version.processing_status)
-          if (status === 'processing') return f
+          const pct = asset.latest_version.processing_progress
+          // §113 — still processing is no longer a dead end for this poll: it
+          // now carries a real percent, which is what advances the bar when
+          // SSE is not connected (a reload, a backgrounded tab).
+          if (status === 'processing') {
+            return pct == null || pct === f.processingProgress ? f : { ...f, processingProgress: pct }
+          }
           return { ...f, status, processingProgress: status === 'complete' ? 100 : 0 }
         }),
       }))

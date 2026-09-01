@@ -385,6 +385,63 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
   const badgeA = `v${left.version_number}`
   const badgeB = `v${right.version_number}`
 
+  // Defined once and rendered in BOTH branches: video needs it between the
+  // stage and the scrubber, images have no scrubber to sit above. Two copies
+  // of this markup would drift.
+  /* ─── Control row ─────────────────────────────────────────────
+  A NORMAL-FLOW sibling of the stage, directly above the
+  scrubber — not absolutely positioned inside it. All three of
+  these used to float over the video at `bottom-4`, where a
+  zoomed-in pane painted straight over them and, with nothing
+  clipping the overflow, could intercept their clicks. They also
+  sat low enough to collide with the scrubber's own bar. Here
+  they cannot be reached by any amount of zoom.
+
+  Three equal tracks, so the zoom cluster is centred on the STAGE
+  as a whole rather than on the space the toggles leave — and, in
+  wipe, independently of wherever the divider currently sits. */
+  const controlRow = (
+    <div
+      data-testid="compare-control-row"
+      className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 border-t border-border px-3 py-1.5"
+    >
+      <div className="flex justify-start">
+        <button
+          type="button"
+          aria-label="Toggle left comments"
+          title={`Comments on ${badgeA}`}
+          onClick={() => setPanelAOpen((p) => !p)}
+          className={cn(
+            'flex h-8 w-8 items-center justify-center rounded-md border border-border text-sky-400 hover:bg-bg-hover',
+            panelAOpen && 'bg-bg-hover',
+          )}
+        >
+          <MessageSquare className="h-4 w-4" />
+        </button>
+      </div>
+      <CompareZoomControls
+        zoomPct={transform.zoomPct}
+        isFit={transform.isFit}
+        setZoom={transform.setZoom}
+        fit={transform.fit}
+      />
+      <div className="flex justify-end">
+        <button
+          type="button"
+          aria-label="Toggle right comments"
+          title={`Comments on ${badgeB}`}
+          onClick={() => setPanelBOpen((p) => !p)}
+          className={cn(
+            'flex h-8 w-8 items-center justify-center rounded-md border border-border text-emerald-400 hover:bg-bg-hover',
+            panelBOpen && 'bg-bg-hover',
+          )}
+        >
+          <MessageSquare className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  )
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-bg-primary">
       {/* Top bar — minimalist chrome only */}
@@ -534,6 +591,7 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
                   </>
                 }
               />
+              {controlRow}
               <CompareScrubber
                 t={transport.t}
                 total={transport.total}
@@ -621,58 +679,8 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
               </div>
             </div>
           )}
+          {!isVideo && controlRow}
 
-          {/* ─── Control row ─────────────────────────────────────────────
-              A NORMAL-FLOW sibling of the stage, directly above the
-              scrubber — not absolutely positioned inside it. All three of
-              these used to float over the video at `bottom-4`, where a
-              zoomed-in pane painted straight over them and, with nothing
-              clipping the overflow, could intercept their clicks. They also
-              sat low enough to collide with the scrubber's own bar. Here
-              they cannot be reached by any amount of zoom.
-
-              Three equal tracks, so the zoom cluster is centred on the STAGE
-              as a whole rather than on the space the toggles leave — and, in
-              wipe, independently of wherever the divider currently sits. */}
-          <div
-            data-testid="compare-control-row"
-            className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 border-t border-border px-3 py-1.5"
-          >
-            <div className="flex justify-start">
-              <button
-                type="button"
-                aria-label="Toggle left comments"
-                title={`Comments on ${badgeA}`}
-                onClick={() => setPanelAOpen((p) => !p)}
-                className={cn(
-                  'flex h-8 w-8 items-center justify-center rounded-md border border-border text-sky-400 hover:bg-bg-hover',
-                  panelAOpen && 'bg-bg-hover',
-                )}
-              >
-                <MessageSquare className="h-4 w-4" />
-              </button>
-            </div>
-            <CompareZoomControls
-              zoomPct={transform.zoomPct}
-              isFit={transform.isFit}
-              setZoom={transform.setZoom}
-              fit={transform.fit}
-            />
-            <div className="flex justify-end">
-              <button
-                type="button"
-                aria-label="Toggle right comments"
-                title={`Comments on ${badgeB}`}
-                onClick={() => setPanelBOpen((p) => !p)}
-                className={cn(
-                  'flex h-8 w-8 items-center justify-center rounded-md border border-border text-emerald-400 hover:bg-bg-hover',
-                  panelBOpen && 'bg-bg-hover',
-                )}
-              >
-                <MessageSquare className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
         </div>
 
         {/* Right comment panel */}

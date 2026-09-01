@@ -119,6 +119,10 @@ def process_asset(self, asset_id: str, version_id: str):
                 _process_image(db, asset, version, media_file, s3, output_prefix)
 
             version.processing_status = ProcessingStatus.ready
+            # A definite 100, not whatever the final report happened to be:
+            # ffmpeg's last progress line is often a percent or two short, and
+            # a finished asset showing 98% reads as stalled.
+            version.processing_progress = 100
             db.commit()
 
             # Publish SSE event (best-effort)
@@ -205,11 +209,35 @@ def _process_video(db, asset, version, media_file, s3, output_prefix):
         qualities=["1080p", "720p", "360p"],
     )
 
+    # §113 — persist alongside the live event, not instead of it.
+    #
+    # The SSE event stays exactly as it was: it is what drives a panel that is
+    # already open, and it is cheap. What it could not do is survive nobody
+    # listening — Redis pub/sub has no replay, so a reload mid-transcode had
+    # nothing to read and the panel fell back to a hardcoded 0/100 guess.
+    #
+    # Writes are THROTTLED to whole-percent changes. ffmpeg reports far more
+    # often than that, and a row UPDATE per report would put thousands of
+    # writes behind every transcode to move a number nobody can see change.
+    last_written = {"pct": None}
+
     def _report_progress(percent: int) -> None:
         _publish_event(str(asset.project_id), "transcode_progress", {
             "asset_id": str(asset.id),
             "percent": percent,
         })
+        pct = max(0, min(100, int(percent)))
+        if last_written["pct"] == pct:
+            return
+        last_written["pct"] = pct
+        try:
+            version.processing_progress = pct
+            db.commit()
+        except Exception:
+            # Progress is a convenience, never a reason to fail a transcode
+            # that is otherwise succeeding. A rollback keeps the session
+            # usable for the real work still to come.
+            db.rollback()
 
     result = _run_async(transcoder.transcode(job, progress_callback=_report_progress))
     if not result.success:

@@ -198,6 +198,10 @@ export interface AssetVersion {
   asset_id: string;
   version_number: number;
   processing_status: AssetVersionStatus;
+  /** §113 — 0-100 while processing, 100 when ready. Null when no progress was
+   *  ever reported (an image, or a job not yet started) — distinct from 0,
+   *  which means a running job that has not advanced. */
+  processing_progress?: number | null;
   created_by: string | null;
   created_by_name?: string | null;
   created_at: string;
