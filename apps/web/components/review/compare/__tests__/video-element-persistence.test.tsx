@@ -85,7 +85,11 @@ describe('video elements persist across a mode switch', () => {
 
   it('changes only the layout: clip in wipe, none in side-by-side', () => {
     const { rerender } = render(stage('sbs'))
-    const paneOf = (id: string) => screen.getByTestId(id).parentElement as HTMLElement
+    // The pane is now the GRANDparent: each pane gained an inner wrapper
+    // that carries the shared zoom transform, so the clip (screen space) and
+    // the transform (media space) stay on separate elements — the divider has
+    // to keep matching the visible split however far the media is zoomed.
+    const paneOf = (id: string) => screen.getByTestId(id).parentElement!.parentElement as HTMLElement
     expect(paneOf('wipe-video-b').style.clipPath).toBe('')
     expect(screen.queryByTestId('wipe-divider')).toBeNull()
 

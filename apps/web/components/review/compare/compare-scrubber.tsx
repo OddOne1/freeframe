@@ -15,6 +15,70 @@ export interface ScrubberMarker {
   hasAnnotation: boolean
 }
 
+/**
+ * Elapsed / remaining readout.
+ *
+ * Clicking toggles which one is shown, and the sign says which without
+ * needing to remember: elapsed counts up from zero and reads `+`, remaining
+ * counts down to zero and reads `-`. A bare number that quietly means
+ * something else after a click is the thing this is designed not to be.
+ *
+ * When the two versions have DIFFERENT runtimes, one number cannot describe
+ * both — "remaining" is a different amount on each side. In that case the two
+ * are stacked, labelled with their version, and both follow the single
+ * toggle: the toggle chooses the mode, not the side.
+ */
+function TimecodeReadout({
+  t, timingA, timingB, fps, labelA, labelB,
+}: {
+  t: number
+  timingA: SideTiming
+  timingB: SideTiming
+  fps?: number | null
+  labelA: string
+  labelB: string
+}) {
+  const [remaining, setRemaining] = React.useState(false)
+  const f = fps ?? 24
+  const endA = sideEnd(timingA)
+  const endB = sideEnd(timingB)
+  // Compared in FRAMES, not seconds: two versions of the same cut can differ
+  // by a rounding error far below a frame, which is not a runtime difference
+  // anyone would want a second readout for.
+  const differs = Math.abs(endA - endB) >= 1 / f
+
+  // Clamped at zero — past a shorter side's end, "remaining" is 0, not
+  // negative time.
+  const valueFor = (end: number) => (remaining ? Math.max(end - t, 0) : t)
+  const sign = remaining ? '-' : '+'
+
+  return (
+    <button
+      type="button"
+      data-testid="timecode-readout"
+      onClick={() => setRemaining((p) => !p)}
+      title={remaining ? 'Showing remaining — click for elapsed' : 'Showing elapsed — click for remaining'}
+      aria-label={remaining ? 'Remaining time' : 'Elapsed time'}
+      className="flex flex-col items-end rounded px-1 py-0.5 font-mono text-[12px] tabular-nums text-text-secondary hover:bg-bg-hover"
+    >
+      {differs ? (
+        <>
+          <span data-testid="timecode-a" className="flex items-center gap-1 leading-tight">
+            <span className="text-[9px] text-sky-400">{labelA}</span>
+            {sign}{formatTimecode(valueFor(endA), f)}
+          </span>
+          <span data-testid="timecode-b" className="flex items-center gap-1 leading-tight">
+            <span className="text-[9px] text-emerald-400">{labelB}</span>
+            {sign}{formatTimecode(valueFor(endB), f)}
+          </span>
+        </>
+      ) : (
+        <span data-testid="timecode-single">{sign}{formatTimecode(valueFor(endA), f)}</span>
+      )}
+    </button>
+  )
+}
+
 interface CompareScrubberProps {
   t: number
   total: number
@@ -33,6 +97,17 @@ interface CompareScrubberProps {
   labelB: string
   /** Reset both per-side offsets back to 0 (re-sync the two sides). */
   onResetOffsets(): void
+}
+
+/**
+ * One side's own end-of-timeline, in shared-transport time.
+ *
+ * A side that starts late (a positive offset) also ENDS late, so its total is
+ * its offset plus its duration — not the job-wide `total`, which is whichever
+ * side runs longest.
+ */
+function sideEnd(side: SideTiming): number {
+  return side.offset + side.duration
 }
 
 // ─── Marker dot + hover preview (mirrors progress-bar.tsx's CommentMarker) ────
@@ -216,7 +291,7 @@ export function CompareScrubber(props: CompareScrubberProps) {
         ))}
       </div>
 
-      <span className="font-mono text-[12px] tabular-nums text-text-secondary">{formatTimecode(t, fps ?? 24)}</span>
+      <TimecodeReadout t={t} timingA={timingA} timingB={timingB} fps={fps} labelA={labelA} labelB={labelB} />
 
       <div className="flex items-center gap-2">
         <div className="flex flex-col gap-1">

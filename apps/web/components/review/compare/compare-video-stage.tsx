@@ -7,6 +7,13 @@ import { useWipeSplit, WipeDivider } from './use-wipe-split'
 
 interface CompareVideoStageProps {
   mode: 'wipe' | 'sbs'
+  /** Shared zoom/pan — ONE transform for both panes (see useSharedTransform). */
+  transform?: {
+    styleFor(): React.CSSProperties
+    onWheel(e: { deltaY: number; preventDefault(): void }): void
+    onPointerDown(e: React.PointerEvent): void
+    setMediaMetrics(m: { intrinsicWidth: number; intrinsicHeight: number; boxWidth: number; boxHeight: number } | null): void
+  }
   videoRefA: React.RefObject<HTMLVideoElement>
   videoRefB: React.RefObject<HTMLVideoElement>
   badgeA: string
@@ -50,14 +57,64 @@ interface CompareVideoStageProps {
  * a drawing cannot bleed across the divider without a second, separate clip
  * layer to arrange it.
  */
+/**
+ * Matches the normal player's video sizing exactly (video-player.tsx), and
+ * that is the fix for the "video is small / shrinks" report — not a tweak.
+ *
+ * Compare used `max-h-full max-w-full`, which only ever scales DOWN: the
+ * element never exceeds the media's own pixel size. Measured in a browser, a
+ * 640x360 source in a 1398px-wide wipe pane rendered at 640px with the rest
+ * black, and closing a comments panel widened the pane without the video
+ * following — it stops growing at intrinsic size, which reads as "stuck
+ * small". `w-full h-full object-contain` fills the pane and letterboxes,
+ * scaling in both directions.
+ *
+ * It also fixes annotation alignment, which was quietly wrong:
+ * VideoFrameConstraint computes the contain-box from the PARENT container's
+ * size, i.e. it assumes the video fills its parent. Under `max-*` sizing the
+ * video was smaller than the parent and centred, so the overlay was measured
+ * against a box the video did not occupy. Filling the parent makes that
+ * assumption true — the same one it has always been correct under on the
+ * normal player, which is where drawings are authored.
+ */
+const VIDEO_CLASS = 'absolute inset-0 h-full w-full object-contain'
+
 export function CompareVideoStage({
-  mode, videoRefA, videoRefB, badgeA, badgeB,
+  mode, videoRefA, videoRefB, badgeA, badgeB, transform,
   audioSide, onAudioSideChange, errA, errB, paneOverlayA, paneOverlayB,
 }: CompareVideoStageProps) {
   // Lives here, so it survives a mode switch: going sbs -> wipe -> sbs keeps
   // the divider where the user put it.
   const { split, stageRef, onDividerDown } = useWipeSplit()
   const isWipe = mode === 'wipe'
+
+  // Feed the shared transform what it needs to turn a percentage into a
+  // scale: the media's own size and the pane it is laid out in. Side A is the
+  // reference — the two versions are the same asset and zoom is shared, so
+  // one measurement governs both.
+  const reportMetrics = transform?.setMediaMetrics
+  React.useEffect(() => {
+    const v = videoRefA.current
+    if (!v || !reportMetrics) return
+    const measure = () => {
+      const parent = v.parentElement
+      if (!parent) return
+      reportMetrics({
+        intrinsicWidth: v.videoWidth,
+        intrinsicHeight: v.videoHeight,
+        boxWidth: parent.clientWidth,
+        boxHeight: parent.clientHeight,
+      })
+    }
+    measure()
+    v.addEventListener('loadedmetadata', measure)
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null
+    if (v.parentElement) ro?.observe(v.parentElement)
+    return () => { v.removeEventListener('loadedmetadata', measure); ro?.disconnect() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- videoRefA is a
+    // ref: stable by contract, and listing it makes this effect re-run on any
+    // render where a caller hands over a fresh ref object.
+  }, [reportMetrics])
 
   const paneClass = isWipe
     ? 'absolute inset-0 flex items-center justify-center'
@@ -95,13 +152,18 @@ export function CompareVideoStage({
           : 'relative flex min-h-0 flex-1 bg-black'
       }
     >
-      <div className={paneClass} style={clipA}>
+      <div className={paneClass} style={clipA} onWheel={transform?.onWheel} onPointerDown={transform?.onPointerDown}>
+        {/* The zoom transform is applied INSIDE the pane, so the pane's
+            clip stays in screen space and the divider keeps matching the
+            visible split however far the media is zoomed or panned. */}
+        <div className="absolute inset-0" style={transform?.styleFor()}>
         {/* Exclusive unmute: audioSide names the (at most one) audible side. */}
-        <video ref={videoRefA} data-testid="wipe-video-a" className="max-h-full max-w-full" playsInline muted={audioSide !== 'a'} />
+        <video ref={videoRefA} data-testid="wipe-video-a" className={VIDEO_CLASS} playsInline preload="metadata" muted={audioSide !== 'a'} />
         {/* Drawings are AUTHORED inside VideoFrameConstraint on the normal
             player (video-frame coordinates, letterbox excluded) — displayed
             in the same space here. */}
         <VideoFrameConstraint videoRef={videoRefA}>{paneOverlayA}</VideoFrameConstraint>
+        </div>
         {errA && <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeA}</span>}
       </div>
 
@@ -109,9 +171,14 @@ export function CompareVideoStage({
           draggable divider below is the boundary. */}
       {!isWipe && <div className="w-px bg-border" />}
 
-      <div className={paneClass} style={clipB}>
-        <video ref={videoRefB} data-testid="wipe-video-b" className="max-h-full max-w-full" playsInline muted={audioSide !== 'b'} />
+      <div className={paneClass} style={clipB} onWheel={transform?.onWheel} onPointerDown={transform?.onPointerDown}>
+        {/* The zoom transform is applied INSIDE the pane, so the pane's
+            clip stays in screen space and the divider keeps matching the
+            visible split however far the media is zoomed or panned. */}
+        <div className="absolute inset-0" style={transform?.styleFor()}>
+        <video ref={videoRefB} data-testid="wipe-video-b" className={VIDEO_CLASS} playsInline preload="metadata" muted={audioSide !== 'b'} />
         <VideoFrameConstraint videoRef={videoRefB}>{paneOverlayB}</VideoFrameConstraint>
+        </div>
         {errB && <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeB}</span>}
       </div>
 

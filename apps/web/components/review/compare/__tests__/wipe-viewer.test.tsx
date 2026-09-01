@@ -158,14 +158,66 @@ describe('WipeViewer', () => {
 })
 
 describe('useSharedTransform', () => {
-  it('zooms with wheel within [1, 8] and resets', () => {
+  it('wheel steps through the fixed zoom list, and reset means Fit', () => {
+    // CHANGED DELIBERATELY, not broken. Zoom was continuous 1.2x steps
+    // clamped [1, 8] with no visible control; it now steps through the same
+    // fixed list the new control offers, so the readout can never show a
+    // percentage the control cannot return to.
+    const wheel = (deltaY: number) => ({ deltaY, preventDefault() {} }) as unknown as WheelEvent
     const { result } = renderHook(() => useSharedTransform())
-    act(() => result.current.onWheel({ deltaY: -100, preventDefault() {} } as unknown as WheelEvent))
-    expect(result.current.scale).toBeCloseTo(1.2)
-    act(() => { for (let i = 0; i < 30; i++) result.current.onWheel({ deltaY: -100, preventDefault() {} } as unknown as WheelEvent) })
-    expect(result.current.scale).toBeLessThanOrEqual(8)
+
+    // A percentage cannot become a scale until the media is measured: "100%"
+    // means one media pixel per screen pixel, which depends on how far
+    // object-contain already shrank it. Until then the wheel is inert.
+    act(() => result.current.onWheel(wheel(-100)))
+    expect(result.current.canZoom).toBe(false)
+    expect(result.current.scale).toBe(1)
+
+    // 1000px of media contained into a 500px pane is drawn at half size, so
+    // 100% is a scale of 2.
+    act(() => result.current.setMediaMetrics({
+      intrinsicWidth: 1000, intrinsicHeight: 500, boxWidth: 500, boxHeight: 500,
+    }))
+    expect(result.current.canZoom).toBe(true)
+
+    act(() => result.current.setZoom(1))
+    expect(result.current.scale).toBeCloseTo(2)
+    expect(result.current.isFit).toBe(false)
+
+    act(() => result.current.onWheel(wheel(-100)))
+    expect(result.current.zoomPct).toBe(1.33)
+
+    // Fit is not a percentage. object-contain has already fitted the media,
+    // so fit IS scale 1 whatever the media's own size — which is also why
+    // reset and fit are the same thing.
     act(() => result.current.reset())
+    expect(result.current.isFit).toBe(true)
     expect(result.current.scale).toBe(1)
     expect(result.current.tx).toBe(0)
+  })
+})
+
+describe('setMediaMetrics is idempotent by value', () => {
+  it('does not produce new state for equal measurements', () => {
+    // Callers measure on every ResizeObserver tick and pass a fresh object.
+    // An identity-based setter re-renders on every tick even when nothing
+    // moved — and if the caller's effect also re-runs each render (a ref
+    // whose identity is not stable, which is what a mocked player hook
+    // produces), that is an unbounded loop. It was: this OOM'd the worker.
+    const { result } = renderHook(() => useSharedTransform())
+    const m = { intrinsicWidth: 1000, intrinsicHeight: 500, boxWidth: 500, boxHeight: 500 }
+
+    act(() => result.current.setMediaMetrics({ ...m }))
+    act(() => result.current.setZoom(1))
+    const scaleAfterFirst = result.current.scale
+
+    // A DIFFERENT object with identical values must change nothing.
+    act(() => result.current.setMediaMetrics({ ...m }))
+    expect(result.current.scale).toBe(scaleAfterFirst)
+
+    // A genuine resize must still take effect: the same media in half the
+    // pane is drawn half as large, so 100% needs twice the scale.
+    act(() => result.current.setMediaMetrics({ ...m, boxWidth: 250, boxHeight: 250 }))
+    expect(result.current.scale).toBeCloseTo(scaleAfterFirst * 2)
   })
 })

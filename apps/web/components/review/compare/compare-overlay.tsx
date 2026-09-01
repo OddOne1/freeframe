@@ -15,6 +15,7 @@ import { useSyncedTransport } from './use-synced-transport'
 import { useSharedTransform } from './use-shared-transform'
 import { WipeViewer } from './wipe-viewer'
 import { CompareVideoStage } from './compare-video-stage'
+import { CompareZoomControls } from './compare-zoom-controls'
 import { AnnotationOverlay } from '@/components/review/annotation-overlay'
 import { AnnotationCanvas } from '@/components/review/annotation-canvas'
 import { VideoFrameConstraint } from '@/components/review/video-player'
@@ -505,7 +506,11 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
             type="button"
             aria-label="Toggle left comments"
             onClick={() => setPanelAOpen((p) => !p)}
-            className="absolute left-2 top-1/2 z-20 -translate-y-1/2 rounded-md bg-bg-elevated/80 p-1.5 text-sky-400 hover:bg-bg-hover"
+            /* Bottom-LEFT corner, off the picture. These used to sit at the
+               vertical centre of the video, directly over the content being
+               reviewed. The zoom control owns the bottom-right, so the two
+               cannot collide. */
+            className="absolute bottom-4 left-4 z-20 rounded-md border border-border bg-bg-elevated/90 p-1.5 text-sky-400 backdrop-blur-sm hover:bg-bg-hover"
           >
             <MessageSquare className="h-4 w-4" />
           </button>
@@ -513,7 +518,9 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
             type="button"
             aria-label="Toggle right comments"
             onClick={() => setPanelBOpen((p) => !p)}
-            className="absolute right-2 top-1/2 z-20 -translate-y-1/2 rounded-md bg-bg-elevated/80 p-1.5 text-emerald-400 hover:bg-bg-hover"
+            /* Bottom-left too, beside side A's — keeping both toggles
+               together and clear of the bottom-right zoom control. */
+            className="absolute bottom-4 left-16 z-20 rounded-md border border-border bg-bg-elevated/90 p-1.5 text-emerald-400 backdrop-blur-sm hover:bg-bg-hover"
           >
             <MessageSquare className="h-4 w-4" />
           </button>
@@ -528,6 +535,7 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
                   the DOM node, went with them. */}
               <CompareVideoStage
                 mode={mode}
+                transform={transform}
                 videoRefA={transport.playerA.videoRef}
                 videoRefB={transport.playerB.videoRef}
                 badgeA={badgeA}
@@ -548,6 +556,13 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
                     {drawingSide === 'b' && <AnnotationCanvas />}
                   </>
                 }
+              />
+              <CompareZoomControls
+                zoomPct={transform.zoomPct}
+                isFit={transform.isFit}
+                canZoom={transform.canZoom}
+                setZoom={transform.setZoom}
+                fit={transform.fit}
               />
               <CompareScrubber
                 t={transport.t}
