@@ -14,7 +14,7 @@ import { CompareScrubber, type ScrubberMarker } from './compare-scrubber'
 import { useSyncedTransport } from './use-synced-transport'
 import { useSharedTransform } from './use-shared-transform'
 import { WipeViewer } from './wipe-viewer'
-import { VideoWipeViewer } from './video-wipe-viewer'
+import { CompareVideoStage } from './compare-video-stage'
 import { AnnotationOverlay } from '@/components/review/annotation-overlay'
 import { AnnotationCanvas } from '@/components/review/annotation-canvas'
 import { VideoFrameConstraint } from '@/components/review/video-player'
@@ -520,85 +520,35 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
 
           {isVideo ? (
             <>
-              {mode === 'wipe' ? (
-                <div className="flex min-h-0 flex-1">
-                  {/* Same two transport-driven elements as side-by-side, in the
-                      shared wipe stage. No new players and no new sync: the
-                      transport reaches these refs by currentTime/play/pause and
-                      never asks where they are painted. */}
-                  <VideoWipeViewer
-                    videoRefA={transport.playerA.videoRef}
-                    videoRefB={transport.playerB.videoRef}
-                    badgeA={badgeA}
-                    badgeB={badgeB}
-                    audioSide={audioSide}
-                    onAudioSideChange={setAudioSide}
-                    errA={errA}
-                    errB={errB}
-                    overlay={
-                      lastAnnotationSide || drawingSide ? (
-                        <>
-                          <AnnotationOverlay
-                            key={`${lastAnnotationSide ?? 'none'}-${focusedCommentId ?? 'none'}`}
-                            annotation={lastAnnotationSide === 'a' ? annotationA : lastAnnotationSide === 'b' ? annotationB : null}
-                          />
-                          {drawingSide && <AnnotationCanvas />}
-                        </>
-                      ) : null
-                    }
-                    overlaySide={drawingSide ?? lastAnnotationSide}
-                  />
-                </div>
-              ) : (
-              <div className="flex min-h-0 flex-1">
-
-                <div className="relative flex min-w-0 flex-1 items-center justify-center bg-black">
-                  <div className="absolute left-3 top-3 z-10 flex items-center gap-1.5">
-                    <span className="rounded bg-sky-500/90 px-1.5 py-0.5 text-[11px] font-semibold text-white">{badgeA}</span>
-                    <button
-                      type="button"
-                      aria-label={audioSide === 'a' ? `Mute ${badgeA}` : `Unmute ${badgeA}`}
-                      onClick={() => setAudioSide((prev) => (prev === 'a' ? 'none' : 'a'))}
-                      className="flex h-7 w-7 items-center justify-center rounded bg-black/40 text-white/80 transition-colors hover:text-white"
-                    >
-                      {audioSide === 'a' ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
-                    </button>
-                  </div>
-                  {/* Exclusive unmute: audioSide names the (at most one) audible side. */}
-                  <video ref={transport.playerA.videoRef} className="max-h-full max-w-full" playsInline muted={audioSide !== 'a'} />
-                  {/* Drawings are AUTHORED inside VideoFrameConstraint on the
-                      normal player (video-frame coordinates, letterbox bars
-                      excluded) — render them in the same space. The constraint
-                      aspect-fits itself to the rendered video box within
-                      video.parentElement = this pane container (relative). */}
-                  <VideoFrameConstraint videoRef={transport.playerA.videoRef}>
+              {/* ONE pair of <video> elements for both layouts. They used to
+                  be two mutually-exclusive JSX subtrees, so switching mode
+                  unmounted the elements: the replacements got no HLS and no
+                  src (use-video-player's attach effect is keyed on `src`, not
+                  on element identity) and playback position, which lives on
+                  the DOM node, went with them. */}
+              <CompareVideoStage
+                mode={mode}
+                videoRefA={transport.playerA.videoRef}
+                videoRefB={transport.playerB.videoRef}
+                badgeA={badgeA}
+                badgeB={badgeB}
+                audioSide={audioSide}
+                onAudioSideChange={setAudioSide}
+                errA={errA}
+                errB={errB}
+                paneOverlayA={
+                  <>
                     <AnnotationOverlay key={`a-${focusedCommentId ?? 'none'}`} annotation={annotationA} />
                     {drawingSide === 'a' && <AnnotationCanvas />}
-                  </VideoFrameConstraint>
-                  {errA && <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeA}</span>}
-                </div>
-                <div className="w-px bg-border" />
-                <div className="relative flex min-w-0 flex-1 items-center justify-center bg-black">
-                  <div className="absolute right-3 top-3 z-10 flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      aria-label={audioSide === 'b' ? `Mute ${badgeB}` : `Unmute ${badgeB}`}
-                      onClick={() => setAudioSide((prev) => (prev === 'b' ? 'none' : 'b'))}
-                      className="flex h-7 w-7 items-center justify-center rounded bg-black/40 text-white/80 transition-colors hover:text-white"
-                    >
-                      {audioSide === 'b' ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
-                    </button>
-                    <span className="rounded bg-emerald-500/90 px-1.5 py-0.5 text-[11px] font-semibold text-white">{badgeB}</span>
-                  </div>
-                  <video ref={transport.playerB.videoRef} className="max-h-full max-w-full" playsInline muted={audioSide !== 'b'} />
-                  <VideoFrameConstraint videoRef={transport.playerB.videoRef}>
+                  </>
+                }
+                paneOverlayB={
+                  <>
                     <AnnotationOverlay key={`b-${focusedCommentId ?? 'none'}`} annotation={annotationB} />
                     {drawingSide === 'b' && <AnnotationCanvas />}
-                  </VideoFrameConstraint>
-                  {errB && <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeB}</span>}
-                </div>
-              </div>
-              )}
+                  </>
+                }
+              />
               <CompareScrubber
                 t={transport.t}
                 total={transport.total}

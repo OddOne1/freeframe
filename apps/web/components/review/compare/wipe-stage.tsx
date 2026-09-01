@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import { useWipeSplit, WipeDivider } from './use-wipe-split'
 
 export interface WipeTransform {
   styleFor(): React.CSSProperties
@@ -56,29 +57,9 @@ export function WipeStage({
   layerA, layerB, badgeA, badgeB, cornerA, cornerB,
   transform, overlay, overlaySide, constrainOverlay,
 }: WipeStageProps) {
-  const [split, setSplit] = React.useState(50)
-  const stageRef = React.useRef<HTMLDivElement>(null)
-  const dividerCleanup = React.useRef<(() => void) | null>(null)
-  React.useEffect(() => () => dividerCleanup.current?.(), [])
-
+  // Shared with the video stage — one divider implementation, not two.
+  const { split, stageRef, onDividerDown } = useWipeSplit()
   const tf = transform ?? IDENTITY
-
-  const onDividerDown = (e: React.PointerEvent) => {
-    e.stopPropagation()
-    const move = (ev: PointerEvent) => {
-      const rect = stageRef.current?.getBoundingClientRect()
-      if (!rect || rect.width === 0) return
-      setSplit(Math.min(Math.max(((ev.clientX - rect.left) / rect.width) * 100, 0), 100))
-    }
-    const up = () => {
-      dividerCleanup.current = null
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
-    dividerCleanup.current = up
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-  }
 
   return (
     <div
@@ -119,21 +100,7 @@ export function WipeStage({
           </div>
         </div>
       )}
-      {/* Divider */}
-      <div
-        data-testid="wipe-divider"
-        data-split={String(Math.round(split))}
-        onPointerDown={onDividerDown}
-        className="absolute top-0 bottom-0 z-10 w-4 -translate-x-1/2 cursor-col-resize"
-        style={{ left: `${split}%` }}
-      >
-        <div className="mx-auto h-full w-0.5 bg-white/90" />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white p-1.5 shadow-lg">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="black" strokeWidth="2">
-            <path d="m9 7-5 5 5 5M15 7l5 5-5 5" />
-          </svg>
-        </div>
-      </div>
+      <WipeDivider split={split} onPointerDown={onDividerDown} />
       {/* Corner version badges (plus any per-side chrome the caller adds) */}
       <div className="absolute left-3 top-3 z-10 flex items-center gap-1.5">
         <span className="rounded bg-sky-500/90 px-1.5 py-0.5 text-[11px] font-semibold text-white">{badgeA}</span>
