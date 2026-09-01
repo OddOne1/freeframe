@@ -12,7 +12,6 @@ interface CompareVideoStageProps {
     styleFor(): React.CSSProperties
     onWheel(e: { deltaY: number; preventDefault(): void }): void
     onPointerDown(e: React.PointerEvent): void
-    setMediaMetrics(m: { intrinsicWidth: number; intrinsicHeight: number; boxWidth: number; boxHeight: number } | null): void
   }
   videoRefA: React.RefObject<HTMLVideoElement>
   videoRefB: React.RefObject<HTMLVideoElement>
@@ -88,37 +87,19 @@ export function CompareVideoStage({
   const { split, stageRef, onDividerDown } = useWipeSplit()
   const isWipe = mode === 'wipe'
 
-  // Feed the shared transform what it needs to turn a percentage into a
-  // scale: the media's own size and the pane it is laid out in. Side A is the
-  // reference — the two versions are the same asset and zoom is shared, so
-  // one measurement governs both.
-  const reportMetrics = transform?.setMediaMetrics
-  React.useEffect(() => {
-    const v = videoRefA.current
-    if (!v || !reportMetrics) return
-    const measure = () => {
-      const parent = v.parentElement
-      if (!parent) return
-      reportMetrics({
-        intrinsicWidth: v.videoWidth,
-        intrinsicHeight: v.videoHeight,
-        boxWidth: parent.clientWidth,
-        boxHeight: parent.clientHeight,
-      })
-    }
-    measure()
-    v.addEventListener('loadedmetadata', measure)
-    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null
-    if (v.parentElement) ro?.observe(v.parentElement)
-    return () => { v.removeEventListener('loadedmetadata', measure); ro?.disconnect() }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- videoRefA is a
-    // ref: stable by contract, and listing it makes this effect re-run on any
-    // render where a caller hands over a fresh ref object.
-  }, [reportMetrics])
+  // No measuring effect any more: percentages are relative to the fitted
+  // picture, and object-contain already does the fitting per pane and per
+  // mode. Converting a percentage into a scale needed the media's size and
+  // its pane's; nothing does now.
 
+  // `overflow-hidden` on the SIDE-BY-SIDE pane, per pane rather than on the
+  // stage: a zoomed-in left pane spilling into the right one is not a
+  // comparison, and clipping at stage level would still let the two panes
+  // bleed into each other. Wipe needs none — its clip-path already contains
+  // each pane to its own side of the divider, and is left untouched.
   const paneClass = isWipe
     ? 'absolute inset-0 flex items-center justify-center'
-    : 'relative flex min-w-0 flex-1 items-center justify-center bg-black'
+    : 'relative flex min-w-0 flex-1 items-center justify-center overflow-hidden bg-black'
 
   // Screen-space clips, one per pane, so everything inside a pane (video,
   // annotation overlay, drawing canvas) is clipped together.

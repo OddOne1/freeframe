@@ -159,3 +159,83 @@ describe('version dropdown anchoring', () => {
     expect(menus.some((m) => m.className.includes('left-0'))).toBe(true)
   })
 })
+
+/**
+ * The control-row and containment regressions from adba966 (§112).
+ *
+ * All three had the same shape: controls that live INSIDE the zoomable stage
+ * are reachable by the content they are meant to control.
+ */
+describe('control row and zoom containment', () => {
+  it('puts all three controls in ONE row, outside the stage', () => {
+    renderOverlay(videoAsset)
+    const row = screen.getByTestId('compare-control-row')
+    expect(row).toContainElement(screen.getByLabelText('Toggle left comments'))
+    expect(row).toContainElement(screen.getByLabelText('Toggle right comments'))
+    expect(row).toContainElement(screen.getByTestId('compare-zoom'))
+    // The point of the fix: a zoomed video cannot paint over what is not
+    // inside the stage it is painted in.
+    expect(screen.getByTestId('sbs-stage').contains(row)).toBe(false)
+  })
+
+  it('keeps each toggle on its own side of the row', () => {
+    // They had both drifted to the left (`left-4` and `left-16`), the right
+    // one still claiming to be the right one only in its aria-label.
+    renderOverlay(videoAsset)
+    const row = screen.getByTestId('compare-control-row')
+    const tracks = Array.from(row.children)
+    expect(tracks[0]).toContainElement(screen.getByLabelText('Toggle left comments'))
+    expect(tracks[2]).toContainElement(screen.getByLabelText('Toggle right comments'))
+  })
+
+  it('centres zoom on the stage, not between the toggles', () => {
+    // Three equal tracks, so the divider's position and the toggles' widths
+    // cannot shift it.
+    renderOverlay(videoAsset)
+    const row = screen.getByTestId('compare-control-row')
+    expect(row.className).toContain('grid-cols-[1fr_auto_1fr]')
+    expect(Array.from(row.children)[1]).toContainElement(screen.getByTestId('compare-zoom'))
+  })
+
+  it('the zoom control is in normal flow, not floating over the video', () => {
+    renderOverlay(videoAsset)
+    const zoom = screen.getByTestId('compare-zoom')
+    expect(zoom.className).not.toContain('absolute')
+    expect(zoom.className).not.toContain('bottom-4')
+  })
+
+  it('clips a zoomed pane to its own box in side-by-side', () => {
+    // Without this a zoomed-in left pane paints into the right one, which is
+    // not a comparison. Wipe needs none — clip-path already contains it.
+    renderOverlay(videoAsset)
+    const pane = screen.getByTestId('wipe-video-a').parentElement!.parentElement as HTMLElement
+    expect(pane.className).toContain('overflow-hidden')
+  })
+
+  it('leaves wipe’s clip-path containment alone', () => {
+    searchParamsString = 'compare=v-1&compareRight=v-3&mode=wipe'
+    renderOverlay(videoAsset)
+    const pane = screen.getByTestId('wipe-video-a').parentElement!.parentElement as HTMLElement
+    expect(pane.style.clipPath).toBe('inset(0 50% 0 0)')
+  })
+
+  it('reads 100% as Fit, and the percentage survives a mode switch unchanged', () => {
+    // The user-visible contract: the number means the same relative thing in
+    // both modes, so switching modes at a given percentage neither overflows
+    // nor shrinks.
+    const { rerender } = render(
+      <CompareOverlay asset={videoAsset as never} versions={[version(1), version(3)]}
+        rightVersion={version(3)} onClose={vi.fn()} />,
+    )
+    expect(screen.getByTestId('compare-zoom-label').textContent).toContain('Fit')
+    fireEvent.click(screen.getByLabelText('Zoom in'))
+    const zoomed = screen.getByTestId('compare-zoom-label').textContent
+
+    searchParamsString = 'compare=v-1&compareRight=v-3&mode=wipe'
+    rerender(
+      <CompareOverlay asset={videoAsset as never} versions={[version(1), version(3)]}
+        rightVersion={version(3)} onClose={vi.fn()} />,
+    )
+    expect(screen.getByTestId('compare-zoom-label').textContent).toBe(zoomed)
+  })
+})
