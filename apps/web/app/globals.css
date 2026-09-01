@@ -86,6 +86,28 @@
   }
 }
 
+/* ─── Asset card: its own container, for the version badge (§111) ─────────
+ *
+ * The GRID is already a container (§50 below), but the badge has to adapt to
+ * the width of one CARD, not of the grid: at XS the same grid holds cards a
+ * quarter of the width it holds at L. Raw CSS for the same reason §50 gives —
+ * @container needs a Tailwind plugin, and a dependency change to apps/web is
+ * what left the production image unbuildable for eleven days (§13c).
+ */
+.asset-card-media {
+  container-type: inline-size;
+  container-name: assetcard;
+}
+
+/* Below this the card cannot hold "V3 · New Version" alongside a comment
+ * count without clipping, so the chip keeps the version number — which is
+ * the part that must always be readable — and drops the words. The accent
+ * colour still marks it as unseen. */
+.version-badge-label { display: none; }
+@container assetcard (min-width: 200px) {
+  .version-badge-label { display: inline; }
+}
+
 /* ─── Asset grid: container queries, not viewport queries (§50) ────────────
  *
  * The grid's column count used to key off viewport breakpoints while its

@@ -121,7 +121,7 @@ export function AssetCard({
     >
       {/* Thumbnail area */}
       <div className={cn(
-        'relative w-full bg-bg-tertiary overflow-hidden flex items-center justify-center',
+        'asset-card-media relative w-full bg-bg-tertiary overflow-hidden flex items-center justify-center',
         aspectMap[aspectRatio],
       )}>
         {thumbnailUrl && !imgError ? (
@@ -179,21 +179,6 @@ export function AssetCard({
           </div>
         )}
 
-        {/* §108 — unseen new version. Top-left, above the thumbnail, using
-            the same chip language as the version pills elsewhere rather than
-            a new visual system. Only ever shown when a NEWER version exists
-            than the one this user opened, so a single-version asset and an
-            asset you have already looked at both show nothing. */}
-        {asset.has_unseen_version && versionCount > 1 && (
-          <span
-            data-testid="unseen-version-badge"
-            title={`New version (v${versionCount}) you have not opened yet`}
-            className="absolute left-2 top-2 inline-flex items-center gap-1 rounded bg-accent px-1.5 py-0.5 text-2xs font-semibold text-accent-foreground shadow-sm"
-          >
-            V{versionCount} · New Version
-          </span>
-        )}
-
         {/* Duration badge — bottom-right (for video/audio) */}
         {duration != null && duration > 0 && (
           <span className="absolute bottom-2 right-2 rounded bg-black/70 px-1.5 py-0.5 text-2xs font-medium text-white tabular-nums backdrop-blur-sm">
@@ -201,13 +186,43 @@ export function AssetCard({
           </span>
         )}
 
-        {/* Comment count badge — bottom-left */}
-        {commentCount != null && commentCount > 0 && (
-          <span className="absolute bottom-2 left-2 inline-flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-2xs font-medium text-white backdrop-blur-sm">
-            <MessageSquare className="h-3 w-3" />
-            {commentCount}
-          </span>
-        )}
+        {/* Bottom-left: version chip and comment count together — both are
+            "there is more to read inside" metadata, unlike duration, which is
+            a fact about the file and keeps the opposite corner. */}
+        <div className="absolute bottom-2 left-2 flex max-w-[calc(100%-1rem)] items-center gap-1">
+          {/* §111 — ONE persistent chip, not a conditionally-mounted one.
+              It used to render only while unseen, so opening an asset removed
+              the version indicator from the card entirely. The version number
+              is always shown once there is more than one version; the unseen
+              state only ADDS the label and the accent colour to the same
+              element. */}
+          {versionCount > 1 && (
+            <span
+              data-testid="unseen-version-badge"
+              data-unseen={asset.has_unseen_version ? 'true' : 'false'}
+              title={asset.has_unseen_version
+                ? `New version (v${versionCount}) you have not opened yet`
+                : `${versionCount} versions`}
+              className={cn(
+                'inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-2xs backdrop-blur-sm',
+                asset.has_unseen_version
+                  ? 'bg-accent font-semibold text-accent-foreground shadow-sm'
+                  : 'bg-black/70 font-medium text-white',
+              )}
+            >
+              V{versionCount}
+              {asset.has_unseen_version && (
+                <span className="version-badge-label whitespace-nowrap">· New Version</span>
+              )}
+            </span>
+          )}
+          {commentCount != null && commentCount > 0 && (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-2xs font-medium text-white backdrop-blur-sm">
+              <MessageSquare className="h-3 w-3" />
+              {commentCount}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Info section */}
