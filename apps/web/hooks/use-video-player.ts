@@ -198,8 +198,32 @@ export function useVideoPlayer(
     video.addEventListener('progress', onProgress)
 
     const isHlsSource = src.includes('.m3u8')
+    // §117 — NATIVE HLS WINS WHERE IT EXISTS, and the order here is the whole
+    // point.
+    //
+    // This used to check Hls.isSupported() first. Measured in Safari 26.5.2:
+    // isSupported() is true (desktop Safari has MSE), canPlayType(
+    // 'application/vnd.apple.mpegurl') is "maybe", and the branch taken was
+    // hls.js — so the native fallback below was unreachable in the one
+    // browser that has a native HLS player at all.
+    //
+    // That matters because our segments are MPEG-TS (the ffmpeg hls muxer's
+    // default). Safari's MSE will not accept TS, so hls.js has to transmux to
+    // fMP4 in JS and append through SourceBuffer — the fragile path, and the
+    // one that produced `HLS error: mediaError` in Safari while Chromium
+    // played the same asset fine. Safari's native player reads TS directly.
+    //
+    // Chromium is unaffected: canPlayType returns "" there, so it still gets
+    // hls.js exactly as before.
+    //
+    // The cost, stated rather than hidden: native playback exposes no level
+    // list, so the quality picker does not render in Safari and ABR is left
+    // to the browser. Playing at all beats choosing a rendition.
+    const nativeHls = isHlsSource && Boolean(video.canPlayType('application/vnd.apple.mpegurl'))
 
-    if (isHlsSource && Hls.isSupported()) {
+    if (nativeHls) {
+      video.src = src
+    } else if (isHlsSource && Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
@@ -222,7 +246,12 @@ export function useVideoPlayer(
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data.fatal) {
-          setError(`HLS error: ${data.type}`)
+          // `details` names the actual failure (bufferAppendError,
+          // fragParsingError, manifestLoadError...). The type alone —
+          // "mediaError" — was what every report of this arrived with, and it
+          // does not distinguish a codec Safari's MSE refuses from a segment
+          // that never loaded.
+          setError(`HLS error: ${data.type}${data.details ? ` (${data.details})` : ''}`)
           setIsLoading(false)
         }
       })
@@ -230,11 +259,10 @@ export function useVideoPlayer(
       hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
         setCurrentQuality(data.level)
       })
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari native HLS
-      video.src = src
     } else {
-      // Direct URL (mp4, mp3, etc.)
+      // Direct URL (mp4, mp3, etc.) — and any HLS source in a browser with
+      // neither native support nor MSE, where this is the only thing left to
+      // try. The native-HLS case is handled first, above.
       video.src = src
     }
 
