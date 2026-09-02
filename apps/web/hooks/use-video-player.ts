@@ -154,6 +154,18 @@ export function useVideoPlayer(
     const onLoadedMetadata = () => {
       setDuration(video.duration)
       setIsLoading(false)
+      // §117 — a media that loaded but has NO video track is the exact shape
+      // of "audio plays, picture is black, nothing in the console".
+      //
+      // It happens when the container decodes but the video codec does not:
+      // Apple's decoder refuses High 10 / High 4:2:2 H.264, so AVFoundation
+      // plays the AAC track and drops the picture, reporting no error at all
+      // — readyState reaches 4, currentTime advances, and videoWidth stays 0.
+      // Every caller of this hook is a video surface (the audio asset type
+      // has its own player), so a zero-width track here is always wrong.
+      if (video.videoWidth === 0 && video.videoHeight === 0) {
+        setError('This video has no playable picture in this browser (unsupported video codec).')
+      }
     }
 
     const onTimeUpdate = () => {

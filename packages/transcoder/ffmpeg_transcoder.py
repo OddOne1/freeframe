@@ -203,6 +203,23 @@ class FFmpegTranscoder(BaseTranscoder):
                 ffmpeg_cmd += [
                     "-map", f"[{quality}]", "-map", "a:0",
                     f"-c:v:{i}", "libx264", f"-crf", str(crf), "-preset", "fast",
+                    # §117 — PIN 8-BIT 4:2:0. Without this x264 inherits the
+                    # SOURCE pixel format, so a 10-bit or 4:2:2 master (ProRes
+                    # 422, Log, essentially any professional camera) produces
+                    # High 10 or High 4:2:2 renditions. Chromium software-
+                    # decodes those, which is why playback looked fine there,
+                    # but Apple's video decoder does not: Safari plays the AAC
+                    # track and shows no picture at all.
+                    #
+                    # These are delivery renditions, not masters -- the
+                    # original is kept untouched as s3_key_raw and is what any
+                    # download or NLE round-trip uses -- so there is nothing to
+                    # preserve by carrying 10-bit through to HLS.
+                    f"-pix_fmt:v:{i}", "yuv420p",
+                    # Pinned for the same reason: an unconstrained profile/level
+                    # can still emit something a hardware decoder refuses.
+                    f"-profile:v:{i}", "high",
+                    f"-level:v:{i}", "4.1",
                     "-force_key_frames", "expr:gte(t,n_forced*2)",
                 ]
 

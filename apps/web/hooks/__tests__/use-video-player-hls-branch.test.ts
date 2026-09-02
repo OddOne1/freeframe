@@ -81,3 +81,22 @@ describe('HLS path selection', () => {
     expect(src).toContain('data.details')
   })
 })
+
+describe('a video track that never decodes is reported', () => {
+  it('errors when metadata loads with no picture at all', () => {
+    // §117 round 3: Safari plays the AAC track of a High 10 / 4:2:2 stream
+    // and drops the video, reporting nothing — readyState reaches 4 and
+    // currentTime advances while videoWidth stays 0. Audio-only playback
+    // with a black frame and an empty console is the exact symptom.
+    const handler = src.slice(src.indexOf('const onLoadedMetadata'), src.indexOf('const onTimeUpdate'))
+    expect(handler).toContain('videoWidth === 0')
+    expect(handler).toContain('setError(')
+  })
+
+  it('requires BOTH dimensions to be zero before calling it a failure', () => {
+    // A single zero could be a transient mid-load read; both zero after
+    // loadedmetadata means there is no video track.
+    const handler = src.slice(src.indexOf('const onLoadedMetadata'), src.indexOf('const onTimeUpdate'))
+    expect(handler).toContain('videoHeight === 0')
+  })
+})
