@@ -129,8 +129,8 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
   )
 
   // Streams
-  const { url: urlA, error: errA } = useStreamUrl(asset.id, left?.id ?? null)
-  const { url: urlB, error: errB } = useStreamUrl(asset.id, right.id)
+  const { url: urlA, error: streamErrA } = useStreamUrl(asset.id, left?.id ?? null)
+  const { url: urlB, error: streamErrB } = useStreamUrl(asset.id, right.id)
 
   // Timings — ONE source shared by the transport, scrubber, localTime and markers.
   // Stored metadata first; reactive element-duration fallback (below) for
@@ -166,6 +166,22 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
     fpsA: mediaA.fps ?? null,
     fpsB: mediaB.fps ?? null,
   })
+
+  // §117 — everything that can stop a pane playing, in one message per pane.
+  //
+  // Only the stream-URL fetch was ever surfaced. The player's own error (HLS
+  // fatal errors, decode failures) and a rejected play() were both dropped on
+  // the floor, so a pane that fetched a URL successfully and then failed to
+  // play anything showed nothing at all and logged nothing -- while the
+  // scrubber kept moving, because the transport clock does not depend on the
+  // media. Ordered most-specific first: a fetch that never returned a URL is
+  // a different problem from media that will not decode.
+  const paneErrorA = streamErrA
+    ? 'This version could not be loaded.'
+    : transport.playerA.error || transport.playErrorA || null
+  const paneErrorB = streamErrB
+    ? 'This version could not be loaded.'
+    : transport.playerB.error || transport.playErrorB || null
 
   // Reactive element-duration fallback: re-render when metadata loads (a render-time
   // videoRef.current?.duration read would go stale while paused).
@@ -577,8 +593,8 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
                 badgeB={badgeB}
                 audioSide={audioSide}
                 onAudioSideChange={setAudioSide}
-                errA={errA}
-                errB={errB}
+                errA={paneErrorA}
+                errB={paneErrorB}
                 paneOverlayA={
                   <>
                     <AnnotationOverlay key={`a-${focusedCommentId ?? 'none'}`} annotation={annotationA} />

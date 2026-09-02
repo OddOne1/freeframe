@@ -25,6 +25,8 @@ export function applySideState(
   side: SideTiming,
   playing: boolean,
   pausedTol: number = frameStep(),
+  /** §117 — reports a rejected play(). See the call below for why. */
+  onPlayError?: (err: unknown) => void,
 ): void {
   const expected = localTime(t, side)
   if (sideNotStarted(t, side) || sideEnded(t, side) || !playing) {
@@ -38,7 +40,27 @@ export function applySideState(
     if (driftedBeyond(expected, video.currentTime, pausedTol)) video.currentTime = expected
     return
   }
-  if (video.paused) Promise.resolve(video.play()).catch(() => {})
+  // §117 — a rejected play() is REPORTED, not swallowed.
+  //
+  // The empty catch that was here is why compare could fail completely
+  // silently: the rAF clock keeps advancing (it is driven by wall time, not
+  // by the media), the scrubber keeps moving, and neither video ever starts
+  // -- with nothing in the console, because the one signal saying so was
+  // being discarded. play() rejects for autoplay policy (NotAllowedError)
+  // and for media that cannot be loaded or decoded (NotSupportedError), and
+  // both of those are exactly what someone debugging "it just doesn't play"
+  // needs to see.
+  if (video.paused) {
+    // try/catch AND .catch: play() normally returns a promise, but a
+    // synchronous throw would escape Promise.resolve() entirely and take the
+    // rAF loop with it — killing the transport for BOTH sides, from one
+    // side's failure.
+    try {
+      Promise.resolve(video.play()).catch((err) => onPlayError?.(err))
+    } catch (err) {
+      onPlayError?.(err)
+    }
+  }
   if (driftedBeyond(expected, video.currentTime)) video.currentTime = expected
 }
 
@@ -116,6 +138,29 @@ export function useSyncedTransport({ urlA, urlB, timingA, timingB, audibleSide =
 
   const [t, setT] = React.useState(0)
   const [isPlaying, setIsPlaying] = React.useState(false)
+
+  // §117 — a play() rejection, per side, surfaced for the UI to render.
+  //
+  // Reported once per source rather than once per frame: applySideState runs
+  // on every rAF tick, so an unplayable side rejects ~60 times a second and
+  // would otherwise re-render the overlay just as often.
+  const [playErrorA, setPlayErrorA] = React.useState<string | null>(null)
+  const [playErrorB, setPlayErrorB] = React.useState<string | null>(null)
+  React.useEffect(() => { setPlayErrorA(null) }, [urlA])
+  React.useEffect(() => { setPlayErrorB(null) }, [urlB])
+  const describePlayError = (err: unknown): string => {
+    const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : ''
+    // NotAllowedError is the browser refusing autoplay; anything else is the
+    // media itself. Both are worth naming, because the fix differs.
+    if (name === 'NotAllowedError') return 'Playback was blocked by the browser.'
+    return 'This version could not be played.'
+  }
+  const reportPlayErrorA = React.useCallback((err: unknown) => {
+    setPlayErrorA((prev) => prev ?? describePlayError(err))
+  }, [])
+  const reportPlayErrorB = React.useCallback((err: unknown) => {
+    setPlayErrorB((prev) => prev ?? describePlayError(err))
+  }, [])
   const tRef = React.useRef(0)
   const playingRef = React.useRef(false)
   const total = tMax(timingA, timingB)
@@ -136,8 +181,8 @@ export function useSyncedTransport({ urlA, urlB, timingA, timingB, audibleSide =
   const slaveBoth = React.useCallback((time: number, playing: boolean) => {
     const a = playerA.videoRef.current
     const b = playerB.videoRef.current
-    if (a) applySideState(a, time, timingARef.current, playing, pausedTolARef.current)
-    if (b) applySideState(b, time, timingBRef.current, playing, pausedTolBRef.current)
+    if (a) applySideState(a, time, timingARef.current, playing, pausedTolARef.current, reportPlayErrorA)
+    if (b) applySideState(b, time, timingBRef.current, playing, pausedTolBRef.current, reportPlayErrorB)
   }, [playerA.videoRef, playerB.videoRef])
 
   // rAF clock
@@ -193,5 +238,5 @@ export function useSyncedTransport({ urlA, urlB, timingA, timingB, audibleSide =
     setIsPlaying(playingRef.current)
   }, [])
 
-  return { playerA, playerB, t, total, isPlaying, toggle, seekTo, setIsPlaying }
+  return { playerA, playerB, t, total, isPlaying, toggle, seekTo, setIsPlaying, playErrorA, playErrorB }
 }

@@ -193,10 +193,14 @@ export function VideoPlayer({
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [loop, setLoop] = useState(false);
   const [captionsOn, setCaptionsOn] = useState(false);
+  const [streamError, setStreamError] = useState<string | null>(null);
 
-  const { isDrawingMode, timeFormat, setTimeFormat, setPlayheadTime } =
+  const { isDrawingMode, timeFormat, setTimeFormat, setPlayheadTime, currentVersion } =
     useReviewStore();
-  const { registerPauseHandler } = useReview();
+  const { registerPauseHandler, isLoading: reviewLoading } = useReview();
+  // The version the review provider actually selected -- the newest READY
+  // one, which is not necessarily the newest one (§117).
+  const versionId = currentVersion?.id ?? null;
   const [timeFormatOpen, setTimeFormatOpen] = useState(false);
   const timeFormatRef = useRef<HTMLDivElement>(null);
 
@@ -229,21 +233,53 @@ export function VideoPlayer({
 
   // Load the stream URL — reset immediately on asset change so the old video
   // doesn't keep playing while the new URL is being fetched.
+  //
+  // §117 — the version_id is REQUIRED, not an optimisation. Without it the
+  // endpoint falls back to the highest version_number with no ready-status
+  // filter (assets.py) and 409s when that one is still processing, while the
+  // review provider's "current version" is the newest READY one. The two
+  // disagree exactly when a new version is uploading, which is when someone
+  // is most likely to be watching — and the 409 surfaced as a blank player,
+  // because the empty catch below left streamUrl null forever and
+  // useVideoPlayer(null) has nothing to report an error about.
   useEffect(() => {
+    let ignore = false;
     setStreamUrl(null);
+    setStreamError(null);
     if (initialStreamUrl) {
       setStreamUrl(resolveStreamUrl(initialStreamUrl));
       return;
     }
+    // Wait for the provider to resolve a version rather than firing a
+    // version-less request first: that request is the one that 409s, and
+    // asking for "whatever is newest" is never what this player wants.
+    if (!versionId) {
+      // Still resolving which version to play. Only once the provider has
+      // finished and produced none is this a real dead end worth showing.
+      if (!reviewLoading) setStreamError("No playable version of this asset.");
+      return;
+    }
     api
-      .get<StreamUrlResponse>(`/assets/${assetId}/stream`)
+      .get<StreamUrlResponse>(`/assets/${assetId}/stream?version_id=${versionId}`)
       .then((data) => {
+        if (ignore) return;
         setStreamUrl(resolveStreamUrl(data.url));
       })
-      .catch(() => {
-        /* stream URL errors handled by player error state */
+      .catch((err) => {
+        if (ignore) return;
+        // A real, visible state. The previous empty catch claimed errors were
+        // "handled by player error state", which was not true of a fetch that
+        // never produced a src for the player to fail on.
+        setStreamError(
+          err && typeof err === "object" && "status" in err && err.status === 409
+            ? "This version is still processing."
+            : "Could not load this video.",
+        );
       });
-  }, [assetId, initialStreamUrl]);
+    return () => {
+      ignore = true;
+    };
+  }, [assetId, initialStreamUrl, versionId, reviewLoading]);
 
   const player = useVideoPlayer(streamUrl);
 
@@ -445,10 +481,12 @@ export function VideoPlayer({
           </div>
         )}
 
-        {/* Error state */}
-        {error && (
+        {/* Error state. streamError covers the case the player itself cannot
+            report: a stream URL that never arrived, so there is no src for
+            useVideoPlayer to fail on and `error` stays null forever. */}
+        {(error || streamError) && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/60">
-            <p className="text-red-400 text-sm">{error}</p>
+            <p className="text-red-400 text-sm">{error || streamError}</p>
           </div>
         )}
 

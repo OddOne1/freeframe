@@ -20,8 +20,10 @@ interface CompareVideoStageProps {
   badgeB: string
   audioSide: 'a' | 'b' | 'none'
   onAudioSideChange(side: 'a' | 'b' | 'none'): void
-  errA?: boolean
-  errB?: boolean
+  /** Message to show over a pane that cannot play. A boolean here would only
+   *  ever produce "something went wrong", which is what §117 was about. */
+  errA?: string | null
+  errB?: string | null
   /** Per-pane annotation display + authoring layer. */
   paneOverlayA?: React.ReactNode
   paneOverlayB?: React.ReactNode
@@ -118,7 +120,7 @@ export function CompareVideoStage({
         isWipe={isWipe}
         clip={clipA}
         transform={transform}
-        chrome={errA ? <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeA}</span> : null}
+        chrome={errA ? <span className="absolute px-4 text-center text-[12px] text-red-400">{errA}</span> : null}
       >
         {/* Exclusive unmute: audioSide names the (at most one) audible side. */}
         <video ref={videoRefA} data-testid="wipe-video-a" className={COMPARE_MEDIA_CLASS} playsInline preload="metadata" muted={audioSide !== 'a'} />
@@ -136,7 +138,7 @@ export function CompareVideoStage({
         isWipe={isWipe}
         clip={clipB}
         transform={transform}
-        chrome={errB ? <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeB}</span> : null}
+        chrome={errB ? <span className="absolute px-4 text-center text-[12px] text-red-400">{errB}</span> : null}
       >
         <video ref={videoRefB} data-testid="wipe-video-b" className={COMPARE_MEDIA_CLASS} playsInline preload="metadata" muted={audioSide !== 'b'} />
         <VideoFrameConstraint videoRef={videoRefB}>{paneOverlayB}</VideoFrameConstraint>

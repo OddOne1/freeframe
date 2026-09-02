@@ -26,6 +26,16 @@ const SPEED_SAMPLE_INTERVAL_MS = 500
 
 export type UploadStatus = 'pending' | 'uploading' | 'paused' | 'processing' | 'complete' | 'failed' | 'cancelled'
 
+/**
+ * How long an item may sit in 'processing' before this client stops polling
+ * it and calls it failed (§117).
+ *
+ * Generous on purpose: a long 4K transcode legitimately takes a while, and
+ * calling a running job failed is worse than polling it a few more times.
+ * Six hours is far beyond any real transcode here while still being a floor.
+ */
+const PROCESSING_POLL_MAX_MS = 6 * 60 * 60 * 1000
+
 export interface UploadFile {
   id: string
   fileName: string
@@ -790,6 +800,39 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
   },
 
   refreshProcessingItems: async () => {
+    // §117 — an item that can never finish must eventually stop being polled.
+    //
+    // This poll runs every 5s from a layout-level bridge, over a store that
+    // is PERSISTED in localStorage, for every file still marked 'processing'
+    // — regardless of which page is open. So an asset that never leaves
+    // 'processing' is re-fetched every 5 seconds, forever, on every page,
+    // across reloads, by asset id. That is what produced repeated requests
+    // for an unrelated asset id while viewing a different asset, and it was
+    // invisible because every error here is swallowed.
+    //
+    // It became permanent rather than rare because process_asset was not a
+    // registered Celery task (§115), so nothing ever moved these rows out of
+    // 'processing'. The registration is fixed; this is the floor that stops
+    // the client spinning regardless of why the server went quiet.
+    const now = Date.now()
+    const stale = get().files.filter(
+      (f) => f.status === 'processing' && f.assetId && now - f.createdAt > PROCESSING_POLL_MAX_MS,
+    )
+    if (stale.length) {
+      const staleIds = new Set(stale.map((f) => f.id))
+      set((s) => ({
+        files: s.files.map((f) =>
+          staleIds.has(f.id)
+            ? { ...f, status: 'failed' as const, error: 'Processing did not finish. Try re-uploading.' }
+            : f,
+        ),
+      }))
+    }
+
+    // No age filter needed here: the block above has already flipped every
+    // over-age item to 'failed', and zustand's set is synchronous, so this
+    // read cannot still see one as 'processing'. A second age check would be
+    // unreachable code that looks load-bearing.
     const processingFiles = get().files.filter((f) => f.status === 'processing' && f.assetId)
     if (!processingFiles.length) return
     try {
