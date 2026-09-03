@@ -18,7 +18,7 @@ import { AnnotationOverlay } from '@/components/review/annotation-overlay'
 import { CommentPanel } from '@/components/review/comment-panel'
 import { CommentInput } from '@/components/review/comment-input'
 import { TranscriptPanel } from '@/components/review/transcript-panel'
-import { LutPicker } from '@/components/review/lut-picker'
+import { LutSidebar, LutSidebarToggle, useLutSidebarOpen } from '@/components/review/lut-sidebar'
 import { SidecarMetadata } from '@/components/review/sidecar-metadata'
 import { CustomFieldInput } from '@/components/projects/asset-metadata'
 // ApprovalBar removed for now
@@ -428,17 +428,17 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const lut = useLut(asset?.project_id, asset?.applied_lut_id ?? null)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
+  const [lutSidebarOpen, toggleLutSidebar] = useLutSidebarOpen()
 
+  // §119 — the control in the media toolbar now toggles a sidebar rather
+  // than opening a dropdown. The list itself lives in its own column beside
+  // the frame (rendered further down), so it cannot overlap the nav and has
+  // room for group headers and full LUT names.
   const lutPicker = lut.supported && asset ? (
-    <LutPicker
-      luts={lut.luts}
-      selectedId={lut.selectedId}
-      onSelect={(id) => {
-        lut.select(id)
-        // Purely local preview. Writing it as the team-wide grade is a
-        // separate, explicit action -- and the backend rejects it outright
-        // for a LUT that isn't shared into this project.
-      }}
+    <LutSidebarToggle
+      open={lutSidebarOpen}
+      onToggle={toggleLutSidebar}
+      selectedName={lut.luts.find((l) => l.id === lut.selectedId)?.name ?? null}
       isLoading={lut.isLoading || lut.isLoadingCube}
       className="shrink-0"
     />
@@ -1199,6 +1199,23 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
         />
       ) : (
       <div className="flex flex-1 overflow-hidden min-h-0">
+        {/* Far left: LUT panel. Its own column between the nav and the frame,
+            so it pushes the frame over instead of floating above it. */}
+        {lutSidebarOpen && lut.supported && asset && (
+          <LutSidebar
+            luts={lut.luts}
+            selectedId={lut.selectedId}
+            onSelect={(id) => {
+              // Purely local preview. Writing it as the team-wide grade is a
+              // separate, explicit action -- and the backend rejects it
+              // outright for a LUT that isn't shared into this project.
+              lut.select(id)
+            }}
+            onClose={toggleLutSidebar}
+            isLoading={lut.isLoading || lut.isLoadingCube}
+          />
+        )}
+
         {/* Left: viewer column */}
         <div className="flex-1 flex flex-col bg-bg-primary overflow-hidden min-w-0">
           {/* Media viewer */}

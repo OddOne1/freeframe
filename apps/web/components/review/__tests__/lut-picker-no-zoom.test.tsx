@@ -1,5 +1,8 @@
 /**
- * The picker keeps one click meaning (CLAUDE.md §36).
+ * The LUT list keeps one click meaning (CLAUDE.md §36).
+ *
+ * §119 rebuilt the picker as a sidebar, so this now renders the sidebar —
+ * the decision is unchanged and so is what it rules out.
  *
  * Zoom is deliberately Settings-only: a picker row's whole job is to select
  * the LUT, so a swatch that also opened a dialog would make the same click
@@ -9,7 +12,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { LutPicker } from '../lut-picker'
+import { LutSidebar } from '../lut-sidebar'
 
 vi.mock('@/lib/lut/lut-thumbnail', () => ({
   REFERENCE_IMAGE_SRC: '/lut-reference.jpg',
@@ -30,20 +33,19 @@ const LUTS = [
 ] as never[]
 
 beforeEach(() => {
-  // Radix needs these in jsdom to open a dropdown.
   window.HTMLElement.prototype.scrollIntoView = vi.fn()
-  window.HTMLElement.prototype.hasPointerCapture = vi.fn()
 })
 
-describe('LutPicker', () => {
+describe('LutSidebar', () => {
   it('selects on click, with no zoom trigger competing for it', async () => {
     const onSelect = vi.fn()
-    render(<LutPicker luts={LUTS} selectedId={null} onSelect={onSelect} />)
+    render(
+      <LutSidebar luts={LUTS} selectedId={null} onSelect={onSelect} onClose={vi.fn()} />,
+    )
 
-    await userEvent.click(screen.getByLabelText('Color LUT'))
     const item = await screen.findByText('Kodak 2383')
 
-    // No preview button anywhere in the menu — the swatch is decorative here.
+    // No preview button anywhere in the list — the swatch is decorative here.
     expect(screen.queryByLabelText(/^Preview /)).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
