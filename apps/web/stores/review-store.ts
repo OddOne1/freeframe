@@ -18,7 +18,9 @@ interface ReviewState {
   drawingColor: string
   brushSize: number
   setCurrentAsset: (asset: Asset) => void
-  setCurrentVersion: (version: AssetVersion) => void
+  /** null clears it — used when navigating between assets, so a version
+   *  from the previous asset can never be paired with the new one (§121). */
+  setCurrentVersion: (version: AssetVersion | null) => void
   setPlayheadTime: (time: number) => void
   seekTo: (time: number, pause?: boolean) => void
   setFocusedCommentId: (id: string | null) => void
@@ -55,7 +57,7 @@ export const useReviewStore = create<ReviewState>()((set) => ({
     set({ currentAsset: asset, playheadTime: 0, seekTarget: null })
   },
 
-  setCurrentVersion: (version: AssetVersion) => {
+  setCurrentVersion: (version: AssetVersion | null) => {
     set({ currentVersion: version })
   },
 

@@ -83,6 +83,27 @@ export function ReviewProvider({
 
   const shareSessionParam = shareSession ? `&share_session=${encodeURIComponent(shareSession)}` : '';
 
+  /**
+   * The store's setters, reached through refs rather than depended upon.
+   *
+   * Their IDENTITY was a dependency of both fetchAsset and the effect below.
+   * Under the real zustand store those identities never change, so this was
+   * invisible — but for any caller whose store hook returns fresh functions
+   * per render, every render rebuilt fetchAsset, which re-ran the effect that
+   * calls it, which set state, which rendered again. An unbounded loop:
+   * measured at ~8,000 renders in 250ms.
+   *
+   * It was already latent before §121 and is why adding one more state write
+   * here hung a whole test worker — and vitest reports a hung worker as
+   * SKIPPED with exit code 0, so six tests silently stopped running while the
+   * suite still looked green. Same ref pattern CollapsibleSection already
+   * uses for its onChange.
+   */
+  const setCurrentAssetRef = useRef(setCurrentAsset);
+  setCurrentAssetRef.current = setCurrentAsset;
+  const setCurrentVersionRef = useRef(setCurrentVersion);
+  setCurrentVersionRef.current = setCurrentVersion;
+
   const fetchAsset = useCallback(async () => {
     try {
       let data: AssetResponse;
@@ -148,7 +169,7 @@ export function ReviewProvider({
 
       if (!mountedRef.current) return;
       setAsset(data);
-      setCurrentAsset(data);
+      setCurrentAssetRef.current(data);
 
       if (!shareToken) {
         // Fetch all versions for the version switcher (not available in share mode)
@@ -162,18 +183,18 @@ export function ReviewProvider({
           .sort((a, b) => b.version_number - a.version_number)
           .find((v) => v.processing_status === "ready");
         if (readyVersion) {
-          setCurrentVersion(readyVersion);
+          setCurrentVersionRef.current(readyVersion);
         } else if (data.latest_version) {
-          setCurrentVersion(data.latest_version);
+          setCurrentVersionRef.current(data.latest_version);
         }
       } else if (data.latest_version) {
-        setCurrentVersion(data.latest_version);
+        setCurrentVersionRef.current(data.latest_version);
       }
     } catch (err) {
       if (!mountedRef.current) return;
       setError(err instanceof Error ? err.message : "Failed to load asset");
     }
-  }, [assetId, shareToken, shareSessionParam, setCurrentAsset, setCurrentVersion]);
+  }, [assetId, shareToken, shareSessionParam]);
 
   const fetchComments = useCallback(async () => {
     try {
@@ -215,6 +236,38 @@ export function ReviewProvider({
       // ignore
     }
   }, [assetId, shareToken]);
+
+  /**
+   * §121 — drop the previous asset's version BEFORE loading the next one.
+   *
+   * currentVersion lives in a global store, and fetchAsset sets the new asset
+   * a full network round trip before it sets the new version (it has to fetch
+   * /assets/{id}/versions in between). For the whole of that window the app
+   * held the NEW asset paired with the OLD asset's version — and every
+   * consumer builds a request out of exactly that pair:
+   *
+   *   /assets/{new}/transcript?version_id={old}   -> 404 No version found
+   *   /assets/{new}/stream?version_id={old}       -> 404
+   *   /assets/{new}/comments?version_id={old}
+   *   /assets/{new}/approvals?version_id={old}
+   *
+   * which is where the reported transcript 404 came from: an asset id and a
+   * version id belonging to two different assets. Clearing here means the
+   * key is simply null until the real version arrives, so the bogus request
+   * is never made rather than being made and handled.
+   *
+   * Declared before the fetch effect so it runs first on an assetId change.
+   * isLoading is true across that whole window, so consumers that
+   * distinguish "still resolving" from "nothing to play" stay correct.
+   */
+
+  useEffect(() => {
+    // Guarded so a fresh [] is not written on every mount: an unconditional
+    // new array reference is its own re-render, which is the other half of
+    // the loop above.
+    setVersions((prev) => (prev.length ? [] : prev));
+    setCurrentVersionRef.current(null);
+  }, [assetId]);
 
   useEffect(() => {
     setIsLoading(true);
