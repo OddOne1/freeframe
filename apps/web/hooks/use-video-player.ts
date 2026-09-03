@@ -60,6 +60,46 @@ export interface UseVideoPlayerOptions {
   detached?: boolean
 }
 
+/** Shown when a media decodes audio but never produces a picture (§117). */
+const NO_PICTURE_ERROR =
+  'This video has no playable picture in this browser (unsupported video codec).'
+
+/**
+ * How far playback must genuinely progress, in seconds of media time, before
+ * 0x0 dimensions are treated as "there is no picture" rather than "not yet".
+ *
+ * Measured: Safari knows the size ~1.2s after loadedmetadata on a healthy
+ * stream. Five seconds is comfortably past that while still surfacing a
+ * genuinely broken asset quickly. The trade-off, stated: an audio-only media
+ * shorter than this never raises the message, and a stream that takes longer
+ * than this to produce its first frame shows it briefly before it clears.
+ */
+const NO_PICTURE_GRACE_SECONDS = 5
+
+/**
+ * Does this media have a picture, not have one, or is it too early to say?
+ *
+ * Extracted as a pure rule because it is the whole of the decision, and the
+ * only part worth testing directly — jsdom implements no media pipeline, so
+ * driving the hook there proves nothing about a real one. The integration is
+ * covered by measurement in a real browser instead (see §118).
+ */
+export function picturelessVerdict(media: {
+  videoWidth: number
+  videoHeight: number
+  readyState: number
+  currentTime: number
+}): 'has-picture' | 'no-picture' | 'too-early' {
+  if (media.videoWidth > 0 && media.videoHeight > 0) return 'has-picture'
+  // HAVE_CURRENT_DATA or better, and far enough in that a real video track
+  // would have announced itself by now. Safari reports 0x0 at loadedmetadata
+  // on healthy media and only knows the size ~1.2s later.
+  if (media.readyState >= 2 && media.currentTime > NO_PICTURE_GRACE_SECONDS) {
+    return 'no-picture'
+  }
+  return 'too-early'
+}
+
 export function useVideoPlayer(
   src: string | null,
   options?: UseVideoPlayerOptions,
@@ -154,22 +194,41 @@ export function useVideoPlayer(
     const onLoadedMetadata = () => {
       setDuration(video.duration)
       setIsLoading(false)
-      // §117 — a media that loaded but has NO video track is the exact shape
-      // of "audio plays, picture is black, nothing in the console".
-      //
-      // It happens when the container decodes but the video codec does not:
-      // Apple's decoder refuses High 10 / High 4:2:2 H.264, so AVFoundation
-      // plays the AAC track and drops the picture, reporting no error at all
-      // — readyState reaches 4, currentTime advances, and videoWidth stays 0.
-      // Every caller of this hook is a video surface (the audio asset type
-      // has its own player), so a zero-width track here is always wrong.
-      if (video.videoWidth === 0 && video.videoHeight === 0) {
-        setError('This video has no playable picture in this browser (unsupported video codec).')
+      evaluatePicture()
+    }
+
+    /**
+     * §118 — is there really no picture, or has the decoder just not got
+     * there yet?
+     *
+     * §117 checked this once, at loadedmetadata, and that was wrong for the
+     * browser it was written for. Measured in Safari 26.5.2 on a native HLS
+     * stream: loadedmetadata fires at ~110ms with videoWidth 0 and the real
+     * size is not known until ~1.2s later, announced by a `resize` event —
+     * which then fires again on every ABR switch (960x540 -> 480x270 ->
+     * 768x432). So a one-shot check at loadedmetadata reports "no picture"
+     * for every Safari playback and never takes it back. Chromium populates
+     * the dimensions immediately, which is why it never showed there.
+     *
+     * So: re-evaluated on every signal that could change the answer, and it
+     * clears itself the moment real dimensions appear.
+     */
+    const evaluatePicture = () => {
+      const verdict = picturelessVerdict(video)
+      // Both branches only ever touch THIS message. A genuine HLS or decode
+      // error set by the handlers below must survive the picture arriving.
+      if (verdict === 'has-picture') {
+        setError((prev) => (prev === NO_PICTURE_ERROR ? null : prev))
+      } else if (verdict === 'no-picture') {
+        setError((prev) => (prev === NO_PICTURE_ERROR ? prev : NO_PICTURE_ERROR))
       }
     }
 
     const onTimeUpdate = () => {
       setCurrentTime(video.currentTime)
+      // The ongoing re-check: this is what both raises the message after the
+      // grace period and keeps it raised for a genuinely pictureless media.
+      evaluatePicture()
       // Update buffered end
       if (video.buffered.length > 0) {
         setBuffered(video.buffered.end(video.buffered.length - 1))
@@ -199,6 +258,11 @@ export function useVideoPlayer(
     }
 
     video.addEventListener('loadedmetadata', onLoadedMetadata)
+    // `resize` is the event that actually announces a known intrinsic size,
+    // and it fires again on every rendition switch.
+    video.addEventListener('resize', evaluatePicture)
+    video.addEventListener('loadeddata', evaluatePicture)
+    video.addEventListener('playing', evaluatePicture)
     video.addEventListener('timeupdate', onTimeUpdate)
     video.addEventListener('play', onPlay)
     video.addEventListener('pause', onPause)
@@ -280,6 +344,9 @@ export function useVideoPlayer(
 
     return () => {
       video.removeEventListener('loadedmetadata', onLoadedMetadata)
+      video.removeEventListener('resize', evaluatePicture)
+      video.removeEventListener('loadeddata', evaluatePicture)
+      video.removeEventListener('playing', evaluatePicture)
       video.removeEventListener('timeupdate', onTimeUpdate)
       video.removeEventListener('play', onPlay)
       video.removeEventListener('pause', onPause)

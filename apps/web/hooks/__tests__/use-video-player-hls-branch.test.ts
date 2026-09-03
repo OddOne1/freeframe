@@ -83,20 +83,21 @@ describe('HLS path selection', () => {
 })
 
 describe('a video track that never decodes is reported', () => {
-  it('errors when metadata loads with no picture at all', () => {
-    // §117 round 3: Safari plays the AAC track of a High 10 / 4:2:2 stream
-    // and drops the video, reporting nothing — readyState reaches 4 and
-    // currentTime advances while videoWidth stays 0. Audio-only playback
-    // with a black frame and an empty console is the exact symptom.
-    const handler = src.slice(src.indexOf('const onLoadedMetadata'), src.indexOf('const onTimeUpdate'))
-    expect(handler).toContain('videoWidth === 0')
-    expect(handler).toContain('setError(')
+  // §117 put this check inline in onLoadedMetadata. §118 moved it out,
+  // because that was the wrong moment: Safari reports 0x0 there on healthy
+  // media and only knows the size ~1.2s later. These are INVERTED rather
+  // than deleted — the guard still exists, it just is not a one-shot check
+  // any more, and the rule itself is covered in
+  // use-video-player-no-picture.test.ts.
+  const metadata = src.slice(src.indexOf('const onLoadedMetadata'), src.indexOf('const evaluatePicture'))
+
+  it('no longer decides at loadedmetadata, where the answer is not yet known', () => {
+    expect(metadata).not.toContain('videoWidth === 0')
+    expect(metadata).toContain('evaluatePicture()')
   })
 
-  it('requires BOTH dimensions to be zero before calling it a failure', () => {
-    // A single zero could be a transient mid-load read; both zero after
-    // loadedmetadata means there is no video track.
-    const handler = src.slice(src.indexOf('const onLoadedMetadata'), src.indexOf('const onTimeUpdate'))
-    expect(handler).toContain('videoHeight === 0')
+  it('still reports a pictureless media, via the extracted rule', () => {
+    expect(src).toContain('picturelessVerdict')
+    expect(src).toContain('NO_PICTURE_ERROR')
   })
 })

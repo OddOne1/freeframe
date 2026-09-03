@@ -197,7 +197,13 @@ export function VideoPlayer({
 
   const { isDrawingMode, timeFormat, setTimeFormat, setPlayheadTime, currentVersion } =
     useReviewStore();
-  const { registerPauseHandler, isLoading: reviewLoading } = useReview();
+  const { registerPauseHandler, isLoading: reviewLoading, asset } = useReview();
+  // §118 — the asset's existing grid thumbnail, shown until the first frame
+  // decodes. Safari's native HLS path takes ~1.2s to produce a real frame
+  // (measured) and showed solid black for that whole gap; the image was
+  // already generated and already being served in the project grid, so
+  // nothing new is fetched or stored for this.
+  const posterUrl = asset?.thumbnail_url ? resolveStreamUrl(asset.thumbnail_url) : undefined;
   // The version the review provider actually selected -- the newest READY
   // one, which is not necessarily the newest one (§117).
   const versionId = currentVersion?.id ?? null;
@@ -446,6 +452,11 @@ export function VideoPlayer({
           )}
           playsInline
           preload="metadata"
+          // Deliberately not cleared once playback starts: the browser drops
+          // the poster itself on the first decoded frame, and keeping it lets
+          // the same image return if the element is re-seeked to an
+          // undecoded position.
+          poster={posterUrl}
         >
           {captionsUrl && (
             <track
