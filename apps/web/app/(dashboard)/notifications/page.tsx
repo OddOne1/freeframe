@@ -41,7 +41,12 @@ function NotificationItem({ notification }: { notification: Notification }) {
 
   return (
     <button
-      onClick={() => !notification.read && markAsRead(notification.id)}
+      onClick={() => {
+        // §120 — markAsRead now rethrows so callers can react; the store has
+        // already rolled the dot back, so there is nothing to do here beyond
+        // not leaving an unhandled rejection behind.
+        if (!notification.read) void markAsRead(notification.id).catch(() => {})
+      }}
       className={cn(
         'flex w-full items-start gap-3 rounded-lg px-4 py-3 text-left transition-colors hover:bg-bg-hover',
         !notification.read && 'bg-bg-secondary',
@@ -98,7 +103,7 @@ export default function NotificationsPage() {
           )}
         </div>
         {unreadCount > 0 && (
-          <Button variant="ghost" size="sm" onClick={markAllRead}>
+          <Button variant="ghost" size="sm" onClick={() => void markAllRead().catch(() => {})}>
             Mark all read
           </Button>
         )}

@@ -52,8 +52,22 @@ function NotificationItem({ notification, onClose }: { notification: Notificatio
   const Icon = notificationIcons[notification.type]
   const { title, subtitle } = getNotificationText(notification)
 
-  function handleClick() {
-    if (!notification.read) markAsRead(notification.id)
+  async function handleClick() {
+    // §120 — AWAITED before navigating. window.location.href starts a full
+    // document unload, and a fetch still in flight when that happens is not
+    // guaranteed to be delivered — so the read could be lost exactly for the
+    // notifications that have somewhere to go, which is most of them. The
+    // badge itself already cleared optimistically inside markAsRead, so this
+    // wait costs the user nothing visible.
+    if (!notification.read) {
+      try {
+        await markAsRead(notification.id)
+      } catch {
+        // The store has already rolled the dot back. Navigating anyway is
+        // right: the user asked to go somewhere, and failing to mark it read
+        // is not a reason to refuse.
+      }
+    }
     // Navigate to asset if possible
     if (notification.project_id && notification.asset_id) {
       const qs = notification.comment_id ? `?commentId=${notification.comment_id}` : ''
@@ -64,7 +78,7 @@ function NotificationItem({ notification, onClose }: { notification: Notificatio
 
   return (
     <button
-      onClick={handleClick}
+      onClick={() => void handleClick()}
       className={cn(
         'flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-bg-hover',
         !notification.read && 'bg-bg-secondary',
@@ -166,7 +180,7 @@ export function NotificationDrawer({ open, onClose }: NotificationDrawerProps) {
           </div>
           {unreadCount > 0 && (
             <button
-              onClick={markAllRead}
+              onClick={() => void markAllRead().catch(() => {})}
               className="text-xs text-text-tertiary hover:text-text-primary transition-colors"
             >
               Mark all as read
