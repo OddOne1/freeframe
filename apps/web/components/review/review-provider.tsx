@@ -99,6 +99,20 @@ export function ReviewProvider({
    * suite still looked green. Same ref pattern CollapsibleSection already
    * uses for its onChange.
    */
+  /**
+   * §122 — which asset is on screen RIGHT NOW, for comparison against the
+   * asset a given in-flight request was made for.
+   *
+   * The blank slate from §121 stops a NEW asset being paired with an OLD
+   * version, but it cannot stop an OLD request landing late: open A, open B
+   * before A answers, and A's response then writes A's version into a page
+   * showing B — recreating the same mismatch from the other direction.
+   * Responses are not ordered, so every write below is gated on the asset
+   * still being the one that was asked for.
+   */
+  const assetIdRef = useRef(assetId);
+  assetIdRef.current = assetId;
+
   const setCurrentAssetRef = useRef(setCurrentAsset);
   setCurrentAssetRef.current = setCurrentAsset;
   const setCurrentVersionRef = useRef(setCurrentVersion);
@@ -167,7 +181,7 @@ export function ReviewProvider({
         data = { ...data, thumbnail_url: resolveApiMediaUrl(data.thumbnail_url) };
       }
 
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || assetIdRef.current !== assetId) return;
       setAsset(data);
       setCurrentAssetRef.current(data);
 
@@ -176,7 +190,7 @@ export function ReviewProvider({
         const allVersions = await api.get<AssetVersion[]>(
           `/assets/${assetId}/versions`,
         );
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || assetIdRef.current !== assetId) return;
         setVersions(allVersions ?? []);
 
         const readyVersion = (allVersions ?? [])
@@ -191,7 +205,7 @@ export function ReviewProvider({
         setCurrentVersionRef.current(data.latest_version);
       }
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || assetIdRef.current !== assetId) return;
       setError(err instanceof Error ? err.message : "Failed to load asset");
     }
   }, [assetId, shareToken, shareSessionParam]);
@@ -215,7 +229,7 @@ export function ReviewProvider({
       } else {
         data = await api.get<Comment[]>(`/assets/${assetId}/comments`);
       }
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || assetIdRef.current !== assetId) return;
       setComments(data ?? []);
     } catch {
       // Comments failing silently — asset is still viewable
