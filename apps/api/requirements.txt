@@ -22,11 +22,38 @@ jinja2==3.1.6
 # package ever reorganizes its extras.
 cryptography==43.0.1
 kombu==5.4.2
+# §124 — imported DIRECTLY by our own code (botocore in s3_service and
+# email_service, starlette in two middlewares) while only ever arriving as
+# someone else's transitive dependency. Both are bounded today by boto3 and
+# fastapi respectively, so neither is currently broken — but that is exactly
+# the shape that broke transcription: code importing a package nothing in
+# this file declares, held up by another package's private choices. Left
+# unpinned so pip keeps resolving them jointly with their parents; the point
+# is that the dependency is now stated.
+botocore
+starlette
 # Speech-to-text (CTranslate2-based; CPU-only in this deployment).
 # Pulls in ctranslate2 + tokenizers + onnxruntime -- this meaningfully
 # increases the api-family image size, which is why transcription runs in
 # its own transcribe_worker service.
 faster-whisper==1.0.3
+# §124 — BOTH of the next two lines exist because faster-whisper 1.0.3 does
+# not declare `requests` even though faster_whisper/utils.py imports it at
+# module scope. It relied on huggingface-hub to bring it in, and declares
+# that as `huggingface-hub>=0.13` with NO upper bound.
+#
+# huggingface-hub 1.0 replaced requests with httpx and dropped it from its
+# core dependencies (verified against PyPI metadata: 0.35.3 still declares
+# requests, current 1.30.0 does not). So a --no-cache rebuild resolved a
+# modern hub, `requests` never landed in the image, and every transcription
+# died at `import requests` inside _get_model(). It had never once succeeded.
+#
+# The ceiling restores the dependency set faster-whisper 1.0.3 was written
+# against; the explicit `requests` means an import that package actually
+# performs no longer depends on another package's private choices, matching
+# what the cryptography pin above already does for the same reason.
+huggingface-hub>=0.24,<1.0
+requests==2.32.3
 
 # Poster thumbnails (§19c). Project posters were stored exactly as
 # uploaded -- up to 10MB of full-resolution original -- and then fetched
