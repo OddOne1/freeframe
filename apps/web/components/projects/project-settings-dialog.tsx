@@ -4,7 +4,7 @@ import * as React from 'react'
 import useSWR from 'swr'
 import * as Dialog from '@radix-ui/react-dialog'
 import * as Switch from '@radix-ui/react-switch'
-import { X, ImagePlus, Globe, Lock, Star, Users } from 'lucide-react'
+import { X, ImagePlus, Globe, Lock, Star, Users, FileText } from 'lucide-react'
 import { cn, resolveApiMediaUrl, formatBytes } from '@/lib/utils'
 import { getGradientForProject } from '@/lib/gradient-utils'
 import { api } from '@/lib/api'
@@ -48,6 +48,11 @@ export function ProjectSettingsDialog({
   const [posterFile, setPosterFile] = React.useState<File | null>(null)
   const [saving, setSaving] = React.useState(false)
   const [ratingsVisible, setRatingsVisible] = React.useState(project.ratings_visible_to_all ?? false)
+  // §127 — null means "never chosen", which falls through to the app-wide
+  // default (on). Kept distinct from an explicit false so a future
+  // folder-level override has something to resolve against.
+  const [transcribeNew, setTranscribeNew] = React.useState(project.transcription_default ?? true)
+  const [savingTranscribeNew, setSavingTranscribeNew] = React.useState(false)
   const [savingRatingsVisible, setSavingRatingsVisible] = React.useState(false)
   const [storageLimitGB, setStorageLimitGB] = React.useState<string>(
     project.storage_limit_bytes ? String(Math.round(project.storage_limit_bytes / (1024 ** 3))) : ''
@@ -78,6 +83,7 @@ export function ProjectSettingsDialog({
     setStorageLimitGB(project.storage_limit_bytes ? String(Math.round(project.storage_limit_bytes / (1024 ** 3))) : '')
     setIsPublic(project.is_public ?? false)
     setRatingsVisible(project.ratings_visible_to_all ?? false)
+    setTranscribeNew(project.transcription_default ?? true)
     setPosterPreview(resolveApiMediaUrl(project.poster_url))
     setPosterFile(null)
     setStorageError('')
@@ -101,6 +107,20 @@ export function ProjectSettingsDialog({
       setRatingsVisible(previous)
     } finally {
       setSavingRatingsVisible(false)
+    }
+  }
+
+  const handleToggleTranscribeNew = async (next: boolean) => {
+    const previous = transcribeNew
+    setTranscribeNew(next)
+    setSavingTranscribeNew(true)
+    try {
+      await api.patch(`/projects/${project.id}`, { transcription_default: next })
+      onUpdated()
+    } catch {
+      setTranscribeNew(previous)
+    } finally {
+      setSavingTranscribeNew(false)
     }
   }
 
@@ -359,6 +379,50 @@ export function ProjectSettingsDialog({
                       {ratingsVisible
                         ? 'Everyone can see the overall rating and who voted. Off by default — only you and superadmins see it otherwise.'
                         : 'Only you and superadmins see the overall rating and voter breakdown. Everyone else only sees their own vote.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* §127 — transcription default for NEW files.
+                  Saved on toggle like the ratings switch above, not via the
+                  dialog's Save button. */}
+              <div className="rounded-xl border border-border bg-bg-tertiary/50 p-4">
+                <div className="flex items-start gap-3">
+                  <div className={cn(
+                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg mt-0.5',
+                    transcribeNew ? 'bg-accent/10 text-accent' : 'bg-bg-tertiary text-text-tertiary',
+                  )}>
+                    <FileText className="h-4.5 w-4.5" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-text-primary">
+                        Transcribe new files
+                      </span>
+                      <Switch.Root
+                        checked={transcribeNew}
+                        onCheckedChange={handleToggleTranscribeNew}
+                        disabled={savingTranscribeNew}
+                        className={cn(
+                          'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+                          transcribeNew ? 'bg-accent' : 'bg-bg-tertiary',
+                        )}
+                      >
+                        <Switch.Thumb className={cn(
+                          'pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+                          transcribeNew ? 'translate-x-[18px]' : 'translate-x-0.5',
+                          'mt-0.5',
+                        )} />
+                      </Switch.Root>
+                    </div>
+                    <p className="text-xs text-text-tertiary mt-0.5">
+                      {/* Said plainly, because the alternative reading -- that
+                          this switches transcription on or off for the whole
+                          project -- is the obvious one and is wrong. */}
+                      Decides what a file&apos;s own transcription switch starts as
+                      when it is added. Files already in this project are not
+                      affected, and any file can be switched individually.
                     </p>
                   </div>
                 </div>

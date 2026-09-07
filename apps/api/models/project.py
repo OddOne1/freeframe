@@ -44,6 +44,14 @@ class Project(Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     ratings_visible_to_all: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # §127 — what a NEW file's transcription toggle starts as in this project.
+    #
+    # A starting value, not a link: changing it never touches a file that
+    # already exists, and a file's own toggle can always be flipped against it
+    # afterwards. Nullable so "never chosen" is distinguishable from an
+    # explicit false, which is what a future folder-level override would need
+    # to resolve against.
+    transcription_default: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     storage_limit_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     # Human-readable S3 prefix (§14): keys become

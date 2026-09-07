@@ -103,6 +103,11 @@ def initiate_upload(
             raise HTTPException(status_code=400, detail="Asset does not belong to the specified project")
     else:
         asset_type = mime_to_asset_type(body.mime_type)
+        # §127 — the project's default decides only the STARTING state of
+        # this new file's toggle. It is read once, here, and never consulted
+        # again for this asset: changing the project setting later must not
+        # reach back into files that already exist.
+        from ..services.transcription_defaults import default_transcription_enabled
         asset = Asset(
             project_id=body.project_id,
             name=body.asset_name,
@@ -110,6 +115,7 @@ def initiate_upload(
             created_by=current_user.id,
             created_by_name=current_user.name,
             folder_id=body.folder_id,
+            transcription_enabled=default_transcription_enabled(project),
         )
         db.add(asset)
         db.flush()

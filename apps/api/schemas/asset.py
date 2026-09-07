@@ -102,6 +102,25 @@ class TranscriptSegment(BaseModel):
     end: float
     text: str
 
+class TranscriptionToggle(BaseModel):
+    """Body of PATCH /assets/{id}/transcription (§127)."""
+    enabled: bool
+
+
+class TranscriptionToggleResponse(BaseModel):
+    """What the toggle settled on, and what it did to any run in flight.
+
+    `cancelled` is reported separately from `enabled` because turning the
+    toggle off has two quite different meanings depending on timing: stopping
+    work that was happening, or just declining future work. The panel says
+    which.
+    """
+    enabled: bool
+    transcription_status: TranscriptionStatus
+    cancelled: bool = False
+    started: bool = False
+
+
 class TranscriptResponse(BaseModel):
     """Everything the transcript panel and the <track> element need in one
     request: status, detected language, a proxy URL for captions.vtt, and
@@ -112,6 +131,12 @@ class TranscriptResponse(BaseModel):
     off the status alone, and flips over on the SSE event.
     """
     transcription_status: TranscriptionStatus
+    # §127 — 0-100 while running, null otherwise. Sits at 0 for a while at
+    # the start: the model load and the VAD pass both precede the first
+    # segment, so a flat 0 there is normal rather than stuck.
+    transcription_progress: Optional[int] = None
+    # §127 — the per-file toggle, so the panel renders it from this one call.
+    transcription_enabled: bool = True
     language: Optional[str] = None
     captions_url: Optional[str] = None
     text: str = ""

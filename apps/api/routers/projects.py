@@ -401,6 +401,11 @@ def update_project(project_id: uuid.UUID, body: ProjectUpdate, db: Session = Dep
                 raise HTTPException(status_code=400, detail=str(e))
     if body.ratings_visible_to_all is not None:
         project.ratings_visible_to_all = body.ratings_visible_to_all
+    # §127 — owner-gated like everything else here (it is not in the
+    # superadmin carve-out above). Setting it changes nothing about files
+    # that already exist; it only decides what a new one starts as.
+    if "transcription_default" in fields_set:
+        project.transcription_default = body.transcription_default
     db.commit()
     db.refresh(project)
     resp = ProjectResponse.model_validate(project)

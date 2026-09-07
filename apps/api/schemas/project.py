@@ -20,6 +20,9 @@ class ProjectUpdate(BaseModel):
     is_public: bool | None = None
     storage_limit_bytes: int | None = None
     ratings_visible_to_all: bool | None = None
+    # §127 — the starting state for a NEW file's transcription toggle in this
+    # project. Never applied to files that already exist.
+    transcription_default: bool | None = None
 
 class ProjectResponse(BaseModel):
     id: uuid.UUID
@@ -52,6 +55,7 @@ class ProjectResponse(BaseModel):
     model_config = {"from_attributes": True}
     storage_limit_bytes: int | None = None
     ratings_visible_to_all: bool = False
+    transcription_default: bool | None = None
     archived_at: datetime | None = None
     archived_by: uuid.UUID | None = None
     archived_by_is_superadmin: bool = False

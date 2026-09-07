@@ -122,7 +122,21 @@ def transcribe_asset(self, asset_id: str, version_id: str):
         if not asset or not media_file:
             return
 
+        # §127 — the toggle may have been switched off while this sat in the
+        # queue. revoke() covers a task that has not started, but only while
+        # the worker still holds the revoked set; this is the durable check,
+        # and it costs one already-loaded boolean.
+        if not asset.transcription_enabled:
+            logger.info(
+                "Transcription disabled for asset %s; skipping queued run", asset_id
+            )
+            media_file.transcription_task_id = None
+            media_file.transcription_progress = None
+            db.commit()
+            return
+
         media_file.transcription_status = TranscriptionStatus.processing
+        media_file.transcription_progress = 0
         db.commit()
         _publish_event(str(asset.project_id), "transcription_processing", {
             "asset_id": asset_id,
@@ -152,17 +166,45 @@ def transcribe_asset(self, asset_id: str, version_id: str):
             segment_iter, info = model.transcribe(tmp_audio, vad_filter=True)
 
             # faster-whisper yields lazily -- transcription only actually
-            # runs as this is consumed.
-            segments = [
-                {
-                    "id": i,
-                    "start": float(s.start),
-                    "end": float(s.end),
-                    "text": (s.text or "").strip(),
-                }
-                for i, s in enumerate(segment_iter)
-            ]
+            # runs as this is consumed. §127 turns that into a progress
+            # signal: each segment carries an end timestamp, so the fraction
+            # of the audio already transcribed is known as it goes.
+            #
+            # Throttled to whole percents, the same shape §113 used for
+            # transcode progress: a long recording yields thousands of
+            # segments and an unthrottled write would be a commit per segment.
+            total = float(getattr(info, "duration", 0) or 0)
+            last_pct = {"v": None}
 
+            def _report(end_seconds: float) -> None:
+                if total <= 0:
+                    return
+                pct = max(0, min(100, int(end_seconds / total * 100)))
+                if last_pct["v"] == pct:
+                    return
+                last_pct["v"] = pct
+                _publish_event(str(asset.project_id), "transcription_progress", {
+                    "asset_id": asset_id,
+                    "version_id": version_id,
+                    "percent": pct,
+                })
+                try:
+                    media_file.transcription_progress = pct
+                    db.commit()
+                except Exception:
+                    db.rollback()
+
+            segments = []
+            for i, seg in enumerate(segment_iter):
+                segments.append({
+                    "id": i,
+                    "start": float(seg.start),
+                    "end": float(seg.end),
+                    "text": (seg.text or "").strip(),
+                })
+                _report(float(seg.end))
+
+            media_file.transcription_progress = 100
             language = getattr(info, "language", None)
             logger.info(
                 "Transcribed asset %s version %s: %d segment(s), language=%s",
@@ -198,6 +240,10 @@ def transcribe_asset(self, asset_id: str, version_id: str):
             media_file.s3_key_transcript = transcript_key
             media_file.s3_key_captions = captions_key
             media_file.transcript_language = language
+            # §127 — the run is over, so the cancellation handle must go
+            # with it. A stale id here would let a later toggle-off revoke a
+            # task id that has since been reused by something else.
+            media_file.transcription_task_id = None
             media_file.transcription_status = TranscriptionStatus.ready
             db.commit()
 
@@ -210,6 +256,8 @@ def transcribe_asset(self, asset_id: str, version_id: str):
 
         except Exception as exc:
             logger.exception("Transcription failed for asset %s version %s", asset_id, version_id)
+            media_file.transcription_task_id = None
+            media_file.transcription_progress = None
             media_file.transcription_status = TranscriptionStatus.failed
             db.commit()
             _publish_event(str(asset.project_id), "transcription_failed", {

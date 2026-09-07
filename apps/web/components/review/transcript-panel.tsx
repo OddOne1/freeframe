@@ -12,6 +12,64 @@ interface TranscriptPanelProps {
   currentTime: number
   /** Seek the player. Same seekTo the comment deep-link already uses. */
   onSeek: (seconds: number) => void
+  /** §127 — flip the per-file toggle. Omitted where the viewer cannot edit. */
+  onToggle?: (enabled: boolean) => void
+  toggleBusy?: boolean
+}
+
+/**
+ * The per-file switch (§127).
+ *
+ * Deliberately reads as "should this file be transcribed", not "transcribe
+ * now": turning it on for something already transcribed does nothing, and
+ * turning it off mid-run stops that run. The label says which of those is
+ * about to happen, because "off" means two quite different things depending
+ * on whether work is in flight.
+ */
+function TranscriptionToggle({
+  enabled,
+  running,
+  busy,
+  onToggle,
+}: {
+  enabled: boolean
+  running: boolean
+  busy?: boolean
+  onToggle: (enabled: boolean) => void
+}) {
+  return (
+    <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/60 px-4 py-2">
+      <div className="min-w-0">
+        <p className="text-xs font-medium text-text-primary">Transcription</p>
+        <p className="text-2xs text-text-tertiary">
+          {enabled
+            ? running
+              ? 'Running — turning this off stops it'
+              : 'On for this file'
+            : 'Off for this file'}
+        </p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        aria-label="Transcribe this file"
+        disabled={busy}
+        onClick={() => onToggle(!enabled)}
+        className={cn(
+          'relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50',
+          enabled ? 'bg-accent' : 'bg-bg-tertiary',
+        )}
+      >
+        <span
+          className={cn(
+            'absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform',
+            enabled ? 'translate-x-4' : 'translate-x-0.5',
+          )}
+        />
+      </button>
+    </div>
+  )
 }
 
 export function TranscriptPanel({
@@ -19,8 +77,21 @@ export function TranscriptPanel({
   isLoading,
   currentTime,
   onSeek,
+  onToggle,
+  toggleBusy,
 }: TranscriptPanelProps) {
   const status = transcript?.transcription_status
+  const enabled = transcript?.transcription_enabled ?? true
+  const running = status === 'processing'
+  const header =
+    onToggle && transcript ? (
+      <TranscriptionToggle
+        enabled={enabled}
+        running={running}
+        busy={toggleBusy}
+        onToggle={onToggle}
+      />
+    ) : null
 
   if (isLoading && !transcript) {
     return (
@@ -30,22 +101,66 @@ export function TranscriptPanel({
     )
   }
 
-  if (status === 'processing' || status === 'not_started') {
+  // §127 — off, and nothing to show. Previously this fell into the
+  // "Transcribing…" branch below via not_started, which claimed work was
+  // happening when none was and none would be.
+  if (!enabled && status !== 'ready') {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center">
-        <Loader2 className="h-5 w-5 animate-spin text-text-tertiary" />
-        <p className="text-sm font-medium text-text-primary">Transcribing…</p>
-        <p className="text-xs text-text-tertiary max-w-[240px]">
-          This runs in the background and can take a while. The transcript
-          appears here on its own when it&apos;s done.
-        </p>
+      <div className="flex-1 flex flex-col min-h-0">
+        {header}
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center">
+          <FileText className="h-5 w-5 text-text-tertiary" />
+          <p className="text-sm font-medium text-text-primary">
+            Transcription is off
+          </p>
+          <p className="text-xs text-text-tertiary max-w-[240px]">
+            Turn it on to transcribe this file.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  if (status === 'processing' || status === 'not_started') {
+    const pct = transcript?.transcription_progress ?? 0
+    return (
+      <div className="flex-1 flex flex-col min-h-0">
+        {header}
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center">
+          <Loader2 className="h-5 w-5 animate-spin text-text-tertiary" />
+          <p className="text-sm font-medium text-text-primary">Transcribing…</p>
+          <div
+            role="progressbar"
+            aria-valuenow={pct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label="Transcription progress"
+            className="h-1 w-[200px] overflow-hidden rounded-full bg-bg-tertiary"
+          >
+            <div
+              className="h-full rounded-full bg-accent transition-[width] duration-500"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <p className="text-xs text-text-tertiary max-w-[240px]">
+            {/* The flat start is real and expected: the model load and the
+                VAD pre-filter both finish before the first segment exists,
+                so 0% here is "not there yet", not "stuck". Saying so is
+                cheaper than someone reloading to check. */}
+            {pct > 0
+              ? `${pct}% — this runs in the background and appears here on its own.`
+              : 'Preparing the audio. This can sit at 0% for a while before it starts moving.'}
+          </p>
+        </div>
       </div>
     )
   }
 
   if (status === 'failed') {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center">
+      <div className="flex-1 flex flex-col min-h-0">
+        {header}
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center">
         <AlertCircle className="h-5 w-5 text-text-tertiary" />
         <p className="text-sm font-medium text-text-primary">
           Transcription failed
@@ -53,6 +168,7 @@ export function TranscriptPanel({
         <p className="text-xs text-text-tertiary max-w-[240px]">
           The asset itself is unaffected and still plays normally.
         </p>
+        </div>
       </div>
     )
   }
@@ -61,18 +177,22 @@ export function TranscriptPanel({
 
   if (segments.length === 0) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center">
+      <div className="flex-1 flex flex-col min-h-0">
+        {header}
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center">
         <FileText className="h-5 w-5 text-text-tertiary" />
         <p className="text-sm font-medium text-text-primary">No speech found</p>
         <p className="text-xs text-text-tertiary max-w-[240px]">
           Nothing recognizable was detected in this file&apos;s audio.
         </p>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
+      {header}
       {transcript?.language && (
         <div className="px-4 py-2 border-b border-border/60 shrink-0">
           <span className="text-xs text-text-tertiary">

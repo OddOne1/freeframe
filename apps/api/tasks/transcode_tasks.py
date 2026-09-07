@@ -174,10 +174,17 @@ def process_asset(self, asset_id: str, version_id: str):
             # on failure for exactly that reason: if it were allowed to
             # raise, it would land in the except below and re-run the entire
             # (already successful) transcode.
-            if asset.asset_type in (AssetType.video, AssetType.audio):
+            if asset.asset_type in (AssetType.video, AssetType.audio) and asset.transcription_enabled:
                 try:
                     from .transcribe_tasks import transcribe_asset
-                    transcribe_asset.delay(asset_id, version_id)
+                    # §127 — the id is recorded so the per-file toggle can
+                    # revoke this run later. Written here rather than by the
+                    # task itself: a task still sitting in the queue has not
+                    # run yet, and that is exactly when someone is most
+                    # likely to turn the toggle back off.
+                    result = transcribe_asset.delay(asset_id, version_id)
+                    media_file.transcription_task_id = result.id
+                    db.commit()
                 except Exception:
                     logger.warning(
                         "Could not queue transcription for asset %s version %s",

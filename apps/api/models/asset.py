@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional
-from sqlalchemy import String, Enum, DateTime, ForeignKey, Integer, BigInteger, Float, func, UniqueConstraint, Index
+from sqlalchemy import String, Boolean, Enum, DateTime, ForeignKey, Integer, BigInteger, Float, func, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 try:
@@ -54,6 +54,19 @@ class Asset(Base):
     # SET NULL so deleting a LUT degrades to "no grade" instead of orphaning.
     # Only a LUT visible in this asset's project may be set here (enforced in
     # routers/luts.py) — otherwise teammates hit a reference they can't read.
+    # §127 — should this file end up transcribed?
+    #
+    # INTENT, not run state. The run's own state lives on MediaFile
+    # (transcription_status), because a transcript belongs to a version while
+    # the toggle belongs to the file. Turning this on for something already
+    # transcribed is a no-op; turning it off cancels a run in flight and stops
+    # future versions being dispatched.
+    #
+    # Defaults true because that is what the app did before this existed:
+    # every video and audio upload was transcribed unconditionally.
+    transcription_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
     applied_lut_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("luts.id", ondelete="SET NULL"), nullable=True
     )
@@ -173,6 +186,21 @@ class MediaFile(Base):
     # be parsed out of transcript.json, so <track srclang> and the panel's
     # language label don't need the full file fetched just for this.
     transcript_language: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    # §127 — the Celery id of the run currently in flight, so it can be
+    # revoked. Cleared whenever the run stops for any reason; a stale id here
+    # would make a later toggle-off revoke somebody else's task.
+    transcription_task_id: Mapped[Optional[str]] = mapped_column(String(155), nullable=True)
+    # §127 — 0-100 while transcribing, null otherwise.
+    #
+    # Its own column rather than AssetVersion.processing_progress (§113):
+    # transcription runs AFTER the version is already `ready`, so sharing that
+    # column would overwrite the transcode's own final value and make a
+    # finished transcode look like it had restarted.
+    #
+    # Expect a long flat start. The model load and the VAD pre-filter both
+    # happen before faster-whisper yields its first segment, so this legitimately
+    # sits at 0 for a while -- that is not a stall.
+    transcription_progress: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     transcription_status: Mapped[TranscriptionStatus] = mapped_column(
         Enum(TranscriptionStatus), nullable=False, default=TranscriptionStatus.not_started,
         server_default=TranscriptionStatus.not_started.value,

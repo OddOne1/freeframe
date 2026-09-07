@@ -16,7 +16,7 @@ from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.share import AssetShare
 from ..models.activity import Mention, Notification, NotificationType, AssetView
 from ..models.vote import Vote
-from ..schemas.asset import AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, VoteToggleResponse, VoteRequest, TranscriptResponse, TranscriptSegment, CheckExistingRequest, CheckExistingResponse
+from ..schemas.asset import TranscriptionToggle, TranscriptionToggleResponse, AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, VoteToggleResponse, VoteRequest, TranscriptResponse, TranscriptSegment, CheckExistingRequest, CheckExistingResponse
 from ..schemas.notification import AssignmentUpdate
 from ..services.permissions import require_project_role, require_asset_access, can_access_asset, is_public_project, get_project_member, can_see_rating_aggregate
 from ..services.s3_service import build_download_filename, get_s3_client
@@ -450,6 +450,8 @@ def get_asset_transcript(
 
     response = TranscriptResponse(
         transcription_status=media_file.transcription_status,
+        transcription_progress=media_file.transcription_progress,
+        transcription_enabled=asset.transcription_enabled,
         language=media_file.transcript_language,
     )
     if media_file.transcription_status != TranscriptionStatus.ready:
@@ -545,6 +547,107 @@ def initiate_new_version(
         asset_id=asset_id,
         version_id=version.id,
     )
+
+@router.patch("/assets/{asset_id}/transcription", response_model=TranscriptionToggleResponse)
+def set_asset_transcription(
+    asset_id: uuid.UUID,
+    body: TranscriptionToggle,
+    version_id: Optional[uuid.UUID] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Turn transcription on or off for one file (§127).
+
+    The toggle is INTENT -- "should this file end up transcribed" -- not a
+    trigger. Turning it on for something already transcribed does nothing;
+    turning it on for something with no transcript starts one; turning it off
+    stops a run in flight and declines future ones.
+
+    Cancellation is done here rather than left to the task, and that is the
+    load-bearing decision. `revoke(terminate=True)` may kill the worker child
+    mid-call, so the task's own except/finally is not guaranteed to run --
+    exactly the shape that leaves a row stuck at `processing` forever, which
+    this codebase has been bitten by twice. So the caller writes the terminal
+    state itself, BEFORE the signal, and the task is written to be safe to
+    lose at any point.
+    """
+    asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    require_project_role(db, asset.project_id, current_user, ProjectRole.editor)
+
+    if asset.asset_type not in (AssetType.video, AssetType.audio):
+        raise HTTPException(status_code=400, detail="Only video and audio can be transcribed")
+
+    if version_id:
+        version = db.query(AssetVersion).filter(
+            AssetVersion.id == version_id,
+            AssetVersion.asset_id == asset_id,
+            AssetVersion.deleted_at.is_(None),
+        ).first()
+    else:
+        version = db.query(AssetVersion).filter(
+            AssetVersion.asset_id == asset_id,
+            AssetVersion.deleted_at.is_(None),
+        ).order_by(AssetVersion.version_number.desc()).first()
+    if not version:
+        raise HTTPException(status_code=404, detail="No version found")
+
+    media_file = db.query(MediaFile).filter(MediaFile.version_id == version.id).first()
+    if not media_file:
+        raise HTTPException(status_code=404, detail="Media file not found")
+
+    asset.transcription_enabled = body.enabled
+    cancelled = False
+    started = False
+
+    if not body.enabled:
+        task_id = media_file.transcription_task_id
+        if media_file.transcription_status == TranscriptionStatus.processing or task_id:
+            # Terminal state FIRST. If the revoke kills the worker child
+            # before its handler runs -- which is the point of terminate --
+            # nothing else will ever write this row.
+            media_file.transcription_status = TranscriptionStatus.not_started
+            media_file.transcription_progress = None
+            media_file.transcription_task_id = None
+            cancelled = True
+        db.commit()
+
+        if task_id:
+            try:
+                from ..tasks.celery_app import celery_app
+                # terminate=True for a run already in flight; the revoked set
+                # covers one still queued. Both matter: concurrency is 1 on
+                # this worker, so a queued task can sit for a long time.
+                celery_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
+            except Exception:
+                # The state is already correct. A broker that will not carry
+                # the revoke leaves a task that finds the toggle off when it
+                # starts and stops by itself.
+                logger.warning("Could not revoke transcription task %s", task_id, exc_info=True)
+    else:
+        db.commit()
+        # Only start something if there is nothing to show and nothing running.
+        if media_file.transcription_status in (
+            TranscriptionStatus.not_started,
+            TranscriptionStatus.failed,
+        ):
+            from ..tasks.transcribe_tasks import transcribe_asset
+            result = transcribe_asset.delay(str(asset_id), str(version.id))
+            media_file.transcription_task_id = result.id
+            media_file.transcription_status = TranscriptionStatus.processing
+            media_file.transcription_progress = 0
+            db.commit()
+            started = True
+
+    db.refresh(media_file)
+    return TranscriptionToggleResponse(
+        enabled=asset.transcription_enabled,
+        transcription_status=media_file.transcription_status,
+        cancelled=cancelled,
+        started=started,
+    )
+
 
 @router.post("/assets/{asset_id}/versions/{version_id}/retry-processing", response_model=AssetVersionResponse)
 def retry_version_processing(

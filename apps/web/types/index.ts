@@ -115,6 +115,9 @@ export interface Project {
   archived_by?: string | null;
   archived_by_is_superadmin?: boolean;
   ratings_visible_to_all?: boolean;
+  /** §127 — what a NEW file's transcription toggle starts as in this
+   *  project. null = never chosen, which falls through to the app default. */
+  transcription_default?: boolean | null;
 }
 
 export interface ProjectMember {
@@ -756,10 +759,25 @@ export interface TranscriptSegment {
  *  only populated once transcription_status is 'ready'. */
 export interface TranscriptResponse {
   transcription_status: TranscriptionStatus
+  /** 0-100 while transcribing, null otherwise (§127). Sits at 0 for a while
+   *  at the start — the model load and the VAD pass both happen before the
+   *  first segment is yielded, so a flat 0 there is normal, not stuck. */
+  transcription_progress: number | null
+  /** The per-file toggle: should this file end up transcribed (§127). */
+  transcription_enabled: boolean
   language: string | null
   captions_url: string | null
   text: string
   segments: TranscriptSegment[]
+}
+
+/** Mirrors TranscriptionToggleResponse in apps/api/schemas/asset.py. */
+export interface TranscriptionToggleResponse {
+  enabled: boolean
+  transcription_status: TranscriptionStatus
+  /** A run was actually stopped, as opposed to future runs merely declined. */
+  cancelled: boolean
+  started: boolean
 }
 
 // ─── LUTs ─────────────────────────────────────────────────────────────────────

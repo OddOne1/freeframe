@@ -29,6 +29,7 @@ ROOTS = (API, REPO / "packages" / "transcoder")
 STDLIB = {
     "abc", "argparse", "ast", "asyncio", "base64", "binascii", "calendar",
     "collections", "contextlib", "copy", "csv", "dataclasses", "datetime",
+    "errno", "fnmatch", "importlib", "sysconfig", "weakref",
     "decimal", "email", "enum", "functools", "glob", "gzip", "hashlib",
     "hmac", "html", "inspect", "io", "itertools", "json", "logging", "math",
     "mimetypes", "operator", "os", "pathlib", "platform", "posixpath",

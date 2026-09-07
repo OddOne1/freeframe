@@ -29,7 +29,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { useComments } from '@/hooks/use-comments'
 import { useSSE } from '@/hooks/use-sse'
 import { useLut } from '@/hooks/use-lut'
-import type { TranscriptResponse, LutExportResponse } from '@/types'
+import type { TranscriptResponse, TranscriptionToggleResponse, LutExportResponse } from '@/types'
 import { TechnicalMetadataList, formatBitrate } from '@/components/review/technical-metadata-list'
 import type { CommentWithReplies } from '@/hooks/use-comments'
 import { api, ApiError } from '@/lib/api'
@@ -393,6 +393,20 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     onTranscriptionProcessing: (data) => {
       if (data.asset_id === asset?.id) mutateTranscript()
     },
+    // §127 — patch the cached payload rather than refetching. Progress
+    // arrives once per whole percent, and a round trip each time would be
+    // a hundred requests per transcription for a number the event already
+    // carries.
+    onTranscriptionProgress: (data) => {
+      if (data.asset_id !== asset?.id) return
+      mutateTranscript(
+        (prev) =>
+          prev
+            ? { ...prev, transcription_progress: data.percent }
+            : prev,
+        { revalidate: false },
+      )
+    },
     onLutExportReady: async (data) => {
       if (data.asset_id !== asset?.id) return
       setExporting(false)
@@ -421,6 +435,30 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     },
     enabled: Boolean(asset?.project_id),
   })
+
+  // §127 — the per-file transcription toggle.
+  const [transcriptionBusy, setTranscriptionBusy] = useState(false)
+  const handleTranscriptionToggle = async (enabled: boolean) => {
+    if (!asset || !currentVersion) return
+    setTranscriptionBusy(true)
+    // Optimistic, like every other toggle in this app (§31, §120): the
+    // switch moves on the click, and the server's answer replaces it.
+    mutateTranscript(
+      (prev) => (prev ? { ...prev, transcription_enabled: enabled } : prev),
+      { revalidate: false },
+    )
+    try {
+      await api.patch<TranscriptionToggleResponse>(
+        `/assets/${asset.id}/transcription?version_id=${currentVersion.id}`,
+        { enabled },
+      )
+    } finally {
+      setTranscriptionBusy(false)
+      // Whatever happened -- started, cancelled, refused -- the server's
+      // state is the one that counts.
+      void mutateTranscript()
+    }
+  }
 
   const captionsUrl = resolveApiMediaUrl(transcript?.captions_url ?? null)
 
@@ -1296,6 +1334,8 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                   isLoading={transcriptLoading}
                   currentTime={playheadTime}
                   onSeek={(seconds) => seekTo(seconds, false)}
+                  onToggle={canEditStatus ? handleTranscriptionToggle : undefined}
+                  toggleBusy={transcriptionBusy}
                 />
               ) : (
                 <div className="flex-1 overflow-y-auto p-4">

@@ -10,6 +10,14 @@ export interface TranscodeProgressEvent {
   percent: number
 }
 
+/** §127 — live transcription progress, distinct from transcode progress:
+ *  transcription runs after the version is already `ready`. */
+export interface TranscriptionProgressEvent {
+  asset_id: string
+  version_id: string
+  percent: number
+}
+
 export interface TranscodeCompleteEvent {
   asset_id: string
   version_id: string
@@ -78,6 +86,7 @@ export type SSEEventType =
   | 'transcode_progress'
   | 'transcode_complete'
   | 'transcode_failed'
+  | 'transcription_progress'
   | 'transcription_processing'
   | 'transcription_complete'
   | 'transcription_failed'
@@ -109,6 +118,7 @@ export interface UseSSEOptions {
   onTranscodeProgress?: (data: TranscodeProgressEvent) => void
   onTranscodeComplete?: (data: TranscodeCompleteEvent) => void
   onTranscodeFailed?: (data: TranscodeFailedEvent) => void
+  onTranscriptionProgress?: (data: TranscriptionProgressEvent) => void
   onTranscriptionProcessing?: (data: TranscriptionProcessingEvent) => void
   onTranscriptionComplete?: (data: TranscriptionCompleteEvent) => void
   onTranscriptionFailed?: (data: TranscriptionFailedEvent) => void
@@ -137,6 +147,7 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
     onTranscodeProgress,
     onTranscodeComplete,
     onTranscodeFailed,
+    onTranscriptionProgress,
     onTranscriptionProcessing,
     onTranscriptionComplete,
     onTranscriptionFailed,
@@ -156,6 +167,7 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
     onTranscodeProgress,
     onTranscodeComplete,
     onTranscodeFailed,
+    onTranscriptionProgress,
     onTranscriptionProcessing,
     onTranscriptionComplete,
     onTranscriptionFailed,
@@ -171,6 +183,7 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
       onTranscodeProgress,
       onTranscodeComplete,
       onTranscodeFailed,
+      onTranscriptionProgress,
       onTranscriptionProcessing,
       onTranscriptionComplete,
       onTranscriptionFailed,
@@ -257,6 +270,19 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
           const event: SSEEvent = { type: 'transcode_failed', data }
           setLastEvent(event)
           callbackRefs.current.onTranscodeFailed?.(data)
+        } catch {
+          // ignore malformed events
+        }
+      })
+
+      // ── transcription_progress ──
+      es.addEventListener('transcription_progress', (e: MessageEvent) => {
+        if (destroyed) return
+        try {
+          const data = JSON.parse(e.data) as TranscriptionProgressEvent
+          const event: SSEEvent = { type: 'transcription_progress', data }
+          setLastEvent(event)
+          callbackRefs.current.onTranscriptionProgress?.(data)
         } catch {
           // ignore malformed events
         }
