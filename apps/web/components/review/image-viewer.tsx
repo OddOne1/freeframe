@@ -364,10 +364,14 @@ export function ImageViewer({ asset, version, className, annotationCanvas, cube,
           )}
         </TransformWrapper>
 
-        {/* LUT picker — top-left, opposite the zoom controls so it never
-            overlaps them. */}
+        {/* §123 — bottom-right, matching where the video player puts it (in
+            the transport bar's right-hand control group, beside captions and
+            quality). It sat top-left here, so the same control appeared in
+            two different corners depending on the media type.
+            `right-14` rather than `right-4`: the zoom stack owns the corner
+            itself, so this sits immediately left of it in the same row. */}
         {lutPicker && (
-          <div className="absolute left-3 top-3 z-10">{lutPicker}</div>
+          <div className="absolute bottom-4 right-14 z-10">{lutPicker}</div>
         )}
       </div>
 

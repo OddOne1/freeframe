@@ -127,13 +127,50 @@ function compile(gl: WebGL2RenderingContext, type: number, source: string): WebG
   return shader
 }
 
+/**
+ * §123 — computed ONCE, and the probe context is handed back immediately.
+ *
+ * This used to create a fresh <canvas> and a fresh WebGL2 context on every
+ * call, and never release either. Browsers cap live contexts (commonly 8-16)
+ * and evict the oldest once past it, which is the "too many active WebGL
+ * contexts on this page" spam — logged 32 times in one session by opening
+ * the LUT list, because renderLutThumbnail asks this question once per LUT
+ * it draws.
+ *
+ * The answer cannot change during a page's life, so it is cached. And the
+ * probe context is explicitly lost rather than left for the collector:
+ * dropping the last reference to a canvas does NOT free its context
+ * promptly, which is the whole reason a cap is reachable by accident.
+ */
+let webgl2Support: boolean | null = null
+
 export function isWebGL2Available(): boolean {
   if (typeof document === 'undefined') return false
+  if (webgl2Support !== null) return webgl2Support
   try {
     const canvas = document.createElement('canvas')
-    return Boolean(canvas.getContext('webgl2'))
+    const gl = canvas.getContext('webgl2')
+    webgl2Support = Boolean(gl)
+    releaseContext(gl)
   } catch {
-    return false
+    webgl2Support = false
+  }
+  return webgl2Support
+}
+
+/**
+ * Hand a WebGL context back to the browser.
+ *
+ * WEBGL_lose_context is the only way to release one on demand; without it a
+ * context lives until its canvas is collected, which is unpredictable and is
+ * what lets a page drift past the cap. Absent in some implementations, so
+ * its absence is not an error.
+ */
+export function releaseContext(gl: WebGL2RenderingContext | null): void {
+  try {
+    gl?.getExtension('WEBGL_lose_context')?.loseContext()
+  } catch {
+    // Nothing to do: the context is being discarded either way.
   }
 }
 
@@ -336,5 +373,8 @@ export class LutRenderer {
     gl.deleteTexture(this.sourceTex)
     gl.deleteProgram(this.program)
     gl.deleteVertexArray(this.vao)
+    // Deleting the objects is not enough: the CONTEXT itself is the capped
+    // resource, and it outlives them until the canvas is collected.
+    releaseContext(gl)
   }
 }
