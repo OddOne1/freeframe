@@ -161,7 +161,20 @@ services:
       # Whisper weights are fetched from the HF hub on first use. Without
       # this volume, the mandatory `--no-cache` rebuilds would re-download a
       # multi-hundred-MB model every single time.
-      - whisper_models:/root/.cache/huggingface
+      #
+      # §125 — this was mounted at /root/.cache/huggingface, which the
+      # process never looks at and could not write to anyway: the container
+      # runs as `appuser` (USER appuser in the Dockerfile), not root. So the
+      # volume that exists to persist the model was pointed at another
+      # user's home. It now matches HF_HOME from the image.
+      #
+      # A NEW volume name on purpose. Docker seeds a named volume from the
+      # image directory — ownership included — only while that volume is
+      # still empty, and the old one was created against a root-owned path.
+      # Reusing it would risk an appuser process meeting root-owned
+      # contents. `whisper_models` is now unused and can be removed with
+      # `docker volume rm freeframe_whisper_models`.
+      - whisper_cache:/cache/huggingface
     command: sh -c "celery -A apps.api.tasks.celery_app worker -Q transcription -c $${TRANSCRIPTION_CONCURRENCY:-1} --loglevel=warning"
     # §114 — same override and reasoning as `worker` above.
     healthcheck:
@@ -267,4 +280,5 @@ volumes:
   pgdata:
   redisdata:
   letsencrypt:
-  whisper_models:
+  # §125 — replaces whisper_models, which was mounted at a root-owned path.
+  whisper_cache:

@@ -22,7 +22,28 @@ COPY packages/transcoder /workspace/packages/transcoder
 COPY apps/api /workspace/apps/api
 
 # Create non-root user
-RUN adduser --disabled-password --no-create-home appuser
+#
+# §125 — WITH a home directory. `--no-create-home` was the literal cause of
+# "PermissionError: [Errno 13] Permission denied: '/home/appuser'": HOME is
+# still /home/appuser for this user, so anything defaulting to ~/.cache tried
+# to create a directory under /home, which is root-owned and 755. Whisper's
+# model download is the first thing in this image that ever wanted a home.
+RUN adduser --disabled-password --gecos "" appuser
+
+# §125 — an explicit, writable cache for Hugging Face model weights.
+#
+# Not left to ~/.cache even now that the home exists: this path is what the
+# transcribe_worker's named volume mounts onto, and a mount point that does
+# not depend on HOME being interpreted the same way by every tool is one
+# less thing to get wrong. Created and chowned here so that Docker seeds the
+# named volume with the right ownership when it first initialises it from
+# the image.
+#
+# Declared in this, the only stage — but note the standing rule that a
+# runtime env var must live in the runner stage, not just a builder one, if
+# this Dockerfile ever gains stages.
+ENV HF_HOME=/cache/huggingface
+RUN mkdir -p /cache/huggingface && chown -R appuser:appuser /cache
 
 WORKDIR /workspace
 
