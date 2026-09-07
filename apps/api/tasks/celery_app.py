@@ -99,6 +99,26 @@ celery_app.conf.update(
         # is not latency-sensitive, and that container is already the one
         # whose stranded work it exists to clean up.
         "apps.api.tasks.cleanup_tasks.*": {"queue": "transcoding"},
+        # §126 — routed by its EXPLICIT name, because that is what it has: a
+        # module glob cannot match a task declared as name="apply_watermark".
+        # It was therefore falling through to `default`, which nothing
+        # consumes — so every watermark request has been answered with
+        # {"status": "watermark_queued"} and then silently dropped. Found by
+        # extending the wiring check from beat-scheduled tasks to all tasks.
+        #
+        # `transcoding` because it is ffmpeg/Pillow work on an asset, the
+        # same profile as lut_tasks above. Safe to switch on: it writes a new
+        # derivative rather than deleting anything, and the already-stranded
+        # messages stay in `default`, which still has no consumer — so
+        # nothing floods when this starts working.
+        "apply_watermark": {"queue": "transcoding"},
+        # Same trap, same fix: both carry an explicit name= and so were
+        # invisible to their module's glob, falling through to `default`.
+        # sweep_lut_exports is the safety net that deletes graded exports
+        # orphaned by a worker restart (§19-era), and sweep_stuck_processing
+        # is §114's own backstop — neither has ever reached a worker.
+        "sweep_lut_exports": {"queue": "transcoding"},
+        "sweep_stuck_processing": {"queue": "transcoding"},
     },
     # Rate limiting for email queues (SES limits)
     task_annotations={

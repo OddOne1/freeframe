@@ -65,23 +65,34 @@ def _consumed_queues() -> set:
     return queues
 
 
-def _queue_for(task_name: str, module: str) -> str:
-    """Resolve a task's queue through task_routes, else the default queue."""
+def _queue_for_name(registered_name: str) -> str:
+    """Resolve a task's queue the way Celery does: by its REGISTERED name.
+
+    A task declared `name="apply_watermark"` is matched against that string,
+    not against its module path — so a `apps.api.tasks.watermark_tasks.*`
+    glob never sees it. Getting this wrong in the check is how the same task
+    can look routed while falling through to the default queue in practice.
+    """
     src = _celery_source()
     routes = src[src.index("task_routes"):src.index("task_annotations")]
-    # Longest pattern wins, matching Celery's own specificity.
     best = None
     for pattern, queue in re.findall(r'"([^"]+)":\s*\{"queue":\s*"([^"]+)"\}', routes):
-        target = f"{module}.{task_name}"
         if pattern.endswith(".*"):
-            if target.startswith(pattern[:-1]):
+            if registered_name.startswith(pattern[:-1]):
                 if best is None or len(pattern) > len(best[0]):
                     best = (pattern, queue)
-        elif pattern == target:
+        elif pattern == registered_name:
+            # An exact match is the most specific there is.
             best = (pattern, queue)
+            break
     if best:
         return best[1]
     return re.search(r'task_default_queue="([^"]+)"', src).group(1)
+
+
+def _queue_for(task_name: str, module: str) -> str:
+    """Same, for callers that hold a module and a function name."""
+    return _queue_for_name(f"{module}.{task_name}")
 
 
 def _decorated_tasks() -> dict:
@@ -200,6 +211,61 @@ def test_dispatch_error_handlers_cannot_throw():
     assert "_task_label(task)" in dispatch_body, "handlers should label via _task_label"
     assert dispatch_body.count("exc_info=True") == 2, (
         "both handlers need exc_info, or the log names the task without saying why"
+    )
+
+
+def _all_task_names() -> dict:
+    """{task name -> module} for EVERY @celery_app.task in tasks/.
+
+    Not just the beat-scheduled ones. A task without an explicit `name=` is
+    auto-named `<module path>.<function>`, which is what task_routes matches
+    against — so its routing is only correct as long as that path is what
+    the route patterns expect. transcribe_asset and process_asset are both
+    in this category, and neither was covered before §126.
+    """
+    out = {}
+    for path in (API / "tasks").glob("*.py"):
+        module = f"apps.api.tasks.{path.stem}"
+        for node in ast.parse(path.read_text()).body:
+            if not isinstance(node, ast.FunctionDef) or not node.decorator_list:
+                continue
+            decs = [ast.unparse(d) for d in node.decorator_list]
+            if not any(k in d for d in decs for k in TASK_DECORATORS):
+                continue
+            explicit = None
+            for dec in node.decorator_list:
+                if isinstance(dec, ast.Call):
+                    for kw in dec.keywords:
+                        if kw.arg == "name" and isinstance(kw.value, ast.Constant):
+                            explicit = kw.value.value
+            out[explicit or f"{module}.{node.name}"] = module
+    return out
+
+
+def test_every_task_reaches_a_consumed_queue():
+    """Not only the scheduled ones (§126).
+
+    Transcription was investigated three times on the theory that
+    transcribe_asset never reached its worker. It does -- verified against
+    the pinned celery 5.4.0/kombu 5.4.2 by tracing send_task: it publishes on
+    the anonymous exchange with routing_key 'transcription', which is the
+    Redis list the worker consumes. This makes that answer a check rather
+    than an investigation.
+    """
+    consumed = _consumed_queues()
+    known = set(re.findall(r'"([^"]+)"', re.search(
+        r"KNOWN_UNROUTED = \{([^}]*)\}", _celery_source()).group(1)))
+
+    stranded = {}
+    for name, module in _all_task_names().items():
+        if name in known:
+            continue
+        queue = _queue_for_name(name)
+        if queue not in consumed:
+            stranded[name] = queue
+    assert not stranded, (
+        f"task(s) routed to a queue no container consumes: {stranded}; "
+        f"consumed queues are {sorted(consumed)}"
     )
 
 

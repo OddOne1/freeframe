@@ -137,8 +137,14 @@ def transcribe_asset(self, asset_id: str, version_id: str):
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 tmp_audio = f.name
 
+            # §126 — milestones. Everything between here and the segment
+            # count below can take minutes, and at the old log level none of
+            # it was visible, so a working transcription looked exactly like
+            # a task that never arrived.
+            logger.info("Transcribing asset %s version %s: fetching source", asset_id, version_id)
             s3.download_file(settings.s3_bucket, media_file.s3_key_raw, tmp_input)
             _extract_audio(tmp_input, tmp_audio)
+            logger.info("Audio extracted for %s; loading model", asset_id)
 
             model = _get_model()
             # No `language=` argument: auto-detect is the whole point here,
@@ -158,6 +164,10 @@ def transcribe_asset(self, asset_id: str, version_id: str):
             ]
 
             language = getattr(info, "language", None)
+            logger.info(
+                "Transcribed asset %s version %s: %d segment(s), language=%s",
+                asset_id, version_id, len(segments), language,
+            )
             transcript = {
                 "language": language,
                 "language_probability": getattr(info, "language_probability", None),

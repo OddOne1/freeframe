@@ -175,7 +175,17 @@ services:
       # contents. `whisper_models` is now unused and can be removed with
       # `docker volume rm freeframe_whisper_models`.
       - whisper_cache:/cache/huggingface
-    command: sh -c "celery -A apps.api.tasks.celery_app worker -Q transcription -c $${TRANSCRIPTION_CONCURRENCY:-1} --loglevel=warning"
+    # §126 — INFO here, unlike the other workers.
+    #
+    # Celery logs "Task received" and "Task succeeded" at INFO (worker/
+    # strategy.py and app/trace.py); only failures are ERROR. This worker's
+    # jobs run for MINUTES -- a first-run model download alone is hundreds of
+    # MB -- so at warning level a healthy, working transcription is
+    # indistinguishable from a task that never arrived: silent logs, and an
+    # empty queue because a live consumer BRPOPs immediately. That ambiguity
+    # cost three rounds of investigation. The volume is a handful of long
+    # jobs, so INFO is cheap here in a way it would not be on `worker`.
+    command: sh -c "celery -A apps.api.tasks.celery_app worker -Q transcription -c $${TRANSCRIPTION_CONCURRENCY:-1} --loglevel=info"
     # §114 — same override and reasoning as `worker` above.
     healthcheck:
       test: ["CMD-SHELL", "celery -A apps.api.tasks.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 > /dev/null 2>&1 || exit 1"]
