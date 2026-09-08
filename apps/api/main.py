@@ -7,6 +7,7 @@ from .routers import auth, users, projects, upload, events, assets, me, comments
 from .services.s3_service import ensure_bucket_exists
 from .middleware.global_rate_limit import GlobalRateLimitMiddleware
 from .middleware.setup_guard import SetupGuardMiddleware
+from .middleware.no_cache_errors import NoCacheErrorsMiddleware
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -40,6 +41,12 @@ app.add_middleware(
 )
 app.add_middleware(GlobalRateLimitMiddleware)
 app.add_middleware(SetupGuardMiddleware)
+# §128 — added LAST on purpose. Starlette's add_middleware inserts at the
+# front of the stack, so the last one added is the OUTERMOST: this therefore
+# sees the final status of every response, including the 429s the rate
+# limiter returns and anything the setup guard short-circuits before a route
+# is ever reached. Added earlier in this list, it would miss exactly those.
+app.add_middleware(NoCacheErrorsMiddleware)
 
 app.include_router(auth.router)
 app.include_router(users.router)
