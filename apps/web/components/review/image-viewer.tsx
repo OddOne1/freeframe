@@ -16,7 +16,7 @@ import {
   ChevronRight,
   Loader2,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, resolveStreamUrl } from '@/lib/utils'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { useReviewStore } from '@/stores/review-store'
@@ -32,10 +32,7 @@ interface StreamResponse {
 }
 
 // The media proxy returns relative paths (/stream/hls/...) — prepend the API URL.
-function resolveStreamUrl(url: string): string {
-  if (!url.startsWith("/")) return url
-  return `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${url}`
-}
+
 
 // AssetVersion already has files?: MediaFile[]
 type VersionWithFiles = AssetVersion

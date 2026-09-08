@@ -6,6 +6,26 @@ export function cn(...inputs: ClassValue[]): string {
 }
 
 /**
+ * Prepend the API origin to a relative URL; leave an absolute one alone.
+ *
+ * The one implementation of this rule. It used to exist as four
+ * near-identical copies (here, plus a local `resolveStreamUrl` in
+ * video-player, audio-player and image-viewer), and the rule's only failure
+ * mode is two places applying it: in production NEXT_PUBLIC_API_URL is
+ * itself "/api", so an already-resolved url STILL starts with "/" and the
+ * `startsWith` guard cannot tell it from a raw one. Resolve twice and you
+ * get "/api/api/stream/..." and a 404. That has now happened twice — §32
+ * for stream_url, §139 for thumbnail_url.
+ *
+ * Read from process.env inside the function, not into a module constant:
+ * tests stub it with vi.stubEnv after this module is imported.
+ */
+function withApiOrigin(url: string): string {
+  if (!url.startsWith('/')) return url
+  return `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}${url}`
+}
+
+/**
  * Resolve a possibly-relative media URL returned by the API (thumbnails,
  * posters, logos, attachments, stream URLs) into a fully-qualified one.
  * The media proxy returns relative paths like "/stream/hls/...?token=..." —
@@ -14,8 +34,16 @@ export function cn(...inputs: ClassValue[]): string {
  */
 export function resolveApiMediaUrl(url: string | null | undefined): string | null {
   if (!url) return url ?? null
-  if (!url.startsWith('/')) return url
-  return `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}${url}`
+  return withApiOrigin(url)
+}
+
+/**
+ * The same rule for a url already known to be present. Kept as a separate
+ * name because the media players deal in definite strings and would
+ * otherwise have to narrow `string | null` at every call site.
+ */
+export function resolveStreamUrl(url: string): string {
+  return withApiOrigin(url)
 }
 
 /**

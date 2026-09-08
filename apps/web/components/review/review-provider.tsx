@@ -10,7 +10,6 @@ import React, {
   useState,
 } from "react";
 import { api } from "@/lib/api";
-import { resolveApiMediaUrl } from "@/lib/utils";
 import { useReviewStore } from "@/stores/review-store";
 import type { AssetResponse, AssetVersion, Comment } from "@/types";
 
@@ -153,15 +152,21 @@ export function ReviewProvider({
           created_at: "",
           updated_at: "",
           deleted_at: null,
-          // RAW, not resolved (CLAUDE.md §32). VideoPlayer prepends
-          // NEXT_PUBLIC_API_URL itself to any stream url starting with "/"
-          // (video-player.tsx:213-217), so resolving here as well produced
-          // `/api/api/stream/hls/master.m3u8` and 404'd every video in a
-          // folder share. The authenticated branch below already leaves
-          // stream_url alone — that asymmetry, feeding one shared consumer,
-          // is what made this reachable from share links only.
+          // Both RAW, not resolved (CLAUDE.md §32, §139). VideoPlayer
+          // prepends NEXT_PUBLIC_API_URL itself to any url starting with "/"
+          // (resolveStreamUrl), so resolving here as well produced
+          // `/api/api/stream/hls/...` and 404'd. The guard against double
+          // resolution is `startsWith("/")`, which cannot help: in
+          // production NEXT_PUBLIC_API_URL is itself "/api", so a resolved
+          // url still starts with "/" and is indistinguishable from a raw
+          // one. The only defence is resolving in exactly one place.
+          //
+          // §32 fixed stream_url this way and left thumbnail_url resolved
+          // here — the same bug, in the sibling field, surviving in both
+          // branches. Keep them together: an edit that "restores symmetry"
+          // by resolving either one here brings it straight back.
           stream_url: streamData?.url ?? undefined,
-          thumbnail_url: resolveApiMediaUrl(streamData?.thumbnail_url),
+          thumbnail_url: streamData?.thumbnail_url ?? undefined,
           latest_version: streamData?.version_id
             ? {
                 id: streamData.version_id,
@@ -177,8 +182,9 @@ export function ReviewProvider({
         } as AssetResponse;
       } else {
         // Normal mode: authenticated API
+        // thumbnail_url is left RAW here for the same reason stream_url is
+        // above — VideoPlayer resolves it, once. See §139.
         data = await api.get<AssetResponse>(`/assets/${assetId}`);
-        data = { ...data, thumbnail_url: resolveApiMediaUrl(data.thumbnail_url) };
       }
 
       if (!mountedRef.current || assetIdRef.current !== assetId) return;

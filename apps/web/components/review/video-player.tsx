@@ -165,18 +165,16 @@ const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 /**
  * Prepend the API origin to a relative stream URL; leave absolute ones alone.
  *
- * Exported because this player is the ONE place a stream URL may be
- * resolved (CLAUDE.md §32) — anything that resolves before handing a URL
- * here produces `/api/api/stream/...` and a 404. Callers and tests should
- * reference this rather than reimplementing the rule: it was previously
- * written out inline twice in the effect below, and a third copy in a test
- * is what let a mutation of the real logic go unnoticed.
+ * Re-exported, not reimplemented: this player is the ONE place a stream URL
+ * may be resolved (CLAUDE.md §32) — anything that resolves before handing a
+ * URL here produces `/api/api/stream/...` and a 404. Callers and tests
+ * should reference this rather than writing the rule out again; it was
+ * previously inline twice in the effect below, and a third copy in a test
+ * is what let a mutation of the real logic go unnoticed. It now lives in
+ * lib/utils beside resolveApiMediaUrl, which is the same rule.
  */
-export function resolveStreamUrl(url: string): string {
-  return url.startsWith("/")
-    ? `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${url}`
-    : url;
-}
+export { resolveStreamUrl } from "@/lib/utils";
+import { resolveStreamUrl } from "@/lib/utils";
 
 export function VideoPlayer({
   assetId,
