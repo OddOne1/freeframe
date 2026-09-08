@@ -22,6 +22,7 @@ import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { GuestCommentInput } from '@/components/review/guest-comment-input'
 import { FolderShareViewer } from '@/components/share/folder-share-viewer'
+import { GuestCommentList } from '@/components/share/guest-comment-list'
 import type { Asset, SharePermission, ProjectBranding, ShareLinkAppearance, DownloadVariant } from '@/types'
 import { ShareFieldsPanel } from '@/components/share/share-fields-panel'
 import { useShareSidebar, type FieldsVisibility, type ShareSidebar } from '@/components/share/use-share-sidebar'
@@ -55,17 +56,6 @@ interface ShareValidateResponse {
   branding?: ProjectBranding | null
   error?: string
 }
-
-interface GuestComment {
-  id: string
-  body: string
-  guest_name: string
-  guest_email: string
-  created_at: string
-  timecode_start?: number | null
-}
-
-type CommentsResponse = GuestComment[]
 
 // ─── Utility ──────────────────────────────────────────────────────────────────
 
@@ -184,77 +174,6 @@ function ErrorState({ expired }: ErrorStateProps) {
             : 'This share link is invalid or has been removed.'}
         </p>
       </div>
-    </div>
-  )
-}
-
-// ─── Guest comment list (for right panel) ────────────────────────────────────
-
-interface GuestCommentListProps {
-  token: string
-  refreshKey: number
-}
-
-function GuestCommentList({ token, refreshKey }: GuestCommentListProps) {
-  const [comments, setComments] = React.useState<GuestComment[]>([])
-  const [loading, setLoading] = React.useState(true)
-
-  React.useEffect(() => {
-    setLoading(true)
-    fetch(`${API_URL}/share/${token}/comments`)
-      .then((r) => (r.ok ? r.json() : Promise.resolve([])))
-      .then((data: CommentsResponse) => setComments(data))
-      .catch(() => setComments([]))
-      .finally(() => setLoading(false))
-  }, [token, refreshKey])
-
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-zinc-500" />
-      </div>
-    )
-  }
-
-  if (comments.length === 0) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center px-6 text-center">
-        <div className="h-12 w-12 rounded-full bg-white/5 flex items-center justify-center mb-3">
-          <MessageSquare className="h-6 w-6 text-zinc-600" />
-        </div>
-        <p className="text-sm font-medium text-zinc-300">No comments — yet</p>
-        <p className="text-xs text-zinc-500 mt-1">
-          Be the first to leave feedback on this asset.
-        </p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2.5">
-      {comments.map((comment) => (
-        <div
-          key={comment.id}
-          className="rounded-lg bg-white/[0.03] border border-white/5 px-3 py-2.5"
-        >
-          <div className="flex items-center gap-2 mb-1.5">
-            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-purple-500/20 text-2xs font-medium text-purple-400">
-              {comment.guest_name.charAt(0).toUpperCase()}
-            </div>
-            <span className="text-xs font-medium text-zinc-200">{comment.guest_name}</span>
-            {comment.timecode_start != null && (
-              <span className="text-2xs text-zinc-500 font-mono bg-white/5 px-1.5 py-0.5 rounded">
-                {Math.floor(comment.timecode_start / 60)}:
-                {String(Math.floor(comment.timecode_start % 60)).padStart(2, '0')}
-              </span>
-            )}
-            <span className="ml-auto text-2xs text-zinc-600">
-              {new Date(comment.created_at).toLocaleDateString()}
-            </span>
-          </div>
-          <p className="text-sm text-zinc-300 leading-relaxed">{comment.body}</p>
-        </div>
-      ))}
     </div>
   )
 }
