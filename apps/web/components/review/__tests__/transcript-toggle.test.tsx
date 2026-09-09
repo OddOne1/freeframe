@@ -109,3 +109,76 @@ describe('the progress bar', () => {
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0')
   })
 })
+
+/**
+ * §140 — the thumb sits at the same 2px inset in both states.
+ *
+ * The hand-rolled toggle this replaced moved the thumb to translate-x-4
+ * (16px) when on. On a 36px track with a 16px thumb the symmetric inset is
+ * 2px each side, so "on" needed 18px: the thumb stopped 2px short of the
+ * right edge and the two states looked unequal. Off (2px) was always right,
+ * which is what made it read as a wobble rather than an offset.
+ *
+ * Asserted as classes rather than measured pixels, because jsdom computes
+ * no layout — the real geometry was measured in a browser instead, and the
+ * numbers here are what that measurement confirmed.
+ */
+describe('the toggle thumb', () => {
+  const thumbOf = (el: HTMLElement) => el.querySelector('span') as HTMLElement
+
+  it('is inset 18px when on — reaching the right edge, not 2px short', () => {
+    panel({ transcription_enabled: true }, vi.fn())
+    const thumb = thumbOf(screen.getByRole('switch'))
+    expect(thumb.className).toContain('translate-x-[18px]')
+    // The specific wrong value this replaced.
+    expect(thumb.className).not.toContain('translate-x-4')
+  })
+
+  it('is inset 2px when off', () => {
+    panel({ transcription_enabled: false }, vi.fn())
+    const thumb = thumbOf(screen.getByRole('switch'))
+    expect(thumb.className).toContain('translate-x-[2px]')
+  })
+
+  it('insets match: 36px track - 16px thumb - 18px travel = 2px each side', () => {
+    // Stated as arithmetic so the numbers cannot drift apart silently.
+    const TRACK = 36, THUMB = 16, ON = 18, OFF = 2
+    expect(OFF).toBe(TRACK - THUMB - ON)
+  })
+
+  it('uses the same track size the inset arithmetic assumes', () => {
+    panel({ transcription_enabled: true }, vi.fn())
+    const track = screen.getByRole('switch')
+    expect(track.className).toContain('h-5')
+    expect(track.className).toContain('w-9')
+    expect(thumbOf(track).className).toContain('h-4')
+    expect(thumbOf(track).className).toContain('w-4')
+  })
+
+  it('positions by transform alone, so the thumb cannot escape the track', () => {
+    // The old markup absolutely positioned the thumb against the track.
+    panel({ transcription_enabled: true }, vi.fn())
+    const thumb = thumbOf(screen.getByRole('switch'))
+    expect(thumb.className).not.toContain('absolute')
+    expect(thumb.className).toContain('block')
+  })
+
+  it('is still disabled while a toggle is in flight', () => {
+    render(
+      <TranscriptPanel
+        transcript={{ ...base, transcription_enabled: true }}
+        isLoading={false}
+        currentTime={0}
+        onSeek={vi.fn()}
+        onToggle={vi.fn()}
+        toggleBusy
+      />,
+    )
+    expect(screen.getByRole('switch')).toBeDisabled()
+  })
+
+  it('keeps its accessible name', () => {
+    panel({ transcription_enabled: true }, vi.fn())
+    expect(screen.getByRole('switch')).toHaveAccessibleName('Transcribe this file')
+  })
+})

@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import { Loader2, FileText, AlertCircle } from 'lucide-react'
+import * as Switch from '@radix-ui/react-switch'
 import { cn, formatTime, languageLabel } from '@/lib/utils'
 import type { TranscriptResponse } from '@/types'
 
@@ -49,25 +50,31 @@ function TranscriptionToggle({
             : 'Off for this file'}
         </p>
       </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={enabled}
-        aria-label="Transcribe this file"
+      {/*
+        Radix, like every other toggle here (appearance-popover's ToggleRow
+        is the same markup). The hand-rolled version this replaces put the
+        thumb at translate-x-4 when on — 16px, against the 18px a 20x36
+        track needs to mirror its own 2px off-state inset — so the thumb sat
+        2px short of the right edge and the two states looked unequal.
+        Radix also supplies role/aria-checked, so only the label is ours.
+      */}
+      <Switch.Root
+        checked={enabled}
+        onCheckedChange={onToggle}
         disabled={busy}
-        onClick={() => onToggle(!enabled)}
+        aria-label="Transcribe this file"
         className={cn(
-          'relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50',
+          'relative h-5 w-9 shrink-0 rounded-full transition-colors outline-none disabled:opacity-50',
           enabled ? 'bg-accent' : 'bg-bg-tertiary',
         )}
       >
-        <span
+        <Switch.Thumb
           className={cn(
-            'absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform',
-            enabled ? 'translate-x-4' : 'translate-x-0.5',
+            'block h-4 w-4 rounded-full bg-white transition-transform',
+            enabled ? 'translate-x-[18px]' : 'translate-x-[2px]',
           )}
         />
-      </button>
+      </Switch.Root>
     </div>
   )
 }
