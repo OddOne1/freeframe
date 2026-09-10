@@ -172,7 +172,13 @@ class FolderShareSubfolder(BaseModel):
 class FolderShareAssetsResponse(BaseModel):
     assets: list[FolderShareAssetItem]
     subfolders: list[FolderShareSubfolder]
+    #: Assets in this folder that the viewer may see — the whole link, not
+    #: just the page in `assets`.
     total: int
+    #: Bytes across all `total` assets, not just the loaded page. Defaults to
+    #: 0 so an older client (or a cached response) reads "unknown" as zero
+    #: rather than failing validation.
+    total_size_bytes: int = 0
     page: int
     per_page: int
 

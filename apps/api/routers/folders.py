@@ -20,6 +20,7 @@ from ..schemas.folder import (
     FolderTreeNode,
     FolderUpdate,
 )
+from ..services.asset_visibility import usable_asset_filter
 from ..services.permissions import require_project_role, get_project_member, is_public_project
 from ..services.purge_service import purge_asset, purge_folder
 
@@ -77,7 +78,11 @@ def _compute_item_count(db: Session, folder_id: uuid.UUID) -> int:
     )
     asset_count = (
         db.query(func.count(Asset.id))
-        .filter(Asset.folder_id == folder_id, Asset.deleted_at.is_(None))
+        .filter(
+            Asset.folder_id == folder_id,
+            Asset.deleted_at.is_(None),
+            usable_asset_filter(),
+        )
         .scalar()
         or 0
     )
@@ -89,7 +94,9 @@ def _compute_folder_total_size(db: Session, folder_id: uuid.UUID) -> int:
     total = db.query(func.coalesce(func.sum(MediaFile.file_size_bytes), 0)).join(
         AssetVersion, MediaFile.version_id == AssetVersion.id
     ).join(Asset, AssetVersion.asset_id == Asset.id).filter(
-        Asset.folder_id.in_(all_folder_ids), Asset.deleted_at.is_(None),
+        Asset.folder_id.in_(all_folder_ids),
+        Asset.deleted_at.is_(None),
+        usable_asset_filter(),
     ).scalar() or 0
     return int(total)
 
@@ -223,7 +230,11 @@ def get_folder_tree(
 
     asset_counts = dict(
         db.query(Asset.folder_id, func.count(Asset.id))
-        .filter(Asset.folder_id.in_(folder_ids), Asset.deleted_at.is_(None))
+        .filter(
+            Asset.folder_id.in_(folder_ids),
+            Asset.deleted_at.is_(None),
+            usable_asset_filter(),
+        )
         .group_by(Asset.folder_id)
         .all()
     ) if folder_ids else {}
@@ -234,7 +245,11 @@ def get_folder_tree(
         db.query(Asset.folder_id, func.coalesce(func.sum(MediaFile.file_size_bytes), 0))
         .join(AssetVersion, AssetVersion.asset_id == Asset.id)
         .join(MediaFile, MediaFile.version_id == AssetVersion.id)
-        .filter(Asset.folder_id.in_(folder_ids), Asset.deleted_at.is_(None))
+        .filter(
+            Asset.folder_id.in_(folder_ids),
+            Asset.deleted_at.is_(None),
+            usable_asset_filter(),
+        )
         .group_by(Asset.folder_id)
         .all()
     ) if folder_ids else {}

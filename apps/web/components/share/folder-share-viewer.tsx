@@ -1073,6 +1073,9 @@ export function FolderShareViewer({
   const [assets, setAssets] = React.useState<FolderShareAssetItem[]>([])
   const [subfolders, setSubfolders] = React.useState<FolderShareSubfolder[]>([])
   const [total, setTotal] = React.useState(0)
+  // Byte total for the whole link, from the API. Distinct from summing
+  // `assets`, which only ever holds the pages loaded so far.
+  const [totalBytes, setTotalBytes] = React.useState<number | null>(null)
   const [page, setPage] = React.useState(1)
   const [loading, setLoading] = React.useState(true)
   const [loadingMore, setLoadingMore] = React.useState(false)
@@ -1138,11 +1141,13 @@ export function FolderShareViewer({
   // Whether clicking opens viewer
   const openInViewer = appearance.open_in_viewer !== false
 
-  // Compute total size of assets
+  // Total size across the whole link. `totalBytes` comes from the API and
+  // covers every page; summing `assets` only ever described the pages
+  // already loaded, so a 2-page link under-reported its own size.
   const totalAssetSize = React.useMemo(() => {
-    const sum = assets.reduce((acc, a) => acc + (a.file_size ?? 0), 0)
+    const sum = totalBytes ?? assets.reduce((acc, a) => acc + (a.file_size ?? 0), 0)
     return sum > 0 ? formatFileSize(sum) : null
-  }, [assets])
+  }, [totalBytes, assets])
 
   // Compute total size of subfolders (approximate from asset sizes)
   const totalFolderSize = React.useMemo(() => {
@@ -1150,6 +1155,10 @@ export function FolderShareViewer({
     // just show item count info instead
     return null
   }, [])
+
+  // The link's configured sort, sent to the API so paging is ordered
+  // server-side and stays stable across load-more.
+  const sortBy = appearance.sort_by ?? 'created_at'
 
   // Fetch assets for current folder/page
   React.useEffect(() => {
@@ -1159,10 +1168,11 @@ export function FolderShareViewer({
     setPage(1)
     setAssets([])
     setSubfolders([])
+    setTotalBytes(null)
     setSelectedAsset(null)
 
     fetch(
-      `${API_URL}/share/${token}/assets?${currentSubfolderId ? `folder_id=${currentSubfolderId}&` : ''}page=1&per_page=${perPage}${sessionParam}`,
+      `${API_URL}/share/${token}/assets?${currentSubfolderId ? `folder_id=${currentSubfolderId}&` : ''}page=1&per_page=${perPage}&sort=${encodeURIComponent(sortBy)}${sessionParam}`,
     )
       .then((r) => {
         if (!r.ok) throw new Error('Failed to load assets')
@@ -1173,6 +1183,7 @@ export function FolderShareViewer({
         setAssets(resolveAssetThumbs(data.assets ?? []))
         setSubfolders(resolveSubfolderThumbs(data.subfolders ?? []))
         setTotal(data.total ?? 0)
+        setTotalBytes(data.total_size_bytes ?? null)
         setPage(1)
       })
       .catch(() => {
@@ -1183,18 +1194,20 @@ export function FolderShareViewer({
       })
 
     return () => { cancelled = true }
-  }, [token, currentSubfolderId])
+  }, [token, currentSubfolderId, sortBy, perPage, sessionParam])
 
   async function loadMore() {
     const nextPage = page + 1
     setLoadingMore(true)
     try {
       const r = await fetch(
-        `${API_URL}/share/${token}/assets?${currentSubfolderId ? `folder_id=${currentSubfolderId}&` : ''}page=${nextPage}&per_page=${perPage}${sessionParam}`,
+        `${API_URL}/share/${token}/assets?${currentSubfolderId ? `folder_id=${currentSubfolderId}&` : ''}page=${nextPage}&per_page=${perPage}&sort=${encodeURIComponent(sortBy)}${sessionParam}`,
       )
       if (!r.ok) throw new Error('Failed to load more')
       const data = (await r.json()) as FolderShareAssetsResponse
       setAssets((prev) => [...prev, ...resolveAssetThumbs(data.assets ?? [])])
+      if (typeof data.total === 'number') setTotal(data.total)
+      if (typeof data.total_size_bytes === 'number') setTotalBytes(data.total_size_bytes)
       setPage(nextPage)
     } catch {
       // silently fail
@@ -1221,24 +1234,29 @@ export function FolderShareViewer({
     setSearchQuery('')
   }
 
-  // Client-side search filter + sort
-  const sortBy = appearance.sort_by ?? 'created_at'
+  // Client-side search filter. Ordering is NOT redone here — see the fetch
+  // effect: the backend now sorts, and re-sorting the accumulated array on
+  // every load-more is what reordered already-visible rows when page 2
+  // arrived.
   const filteredAssets = React.useMemo(() => {
-    const list = searchQuery.trim()
-      ? assets.filter((a) => a.name.toLowerCase().includes(searchQuery.toLowerCase().trim()))
-      : [...assets]
-    list.sort((a, b) => {
-      if (sortBy === 'name') return a.name.localeCompare(b.name)
-      if (sortBy === 'file_size') return (b.file_size ?? 0) - (a.file_size ?? 0)
-      // default: created_at desc
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    })
-    return list
-  }, [assets, searchQuery, sortBy])
+    // `assets` already arrives in the link's configured order and each page
+    // continues the last, so this only narrows — it must never reorder.
+    if (!searchQuery.trim()) return assets
+    const q = searchQuery.toLowerCase().trim()
+    return assets.filter((a) => a.name.toLowerCase().includes(q))
+  }, [assets, searchQuery])
 
   const filteredSubfolders = searchQuery.trim()
     ? subfolders.filter((f) => f.name.toLowerCase().includes(searchQuery.toLowerCase().trim()))
     : subfolders
+
+  // While a search is active the counts describe the matches on screen, not
+  // the link — searching is client-side over loaded pages only, so the
+  // link-wide total would be answering a different question than the one
+  // the user just asked.
+  const isSearching = searchQuery.trim().length > 0
+  const assetCount = isSearching ? filteredAssets.length : total
+  const displayAssetSize = isSearching ? null : totalAssetSize
 
   const hasMore = assets.length < total && !searchQuery.trim()
 
@@ -1247,8 +1265,8 @@ export function FolderShareViewer({
   if (subfolders.length > 0) {
     summaryParts.push(`${subfolders.length} Folder${subfolders.length === 1 ? '' : 's'}`)
   }
-  if (assets.length > 0) {
-    summaryParts.push(`${assets.length} Asset${assets.length === 1 ? '' : 's'}`)
+  if (assetCount > 0) {
+    summaryParts.push(`${assetCount} Asset${assetCount === 1 ? '' : 's'}`)
   }
   const summaryText = summaryParts.join(', ')
 
@@ -1467,9 +1485,9 @@ export function FolderShareViewer({
                 {filteredAssets.length > 0 && (
                   <section>
                     <SectionHeader
-                      label={filteredAssets.length === 1 ? 'Asset' : 'Assets'}
-                      count={filteredAssets.length}
-                      totalSize={totalAssetSize}
+                      label={assetCount === 1 ? 'Asset' : 'Assets'}
+                      count={assetCount}
+                      totalSize={displayAssetSize}
                       expanded={assetsExpanded}
                       onToggle={() => setAssetsExpanded((v) => !v)}
                     />
@@ -1583,7 +1601,8 @@ export function FolderShareViewer({
               )}
               {!loading && (
                 <p className="text-xs tabular-nums text-text-tertiary">
-                  {assets.length + subfolders.length} item{assets.length + subfolders.length === 1 ? '' : 's'}
+                  {assetCount + filteredSubfolders.length} item
+                  {assetCount + filteredSubfolders.length === 1 ? '' : 's'}
                 </p>
               )}
             </div>

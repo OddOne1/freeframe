@@ -548,7 +548,14 @@ export interface FolderShareSubfolder {
 export interface FolderShareAssetsResponse {
   assets: FolderShareAssetItem[]
   subfolders: FolderShareSubfolder[]
+  /** Assets in this folder across the whole link, not just the loaded page. */
   total: number
+  /**
+   * Bytes across all `total` assets, not just the loaded page. Optional so a
+   * response served by an API that predates this field type-checks; the
+   * viewer falls back to summing what it has loaded.
+   */
+  total_size_bytes?: number
   page: number
   per_page: number
 }

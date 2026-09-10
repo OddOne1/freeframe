@@ -26,6 +26,7 @@ from ..schemas.upload import InitiateUploadRequest, InitiateUploadResponse, ALLO
 from ..services.s3_service import create_multipart_upload
 from .folders import _get_descendant_ids as _get_descendant_folder_ids
 from ..services.storage_prefix import lock_storage_prefix, prefix_for_project
+from ..services.asset_visibility import visible_assets
 
 router = APIRouter(tags=["assets"])
 
@@ -246,28 +247,11 @@ def list_assets(
         else:
             query = query.filter(Asset.folder_id == target_folder_id)
 
-    assets = query.all()
-
-    if not include_failed:
-        # Exclude assets where the only version is failed or still uploading
-        asset_ids = [a.id for a in assets]
-        if asset_ids:
-            # Find assets that have at least one non-failed, non-uploading version
-            usable = set(
-                row[0] for row in db.query(AssetVersion.asset_id).filter(
-                    AssetVersion.asset_id.in_(asset_ids),
-                    AssetVersion.deleted_at.is_(None),
-                    AssetVersion.processing_status.notin_([ProcessingStatus.failed, ProcessingStatus.uploading]),
-                ).distinct().all()
-            )
-            # Also include assets with no versions yet (just created)
-            has_any_version = set(
-                row[0] for row in db.query(AssetVersion.asset_id).filter(
-                    AssetVersion.asset_id.in_(asset_ids),
-                    AssetVersion.deleted_at.is_(None),
-                ).distinct().all()
-            )
-            assets = [a for a in assets if a.id in usable or a.id not in has_any_version]
+    # Exclude assets whose only version is failed or still uploading. The rule
+    # itself lives in services/asset_visibility.py so the share endpoint and
+    # the folder counts enforce exactly this one, rather than three drifting
+    # copies of it.
+    assets = visible_assets(query, include_failed=include_failed).all()
 
     return _build_asset_responses_bulk(assets, db, current_user)
 

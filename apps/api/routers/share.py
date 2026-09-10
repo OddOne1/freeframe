@@ -31,6 +31,7 @@ from ..models.branding import ProjectBranding
 from ..models.asset import AssetVersion, AssetType, MediaFile, ProcessingStatus
 from ..models.sidecar import SidecarFile
 from ..models.comment import Comment
+from ..services.asset_visibility import usable_asset_filter
 from ..schemas.share import (
     DirectShareCreate,
     DirectShareResponse,
@@ -1233,17 +1234,106 @@ def create_multi_share_link(
 
 # ── Folder share public endpoints ─────────────────────────────────────────────
 
+def _latest_ready_size():
+    """Correlated scalar subquery: the byte size this listing shows for an asset.
+
+    Must match `_get_latest_media_file` exactly — latest **ready** version
+    (not merely "not failed"), then its media file — because that is what
+    populates each row's `file_size`. If the aggregate used a looser
+    definition, the footer's total would not equal the sum of the sizes on
+    screen, which is the bug this replaces, wearing a different hat.
+
+    A correlated subquery rather than a join: an asset has one row per
+    version, and joining multiplies it, which would corrupt the COUNT and
+    the page slice sitting next to this in the same query.
+    """
+    latest_ready = (
+        sqlalchemy.select(AssetVersion.id)
+        .where(
+            AssetVersion.asset_id == Asset.id,
+            AssetVersion.deleted_at.is_(None),
+            AssetVersion.processing_status == ProcessingStatus.ready,
+        )
+        .order_by(AssetVersion.version_number.desc())
+        .limit(1)
+        .correlate(Asset)
+        .scalar_subquery()
+    )
+    return (
+        sqlalchemy.select(sa_func.coalesce(MediaFile.file_size_bytes, 0))
+        .where(MediaFile.version_id == latest_ready)
+        .order_by(MediaFile.id.asc())
+        .limit(1)
+        .correlate(Asset)
+        .scalar_subquery()
+    )
+
+
+def _sum_asset_bytes(db: Session, asset_filter) -> int:
+    """Total bytes across every asset matching `asset_filter`.
+
+    Exists because the viewer's footer previously summed only the assets it
+    had loaded, so a 2-page link under-reported its own size by whatever sat
+    on page 2.
+    """
+    total = db.query(
+        sa_func.coalesce(sa_func.sum(_latest_ready_size()), 0)
+    ).select_from(Asset).filter(asset_filter).scalar()
+    return int(total or 0)
+
+
+#: Sort keys accepted by the folder-share listing. Deliberately the same three
+#: values as `ShareLinkAppearance["sort_by"]` on the frontend — the viewer
+#: passes its configured appearance straight through, so a fourth key here
+#: that the appearance cannot express would be unreachable, and a missing one
+#: would silently fall back to a different order than the UI promises.
+SHARE_SORT_KEYS = ("name", "created_at", "file_size")
+
+
+def _apply_share_sort(query, sort: str):
+    """Order an `Asset` query by one of :data:`SHARE_SORT_KEYS`.
+
+    `file_size` sorts on :func:`_latest_ready_size`, the same expression the
+    byte total uses and the same value each row displays.
+
+    Every branch ends with a tiebreak on `Asset.id`. Without it, two assets
+    sharing a name (or a byte count, or a timestamp) can come back in a
+    different relative order on page 2 than they did on page 1, which is the
+    same "load-more reorders the list" symptom this sort exists to fix — just
+    rarer and much harder to reproduce.
+    """
+    if sort == "name":
+        return query.order_by(Asset.name.asc(), Asset.id.asc())
+    if sort == "file_size":
+        # Largest first, matching the frontend's own `file_size` comparator,
+        # and reading the same size the row itself displays.
+        return query.order_by(
+            sa_func.coalesce(_latest_ready_size(), 0).desc(), Asset.id.asc()
+        )
+    return query.order_by(Asset.created_at.desc(), Asset.id.asc())
+
+
 @router.get("/share/{token}/assets", response_model=FolderShareAssetsResponse)
 def get_folder_share_assets(
     token: str,
     folder_id: Optional[uuid.UUID] = None,
     page: int = 1,
     per_page: int = 50,
+    sort: str = Query(
+        "created_at",
+        description="Sort order for assets: name, created_at (default) or file_size.",
+    ),
     share_session: Optional[str] = Query(None, alias="share_session"),
     db: Session = Depends(get_db),
 ):
     """Public endpoint — no auth required. Returns assets and subfolders for a folder or project share link."""
     link = validate_share_link_with_session(db, token, share_session=share_session)
+
+    # An unknown sort key falls back to the default rather than 400-ing: this
+    # is a public viewer, and a link whose stored appearance predates a key
+    # should still render, just in the default order.
+    if sort not in SHARE_SORT_KEYS:
+        sort = "created_at"
 
     is_project_share = link.project_id is not None
     if not link.folder_id and not is_project_share:
@@ -1268,6 +1358,7 @@ def get_folder_share_assets(
             for sf in shared_folders:
                 asset_count = db.query(sa_func.count(Asset.id)).filter(
                     Asset.folder_id == sf.id, Asset.deleted_at.is_(None),
+                    usable_asset_filter(),
                 ).scalar() or 0
                 child_folder_count = db.query(sa_func.count(Folder.id)).filter(
                     Folder.parent_id == sf.id, Folder.deleted_at.is_(None),
@@ -1275,6 +1366,7 @@ def get_folder_share_assets(
                 thumb_urls: list[str] = []
                 preview_assets = db.query(Asset).filter(
                     Asset.folder_id == sf.id, Asset.deleted_at.is_(None),
+                    usable_asset_filter(),
                 ).order_by(Asset.created_at.desc()).limit(4).all()
                 for pa in preview_assets:
                     mf = _get_latest_media_file(db, pa.id)
@@ -1287,11 +1379,22 @@ def get_folder_share_assets(
         # Get shared assets
         asset_items = []
         if multi_asset_ids:
-            total = len(multi_asset_ids)
+            multi_filter = sqlalchemy.and_(
+                Asset.id.in_(multi_asset_ids),
+                Asset.deleted_at.is_(None),
+                usable_asset_filter(),
+            )
+            # `total` was `len(multi_asset_ids)` — the number of rows SELECTED
+            # into the link, not the number a viewer can see. A selection
+            # containing a since-deleted or never-finished upload reported a
+            # total the listing could never reach, so "load more" stayed
+            # visible forever.
+            total = db.query(sa_func.count(Asset.id)).filter(multi_filter).scalar() or 0
+            total_size_bytes = _sum_asset_bytes(db, multi_filter)
             offset = (page - 1) * per_page
-            shared_assets = db.query(Asset).filter(
-                Asset.id.in_(multi_asset_ids), Asset.deleted_at.is_(None),
-            ).order_by(Asset.created_at.desc()).offset(offset).limit(per_page).all()
+            shared_assets = _apply_share_sort(
+                db.query(Asset).filter(multi_filter), sort
+            ).offset(offset).limit(per_page).all()
             for a in shared_assets:
                 mf = _get_latest_media_file(db, a.id)
                 thumbnail_url = proxy_url_for(mf.s3_key_thumbnail) if mf and mf.s3_key_thumbnail else None
@@ -1306,9 +1409,11 @@ def get_folder_share_assets(
                 ))
         else:
             total = 0
+            total_size_bytes = 0
 
         return FolderShareAssetsResponse(
-            subfolders=subfolder_items, assets=asset_items, total=total, page=page, per_page=per_page,
+            subfolders=subfolder_items, assets=asset_items, total=total,
+            total_size_bytes=total_size_bytes, page=page, per_page=per_page,
         )
 
     # Determine which folder to list contents from
@@ -1344,6 +1449,7 @@ def get_folder_share_assets(
         asset_count = db.query(sa_func.count(Asset.id)).filter(
             Asset.folder_id == sf.id,
             Asset.deleted_at.is_(None),
+            usable_asset_filter(),
         ).scalar() or 0
         child_folder_count = db.query(sa_func.count(Folder.id)).filter(
             Folder.parent_id == sf.id,
@@ -1355,6 +1461,7 @@ def get_folder_share_assets(
         preview_assets = db.query(Asset).filter(
             Asset.folder_id == sf.id,
             Asset.deleted_at.is_(None),
+            usable_asset_filter(),
         ).order_by(Asset.created_at.desc()).limit(4).all()
         for pa in preview_assets:
             mf = _get_latest_media_file(db, pa.id)
@@ -1379,16 +1486,20 @@ def get_folder_share_assets(
             Asset.folder_id.is_(None),
             Asset.project_id == link.project_id,
         )
-    total = db.query(sa_func.count(Asset.id)).filter(
+    # One filter object for the count, the byte total and the page, so the
+    # three can never disagree about what the link contains.
+    visible_filter = sqlalchemy.and_(
         asset_filter,
         Asset.deleted_at.is_(None),
-    ).scalar() or 0
+        usable_asset_filter(),
+    )
+    total = db.query(sa_func.count(Asset.id)).filter(visible_filter).scalar() or 0
+    total_size_bytes = _sum_asset_bytes(db, visible_filter)
 
     offset = (page - 1) * per_page
-    assets = db.query(Asset).filter(
-        asset_filter,
-        Asset.deleted_at.is_(None),
-    ).order_by(Asset.created_at.desc()).offset(offset).limit(per_page).all()
+    assets = _apply_share_sort(
+        db.query(Asset).filter(visible_filter), sort
+    ).offset(offset).limit(per_page).all()
 
     asset_items = []
     for asset in assets:
@@ -1427,6 +1538,7 @@ def get_folder_share_assets(
         assets=asset_items,
         subfolders=subfolder_items,
         total=total,
+        total_size_bytes=total_size_bytes,
         page=page,
         per_page=per_page,
     )
