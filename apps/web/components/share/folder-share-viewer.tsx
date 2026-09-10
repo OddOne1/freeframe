@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { triggerBrowserDownload } from '@/lib/download'
+import { useMediaQuery, XL_UP } from '@/hooks/use-media-query'
 import type {
   SharePermission,
   ShareLinkAppearance,
@@ -785,7 +786,12 @@ function ShareReviewInner({
 
   const { asset, versions, isLoading, comments, refetchComments, addComment } = useReview()
   const { currentVersion, isDrawingMode, focusedCommentId } = useReviewStore()
+  // Comments start collapsed on a phone so the media gets the screen; the
+  // existing toggle in this viewer's own header opens them. On xl+ nothing
+  // changes.
+  const isWideViewer = useMediaQuery(XL_UP)
   const [sidebarOpen, setSidebarOpen] = React.useState(true)
+  React.useEffect(() => { setSidebarOpen(isWideViewer) }, [isWideViewer])
   // §33 — the same decision page.tsx's ShareViewer makes, from the same
   // hook. This file previously showed a Fields tab that rendered nothing
   // and a Comments tab that ignored the permission entirely.
@@ -867,15 +873,22 @@ function ShareReviewInner({
             className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium text-accent-foreground bg-accent hover:bg-accent-hover transition-colors"
           />
           {sidebar.showSidebar && (
-            <button onClick={() => setSidebarOpen(v => !v)} className="flex items-center justify-center h-8 w-8 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors">
+            <button
+              onClick={() => setSidebarOpen(v => !v)}
+              title={sidebarOpen ? 'Hide comments' : 'Show comments'}
+              aria-label={sidebarOpen ? 'Hide comments' : 'Show comments'}
+              className="flex items-center justify-center h-8 w-8 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
+            >
               {sidebarOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
             </button>
           )}
         </div>
       </div>
 
-      {/* Main: viewer + sidebar */}
-      <div className="flex flex-1 overflow-hidden min-h-0">
+      {/* Main: viewer + sidebar. Stacks below xl so the media keeps the full
+          width on a phone and the comments sit under it, rather than a
+          360px pane squeezing the video into a sliver. */}
+      <div className="flex flex-col xl:flex-row flex-1 overflow-hidden min-h-0">
         {/* Media viewer — reuses project components */}
         <div className="flex-1 flex flex-col bg-bg-primary overflow-hidden min-w-0">
           {asset.asset_type === 'video' && versionReady && VideoPlayer ? (
@@ -915,7 +928,7 @@ function ShareReviewInner({
 
         {/* Right sidebar — reuses project comment panel */}
         {sidebar.showSidebar && sidebarOpen && (
-          <div className="w-[360px] flex flex-col border-l border-border bg-bg-secondary shrink-0">
+          <div className="w-full xl:w-[360px] flex flex-col border-t xl:border-t-0 xl:border-l border-border bg-bg-secondary shrink-0 max-h-[45vh] xl:max-h-none overflow-hidden">
             {sidebar.showTabSwitcher && (
             <div className="px-4 pt-3 pb-2 shrink-0">
               <div className="flex items-center bg-bg-tertiary rounded-lg p-0.5">
@@ -1052,6 +1065,11 @@ export function FolderShareViewer({
   const [foldersExpanded, setFoldersExpanded] = React.useState(true)
   const [assetsExpanded, setAssetsExpanded] = React.useState(true)
   const [panelOpen, setPanelOpen] = React.useState(true)
+  // Below xl the right panel is not rendered, so "select" has nowhere to
+  // show a result. A tap therefore has to open the asset itself — CSS can
+  // hide a pane but it cannot rewrite a click handler.
+  const isWide = useMediaQuery(XL_UP)
+
   const [viewingAsset, setViewingAsset] = React.useState<FolderShareAssetItem | null>(null)
 
   // Set page title
@@ -1131,6 +1149,17 @@ export function FolderShareViewer({
 
   // Whether clicking opens viewer
   const openInViewer = appearance.open_in_viewer !== false
+  // One rule for both the grid and the list: on a wide screen a tap selects
+  // (the panel shows it), on a narrow one it opens. `open_in_viewer: false`
+  // is still honoured — a link configured not to open assets just selects,
+  // which on mobile is a no-op rather than a trap.
+  const handleAssetActivate = React.useCallback(
+    (asset: FolderShareAssetItem) => {
+      if (!isWide && openInViewer) setViewingAsset(asset)
+      else setSelectedAsset(asset)
+    },
+    [isWide, openInViewer],
+  )
 
   // Total size across the whole link. `totalBytes` comes from the API and
   // covers every page; summing `assets` only ever described the pages
@@ -1357,12 +1386,12 @@ export function FolderShareViewer({
               title="Downloads the original of every file here"
             >
               <Download className="h-3 w-3" />
-              Download All
+              <span className="hidden sm:inline">Download All</span>
             </button>
           )}
           <button
             onClick={() => setPanelOpen((v) => !v)}
-            className="flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
+            className="hidden xl:flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
             title={panelOpen ? 'Hide panel' : 'Show panel'}
           >
             {panelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
@@ -1495,7 +1524,7 @@ export function FolderShareViewer({
                                 token={token}
                                 shareSession={shareSession}
                                 isSelected={selectedAsset?.id === asset.id}
-                                onSelect={setSelectedAsset}
+                                onSelect={handleAssetActivate}
                                 onOpen={openInViewer ? setViewingAsset : () => {}}
                                 aspectClass={aspectClass}
                                 thumbnailScale={thumbnailScale}
@@ -1523,7 +1552,7 @@ export function FolderShareViewer({
                                     selectedAsset?.id === asset.id && 'bg-accent/5',
                                     i !== filteredAssets.length - 1 && 'border-b border-border',
                                   )}
-                                  onClick={() => setSelectedAsset(asset)}
+                                  onClick={() => handleAssetActivate(asset)}
                                   onDoubleClick={() => openInViewer && setViewingAsset(asset)}
                                 >
                                   {/* Square thumbnail */}
@@ -1601,8 +1630,11 @@ export function FolderShareViewer({
         </div>
 
         {/* ─── Right Panel ───────────────────────────────────────────── */}
+        {/* Hidden below xl, matching the authenticated app's own right panel
+            (projects/[id]/page.tsx). At 390px this 320px pane left the asset
+            list ~70px wide and filled the screen with its own empty state. */}
         {panelOpen && (
-          <div className="w-[320px] shrink-0 border-l border-border bg-bg-secondary flex flex-col overflow-hidden">
+          <div className="hidden xl:flex w-[320px] shrink-0 border-l border-border bg-bg-secondary flex-col overflow-hidden">
             <RightPanel
               selectedAsset={selectedAsset}
               token={token}
