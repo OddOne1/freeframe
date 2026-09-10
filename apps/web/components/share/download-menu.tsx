@@ -4,6 +4,7 @@ import * as React from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { Download, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { triggerBrowserDownload as trigger } from '@/lib/download'
 import { DOWNLOAD_VARIANT_LABELS, type DownloadVariant } from '@/types'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -27,14 +28,6 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
  *  their download failed while it is still working. */
 const POLL_TIMEOUT_MS = 15 * 60 * 1000
 const POLL_INTERVAL_MS = 3000
-
-function trigger(url: string) {
-  const iframe = document.createElement('iframe')
-  iframe.style.display = 'none'
-  iframe.src = url
-  document.body.appendChild(iframe)
-  setTimeout(() => iframe.remove(), 30000)
-}
 
 async function downloadRaw(token: string, assetId: string, shareSession?: string | null) {
   const sp = shareSession ? `&share_session=${encodeURIComponent(shareSession)}` : ''

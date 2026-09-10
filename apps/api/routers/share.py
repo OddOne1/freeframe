@@ -1592,11 +1592,20 @@ def get_share_stream_url(
             hls_token = create_hls_token(media_file.s3_key_processed)
             url = f"/stream/hls/master.m3u8?token={hls_token}"
     else:
-        s3_key = media_file.s3_key_processed or media_file.s3_key_raw
         if download:
+            # §141 — a download hands back the ORIGINAL, exactly as the video
+            # branch above already did. `s3_key_processed` for an image is the
+            # WebP the viewer displays and for audio the transcoded mp3: both
+            # are display derivatives, so serving them here silently handed
+            # someone a different file than the one they uploaded, under a
+            # filename claiming otherwise.
+            s3_key = media_file.s3_key_raw or media_file.s3_key_processed
             filename = build_download_filename(asset.name, media_file.original_filename or s3_key)
             url = proxy_url_for(s3_key, download_filename=filename)
         else:
+            # Viewing still prefers the processed derivative — that is what it
+            # exists for.
+            s3_key = media_file.s3_key_processed or media_file.s3_key_raw
             url = proxy_url_for(s3_key)
 
     # Log activity

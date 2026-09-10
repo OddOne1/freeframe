@@ -18,6 +18,7 @@ import {
   ArrowLeft,
 } from 'lucide-react'
 import { cn, resolveApiMediaUrl } from '@/lib/utils'
+import { triggerBrowserDownload } from '@/lib/download'
 import type {
   SharePermission,
   ShareLinkAppearance,
@@ -110,24 +111,14 @@ function getAssetTypeBadgeLabel(assetType: string): string {
 
 // ─── Download handler ─────────────────────────────────────────────────────────
 
-function triggerDownload(url: string) {
-  // Let the server's Content-Disposition filename win — don't set `a.download`,
-  // since it would strip the extension the backend appended.
-  const a = document.createElement('a')
-  a.href = url
-  a.rel = 'noopener noreferrer'
-  a.style.display = 'none'
-  document.body.appendChild(a)
-  a.click()
-  setTimeout(() => a.remove(), 1000)
-}
-
 async function fetchDownloadUrl(token: string, assetId: string, shareSession?: string | null): Promise<string | null> {
   const sp = shareSession ? `&share_session=${encodeURIComponent(shareSession)}` : ''
   try {
     const response = await fetch(`${API_URL}/share/${token}/stream/${assetId}?download=true&variant=raw${sp}`)
     if (!response.ok) return null
     const data = await response.json()
+    // Returned RAW. triggerBrowserDownload resolves — resolving here too
+    // would double-prefix (§141).
     return data?.url ?? null
   } catch {
     return null
@@ -172,7 +163,7 @@ async function handleDownloadAll(
   )
   for (const url of urls) {
     if (!url) continue
-    triggerDownload(url)
+    triggerBrowserDownload(url)
     await new Promise((r) => setTimeout(r, 800))
   }
 }

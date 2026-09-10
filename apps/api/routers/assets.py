@@ -380,11 +380,17 @@ def get_stream_url(
             token = create_hls_token(media_file.s3_key_processed)
             url = f"/stream/hls/master.m3u8?token={token}"
     else:
-        s3_key = media_file.s3_key_processed or media_file.s3_key_raw
         if download:
+            # §141 — mirror the video branch: a download is the ORIGINAL file.
+            # `s3_key_processed` is a display derivative (WebP for an image,
+            # mp3 for audio), so preferring it here handed the user a
+            # re-encoded file under a filename claiming to be their upload.
+            s3_key = media_file.s3_key_raw or media_file.s3_key_processed
             filename = build_download_filename(asset.name, media_file.original_filename or s3_key)
             url = proxy_url_for(s3_key, download_filename=filename)
         else:
+            # Viewing still prefers the processed derivative.
+            s3_key = media_file.s3_key_processed or media_file.s3_key_raw
             url = proxy_url_for(s3_key)
 
     return StreamUrlResponse(url=url, asset_type=asset.asset_type)

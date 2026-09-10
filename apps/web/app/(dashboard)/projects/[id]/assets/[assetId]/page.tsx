@@ -65,6 +65,7 @@ import {
 } from 'lucide-react'
 import Link from 'next/link'
 import { cn, formatBytes, formatRelativeTime, formatTime, resolveApiMediaUrl } from '@/lib/utils'
+import { triggerBrowserDownload } from '@/lib/download'
 import { usePageTitle } from '@/hooks/use-page-title'
 import type {
   Project,
@@ -416,14 +417,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
         )
         // Same hidden-iframe trigger the plain download already uses, so
         // the browser treats it as a download rather than a navigation.
-        const url = resolveApiMediaUrl(res.url)
-        if (url) {
-          const iframe = document.createElement('iframe')
-          iframe.style.display = 'none'
-          iframe.src = url
-          document.body.appendChild(iframe)
-          setTimeout(() => iframe.remove(), 60_000)
-        }
+        triggerBrowserDownload(res.url)
       } catch {
         setExportError('The graded file was rendered but could not be fetched')
       }
@@ -486,13 +480,8 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     if (!asset) return
     try {
       const data = await api.get<{ url: string }>(`/assets/${asset.id}/stream?download=true`)
-      if (data?.url) {
-        const iframe = document.createElement('iframe')
-        iframe.style.display = 'none'
-        iframe.src = data.url
-        document.body.appendChild(iframe)
-        setTimeout(() => iframe.remove(), 30000)
-      }
+      // §141 — one helper, which resolves the relative proxy path.
+      triggerBrowserDownload(data?.url)
     } catch {}
   }
 

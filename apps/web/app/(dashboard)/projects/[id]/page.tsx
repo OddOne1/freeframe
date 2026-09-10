@@ -36,6 +36,7 @@ import {
   TRASH_RETENTION_DAYS,
 } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { triggerBrowserDownload } from "@/lib/download";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/shared/avatar";
@@ -1162,13 +1163,7 @@ export default function ProjectDetailPage() {
                   const data = await api.get<{ url: string }>(
                     `/assets/${asset.id}/stream?download=true`,
                   );
-                  if (data?.url) {
-                    const iframe = document.createElement("iframe");
-                    iframe.style.display = "none";
-                    iframe.src = data.url;
-                    document.body.appendChild(iframe);
-                    setTimeout(() => iframe.remove(), 30000);
-                  }
+                  triggerBrowserDownload(data?.url);
                 } catch {}
               }}
               onAssetRename={canEditAssets ? (asset) => setAssetToRename(asset as AssetResponse) : undefined}
@@ -1194,21 +1189,13 @@ export default function ProjectDetailPage() {
                   : undefined
               }
               onBulkDownload={async (assetIds, folderIds) => {
-                function triggerDownload(url: string) {
-                  const iframe = document.createElement("iframe");
-                  iframe.style.display = "none";
-                  iframe.src = url;
-                  document.body.appendChild(iframe);
-                  setTimeout(() => iframe.remove(), 30000);
-                }
-
                 async function downloadAsset(id: string) {
                   try {
                     const data = await api.get<{ url: string }>(
                       `/assets/${id}/stream?download=true`,
                     );
                     if (data?.url) {
-                      triggerDownload(data.url);
+                      triggerBrowserDownload(data.url);
                       await new Promise((r) => setTimeout(r, 300));
                     }
                   } catch {}
@@ -1640,13 +1627,7 @@ export default function ProjectDetailPage() {
                             const res = await api.get<{ url: string }>(
                               `/assets/${selectedAsset.id}/stream?download=true`,
                             );
-                            if (res.url) {
-                              const iframe = document.createElement("iframe");
-                              iframe.style.display = "none";
-                              iframe.src = res.url;
-                              document.body.appendChild(iframe);
-                              setTimeout(() => iframe.remove(), 30000);
-                            }
+                            triggerBrowserDownload(res.url);
                           } catch {
                             // Silent fail
                           }
