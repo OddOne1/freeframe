@@ -87,7 +87,14 @@ describe('share DownloadMenu', () => {
 // ── share: "Download All", the reported path ──────────────────────────────
 
 describe('share viewer "Download All"', () => {
-  it('resolves every asset URL exactly once', async () => {
+  it('opens the batch dialog instead of firing one download per file', async () => {
+    // §143 deliberately replaced this path. It used to trigger N staggered
+    // iframe downloads — which is what made the browser re-prompt once per
+    // remaining file — and now collects the selection and hands it to the
+    // zip dialog. The §141 rule this file exists for (resolve the proxy URL
+    // exactly once) still applies, but to the ONE zip URL, and is asserted
+    // where that download happens: batch-download-dialog.test.tsx plus
+    // triggerBrowserDownload's own tests above.
     captureNavigations()
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       const u = String(url)
@@ -98,15 +105,16 @@ describe('share viewer "Download All"', () => {
               file_size: 10, duration_seconds: null, comment_count: 0,
               created_by_name: 'M', created_at: new Date().toISOString(),
               download_variants: ['raw'] },
-            { id: 'a2', name: 'two', asset_type: 'image', thumbnail_url: null,
-              file_size: 20, duration_seconds: null, comment_count: 0,
-              created_by_name: 'M', created_at: new Date().toISOString(),
-              download_variants: ['raw'] },
           ],
-          subfolders: [], total: 2, total_size_bytes: 30, page: 1, per_page: 24,
+          subfolders: [], total: 1, total_size_bytes: 10, page: 1, per_page: 24,
         }) } as unknown as Response
       }
-      // the per-asset download URL
+      if (u.includes('/zip/options')) {
+        return { ok: true, json: async () => ({
+          variants: ['raw'],
+          assets: [{ asset_id: 'a1', asset_name: 'one', versions: [] }],
+        }) } as unknown as Response
+      }
       return { ok: true, json: async () => ({ url: RELATIVE }) } as unknown as Response
     }))
 
@@ -122,11 +130,9 @@ describe('share viewer "Download All"', () => {
     await screen.findByText('one')
     await userEvent.click(screen.getByRole('button', { name: /download all/i }))
 
-    await waitFor(() => expect(hrefs.length).toBeGreaterThan(0), { timeout: 4000 })
-    for (const h of hrefs) {
-      expect(h).toBe(`/api${RELATIVE}`)
-      expect(h).not.toContain('/api/api')
-    }
+    // A dialog, and crucially NOT a download per file.
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(hrefs).toEqual([])
   })
 })
 

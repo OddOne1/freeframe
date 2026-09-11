@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { triggerBrowserDownload } from '@/lib/download'
+import { BatchDownloadDialog, type BatchDownloadApi } from '@/components/shared/batch-download-dialog'
 import { useMediaQuery, XL_UP } from '@/hooks/use-media-query'
 import { useSessionPreference } from '@/hooks/use-session-preference'
 import type {
@@ -174,23 +175,21 @@ async function collectAllAssetsRecursive(
   }
 }
 
-async function handleDownloadAll(
+/**
+ * Every asset under a folder, for the batch download dialog (§143).
+ *
+ * Still recursive — "Download All" means the subfolders too — but it now
+ * only COLLECTS. The N staggered iframe downloads it used to end with are
+ * gone; one server-built zip replaces them, which is what stops the
+ * browser's multi-download prompt reappearing per file.
+ */
+async function collectAllAssetIds(
   token: string,
   folderId: string | null,
   shareSession?: string | null,
-) {
-  // Recursively collect all assets (including those in subfolders),
-  // pre-fetch presigned URLs in parallel, then trigger downloads
-  // sequentially with a delay so the browser doesn't block them.
-  const allAssets = await collectAllAssetsRecursive(token, folderId, shareSession)
-  const urls = await Promise.all(
-    allAssets.map((a) => fetchDownloadUrl(token, a.id, shareSession)),
-  )
-  for (const url of urls) {
-    if (!url) continue
-    triggerBrowserDownload(url)
-    await new Promise((r) => setTimeout(r, 800))
-  }
+): Promise<string[]> {
+  const all = await collectAllAssetsRecursive(token, folderId, shareSession)
+  return all.map((a) => a.id)
 }
 
 // The media proxy returns relative paths — resolve them to absolute URLs
@@ -1122,6 +1121,11 @@ export function FolderShareViewer({
   // a guest reordering their view must not reorder it for everyone else
   // holding the link. Scoped by token so two share tabs do not share a
   // choice.
+  // §143 — "Download All" opens a dialog instead of firing N downloads.
+  const [zipOpen, setZipOpen] = React.useState(false)
+  const [zipAssetIds, setZipAssetIds] = React.useState<string[]>([])
+  const [collectingZip, setCollectingZip] = React.useState(false)
+
   const [viewerSort, setViewerSort, sortReady] = useSessionPreference<ShareSortKey>(
     `ff-share-sort:${token}`,
     (appearance.sort_by as ShareSortKey) ?? 'created_at',
@@ -1191,6 +1195,46 @@ export function FolderShareViewer({
   }, [accentColor])
 
   // Whether clicking opens viewer
+  // The share half of the batch-download API. The authenticated app passes
+  // its own; everything the user sees is shared.
+  const zipApi = React.useMemo<BatchDownloadApi>(() => ({
+    fetchOptions: async (items) => {
+      const r = await fetch(`${API_URL}/share/${token}/zip/options?${sessionParam.replace(/^&/, '')}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items, variant: 'raw' }),
+      })
+      if (!r.ok) throw new Error('Could not load download options')
+      return r.json()
+    },
+    start: async (items, variant) => {
+      const r = await fetch(`${API_URL}/share/${token}/zip?${sessionParam.replace(/^&/, '')}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items, variant }),
+      })
+      if (!r.ok) throw new Error('Could not start the download')
+      return r.json()
+    },
+    poll: async (exportId) => {
+      const r = await fetch(`${API_URL}/share/${token}/zip/${exportId}?${sessionParam.replace(/^&/, '')}`)
+      if (!r.ok) throw new Error('Lost track of the download')
+      return r.json()
+    },
+  }), [token, sessionParam])
+
+  async function openZipDialog() {
+    setCollectingZip(true)
+    try {
+      const ids = await collectAllAssetIds(token, currentSubfolderId ?? null, shareSession)
+      if (ids.length === 0) return
+      setZipAssetIds(ids)
+      setZipOpen(true)
+    } finally {
+      setCollectingZip(false)
+    }
+  }
+
   const openInViewer = appearance.open_in_viewer !== false
   // One rule for both the grid and the list: on a wide screen a tap selects
   // (the panel shows it), on a narrow one it opens. `open_in_viewer: false`
@@ -1429,7 +1473,8 @@ export function FolderShareViewer({
           {downloadVariants.includes('raw') && (
             <button
               className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium text-white bg-accent hover:bg-accent-hover transition-colors"
-              onClick={() => handleDownloadAll(token, currentSubfolderId ?? null, shareSession)}
+              onClick={openZipDialog}
+              disabled={collectingZip}
               title="Downloads the original of every file here"
             >
               <Download className="h-3 w-3" />
@@ -1721,6 +1766,14 @@ export function FolderShareViewer({
             </div>
           </footer>
         </div>
+
+        <BatchDownloadDialog
+          open={zipOpen}
+          onOpenChange={setZipOpen}
+          assetIds={zipAssetIds}
+          api={zipApi}
+          title="Download all"
+        />
 
         {/* ─── Right Panel ───────────────────────────────────────────── */}
         {/* Hidden below xl, matching the authenticated app's own right panel

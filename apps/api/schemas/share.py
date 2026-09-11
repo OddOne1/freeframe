@@ -183,6 +183,73 @@ class FolderShareAssetsResponse(BaseModel):
     per_page: int
 
 
+class ZipExportItem(BaseModel):
+    """One file a batch download should contain."""
+
+    asset_id: uuid.UUID
+    #: Omit for "the latest ready version", which is what the UI sends when
+    #: the viewer has not touched that file's version selector (§143.1).
+    version_id: Optional[uuid.UUID] = None
+
+
+class ZipExportRequest(BaseModel):
+    items: list[ZipExportItem]
+    #: One choice for the whole batch. Only variants backed by a stored
+    #: object are accepted — a batch never triggers a render (§143 scope).
+    variant: DownloadVariant = DownloadVariant.raw
+
+
+class ZipExportFile(BaseModel):
+    asset_id: uuid.UUID
+    asset_name: str
+    #: Where this file sits inside the archive, folders included.
+    path: str
+    version_id: uuid.UUID
+    variant: str
+    #: Why this file is not the variant the batch asked for, when it isn't.
+    #: Shown per file rather than substituted silently (§143.2).
+    fallback_reason: Optional[str] = None
+    #: Set only if the build could not read the file at all.
+    skipped: Optional[str] = None
+
+
+class ZipExportStatusResponse(BaseModel):
+    export_id: uuid.UUID
+    status: str
+    #: True when a prior identical request already built this archive.
+    reused: bool = False
+    ready: bool = False
+    url: Optional[str] = None
+    file_count: int = 0
+    files_done: int = 0
+    total_bytes: int = 0
+    error: Optional[str] = None
+    files: list[ZipExportFile] = []
+
+
+class ZipExportVersionOption(BaseModel):
+    version_id: uuid.UUID
+    version_number: int
+    created_at: Optional[datetime] = None
+    is_latest: bool = False
+
+
+class ZipExportAssetOptions(BaseModel):
+    asset_id: uuid.UUID
+    asset_name: str
+    #: Empty when the viewer gets no choice — either the asset has a single
+    #: version, or the link has `show_versions` off. The UI hides the
+    #: selector in both cases (§143's "collapsed if only one version").
+    versions: list[ZipExportVersionOption] = []
+
+
+class ZipExportOptionsResponse(BaseModel):
+    """What the batch picker may offer for a given selection."""
+
+    variants: list[DownloadVariant] = []
+    assets: list[ZipExportAssetOptions] = []
+
+
 class DirectShareCreate(BaseModel):
     permission: SharePermission = SharePermission.view
     user_id: Optional[uuid.UUID] = None

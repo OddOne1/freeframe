@@ -545,6 +545,53 @@ export interface FolderShareSubfolder {
   thumbnail_urls: string[]
 }
 
+/** §143 — server-built zip downloads. */
+export interface ZipExportVersionOption {
+  version_id: string
+  version_number: number
+  created_at?: string | null
+  is_latest?: boolean
+}
+
+export interface ZipExportAssetOptions {
+  asset_id: string
+  asset_name: string
+  /** Empty when there is no choice to make: one version, or the link hides
+   *  versions. The UI hides the selector in both cases. */
+  versions: ZipExportVersionOption[]
+}
+
+export interface ZipExportOptionsResponse {
+  /** Only variants backed by a stored object — a batch never renders. */
+  variants: DownloadVariant[]
+  assets: ZipExportAssetOptions[]
+}
+
+export interface ZipExportFile {
+  asset_id: string
+  asset_name: string
+  path: string
+  version_id: string
+  variant: string
+  /** Why this file is not the variant the batch asked for, when it isn't. */
+  fallback_reason?: string | null
+  skipped?: string | null
+}
+
+export interface ZipExportStatusResponse {
+  export_id: string
+  status: 'pending' | 'building' | 'ready' | 'failed'
+  /** True when an identical earlier request already built this archive. */
+  reused: boolean
+  ready: boolean
+  url?: string | null
+  file_count: number
+  files_done: number
+  total_bytes: number
+  error?: string | null
+  files: ZipExportFile[]
+}
+
 export interface FolderShareAssetsResponse {
   assets: FolderShareAssetItem[]
   subfolders: FolderShareSubfolder[]

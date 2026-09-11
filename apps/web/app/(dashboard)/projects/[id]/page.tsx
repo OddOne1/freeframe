@@ -37,6 +37,7 @@ import {
 } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { triggerBrowserDownload } from "@/lib/download";
+import { BatchDownloadDialog, type BatchDownloadApi } from "@/components/shared/batch-download-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/shared/avatar";
@@ -215,6 +216,20 @@ export default function ProjectDetailPage() {
   // minute is plenty; a per-second ticker would re-render this page 60×
   // more often to display the same string.
   const [, setCountdownTick] = React.useState(0);
+  // §143 — bulk download opens the shared zip dialog.
+  const [zipOpen, setZipOpen] = React.useState(false);
+  const [zipAssetIds, setZipAssetIds] = React.useState<string[]>([]);
+  const zipApi = React.useMemo<BatchDownloadApi>(
+    () => ({
+      fetchOptions: (items) =>
+        api.post(`/projects/${projectId}/zip/options`, { items, variant: "raw" }),
+      start: (items, variant) =>
+        api.post(`/projects/${projectId}/zip`, { items, variant }),
+      poll: (exportId) => api.get(`/projects/${projectId}/zip/${exportId}`),
+    }),
+    [projectId],
+  );
+
   const [assetToRename, setAssetToRename] = React.useState<AssetResponse | null>(null);
   const [assetToDelete, setAssetToDelete] = React.useState<AssetResponse | null>(null);
 
@@ -1189,34 +1204,25 @@ export default function ProjectDetailPage() {
                   : undefined
               }
               onBulkDownload={async (assetIds, folderIds) => {
-                async function downloadAsset(id: string) {
-                  try {
-                    const data = await api.get<{ url: string }>(
-                      `/assets/${id}/stream?download=true`,
-                    );
-                    if (data?.url) {
-                      triggerBrowserDownload(data.url);
-                      await new Promise((r) => setTimeout(r, 300));
-                    }
-                  } catch {}
-                }
-
-                // Download selected assets
-                for (const id of assetIds) {
-                  await downloadAsset(id);
-                }
-
-                // Download assets from selected folders
+                // §143 — collect, then hand the selection to the shared
+                // dialog. This used to loop one iframe download per file,
+                // which re-triggered the browser's multi-download prompt
+                // once per remaining file with no way to stop it.
+                const ids = [...assetIds];
                 for (const folderId of folderIds) {
                   try {
                     const folderAssets = await api.get<AssetResponse[]>(
-                      `/projects/${projectId}/assets?folder_id=${folderId}&skip=0&limit=100`,
+                      `/projects/${projectId}/assets?folder_id=${folderId}&skip=0&limit=500`,
                     );
-                    for (const fa of folderAssets) {
-                      await downloadAsset(fa.id);
-                    }
+                    ids.push(...folderAssets.map((fa) => fa.id));
                   } catch {}
                 }
+                // Array.from, not spread: this tsconfig targets below es2015
+                // for downlevel iteration.
+                const unique = Array.from(new Set(ids));
+                if (unique.length === 0) return;
+                setZipAssetIds(unique);
+                setZipOpen(true);
               }}
               actions={
                 <>
@@ -1306,7 +1312,15 @@ export default function ProjectDetailPage() {
             </Dialog.Portal>
           </Dialog.Root>
 
-          {/* Upload dialog */}
+          <BatchDownloadDialog
+        open={zipOpen}
+        onOpenChange={setZipOpen}
+        assetIds={zipAssetIds}
+        api={zipApi}
+        title="Download selected"
+      />
+
+      {/* Upload dialog */}
           <Dialog.Root open={uploadOpen} onOpenChange={setUploadOpen}>
             <Dialog.Portal>
               <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />

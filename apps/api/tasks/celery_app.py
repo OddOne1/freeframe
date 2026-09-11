@@ -21,6 +21,7 @@ celery_app = Celery(
         "apps.api.tasks.email_tasks",
         "apps.api.tasks.purge_tasks",
         "apps.api.tasks.cleanup_tasks",
+        "apps.api.tasks.zip_tasks",
     ],
 )
 
@@ -119,6 +120,22 @@ celery_app.conf.update(
         # is §114's own backstop — neither has ever reached a worker.
         "sweep_lut_exports": {"queue": "transcoding"},
         "sweep_stuck_processing": {"queue": "transcoding"},
+        # §143 — all four carry an explicit name=, so they need explicit
+        # routes for exactly the reason the three above do: a module glob
+        # cannot match a task declared as name="build_zip_export", and an
+        # unrouted task falls through to `default`, which nothing consumes.
+        # That is how every watermark request was silently dropped (§126).
+        # `transcoding` because zipping multi-GB originals is the same
+        # long-running, disk-and-bandwidth profile as the ffmpeg work.
+        # Both forms, deliberately. The bare names are what Celery actually
+        # routes on, since each of these declares an explicit name=. The
+        # module glob covers any task added to zip_tasks later that does
+        # NOT declare one — the omission that stranded apply_watermark.
+        "apps.api.tasks.zip_tasks.*": {"queue": "transcoding"},
+        "build_zip_export": {"queue": "transcoding"},
+        "delete_zip_export": {"queue": "transcoding"},
+        "purge_share_link_zips": {"queue": "transcoding"},
+        "sweep_zip_exports": {"queue": "transcoding"},
     },
     # Rate limiting for email queues (SES limits)
     task_annotations={
@@ -142,6 +159,15 @@ celery_app.conf.beat_schedule = {
         # nothing. It only matters for exports orphaned by a worker restart,
         # which then survive up to ~12h instead of ~1h before being cleared.
         "schedule": crontab(minute="30", hour="*/12"),
+    },
+    # §143 — same backstop, same reason, for the three-day zip archives.
+    # Hourly rather than twice-daily: the countdown is three days, so a
+    # sweep that ran every twelve hours could let an orphaned archive
+    # outlive its promise by half a day. An hourly pass over one indexed
+    # table is cheap, and normally finds nothing.
+    "sweep-zip-exports": {
+        "task": "sweep_zip_exports",
+        "schedule": crontab(minute="15"),
     },
     # 30-day Recently Deleted retention. Daily is ample: the window is
     # measured in days, so the worst case is an item surviving its

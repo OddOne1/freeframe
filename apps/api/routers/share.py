@@ -32,8 +32,14 @@ from ..models.asset import AssetVersion, AssetType, MediaFile, ProcessingStatus
 from ..models.sidecar import SidecarFile
 from ..models.comment import Comment
 from ..services.asset_visibility import usable_asset_filter
+from ..models.zip_export import ZipExport, ZipExportStatus
+from ..services import zip_export_service as zx
 from ..schemas.share import (
     DirectShareCreate,
+    ZipExportRequest,
+    ZipExportStatusResponse,
+    ZipExportFile,
+    ZipExportOptionsResponse,
     DirectShareResponse,
     FolderShareAssetItem,
     FolderShareAssetsResponse,
@@ -57,6 +63,10 @@ from .hls_proxy import create_hls_token, proxy_url_for
 from ..models.project import Project, ProjectRole
 from ..tasks.email_tasks import send_share_email
 from ..tasks.celery_app import send_task_safe
+
+import logging
+
+logger = logging.getLogger(__name__)
 from ..config import settings
 
 router = APIRouter(tags=["sharing"])
@@ -94,9 +104,12 @@ def _available_variants(link: ShareLink, asset) -> list[str]:
     permission rule is how this codebase has repeatedly ended up with two
     that disagree.
     """
-    allowed = link.allowed_download_variants or []
-    has_lut = getattr(asset, "applied_lut_id", None) is not None
-    return [v for v in allowed if has_lut or not VARIANT_USES_LUT[DownloadVariant(v)]]
+    # §143 — the rule itself moved to services/zip_export_service so the
+    # zip route and the authenticated bulk route enforce this one rather
+    # than each growing a copy.
+    from ..services.zip_export_service import available_variants_for
+
+    return available_variants_for(link.allowed_download_variants or [], asset)
 
 
 def _require_download_variant(link: ShareLink, variant: DownloadVariant) -> None:
@@ -115,6 +128,27 @@ def _require_download_variant(link: ShareLink, variant: DownloadVariant) -> None
             status_code=403,
             detail="This download option is not allowed for this share link",
         )
+
+
+def _purge_link_zips(share_link_id) -> None:
+    """Destroy a link's cached zip archives (§143.5).
+
+    Deactivating or deleting a link revokes access to it, and an archive
+    built from it is a copy of its contents — leaving one in storage for
+    the remainder of its three-day window would mean the link's own
+    deletion did not actually withdraw anything.
+
+    Dispatched rather than done inline: it is S3 work, and the request that
+    turned the link off should not wait on it. Best-effort by design — if
+    the broker is unreachable the sweep still collects the archive at its
+    TTL, so the worst case is late, not never.
+    """
+    try:
+        from ..tasks.zip_tasks import purge_share_link_zips
+
+        send_task_safe(purge_share_link_zips, str(share_link_id))
+    except Exception:
+        logger.warning("Could not dispatch zip purge for share link %s", share_link_id)
 
 
 def _escape_like(s: str) -> str:
@@ -499,11 +533,32 @@ def update_share_link(
     if "allowed_download_variants" in updates and updates["allowed_download_variants"] is not None:
         updates["allowed_download_variants"] = variant_values(updates["allowed_download_variants"])
 
+    # §143 — a deactivated link's cached archives must go with it, not sit
+    # in storage for the rest of their three days. Captured BEFORE the
+    # setattr loop because afterwards there is no way to tell an
+    # already-disabled link from one being disabled now.
+    was_enabled = link.is_enabled
+    turning_off = (
+        "is_enabled" in updates and not updates["is_enabled"] and was_enabled
+    )
+    # Clearing every download variant is the other way downloads get turned
+    # off (§30), and it has the same consequence for an archive already
+    # built: nobody may fetch it any more, so it should not be kept.
+    downloads_revoked = (
+        "allowed_download_variants" in updates
+        and not updates["allowed_download_variants"]
+        and bool(link.allowed_download_variants)
+    )
+
     for key, value in updates.items():
         setattr(link, key, value)
 
     db.commit()
     db.refresh(link)
+
+    if turning_off or downloads_revoked:
+        _purge_link_zips(link.id)
+
     return _share_link_response(link)
 
 
@@ -520,6 +575,7 @@ def revoke_share_link(
     require_project_role(db, project_id, current_user, ProjectRole.editor)
     link.deleted_at = datetime.now(timezone.utc)
     db.commit()
+    _purge_link_zips(link.id)
 
 
 # ── Folder share links ───────────────────────────────────────────────────────
@@ -1777,6 +1833,287 @@ def get_share_export_status(
         "ready": True,
         "url": proxy_url_for(export_key, expires_hours=1, download_filename=filename),
     }
+
+
+# ── Batch (zip) downloads for share links (§143) ─────────────────────────────
+
+def _resolve_zip_selection(db, *, items, variant, link, root_folder_id, allowed_variants):
+    """Turn a requested selection into a build plan.
+
+    Shared by the share route and the authenticated one; the only thing
+    that differs between them is `allowed_variants` (a link's permission
+    set, or every variant for a signed-in member) and the asset-access
+    check the caller has already done.
+
+    Every permission decision is made HERE and written into the manifest,
+    so the worker never re-derives one.
+    """
+    resolved = zx.ResolvedSelection()
+    taken: set[str] = set()
+    plan: list[dict] = []
+
+    for item in items:
+        asset = _get_asset(db, item.asset_id)
+        if link is not None:
+            _validate_asset_in_share(db, link, asset)
+
+        version = None
+        if item.version_id:
+            version = (
+                db.query(AssetVersion)
+                .filter(
+                    AssetVersion.id == item.version_id,
+                    AssetVersion.asset_id == asset.id,
+                    AssetVersion.deleted_at.is_(None),
+                )
+                .first()
+            )
+            if version is None:
+                # A version that does not belong to this asset is a
+                # mismatched request, not a reason to silently serve a
+                # different file.
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown version for asset {asset.id}",
+                )
+        if version is None:
+            version = zx.latest_ready_version(db, asset.id)
+        if version is None:
+            continue  # nothing downloadable for this asset yet
+
+        media_file = db.query(MediaFile).filter(MediaFile.version_id == version.id).first()
+        if not media_file:
+            continue
+
+        stored = zx.stored_variants_for(allowed_variants, asset, media_file)
+        chosen, reason = zx.resolve_variant(
+            variant.value, stored, is_video=asset.asset_type == AssetType.video
+        )
+        if not chosen:
+            continue  # nothing this viewer may download for this file
+
+        chain = zx.folder_chain(db, asset.folder_id, root_folder_id)
+        filename = build_download_filename(asset.name, media_file.original_filename or "")
+        path = zx.zip_entry_path(chain, filename, taken)
+
+        rf = zx.ResolvedFile(
+            asset_id=str(asset.id),
+            version_id=str(version.id),
+            path=path,
+            variant=chosen,
+            fallback_reason=reason,
+            applied_lut_id=str(asset.applied_lut_id) if asset.applied_lut_id else None,
+        )
+        resolved.files.append(rf)
+        plan.append(zx.build_manifest_entry(rf, media_file, asset.name))
+
+    return resolved, plan
+
+
+def _zip_status_payload(export: ZipExport, *, reused: bool = False) -> ZipExportStatusResponse:
+    files = [
+        ZipExportFile(
+            asset_id=e["asset_id"],
+            asset_name=e.get("asset_name") or "",
+            path=e["path"],
+            version_id=e["version_id"],
+            variant=e["variant"],
+            fallback_reason=e.get("fallback_reason"),
+            skipped=e.get("skipped"),
+        )
+        for e in (export.manifest or [])
+    ]
+    ready = export.status == ZipExportStatus.ready
+    url = None
+    if ready:
+        url = proxy_url_for(
+            export.s3_key, expires_hours=1, download_filename="download.zip"
+        )
+    return ZipExportStatusResponse(
+        export_id=export.id,
+        status=export.status.value if hasattr(export.status, "value") else str(export.status),
+        reused=reused,
+        ready=ready,
+        url=url,
+        file_count=export.file_count,
+        files_done=export.files_done,
+        total_bytes=export.total_bytes,
+        error=export.error,
+        files=files,
+    )
+
+
+def _start_or_reuse_zip(
+    db, *, plan, resolved, scope_kind, scope_id, project_id, share_link_id, created_by
+):
+    """Reuse an identical archive if one is still alive, else start a build.
+
+    "Identical" is `compute_cache_key`'s definition, documented on the
+    model. A `failed` row is deliberately NOT reused — retrying should
+    retry.
+    """
+    cache_key = zx.compute_cache_key(scope_id, resolved)
+    existing = (
+        db.query(ZipExport)
+        .filter(
+            ZipExport.cache_key == cache_key,
+            ZipExport.status.in_([ZipExportStatus.pending, ZipExportStatus.building, ZipExportStatus.ready]),
+        )
+        .order_by(ZipExport.created_at.desc())
+        .first()
+    )
+    if existing:
+        logger.info("zip export cache HIT for %s (export %s)", cache_key[:12], existing.id)
+        return existing, True
+
+    export_id = uuid.uuid4()
+    export = ZipExport(
+        id=export_id,
+        cache_key=cache_key,
+        share_link_id=share_link_id,
+        project_id=project_id,
+        created_by=created_by,
+        s3_key=zx.zip_object_key(str(project_id), scope_kind, str(scope_id), str(export_id)),
+        status=ZipExportStatus.pending,
+        file_count=len(plan),
+        files_done=0,
+        manifest=plan,
+    )
+    db.add(export)
+    db.commit()
+    db.refresh(export)
+    logger.info("zip export cache MISS for %s — building %s", cache_key[:12], export.id)
+
+    from ..tasks.zip_tasks import build_zip_export
+
+    send_task_safe(build_zip_export, str(export.id))
+    return export, False
+
+
+@router.post("/share/{token}/zip/options", response_model=ZipExportOptionsResponse)
+def get_share_zip_options(
+    token: str,
+    body: ZipExportRequest,
+    share_session: Optional[str] = Query(None, alias="share_session"),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    """Which variants the batch picker may offer for this selection.
+
+    Computed server-side for the same reason `_available_variants` is: the
+    browser would have to re-derive both a permission rule and a
+    what-is-stored rule to work it out.
+    """
+    link = validate_share_link_with_session(
+        db, token, share_session=share_session, current_user=current_user
+    )
+    pairs = []
+    for item in body.items:
+        asset = _get_asset(db, item.asset_id)
+        _validate_asset_in_share(db, link, asset)
+        version = (
+            zx.latest_ready_version(db, asset.id)
+            if not item.version_id
+            else db.query(AssetVersion).filter(AssetVersion.id == item.version_id).first()
+        )
+        if not version:
+            continue
+        mf = db.query(MediaFile).filter(MediaFile.version_id == version.id).first()
+        if mf:
+            pairs.append((asset, mf))
+    from ..schemas.share import ZipExportAssetOptions, ZipExportVersionOption
+
+    assets_out = []
+    for asset, _mf in pairs:
+        versions = zx.selectable_versions(db, asset.id, allowed=bool(link.show_versions))
+        assets_out.append(ZipExportAssetOptions(
+            asset_id=asset.id,
+            asset_name=asset.name,
+            versions=[
+                ZipExportVersionOption(
+                    version_id=v.id, version_number=v.version_number,
+                    created_at=v.created_at, is_latest=(i == 0),
+                )
+                for i, v in enumerate(versions)
+            ],
+        ))
+    return ZipExportOptionsResponse(
+        variants=zx.batch_variant_options(link.allowed_download_variants or [], pairs),
+        assets=assets_out,
+    )
+
+
+@router.post("/share/{token}/zip", response_model=ZipExportStatusResponse)
+def request_share_zip(
+    token: str,
+    body: ZipExportRequest,
+    share_session: Optional[str] = Query(None, alias="share_session"),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    """Start (or reuse) a zip of several files from this link."""
+    link = validate_share_link_with_session(
+        db, token, share_session=share_session, current_user=current_user
+    )
+    _require_download_variant(link, body.variant)
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Nothing selected")
+
+    resolved, plan = _resolve_zip_selection(
+        db,
+        items=body.items,
+        variant=body.variant,
+        link=link,
+        root_folder_id=link.folder_id,
+        allowed_variants=link.allowed_download_variants or [],
+    )
+    if not plan:
+        raise HTTPException(
+            status_code=400, detail="None of these files are available to download"
+        )
+
+    export, reused = _start_or_reuse_zip(
+        db,
+        plan=plan,
+        resolved=resolved,
+        scope_kind="link",
+        scope_id=link.id,
+        project_id=_get_project_id_from_link(db, link),
+        share_link_id=link.id,
+        created_by=current_user.id if current_user else None,
+    )
+    _log_share_activity(
+        db, link.id, ShareActivityAction.downloaded,
+        actor_email=current_user.email if current_user else "anonymous",
+        actor_name=current_user.name if current_user else None,
+    )
+    return _zip_status_payload(export, reused=reused)
+
+
+@router.get("/share/{token}/zip/{export_id}", response_model=ZipExportStatusResponse)
+def get_share_zip_status(
+    token: str,
+    export_id: uuid.UUID,
+    share_session: Optional[str] = Query(None, alias="share_session"),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    """Poll a build.
+
+    Re-validates the link on every poll, like get_share_export_status: a
+    link whose downloads were switched off mid-build must not still hand
+    back the finished archive.
+    """
+    link = validate_share_link_with_session(
+        db, token, share_session=share_session, current_user=current_user
+    )
+    if not (link.allowed_download_variants or []):
+        raise HTTPException(status_code=403, detail="Downloads are not allowed for this share link")
+
+    export = db.query(ZipExport).filter(ZipExport.id == export_id).first()
+    if not export or export.share_link_id != link.id:
+        raise HTTPException(status_code=404, detail="Export not found")
+    return _zip_status_payload(export)
 
 
 @router.get("/share/{token}/fields/{asset_id}", response_model=ShareFieldsResponse)

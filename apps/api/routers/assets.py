@@ -27,6 +27,10 @@ from ..services.s3_service import create_multipart_upload
 from .folders import _get_descendant_ids as _get_descendant_folder_ids
 from ..services.storage_prefix import lock_storage_prefix, prefix_for_project
 from ..services.asset_visibility import visible_assets
+from ..services import zip_export_service as zx
+from ..models.zip_export import ZipExport
+from ..models.share import ALL_DOWNLOAD_VARIANTS
+from ..schemas.share import ZipExportRequest, ZipExportStatusResponse, ZipExportOptionsResponse
 
 router = APIRouter(tags=["assets"])
 
@@ -394,6 +398,134 @@ def get_stream_url(
             url = proxy_url_for(s3_key)
 
     return StreamUrlResponse(url=url, asset_type=asset.asset_type)
+
+# ── Batch (zip) downloads for the authenticated app (§143) ───────────────────
+
+@router.post("/projects/{project_id}/zip/options", response_model=ZipExportOptionsResponse)
+def get_project_zip_options(
+    project_id: uuid.UUID,
+    body: ZipExportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Which variants a bulk download may offer for this selection.
+
+    A signed-in member is not gated by a share link's permission set, so
+    every variant is permitted here and the narrowing is purely "does a
+    stored object back it" — the same scope rule the share route applies.
+    """
+    member = get_project_member(db, project_id, current_user.id)
+    if not member and not is_public_project(db, project_id):
+        raise HTTPException(status_code=403, detail="Not a project member")
+
+    pairs = []
+    for item in body.items:
+        asset = db.query(Asset).filter(Asset.id == item.asset_id, Asset.deleted_at.is_(None)).first()
+        if not asset or asset.project_id != project_id:
+            continue
+        version = (
+            zx.latest_ready_version(db, asset.id)
+            if not item.version_id
+            else db.query(AssetVersion).filter(AssetVersion.id == item.version_id).first()
+        )
+        if not version:
+            continue
+        mf = db.query(MediaFile).filter(MediaFile.version_id == version.id).first()
+        if mf:
+            pairs.append((asset, mf))
+    from ..schemas.share import ZipExportAssetOptions, ZipExportVersionOption
+
+    assets_out = []
+    for asset, _mf in pairs:
+        # A signed-in member already sees the version switcher in the app,
+        # so there is no equivalent of a link's show_versions gate here.
+        versions = zx.selectable_versions(db, asset.id, allowed=True)
+        assets_out.append(ZipExportAssetOptions(
+            asset_id=asset.id, asset_name=asset.name,
+            versions=[
+                ZipExportVersionOption(
+                    version_id=v.id, version_number=v.version_number,
+                    created_at=v.created_at, is_latest=(i == 0),
+                )
+                for i, v in enumerate(versions)
+            ],
+        ))
+    return ZipExportOptionsResponse(
+        variants=zx.batch_variant_options(ALL_DOWNLOAD_VARIANTS, pairs), assets=assets_out
+    )
+
+
+@router.post("/projects/{project_id}/zip", response_model=ZipExportStatusResponse)
+def request_project_zip(
+    project_id: uuid.UUID,
+    body: ZipExportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Start (or reuse) a zip of several files for a signed-in member.
+
+    Same popup-spam fix as the share viewer: one download instead of N
+    iframe-triggered ones.
+    """
+    member = get_project_member(db, project_id, current_user.id)
+    if not member and not is_public_project(db, project_id):
+        raise HTTPException(status_code=403, detail="Not a project member")
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Nothing selected")
+
+    from .share import _resolve_zip_selection, _start_or_reuse_zip, _zip_status_payload
+
+    # Access was checked at the project level above; `link=None` tells the
+    # shared resolver to skip the share-membership check rather than
+    # inventing a second one.
+    resolved, plan = _resolve_zip_selection(
+        db,
+        items=[i for i in body.items],
+        variant=body.variant,
+        link=None,
+        root_folder_id=None,
+        allowed_variants=ALL_DOWNLOAD_VARIANTS,
+    )
+    plan = [
+        e for e in plan
+        if db.query(Asset).filter(Asset.id == e["asset_id"]).first().project_id == project_id
+    ]
+    if not plan:
+        raise HTTPException(status_code=400, detail="None of these files are available to download")
+
+    export, reused = _start_or_reuse_zip(
+        db,
+        plan=plan,
+        resolved=resolved,
+        scope_kind="user",
+        scope_id=current_user.id,
+        project_id=project_id,
+        share_link_id=None,
+        created_by=current_user.id,
+    )
+    return _zip_status_payload(export, reused=reused)
+
+
+@router.get("/projects/{project_id}/zip/{export_id}", response_model=ZipExportStatusResponse)
+def get_project_zip_status(
+    project_id: uuid.UUID,
+    export_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    member = get_project_member(db, project_id, current_user.id)
+    if not member and not is_public_project(db, project_id):
+        raise HTTPException(status_code=403, detail="Not a project member")
+
+    from .share import _zip_status_payload
+
+    export = db.query(ZipExport).filter(ZipExport.id == export_id).first()
+    # Scoped to the requester, not just the project: another member's
+    # archive may contain a selection this user never made.
+    if not export or export.project_id != project_id or export.created_by != current_user.id:
+        raise HTTPException(status_code=404, detail="Export not found")
+    return _zip_status_payload(export)
+
 
 @router.get("/assets/{asset_id}/transcript", response_model=TranscriptResponse)
 def get_asset_transcript(
