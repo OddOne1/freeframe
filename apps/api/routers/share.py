@@ -1079,10 +1079,15 @@ def list_project_share_links(
             ShareLink.is_enabled,
             ShareLink.permission,
             sqlalchemy.literal("folder").label("share_type"),
-            ShareLink.title.label("target_name"),
+            # Project.name, NOT ShareLink.title again. Selecting title twice made
+            # it a duplicate column in the compound SELECT below, and the two
+            # collapsed to one under the union's keying -- so row.title returned
+            # the target's name for EVERY branch, not just this one.
+            Project.name.label("target_name"),
             sa_func.coalesce(activity_stats.c.view_count, 0).label("view_count"),
             activity_stats.c.last_viewed_at,
         )
+        .join(Project, ShareLink.project_id == Project.id)
         .outerjoin(activity_stats, ShareLink.id == activity_stats.c.share_link_id)
         .filter(
             ShareLink.project_id == project_id,
@@ -1964,6 +1969,8 @@ def _zip_status_payload(export: ZipExport, *, reused: bool = False) -> ZipExport
         file_count=export.file_count,
         files_done=export.files_done,
         total_bytes=export.total_bytes,
+        phase=export.phase,
+        bytes_done=export.bytes_done,
         error=export.error,
         files=files,
     )
