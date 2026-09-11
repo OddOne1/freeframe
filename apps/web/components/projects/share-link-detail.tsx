@@ -25,6 +25,8 @@ import {
   X,
 } from "lucide-react";
 import { cn, resolveApiMediaUrl } from "@/lib/utils";
+import { useSiteSettings } from "@/hooks/use-site-settings";
+import { siteAccentColor } from "@/lib/color-utils";
 import { api } from "@/lib/api";
 import { ShareLinkActivityPanel } from "@/components/projects/share-link-activity";
 import type { ShareLink, ShareLinkAppearance } from "@/types";
@@ -92,7 +94,6 @@ function useShareLinkData(token: string) {
   );
 
   const appearance: ShareLinkAppearance = shareLink?.appearance || DEFAULT_SHARE_APPEARANCE;
-
   const updateAppearance = React.useCallback(
     (patch: Partial<ShareLinkAppearance>) => {
       const updated = { ...appearance, ...patch };
@@ -833,6 +834,24 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
   const [showPassword, setShowPassword] = React.useState(false);
   const [localAccentColor, setLocalAccentColor] = React.useState("");
 
+  // §145 — what this link's accent resolves to when it sets none of its own:
+  // the SITE-WIDE accent for the theme the link is using, not a hardcoded
+  // colour. The old `#6366f1` matched neither built-in default (#5b8def
+  // dark / #4a7de8 light) and was never stored anywhere, so the swatch
+  // disagreed with the product's palette and with any customisation a
+  // superadmin had made.
+  //
+  // Inheriting is unambiguous here: `accent_color: null` genuinely means
+  // "never set" — nothing in the frontend or the API ever writes a default
+  // into it (the column's server_default is literally `"accent_color":null`),
+  // so this cannot be confused with someone having explicitly picked the old
+  // fallback.
+  const { themeColors } = useSiteSettings();
+  const inheritedAccent = siteAccentColor(
+    themeColors,
+    appearance.theme === "light" ? "light" : "dark",
+  );
+
   React.useEffect(() => {
     if (shareLink) {
       setPasswordEnabled(shareLink.has_password ?? false);
@@ -1148,7 +1167,11 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
                         });
                       }
                     }}
-                    placeholder="None"
+                    // Placeholder, not value: prefilling would look like an
+                    // explicit override and onBlur would persist it, turning
+                    // "inherits the site accent" into "pinned to today's site
+                    // accent" the first time anyone opened this panel.
+                    placeholder={inheritedAccent.replace("#", "")}
                     maxLength={7}
                     className="w-20 rounded border border-border bg-bg-tertiary px-2 py-1 text-xs text-text-primary placeholder:text-text-tertiary outline-none focus:border-accent/50 font-mono"
                   />
@@ -1158,7 +1181,7 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
                       style={{
                         backgroundColor: localAccentColor
                           ? `#${localAccentColor.replace("#", "")}`
-                          : "#6366f1",
+                          : inheritedAccent,
                       }}
                     />
                     <input
@@ -1166,7 +1189,7 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
                       value={
                         localAccentColor
                           ? `#${localAccentColor.replace("#", "")}`
-                          : "#6366f1"
+                          : inheritedAccent
                       }
                       onChange={(e) => {
                         const hex = e.target.value.replace("#", "");

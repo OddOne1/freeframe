@@ -74,6 +74,36 @@ export const DEFAULT_LIGHT_TOKENS: ThemeColorTokens = {
   navText: '#1a1a2e',
 }
 
+/**
+ * The accent a viewer actually sees when nothing overrides it (§145).
+ *
+ * Resolution order, and it matters that this is one function rather than a
+ * literal repeated at each call site: a superadmin's custom accent for this
+ * theme, else the built-in default for this theme. Before this existed the
+ * share-link appearance editor showed a hardcoded `#6366f1` — a value that
+ * matches NEITHER built-in default (`#5b8def` dark, `#4a7de8` light) and
+ * was never stored anywhere, so the editor's swatch disagreed with the
+ * product's own palette and with any customisation.
+ *
+ * `theme_colors` is `Record<string, unknown>` on the wire (the backend
+ * stores it as free-form JSONB), so the lookup is defensive: a malformed
+ * or partial entry falls back rather than rendering `undefined` into a
+ * colour input.
+ */
+export function siteAccentColor(
+  themeColors: Record<string, unknown> | null | undefined,
+  theme: 'dark' | 'light',
+): string {
+  const fallback = theme === 'light' ? DEFAULT_LIGHT_TOKENS.accent : DEFAULT_DARK_TOKENS.accent
+  const forTheme = themeColors?.[theme]
+  if (forTheme && typeof forTheme === 'object') {
+    const accent = (forTheme as Record<string, unknown>).accent
+    if (typeof accent === 'string' && /^#[0-9a-fA-F]{6}$/.test(accent)) return accent
+  }
+  return fallback
+}
+
+
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n))
 }
