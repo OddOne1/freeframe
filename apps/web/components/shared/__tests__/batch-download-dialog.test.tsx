@@ -281,3 +281,61 @@ describe('the popup-spam bug', () => {
     await waitFor(() => expect(downloads).toHaveLength(1))
   })
 })
+
+
+// ── unmount cleanup (§146) ───────────────────────────────────────────────
+
+describe('unmounting stops the poll', () => {
+  it('fires no further requests after the dialog is torn down', async () => {
+    // The leak this covers: cancelled.current was only ever set by cancel()
+    // and onOpenChange, so a route change or a parent clearing its state
+    // unmounted the dialog while the while-loop kept polling for up to its
+    // full 30-minute deadline, with nothing on screen.
+    const api = makeApi({
+      poll: vi.fn(async () => ({
+        export_id: 'e1', status: 'building', reused: false, ready: false,
+        file_count: 5, files_done: 1, total_bytes: 0, files: [],
+      } as never)),
+    })
+    const { unmount } = render(
+      <BatchDownloadDialog open onOpenChange={vi.fn()} assetIds={['a1']} api={api} />,
+    )
+    await userEvent.click(await screen.findByRole('button', { name: /download zip/i }))
+    await screen.findByTestId('zip-progress')
+
+    await waitFor(() => expect((api.poll as ReturnType<typeof vi.fn>).mock.calls.length)
+      .toBeGreaterThan(0), { timeout: 4000 })
+    const pollsAtUnmount = (api.poll as ReturnType<typeof vi.fn>).mock.calls.length
+
+    unmount()
+
+    // Well past several poll intervals.
+    await new Promise((r) => setTimeout(r, 3500))
+    expect((api.poll as ReturnType<typeof vi.fn>).mock.calls.length).toBe(pollsAtUnmount)
+  }, 20000)
+
+  it('does not download something that arrives after unmount', async () => {
+    // The build legitimately finishes just after teardown — a stray
+    // triggerBrowserDownload then starts a file nobody asked for.
+    let polls = 0
+    const api = makeApi({
+      poll: vi.fn(async () => {
+        polls += 1
+        return polls < 3
+          ? { export_id: 'e1', status: 'building', reused: false, ready: false,
+              file_count: 2, files_done: 1, total_bytes: 0, files: [] }
+          : { export_id: 'e1', status: 'ready', reused: false, ready: true,
+              url: '/late.zip', file_count: 2, files_done: 2, total_bytes: 1, files: [] }
+      }) as never,
+    })
+    const { unmount } = render(
+      <BatchDownloadDialog open onOpenChange={vi.fn()} assetIds={['a1']} api={api} />,
+    )
+    await userEvent.click(await screen.findByRole('button', { name: /download zip/i }))
+    await screen.findByTestId('zip-progress')
+    unmount()
+
+    await new Promise((r) => setTimeout(r, 4000))
+    expect(downloads).toEqual([])
+  }, 20000)
+})

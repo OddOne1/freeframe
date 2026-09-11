@@ -427,3 +427,36 @@ def selectable_versions(db, asset_id, *, allowed: bool):
         .all()
     )
     return rows if len(rows) > 1 else []
+
+
+# ── Staleness (§146) ─────────────────────────────────────────────────────────
+
+#: How long a build may sit without its file count advancing before it is
+#: declared dead. Tied to the task's own hard limit with margin: Celery kills
+#: the worker at ZIP_HARD_TIME_LIMIT, so anything still claiming to build
+#: well past that is not running — it is a row nobody will ever update.
+#:
+#: Measured against PROGRESS, not age, on purpose. A large batch that is
+#: genuinely still downloading keeps bumping `progress_at`, and must not be
+#: failed for being slow; a wedged one stops bumping it immediately.
+ZIP_STALE_AFTER_SECONDS = 25 * 60
+
+
+def is_stale(export, *, now=None) -> bool:
+    """True when a pending/building row cannot still be alive.
+
+    A row with no `progress_at` yet is measured from `created_at` — a build
+    that died before its first file is exactly the case worth catching.
+    """
+    from datetime import datetime, timedelta, timezone
+    from ..models.zip_export import ZipExportStatus
+
+    if export.status not in (ZipExportStatus.pending, ZipExportStatus.building):
+        return False
+    now = now or datetime.now(timezone.utc)
+    last = export.progress_at or export.created_at
+    if last is None:
+        return False
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return (now - last) > timedelta(seconds=ZIP_STALE_AFTER_SECONDS)

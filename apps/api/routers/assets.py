@@ -517,13 +517,14 @@ def get_project_zip_status(
     if not member and not is_public_project(db, project_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    from .share import _zip_status_payload
+    from .share import _resolve_if_stale, _zip_status_payload
 
     export = db.query(ZipExport).filter(ZipExport.id == export_id).first()
     # Scoped to the requester, not just the project: another member's
     # archive may contain a selection this user never made.
     if not export or export.project_id != project_id or export.created_by != current_user.id:
         raise HTTPException(status_code=404, detail="Export not found")
+    _resolve_if_stale(db, export)
     return _zip_status_payload(export)
 
 

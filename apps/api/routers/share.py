@@ -1910,6 +1910,32 @@ def _resolve_zip_selection(db, *, items, variant, link, root_folder_id, allowed_
     return resolved, plan
 
 
+def _resolve_if_stale(db: Session, export: ZipExport) -> None:
+    """Turn a wedged build into a real failure, in the DATABASE (§146).
+
+    Before this, the status route echoed `ZipExport.status` verbatim, so a
+    row stuck at `building` answered 200 {"status":"building"} on every poll
+    forever — the client's own 30-minute deadline was the only ceiling, and
+    it reported "taking longer than expected" rather than an error.
+
+    Done on read as well as in the sweep because the poller is the one who
+    needs the answer NOW; the sweep exists for rows nobody is watching. The
+    write is what matters: this resolves the row rather than changing what a
+    single request happens to say.
+    """
+    if not zx.is_stale(export):
+        return
+    export.status = ZipExportStatus.failed
+    export.error = (
+        "Preparing this download stopped unexpectedly. Try again, or select fewer files."
+    )
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("could not mark stale zip export %s failed", export.id)
+
+
 def _zip_status_payload(export: ZipExport, *, reused: bool = False) -> ZipExportStatusResponse:
     files = [
         ZipExportFile(
@@ -2113,6 +2139,7 @@ def get_share_zip_status(
     export = db.query(ZipExport).filter(ZipExport.id == export_id).first()
     if not export or export.share_link_id != link.id:
         raise HTTPException(status_code=404, detail="Export not found")
+    _resolve_if_stale(db, export)
     return _zip_status_payload(export)
 
 

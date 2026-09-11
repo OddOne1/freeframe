@@ -69,9 +69,21 @@ export function BatchDownloadDialog({
   const [status, setStatus] = React.useState<ZipExportStatusResponse | null>(null)
   const [error, setError] = React.useState<string | null>(null)
 
-  // Set when the viewer cancels. The poll loop checks it rather than being
-  // torn down, so an in-flight request cannot resurrect the dialog.
+  // Set when the viewer cancels, and on unmount. The poll loop checks it
+  // rather than being torn down, so an in-flight request cannot resurrect
+  // the dialog.
   const cancelled = React.useRef(false)
+
+  // §146 — stop polling when this component goes away by ANY route.
+  // `cancel()` covers the X button and the overlay, but a route change or a
+  // parent clearing its state unmounts the dialog without either firing, and
+  // the while-loop below would then keep hitting the API for up to its full
+  // 30-minute deadline with nothing on screen to show for it.
+  React.useEffect(() => {
+    return () => {
+      cancelled.current = true
+    }
+  }, [])
 
   React.useEffect(() => {
     if (!open) return
@@ -112,10 +124,12 @@ export function BatchDownloadDialog({
     try {
       first = await api.start(items, variant)
     } catch (e) {
+      if (cancelled.current) return
       setPhase('error')
       setError(e instanceof Error ? e.message : 'Could not start the download')
       return
     }
+    if (cancelled.current) return
     setStatus(first)
 
     // ── Cache hit: the archive already exists, so there is nothing to
@@ -141,6 +155,7 @@ export function BatchDownloadDialog({
         continue // a blip mid-build is not a failure; the deadline governs
       }
       if (cancelled.current) return
+      if (cancelled.current) return
       setStatus(next)
       if (next.status === 'failed') {
         setPhase('error')
@@ -154,6 +169,7 @@ export function BatchDownloadDialog({
         return
       }
     }
+    if (cancelled.current) return
     setPhase('error')
     setError('This is taking longer than expected — try again')
   }

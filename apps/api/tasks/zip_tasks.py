@@ -5,23 +5,35 @@ delete, periodic sweep as the backstop for the countdown that a worker
 restart drops — because that shape has already been debugged here and a
 second, differently-shaped one would have to earn its differences.
 
+§146 note, recorded because it is a gap rather than a decision: this is the
+ONLY Celery task in this codebase carrying a time limit. Nothing else —
+including burn_lut_export, the transcode tasks, or the transcription
+worker — has `soft_time_limit`/`time_limit` set, so any of them can wedge a
+worker indefinitely. Scoped here on purpose; a sweep across every task is
+its own pass with its own per-task ceilings to choose.
+
 One real divergence: a zip is built to a temp FILE and uploaded whole
 (§143.4), not streamed to the client. Streaming would mean no cache, no
 resume, no progress, and a request that dies if the connection blinks.
 """
 import logging
 import os
+import queue
 import shutil
 import tempfile
+import threading
 import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
+
+from celery.exceptions import SoftTimeLimitExceeded
 
 from ..config import settings
 from ..database import SessionLocal
 from ..models.asset import Asset, AssetVersion, MediaFile
 from ..models.zip_export import ZipExport, ZipExportStatus
 from ..services import s3_service
+from ..services import zip_export_service
 from ..services.zip_export_service import ZIP_PREFIX, ZIP_TTL_SECONDS
 from .celery_app import celery_app
 
@@ -31,8 +43,49 @@ logger = logging.getLogger(__name__)
 #: original is routinely multi-GB and a worker holds one at a time.
 _CHUNK = 8 * 1024 * 1024
 
+#: How many objects are pulled from storage at once (§146).
+#:
+#: The bug this fixes: fetching 103 files strictly one at a time, each a
+#: full S3 round trip, ran past the client's 30-minute deadline on a real
+#: 13.25GB batch with nothing actually stuck — the task was simply serial.
+#: Mirrors upload-store.ts's CONCURRENT_PARTS worker pool: N workers pull
+#: from a shared counter until the work runs out.
+#:
+#: Six, not more: the bottleneck is one worker's network link to AIStor, and
+#: past roughly this point the connections compete for the same pipe while
+#: each one's memory buffer and open socket still costs. It is also a
+#: deliberate ceiling on how hard one zip can hammer storage that every
+#: upload and transcode shares.
+_CONCURRENT_FETCHES = 6
 
-@celery_app.task(bind=True, max_retries=1, default_retry_delay=60, name="build_zip_export")
+#: zipfile.ZipFile is NOT thread-safe, so the concurrency is in the FETCH
+#: only: workers download to temp files, and a single consumer writes them
+#: into the archive. The queue is bounded to the worker count so at most a
+#: handful of members sit on disk at once — unbounded, a 13GB batch would
+#: try to stage all 103 originals before writing any of them.
+_FETCH_QUEUE_DEPTH = _CONCURRENT_FETCHES
+
+#: Ceilings for one build (§146). Ordering is deliberate and load-bearing:
+#: soft (20m) < hard (21m) < the status endpoint's staleness threshold <
+#: the browser's own 30-minute deadline. The server therefore resolves a
+#: doomed build into a real `failed` BEFORE the client gives up, so someone
+#: sees an error they can act on instead of "taking longer than expected".
+#: 13.25GB over a LAN is a couple of minutes of pure transfer, so 20 minutes
+#: is generous for the concurrent version rather than tight.
+ZIP_SOFT_TIME_LIMIT = 20 * 60
+ZIP_HARD_TIME_LIMIT = 21 * 60
+
+
+@celery_app.task(
+    bind=True,
+    max_retries=1,
+    default_retry_delay=60,
+    name="build_zip_export",
+    # §146 — the first time limits anywhere in this codebase. Scoped to this
+    # task deliberately; see the module docstring note about the wider gap.
+    soft_time_limit=ZIP_SOFT_TIME_LIMIT,
+    time_limit=ZIP_HARD_TIME_LIMIT,
+)
 def build_zip_export(self, export_id: str):
     """Assemble one archive from an already-resolved manifest.
 
@@ -59,50 +112,145 @@ def build_zip_export(self, export_id: str):
         client = s3_service.get_s3_client()
         done = 0
 
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
-            # ZIP_STORED, not DEFLATE, on purpose: the payload is already
-            # compressed video and images, so deflate spends CPU on every
-            # byte to save ~nothing. Zip64 because a folder of originals
-            # passes 4GB easily.
-            for entry in export.manifest or []:
-                s3_key = entry.get("s3_key")
-                path = entry.get("path")
-                if not s3_key or not path:
-                    continue
-                if entry.get("needs_render"):
-                    # Unreachable by construction: the batch picker only
-                    # offers variants backed by a stored object (§143 scope
-                    # decision), so nothing here is an ffmpeg product. Kept
-                    # as a guard rather than an assert because the
-                    # alternative failure is silent and worse — `s3_key` is
-                    # the RENDER INPUT for such an entry, so zipping it
-                    # would hand someone the original under a filename
-                    # promising a proxy or a graded copy.
-                    logger.error(
-                        "zip %s: refusing entry that needs a render (%s)", export_id, path
-                    )
-                    entry["skipped"] = "this option needs rendering and is not available in a batch download"
-                    done += 1
-                    export.files_done = done
-                    db.commit()
-                    continue
+        entries = [
+            e for e in (export.manifest or [])
+            if e.get("s3_key") and e.get("path")
+        ]
+
+        # Entries that must never be fetched are settled up front, so the
+        # worker pool below deals only with real downloads.
+        for entry in entries:
+            if entry.get("needs_render"):
+                # Unreachable by construction: the batch picker only offers
+                # variants backed by a stored object (§143 scope decision).
+                # Kept as a guard because the alternative failure is silent
+                # and worse — `s3_key` is the RENDER INPUT for such an
+                # entry, so zipping it would hand someone the original under
+                # a filename promising a proxy or a graded copy.
+                logger.error(
+                    "zip %s: refusing entry that needs a render (%s)",
+                    export_id, entry.get("path"),
+                )
+                entry["skipped"] = (
+                    "this option needs rendering and is not available in a batch download"
+                )
+
+        fetchable = [e for e in entries if not e.get("needs_render")]
+
+        # ── Fetch concurrently, write serially ───────────────────────────
+        # The split is forced by zipfile not being thread-safe, and it is
+        # also the right shape: the slow part is the network round trip, and
+        # writing an already-downloaded file into a ZIP_STORED archive is
+        # local disk I/O.
+        staging = os.path.join(work_dir, "staging")
+        os.makedirs(staging, exist_ok=True)
+        ready: "queue.Queue" = queue.Queue(maxsize=_FETCH_QUEUE_DEPTH)
+        next_index = [0]
+        index_lock = threading.Lock()
+        stop = threading.Event()
+        # A timeout that lands in a worker must NOT be treated as "this one
+        # file was unreadable". Celery raises SoftTimeLimitExceeded in the
+        # main thread, but a worker blocked in read() can surface it too —
+        # and the broad `except Exception` below would then mark every
+        # remaining file skipped and upload a "ready" archive containing
+        # nothing, which is worse than failing. Captured here and re-raised
+        # by the consumer so it takes the timeout path.
+        fatal: list = []
+
+        def claim_next():
+            with index_lock:
+                i = next_index[0]
+                if i >= len(fetchable):
+                    return None
+                next_index[0] = i + 1
+                return i
+
+        def fetch_worker():
+            while not stop.is_set():
+                i = claim_next()
+                if i is None:
+                    return
+                entry = fetchable[i]
+                local = os.path.join(staging, f"{i}.part")
                 try:
-                    obj = client.get_object(Bucket=settings.s3_bucket, Key=s3_key)
-                    with zf.open(path, "w") as dest:
-                        body = obj["Body"]
+                    obj = client.get_object(
+                        Bucket=settings.s3_bucket, Key=entry["s3_key"]
+                    )
+                    body = obj["Body"]
+                    with open(local, "wb") as fh:
                         while True:
+                            if stop.is_set():
+                                return
                             chunk = body.read(_CHUNK)
                             if not chunk:
                                 break
-                            dest.write(chunk)
+                            fh.write(chunk)
+                    ready.put((entry, local, None))
+                except SoftTimeLimitExceeded as exc:
+                    fatal.append(exc)
+                    stop.set()
+                    ready.put((entry, None, "timed out"))
+                    return
                 except Exception as exc:
-                    # One unreadable member must not lose the other 19 files.
-                    # It is recorded on the entry so the UI can say which.
-                    logger.warning("zip %s: skipping %s (%s)", export_id, s3_key, exc)
-                    entry["skipped"] = str(exc)[:200]
-                done += 1
+                    # One unreadable member must not lose the other 102.
+                    logger.warning(
+                        "zip %s: skipping %s (%s)", export_id, entry["s3_key"], exc
+                    )
+                    ready.put((entry, None, str(exc)[:200]))
+
+        workers = [
+            threading.Thread(target=fetch_worker, daemon=True)
+            for _ in range(min(_CONCURRENT_FETCHES, max(1, len(fetchable))))
+        ]
+        for w in workers:
+            w.start()
+
+        try:
+            with zipfile.ZipFile(
+                zip_path, "w", compression=zipfile.ZIP_STORED, allowZip64=True
+            ) as zf:
+                # ZIP_STORED, not DEFLATE, on purpose: the payload is already
+                # compressed video and images, so deflate spends CPU on every
+                # byte to save ~nothing. Zip64 because a folder of originals
+                # passes 4GB easily.
+                for _ in range(len(fetchable)):
+                    if fatal:
+                        raise fatal[0]
+                    entry, local, err = ready.get()
+                    if err is not None:
+                        entry["skipped"] = err
+                    else:
+                        try:
+                            with open(local, "rb") as src, zf.open(entry["path"], "w") as dest:
+                                shutil.copyfileobj(src, dest, _CHUNK)
+                        except Exception as exc:
+                            logger.warning(
+                                "zip %s: could not add %s (%s)",
+                                export_id, entry["path"], exc,
+                            )
+                            entry["skipped"] = str(exc)[:200]
+                        finally:
+                            # Deleted as soon as it is in the archive, so the
+                            # staging area never holds more than the queue.
+                            try:
+                                os.remove(local)
+                            except OSError:
+                                pass
+                    done += 1
+                    export.files_done = done
+                    export.progress_at = datetime.now(timezone.utc)
+                    db.commit()
+                # Entries refused above still count as handled.
+                done += len(entries) - len(fetchable)
                 export.files_done = done
+                export.progress_at = datetime.now(timezone.utc)
                 db.commit()
+        finally:
+            stop.set()
+            for w in workers:
+                w.join(timeout=5)
+        if fatal:
+            raise fatal[0]
 
         size = os.path.getsize(zip_path)
         with open(zip_path, "rb") as fh:
@@ -126,6 +274,24 @@ def build_zip_export(self, export_id: str):
         )
         logger.info("zip export %s ready: %s files, %s bytes", export_id, done, size)
 
+    except SoftTimeLimitExceeded:
+        # §146 — the backstop. Deliberately NOT retried: the build already
+        # had its full budget, and a retry would occupy a worker for another
+        # 20 minutes to reach the same wall. Marking the row failed is what
+        # lets the polling client stop and say something true, instead of
+        # sitting on a row wedged at "building" forever.
+        logger.error("zip export %s exceeded its time limit", export_id)
+        try:
+            export = db.query(ZipExport).filter(ZipExport.id == uuid.UUID(export_id)).first()
+            if export:
+                export.status = ZipExportStatus.failed
+                export.error = (
+                    "Preparing this download took too long. Try selecting fewer files."
+                )
+                db.commit()
+        except Exception:
+            logger.exception("could not mark zip export %s failed after timeout", export_id)
+        return
     except Exception as exc:
         logger.exception("zip export %s failed", export_id)
         try:
@@ -220,10 +386,25 @@ def sweep_zip_exports():
     """
     db = SessionLocal()
     deleted = 0
+    stuck = 0
     try:
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(seconds=ZIP_TTL_SECONDS)
         rows = db.query(ZipExport).all()
+
+        # §146 — resolve wedged builds for anyone NOT polling. The status
+        # route does this on read for an active viewer; a build abandoned
+        # when its tab closed has nobody to trigger that, and would sit at
+        # "building" until its TTL.
+        for row in rows:
+            if zip_export_service.is_stale(row, now=now):
+                row.status = ZipExportStatus.failed
+                row.error = "Preparing this download stopped unexpectedly."
+                stuck += 1
+        if stuck:
+            db.commit()
+            logger.warning("Marked %s wedged zip export(s) failed", stuck)
+
         for row in rows:
             expired = (row.expires_at and row.expires_at <= now) or (
                 row.expires_at is None and row.created_at and row.created_at <= cutoff

@@ -33,7 +33,7 @@ STDLIB = {
     "decimal", "email", "enum", "functools", "glob", "gzip", "hashlib",
     "hmac", "html", "inspect", "io", "itertools", "json", "logging", "math",
     "mimetypes", "operator", "os", "pathlib", "platform", "posixpath",
-    "pprint", "random", "re", "secrets", "shlex", "shutil", "signal",
+    "pprint", "queue", "random", "re", "secrets", "shlex", "shutil", "signal",
     "smtplib", "socket", "ssl", "statistics", "string", "struct",
     "subprocess", "sys", "tempfile", "textwrap", "threading", "time",
     "traceback", "types", "typing", "unittest", "urllib", "uuid", "warnings",

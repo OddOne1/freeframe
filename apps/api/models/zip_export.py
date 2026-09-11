@@ -94,6 +94,12 @@ class ZipExport(Base):
     #: file rather than silently handing back something else (§143).
     manifest: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
 
+    #: Bumped every time `files_done` advances (§146). Staleness detection
+    #: needs "has this build made progress recently", not merely "how old is
+    #: it" — a genuinely slow but advancing build must not be killed, and a
+    #: wedged one must not poll forever.
+    progress_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     #: Three days, or until the link is deactivated — whichever comes first.
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
