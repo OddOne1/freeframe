@@ -104,8 +104,11 @@ def test_every_file_still_lands_in_the_archive():
 
     uploaded = {}
     client = _client_with_delay(0.0, [])
-    client.put_object.side_effect = lambda **kw: uploaded.update(
-        {"body": kw["Body"].read()}
+    # upload_fileobj, not put_object (§147): the archive goes up multipart,
+    # because a single PUT is capped at 5GB and hangs rather than failing
+    # cleanly past it.
+    client.upload_fileobj.side_effect = lambda fh, bucket, key, **kw: uploaded.update(
+        {"body": fh.read()}
     )
     export = _export(9)
     _run_build(export, client)

@@ -22,9 +22,12 @@ import queue
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
+
+from boto3.s3.transfer import TransferConfig
 
 from celery.exceptions import SoftTimeLimitExceeded
 
@@ -42,6 +45,33 @@ logger = logging.getLogger(__name__)
 #: Stream each member in chunks rather than reading it whole. A camera
 #: original is routinely multi-GB and a worker holds one at a time.
 _CHUNK = 8 * 1024 * 1024
+
+#: The finished archive goes up as a MULTIPART upload (§147). A single
+#: PUT is capped at 5GB by the S3 API, and the failure is not a clean
+#: rejection: the server stops reading a body it has already refused while
+#: boto3 keeps writing, the socket buffers fill, and the send blocks
+#: forever. That is the hang — a 13.25GB build reached `files_done=103` and
+#: sat in put_object with no timeout and no progress until the task's own
+#: ceiling killed it.
+#:
+#: 64MB parts keep a 13GB archive to ~210 of them, comfortably inside the
+#: 10,000-part limit, while staying small enough that one retried part is
+#: cheap. Concurrency is 4 rather than the fetch pool's 6: this runs at the
+#: END of a build, when nothing else in it competes, but it still shares one
+#: pipe with every other upload and transcode on the box.
+_UPLOAD_PART_SIZE = 64 * 1024 * 1024
+_UPLOAD_CONCURRENCY = 4
+
+#: How often the upload callback is allowed to write progress to the
+#: database. The callback fires per part-chunk — hundreds of times for a
+#: large archive — and every one of those is a round trip that the build
+#: does not need. 2s is frequent enough that staleness detection never sees
+#: a healthy upload as wedged.
+_UPLOAD_PROGRESS_INTERVAL_S = 2.0
+
+#: Values for `ZipExport.phase`.
+PHASE_GATHERING = "gathering"
+PHASE_UPLOADING = "uploading"
 
 #: How many objects are pulled from storage at once (§146).
 #:
@@ -76,6 +106,93 @@ ZIP_SOFT_TIME_LIMIT = 20 * 60
 ZIP_HARD_TIME_LIMIT = 21 * 60
 
 
+def _upload_archive(db, export, client, zip_path, size, export_id):
+    """Send the finished archive to storage as a multipart upload (§147).
+
+    Returns the number of bytes the progress callback acknowledged. That is
+    a report, not a guarantee — boto3 raises on a failed part, so reaching
+    the return at all is what says the upload succeeded.
+
+    Progress is written by a MONITOR THREAD owning its own session, not by
+    the callback. The callback fires concurrently from every one of the
+    transfer's worker threads, and a SQLAlchemy Session is not safe to share
+    across threads; a lock around the write would serialise the I/O but
+    still hand one session to several threads. So the callback only adds to
+    an integer under a lock, and exactly one thread — with exactly one
+    session — persists it.
+    """
+    counter = {"done": 0}
+    lock = threading.Lock()
+    stop_monitor = threading.Event()
+
+    def on_progress(chunk):
+        with lock:
+            counter["done"] += chunk
+
+    def monitor():
+        # Its own session: this thread writes while the caller's session is
+        # blocked inside upload_fileobj.
+        mdb = SessionLocal()
+        try:
+            last = -1
+            while not stop_monitor.wait(_UPLOAD_PROGRESS_INTERVAL_S):
+                with lock:
+                    seen = counter["done"]
+                if seen == last:
+                    continue  # nothing moved; leave progress_at alone so a
+                              # genuinely wedged upload still reads as stale
+                last = seen
+                try:
+                    mdb.query(ZipExport).filter(ZipExport.id == export.id).update(
+                        {
+                            "bytes_done": seen,
+                            "progress_at": datetime.now(timezone.utc),
+                        },
+                        synchronize_session=False,
+                    )
+                    mdb.commit()
+                except Exception:
+                    # Losing a progress row must never fail the upload it is
+                    # only describing.
+                    mdb.rollback()
+                    logger.warning(
+                        "zip %s: could not record upload progress", export_id,
+                        exc_info=True,
+                    )
+        finally:
+            mdb.close()
+
+    watcher = threading.Thread(target=monitor, daemon=True)
+    watcher.start()
+    started = time.monotonic()
+    try:
+        with open(zip_path, "rb") as fh:
+            client.upload_fileobj(
+                fh,
+                settings.s3_bucket,
+                export.s3_key,
+                ExtraArgs={"ContentType": "application/zip"},
+                Config=TransferConfig(
+                    multipart_threshold=_UPLOAD_PART_SIZE,
+                    multipart_chunksize=_UPLOAD_PART_SIZE,
+                    max_concurrency=_UPLOAD_CONCURRENCY,
+                    use_threads=True,
+                ),
+                Callback=on_progress,
+            )
+    finally:
+        stop_monitor.set()
+        watcher.join(timeout=5)
+
+    elapsed = time.monotonic() - started
+    logger.info(
+        "zip %s: uploaded %s bytes in %.1fs (%.1f MB/s)",
+        export_id, size, elapsed, (size / max(elapsed, 0.001)) / (1024 * 1024),
+    )
+    with lock:
+        return counter["done"]
+
+
 @celery_app.task(
     bind=True,
     max_retries=1,
@@ -105,6 +222,8 @@ def build_zip_export(self, export_id: str):
             return  # another worker already finished it
 
         export.status = ZipExportStatus.building
+        export.phase = PHASE_GATHERING
+        export.progress_at = datetime.now(timezone.utc)
         db.commit()
 
         work_dir = tempfile.mkdtemp(prefix=f"zipexport_{export_id}_")
@@ -253,15 +372,32 @@ def build_zip_export(self, export_id: str):
             raise fatal[0]
 
         size = os.path.getsize(zip_path)
-        with open(zip_path, "rb") as fh:
-            client.put_object(
-                Bucket=settings.s3_bucket,
-                Key=export.s3_key,
-                Body=fh,
-                ContentType="application/zip",
-            )
+        logger.info(
+            "zip %s: gathered %s/%s files into a %s byte archive, uploading to %s",
+            export_id, done, export.file_count, size, export.s3_key,
+        )
+
+        # total_bytes is set BEFORE the upload, not after. It is the size of a
+        # finished archive on disk, so it is already known — and reporting it
+        # here is what lets the UI say "uploading 13.2GB" instead of showing a
+        # completed bar next to a zero. `total_bytes=0` alongside
+        # `files_done == file_count` was the clue that finalization, not the
+        # gather, was where a stuck build actually sat.
+        export.phase = PHASE_UPLOADING
+        export.total_bytes = size
+        export.bytes_done = 0
+        export.progress_at = datetime.now(timezone.utc)
+        db.commit()
+
+        uploaded = _upload_archive(db, export, client, zip_path, size, export_id)
+        logger.info(
+            "zip %s: upload finished, %s of %s bytes acknowledged",
+            export_id, uploaded, size,
+        )
 
         export.status = ZipExportStatus.ready
+        export.phase = None
+        export.bytes_done = size
         export.total_bytes = size
         export.files_done = done
         export.expires_at = datetime.now(timezone.utc) + timedelta(seconds=ZIP_TTL_SECONDS)
@@ -282,9 +418,22 @@ def build_zip_export(self, export_id: str):
         # sitting on a row wedged at "building" forever.
         logger.error("zip export %s exceeded its time limit", export_id)
         try:
+            # §147 — rollback FIRST. If the build died on a database error,
+            # this session is already in a failed transaction and every
+            # statement on it raises InFailedSqlTransaction, including the
+            # one that records the failure. That is why a build that hit the
+            # `total_bytes` overflow sat at "building" forever instead of
+            # reporting the error it had already raised: the handler could
+            # not write, and its own `except` swallowed the reason.
+            db.rollback()
             export = db.query(ZipExport).filter(ZipExport.id == uuid.UUID(export_id)).first()
             if export:
+                logger.error(
+                    "zip export %s timed out during the %s phase",
+                    export_id, export.phase or "unknown",
+                )
                 export.status = ZipExportStatus.failed
+                export.phase = None
                 export.error = (
                     "Preparing this download took too long. Try selecting fewer files."
                 )
@@ -295,13 +444,24 @@ def build_zip_export(self, export_id: str):
     except Exception as exc:
         logger.exception("zip export %s failed", export_id)
         try:
+            # See the rollback note above: without this, a DB-level failure
+            # is unreportable and the row never leaves "building".
+            db.rollback()
             export = db.query(ZipExport).filter(ZipExport.id == uuid.UUID(export_id)).first()
             if export:
+                logger.error(
+                    "zip export %s failed during the %s phase",
+                    export_id, export.phase or "unknown",
+                )
                 export.status = ZipExportStatus.failed
+                export.phase = None
                 export.error = str(exc)[:500]
                 db.commit()
         except Exception:
-            pass
+            logger.exception(
+                "could not mark zip export %s failed; it will be resolved by "
+                "staleness detection instead", export_id,
+            )
         raise self.retry(exc=exc)
     finally:
         db.close()

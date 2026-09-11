@@ -3,7 +3,7 @@
 import * as React from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { Download, Loader2, X } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, formatBytes } from '@/lib/utils'
 import { triggerBrowserDownload } from '@/lib/download'
 import { DOWNLOAD_VARIANT_LABELS, type DownloadVariant } from '@/types'
 import type {
@@ -187,6 +187,12 @@ export function BatchDownloadDialog({
 
   const total = status?.file_count ?? assetIds.length
   const done = status?.files_done ?? 0
+  // §147 — a large build spends most of its time AFTER the last file is
+  // added, uploading the archive. Reporting only the file count left that
+  // half looking frozen at "103 of 103" for minutes.
+  const uploading = status?.phase === 'uploading'
+  const sent = status?.bytes_done ?? 0
+  const archiveBytes = status?.total_bytes ?? 0
 
   return (
     <Dialog.Root open={open} onOpenChange={(v) => (v ? onOpenChange(v) : cancel())}>
@@ -207,9 +213,15 @@ export function BatchDownloadDialog({
                   render phase: a batch only offers variants that already
                   exist as stored files (§143 scope). */}
               <p className="text-sm text-text-primary" data-testid="zip-progress">
-                Compacting {total} file{total === 1 ? '' : 's'} into a zip…
+                {uploading
+                  ? 'Finishing the zip…'
+                  : `Compacting ${total} file${total === 1 ? '' : 's'} into a zip…`}
               </p>
-              <p className="text-xs text-text-tertiary tabular-nums">{done} of {total} added</p>
+              <p className="text-xs text-text-tertiary tabular-nums">
+                {uploading
+                  ? `${formatBytes(sent)} of ${formatBytes(archiveBytes)} transferred`
+                  : `${done} of ${total} added`}
+              </p>
               <button
                 type="button"
                 onClick={cancel}

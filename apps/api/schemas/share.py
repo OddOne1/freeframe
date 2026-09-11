@@ -223,6 +223,13 @@ class ZipExportStatusResponse(BaseModel):
     file_count: int = 0
     files_done: int = 0
     total_bytes: int = 0
+    #: Which half of the build is running: "gathering", "uploading", or null
+    #: once it is neither (§147). Before this, a large build showed a full
+    #: file bar for the entire upload, which is the longer half.
+    phase: Optional[str] = None
+    #: Bytes of the finished archive already sent to storage. Only meaningful
+    #: while `phase == "uploading"`.
+    bytes_done: int = 0
     error: Optional[str] = None
     files: list[ZipExportFile] = []
 

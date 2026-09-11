@@ -15,7 +15,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -85,7 +85,17 @@ class ZipExport(Base):
 
     file_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     files_done: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    total_bytes: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    #: BigInteger, NOT Integer (§147). A 4-byte column tops out at 2.1GB, so
+    #: assigning the size of any archive past that raised
+    #: `NumericValueOutOfRange` on commit — at the very last step, after the
+    #: whole build had succeeded. Counts above stay Integer: a selection of
+    #: two billion files is not a thing.
+    total_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    #: Bytes of the finished archive already uploaded to storage (§147).
+    #: Gather progress is `files_done`; this is the second half, which was
+    #: previously invisible — the UI showed a full bar while the longest part
+    #: of a large build had not started.
+    bytes_done: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     #: One entry per file: its path in the zip, the version and variant
@@ -99,6 +109,14 @@ class ZipExport(Base):
     #: it" — a genuinely slow but advancing build must not be killed, and a
     #: wedged one must not poll forever.
     progress_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    #: Which half of the build is running: "gathering" (fetching members and
+    #: writing the archive) or "uploading" (sending the finished archive to
+    #: storage). Explicit rather than derived from `files_done == file_count`
+    #: (§147): the two are equal for a moment before the upload begins, and a
+    #: derived value cannot tell that apart from an upload in flight — which
+    #: is exactly the distinction the logs and the UI needed and lacked.
+    phase: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     #: Three days, or until the link is deactivated — whichever comes first.

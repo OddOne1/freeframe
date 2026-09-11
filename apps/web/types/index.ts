@@ -588,6 +588,11 @@ export interface ZipExportStatusResponse {
   file_count: number
   files_done: number
   total_bytes: number
+  /** Which half of the build is running, or null once it is neither. */
+  phase?: 'gathering' | 'uploading' | null
+  /** Bytes of the finished archive uploaded so far; only meaningful while
+   *  `phase === 'uploading'`. */
+  bytes_done?: number
   error?: string | null
   files: ZipExportFile[]
 }

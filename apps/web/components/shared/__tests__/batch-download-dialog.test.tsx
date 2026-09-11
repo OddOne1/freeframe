@@ -339,3 +339,59 @@ describe('unmounting stops the poll', () => {
     expect(downloads).toEqual([])
   }, 20000)
 })
+
+describe('the upload half of a build (§147)', () => {
+  it('reports transferred bytes instead of a file bar frozen at 12 of 12', async () => {
+    // A large build spends most of its wall time here. Reporting only
+    // files_done left the UI showing a completed count for minutes, which is
+    // what made the finalization hang look like nothing was happening at all.
+    const api = makeApi({
+      start: vi.fn(async () => ({
+        export_id: 'e1', status: 'building', reused: false, ready: false,
+        file_count: 12, files_done: 12, total_bytes: 6442450944,
+        phase: 'uploading', bytes_done: 1610612736, files: [],
+      } as never)),
+      poll: vi.fn(async () => ({
+        export_id: 'e1', status: 'building', reused: false, ready: false,
+        file_count: 12, files_done: 12, total_bytes: 6442450944,
+        phase: 'uploading', bytes_done: 3221225472, files: [],
+      } as never)),
+    })
+    renderDialog(api)
+
+    await userEvent.click(await screen.findByRole('button', { name: /download zip/i }))
+
+    const msg = await screen.findByTestId('zip-progress')
+    expect(msg.textContent).toMatch(/finishing the zip/i)
+    // The count that is standing still must NOT be what is shown.
+    expect(msg.parentElement?.textContent).not.toMatch(/12 of 12 added/)
+    await waitFor(() =>
+      expect(msg.parentElement?.textContent).toMatch(/of 6(\.0+)? GB transferred/i),
+    )
+  })
+
+  it('still shows the file count while files are being gathered', async () => {
+    // The two messages must not collapse into one: during the gather the byte
+    // figure is meaningless, and this is the case the original UI got right.
+    const api = makeApi({
+      start: vi.fn(async () => ({
+        export_id: 'e1', status: 'building', reused: false, ready: false,
+        file_count: 12, files_done: 3, total_bytes: 0,
+        phase: 'gathering', bytes_done: 0, files: [],
+      } as never)),
+      poll: vi.fn(async () => ({
+        export_id: 'e1', status: 'building', reused: false, ready: false,
+        file_count: 12, files_done: 5, total_bytes: 0,
+        phase: 'gathering', bytes_done: 0, files: [],
+      } as never)),
+    })
+    renderDialog(api)
+
+    await userEvent.click(await screen.findByRole('button', { name: /download zip/i }))
+
+    const msg = await screen.findByTestId('zip-progress')
+    expect(msg.textContent).toMatch(/compacting 12 files/i)
+    expect(msg.parentElement?.textContent).toMatch(/of 12 added/)
+    expect(msg.parentElement?.textContent).not.toMatch(/transferred/i)
+  })
+})
