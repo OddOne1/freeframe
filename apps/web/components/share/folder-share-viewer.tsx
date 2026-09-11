@@ -20,6 +20,7 @@ import {
 import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { triggerBrowserDownload } from '@/lib/download'
 import { useMediaQuery, XL_UP } from '@/hooks/use-media-query'
+import { useSessionPreference } from '@/hooks/use-session-preference'
 import type {
   SharePermission,
   ShareLinkAppearance,
@@ -108,6 +109,29 @@ function getAssetTypeBadgeLabel(assetType: string): string {
     case 'image_carousel': return 'Carousel'
     default: return assetType.charAt(0).toUpperCase() + assetType.slice(1)
   }
+}
+
+// ─── Viewer-local display preferences (§144) ──────────────────────────────────
+
+/** The three keys the backend's `sort` param accepts (SHARE_SORT_KEYS in
+ *  routers/share.py). Kept in step with it deliberately — a fourth option
+ *  here would be silently ignored by the server and the list would not
+ *  reorder, which reads as a broken control rather than a rejected value. */
+type ShareSortKey = 'name' | 'created_at' | 'file_size'
+type ShareCardSize = 's' | 'm' | 'l'
+
+const SHARE_SORT_OPTIONS: { value: ShareSortKey; label: string }[] = [
+  { value: 'name', label: 'Name' },
+  { value: 'created_at', label: 'Date' },
+  { value: 'file_size', label: 'Size' },
+]
+const SHARE_CARD_SIZES: ShareCardSize[] = ['s', 'm', 'l']
+
+function isShareSortKey(v: string): v is ShareSortKey {
+  return SHARE_SORT_OPTIONS.some((o) => o.value === v)
+}
+function isShareCardSize(v: string): v is ShareCardSize {
+  return (SHARE_CARD_SIZES as string[]).includes(v)
 }
 
 // ─── Download handler ─────────────────────────────────────────────────────────
@@ -1092,7 +1116,26 @@ export function FolderShareViewer({
 
   const accentColor = appearance.accent_color ?? branding?.primary_color ?? '#6366f1'
   const isDark = appearance.theme !== 'light'
-  const cardSize = appearance.card_size ?? 'm'
+
+  // §144 — sort and card size are the viewer's own, for this tab only. The
+  // creator's `appearance` is the starting point and is never written back:
+  // a guest reordering their view must not reorder it for everyone else
+  // holding the link. Scoped by token so two share tabs do not share a
+  // choice.
+  const [viewerSort, setViewerSort, sortReady] = useSessionPreference<ShareSortKey>(
+    `ff-share-sort:${token}`,
+    (appearance.sort_by as ShareSortKey) ?? 'created_at',
+    isShareSortKey,
+  )
+  // No readiness gate needed here, unlike sort: card size is pure CSS,
+  // so a one-frame default costs nothing and triggers no request.
+  const [viewerCardSize, setViewerCardSize] = useSessionPreference<ShareCardSize>(
+    `ff-share-size:${token}`,
+    (appearance.card_size as ShareCardSize) ?? 'm',
+    isShareCardSize,
+  )
+
+  const cardSize = viewerCardSize
   const aspectRatio = appearance.aspect_ratio ?? 'landscape'
   const thumbnailScale = appearance.thumbnail_scale ?? 'fill'
   const showCardInfo = appearance.show_card_info !== false
@@ -1176,12 +1219,16 @@ export function FolderShareViewer({
     return null
   }, [])
 
-  // The link's configured sort, sent to the API so paging is ordered
-  // server-side and stays stable across load-more.
-  const sortBy = appearance.sort_by ?? 'created_at'
+  // Sent to the API so paging stays ordered server-side and stable across
+  // load-more (§140). Now the VIEWER's choice rather than the link's.
+  const sortBy = viewerSort
 
   // Fetch assets for current folder/page
   React.useEffect(() => {
+    // Wait for the stored sort (§144): firing with the creator's default
+    // and then re-fetching with the viewer's would double every mount and
+    // briefly show the wrong order.
+    if (!sortReady) return
     let cancelled = false
     setLoading(true)
     setError(null)
@@ -1214,7 +1261,7 @@ export function FolderShareViewer({
       })
 
     return () => { cancelled = true }
-  }, [token, currentSubfolderId, sortBy, perPage, sessionParam])
+  }, [token, currentSubfolderId, sortBy, perPage, sessionParam, sortReady])
 
   async function loadMore() {
     const nextPage = page + 1
@@ -1443,6 +1490,52 @@ export function FolderShareViewer({
                   </React.Fragment>
                 ))}
               </nav>
+
+              {/* Viewer's own sort + card size (§144). These change what THIS
+                  guest sees and are never written back to the link — the
+                  creator's appearance stays the default everyone else gets. */}
+              <div className="flex items-center gap-2 shrink-0">
+                <label className="sr-only" htmlFor="share-sort">Sort by</label>
+                <select
+                  id="share-sort"
+                  aria-label="Sort by"
+                  value={viewerSort}
+                  onChange={(e) => setViewerSort(e.target.value as ShareSortKey)}
+                  className="h-8 rounded-md border border-border bg-bg-tertiary px-2 text-sm text-text-primary focus:outline-none focus:border-border-focus"
+                >
+                  {SHARE_SORT_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+
+                {/* Card size is meaningless in list view, where there are no
+                    cards to resize — hidden rather than shown inert. */}
+                {isGridLayout && (
+                  <div
+                    role="group"
+                    aria-label="Card size"
+                    className="hidden sm:flex items-center rounded-md border border-border bg-bg-tertiary p-0.5"
+                  >
+                    {SHARE_CARD_SIZES.map((size) => (
+                      <button
+                        key={size}
+                        type="button"
+                        aria-label={`Card size ${size.toUpperCase()}`}
+                        aria-pressed={viewerCardSize === size}
+                        onClick={() => setViewerCardSize(size)}
+                        className={cn(
+                          'h-7 w-7 rounded text-xs font-medium transition-colors',
+                          viewerCardSize === size
+                            ? 'bg-bg-hover text-text-primary'
+                            : 'text-text-tertiary hover:text-text-primary',
+                        )}
+                      >
+                        {size.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               {/* Search */}
               <div className="relative flex items-center shrink-0">
