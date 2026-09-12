@@ -502,8 +502,9 @@ def request_project_zip(
         project_id=project_id,
         share_link_id=None,
         created_by=current_user.id,
+        scope=body.scope,
     )
-    return _zip_status_payload(export, reused=reused)
+    return _zip_status_payload(db, export, reused=reused)
 
 
 @router.get("/projects/{project_id}/zip/{export_id}", response_model=ZipExportStatusResponse)
@@ -525,7 +526,7 @@ def get_project_zip_status(
     if not export or export.project_id != project_id or export.created_by != current_user.id:
         raise HTTPException(status_code=404, detail="Export not found")
     _resolve_if_stale(db, export)
-    return _zip_status_payload(export)
+    return _zip_status_payload(db, export)
 
 
 @router.get("/assets/{asset_id}/transcript", response_model=TranscriptResponse)

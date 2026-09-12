@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ..models.share import VARIANT_QUALITY, VARIANT_USES_LUT, DownloadVariant
+from .s3_service import build_download_filename
 
 #: Everything this feature writes lives under here. The delete task refuses
 #: any key that does not start with it, mirroring delete_lut_export.
@@ -152,6 +153,40 @@ def _cheapest(available: list[str]) -> str:
         DownloadVariant.raw_lut.value: 5,
     }
     return sorted(available, key=lambda v: order.get(v, 99))[0]
+
+
+#: Used when a scope has no name to borrow — an untitled share link. Better
+#: than an empty filename, and better than the token, which is a secret-ish
+#: opaque string that means nothing to whoever finds the file later.
+ZIP_FALLBACK_NAME = "share"
+
+
+def zip_download_filename(name: Optional[str], scope: str, s3_key: str) -> str:
+    """What the browser saves a batch download as (§175).
+
+    `{name}.zip` for a whole scope, `{name}_selection.zip` for a subset. The
+    extension comes from `build_download_filename` against the archive's own
+    S3 key — the key is the authoritative source that helper documents, and a
+    name already ending in `.zip` is left alone rather than doubled.
+
+    Note `build_download_filename` is an extension-appender, NOT a sanitizer;
+    header safety (control characters, quote escaping) is applied where the
+    header is written, in hls_proxy._sanitize_download_filename. The one thing
+    neither covers is a path separator, and a share-link title is free text
+    that can easily contain one ("Client / Round 2"), which would leave a
+    browser saving `Round 2.zip` or refusing the name. So separators are
+    folded to a dash here — deliberately the only cleaning this does, rather
+    than a second, competing sanitizer.
+    """
+    base = (name or "").strip()
+    for sep in ("/", "\\"):
+        base = base.replace(sep, "-")
+    base = base.strip(" .").strip()          # a trailing dot would eat the extension
+    if not base:
+        base = ZIP_FALLBACK_NAME
+    if scope != "all":
+        base = f"{base}_selection"
+    return build_download_filename(base, s3_key)
 
 
 def zip_entry_path(folder_path: list[str], filename: str, taken: set[str]) -> str:

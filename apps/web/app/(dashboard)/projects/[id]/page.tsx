@@ -223,8 +223,8 @@ export default function ProjectDetailPage() {
     () => ({
       fetchOptions: (items) =>
         api.post(`/projects/${projectId}/zip/options`, { items, variant: "raw" }),
-      start: (items, variant) =>
-        api.post(`/projects/${projectId}/zip`, { items, variant }),
+      start: (items, variant, scope) =>
+        api.post(`/projects/${projectId}/zip`, { items, variant, scope }),
       poll: (exportId) => api.get(`/projects/${projectId}/zip/${exportId}`),
     }),
     [projectId],
@@ -1312,11 +1312,16 @@ export default function ProjectDetailPage() {
             </Dialog.Portal>
           </Dialog.Root>
 
+          {/* §175 — scope="selection": the only thing that opens this is
+              onBulkDownload, fired from the grid's multi-select. Even when
+              the user happens to have selected everything, they selected it,
+              and nothing here verified it was the whole project. */}
           <BatchDownloadDialog
         open={zipOpen}
         onOpenChange={setZipOpen}
         assetIds={zipAssetIds}
         api={zipApi}
+        scope="selection"
         title="Download selected"
       />
 

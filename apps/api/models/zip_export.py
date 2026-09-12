@@ -110,6 +110,21 @@ class ZipExport(Base):
     #: wedged one must not poll forever.
     progress_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    #: "all" or "selection" (§175) — whether this archive is everything
+    #: downloadable in its scope or a subset the user picked. Persisted so the
+    #: status payload can name the download without re-deriving it, and
+    #: recorded as a property of the REQUEST rather than of the contents:
+    #: item-count vs total-count cannot tell the two apart for a scope holding
+    #: one asset.
+    #:
+    #: Deliberately NOT part of `cache_key`. Two requests differing only in
+    #: scope produce byte-identical archives and should share one object; the
+    #: name is applied when the download is served, not baked into the file.
+    #: That is also why the link's TITLE is not stored here — reading it live
+    #: means re-titling a link renames its download with no rebuild, matching
+    #: what `cache_key` already documents about a re-title reusing the build.
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, server_default="selection")
+
     #: Which half of the build is running: "gathering" (fetching members and
     #: writing the archive) or "uploading" (sending the finished archive to
     #: storage). Explicit rather than derived from `files_done == file_count`

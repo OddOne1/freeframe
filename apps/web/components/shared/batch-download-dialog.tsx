@@ -27,6 +27,13 @@ import type {
  * here once.
  */
 
+/** Whether this batch is everything downloadable here, or a subset the user
+ *  picked. Decides the download's FILENAME only (§175) — `{link}.zip` vs
+ *  `{link}_selection.zip`. It comes from the call site rather than being
+ *  inferred from the item count, because a scope holding exactly one asset
+ *  makes "all of it" and "the one I picked" identical numbers. */
+export type ZipScope = 'all' | 'selection'
+
 const POLL_INTERVAL_MS = 1000
 /** A build of a large folder is genuinely slow; giving up early would tell
  *  someone their download failed while it is still working. */
@@ -40,6 +47,7 @@ export interface BatchDownloadApi {
   start(
     items: { asset_id: string; version_id?: string }[],
     variant: DownloadVariant,
+    scope: ZipScope,
   ): Promise<ZipExportStatusResponse>
   poll(exportId: string): Promise<ZipExportStatusResponse>
 }
@@ -51,12 +59,17 @@ export function BatchDownloadDialog({
   onOpenChange,
   assetIds,
   api,
+  scope,
   title = 'Download',
 }: {
   open: boolean
   onOpenChange: (v: boolean) => void
   assetIds: string[]
   api: BatchDownloadApi
+  /** Required, not defaulted: the surface mounting this dialog is the only
+   *  thing that knows whether the user asked for everything or picked items,
+   *  and a silent default would mislabel one of them. */
+  scope: ZipScope
   title?: string
 }) {
   const [options, setOptions] = React.useState<ZipExportOptionsResponse | null>(null)
@@ -122,7 +135,7 @@ export function BatchDownloadDialog({
     }))
     let first: ZipExportStatusResponse
     try {
-      first = await api.start(items, variant)
+      first = await api.start(items, variant, scope)
     } catch (e) {
       if (cancelled.current) return
       setPhase('error')

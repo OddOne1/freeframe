@@ -1207,11 +1207,11 @@ export function FolderShareViewer({
       if (!r.ok) throw new Error('Could not load download options')
       return r.json()
     },
-    start: async (items, variant) => {
+    start: async (items, variant, scope) => {
       const r = await fetch(`${API_URL}/share/${token}/zip?${sessionParam.replace(/^&/, '')}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items, variant }),
+        body: JSON.stringify({ items, variant, scope }),
       })
       if (!r.ok) throw new Error('Could not start the download')
       return r.json()
@@ -1767,11 +1767,16 @@ export function FolderShareViewer({
           </footer>
         </div>
 
+        {/* §175 — scope="all": this surface has exactly one trigger, the
+            "Download All" button above, and it collects every downloadable
+            asset in the link (subfolders included). There is no multi-select
+            here, so the scope is never a subset. */}
         <BatchDownloadDialog
           open={zipOpen}
           onOpenChange={setZipOpen}
           assetIds={zipAssetIds}
           api={zipApi}
+          scope="all"
           title="Download all"
         />
 

@@ -13,7 +13,7 @@ import userEvent from '@testing-library/user-event'
 
 vi.stubEnv('NEXT_PUBLIC_API_URL', '/api')
 
-import { BatchDownloadDialog, type BatchDownloadApi } from '../batch-download-dialog'
+import { BatchDownloadDialog, type BatchDownloadApi, type ZipScope } from '../batch-download-dialog'
 import type { ZipExportOptionsResponse } from '@/types'
 
 let downloads: string[] = []
@@ -66,10 +66,20 @@ function makeApi(
   } as BatchDownloadApi
 }
 
-function renderDialog(api: BatchDownloadApi, ids = ['a1', 'a2']) {
+function renderDialog(
+  api: BatchDownloadApi,
+  ids = ['a1', 'a2'],
+  scope: ZipScope = 'selection',
+) {
   const onOpenChange = vi.fn()
   render(
-    <BatchDownloadDialog open onOpenChange={onOpenChange} assetIds={ids} api={api} />,
+    <BatchDownloadDialog
+      open
+      onOpenChange={onOpenChange}
+      assetIds={ids}
+      api={api}
+      scope={scope}
+    />,
   )
   return { onOpenChange }
 }
@@ -298,7 +308,13 @@ describe('unmounting stops the poll', () => {
       } as never)),
     })
     const { unmount } = render(
-      <BatchDownloadDialog open onOpenChange={vi.fn()} assetIds={['a1']} api={api} />,
+      <BatchDownloadDialog
+        open
+        onOpenChange={vi.fn()}
+        assetIds={['a1']}
+        api={api}
+        scope="selection"
+      />,
     )
     await userEvent.click(await screen.findByRole('button', { name: /download zip/i }))
     await screen.findByTestId('zip-progress')
@@ -329,7 +345,13 @@ describe('unmounting stops the poll', () => {
       }) as never,
     })
     const { unmount } = render(
-      <BatchDownloadDialog open onOpenChange={vi.fn()} assetIds={['a1']} api={api} />,
+      <BatchDownloadDialog
+        open
+        onOpenChange={vi.fn()}
+        assetIds={['a1']}
+        api={api}
+        scope="selection"
+      />,
     )
     await userEvent.click(await screen.findByRole('button', { name: /download zip/i }))
     await screen.findByTestId('zip-progress')
@@ -394,4 +416,19 @@ describe('the upload half of a build (§147)', () => {
     expect(msg.parentElement?.textContent).toMatch(/of 12 added/)
     expect(msg.parentElement?.textContent).not.toMatch(/transferred/i)
   })
+})
+
+describe('scope reaches the server (§175)', () => {
+  it.each(['all', 'selection'] as ZipScope[])(
+    'forwards scope=%s to start()',
+    async (scope) => {
+      const api = makeApi()
+      renderDialog(api, ['a1', 'a2'], scope)
+      await userEvent.click(await screen.findByRole('button', { name: /download zip/i }))
+      await waitFor(() => expect(api.start).toHaveBeenCalled())
+      // Third argument, not the second: the variant already occupied that
+      // slot and swapping the two would silently send a variant as a scope.
+      expect((api.start as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe(scope)
+    },
+  )
 })

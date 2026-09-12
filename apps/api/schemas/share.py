@@ -192,11 +192,26 @@ class ZipExportItem(BaseModel):
     version_id: Optional[uuid.UUID] = None
 
 
+#: Whether a batch is everything downloadable in its scope, or a subset the
+#: user picked (§175). Carried explicitly rather than inferred from
+#: item-count vs total-asset-count, because those are indistinguishable for a
+#: link holding exactly one asset: "all of it" and "the one I selected" are
+#: the same count.
+ZipScope = Literal["all", "selection"]
+
+
 class ZipExportRequest(BaseModel):
     items: list[ZipExportItem]
     #: One choice for the whole batch. Only variants backed by a stored
     #: object are accepted — a batch never triggers a render (§143 scope).
     variant: DownloadVariant = DownloadVariant.raw
+    #: Only affects the download's FILENAME, never its contents.
+    #:
+    #: Defaults to "selection" on purpose: a caller that does not say cannot
+    #: have its archive labelled as complete. Naming a partial archive
+    #: `{link}.zip` would claim a completeness nothing verified, while naming
+    #: a complete one `{link}_selection.zip` is merely less specific.
+    scope: ZipScope = "selection"
 
 
 class ZipExportFile(BaseModel):

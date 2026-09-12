@@ -1941,7 +1941,37 @@ def _resolve_if_stale(db: Session, export: ZipExport) -> None:
         logger.exception("could not mark stale zip export %s failed", export.id)
 
 
-def _zip_status_payload(export: ZipExport, *, reused: bool = False) -> ZipExportStatusResponse:
+def _zip_download_name(db, export: ZipExport) -> str:
+    """The filename for one archive, resolved at SERVE time (§175).
+
+    Read live rather than stored, so re-titling a share link renames its
+    download immediately — `cache_key` deliberately ignores the title, so a
+    re-title reuses the build, and a name baked in at build time would stay
+    stale until the contents happened to change.
+
+    Falls back through link title -> project name -> "share". The in-app
+    batch download has no share link at all (`share_link_id` is None), and
+    its project's name is the closest thing to what the user asked for.
+    """
+    name = None
+    if export.share_link_id:
+        link = (
+            db.query(ShareLink)
+            .filter(ShareLink.id == export.share_link_id)
+            .first()
+        )
+        name = link.title if link else None
+    if not (name or "").strip():
+        project = (
+            db.query(Project).filter(Project.id == export.project_id).first()
+        )
+        name = project.name if project else None
+    return zx.zip_download_filename(name, export.scope, export.s3_key)
+
+
+def _zip_status_payload(
+    db, export: ZipExport, *, reused: bool = False
+) -> ZipExportStatusResponse:
     files = [
         ZipExportFile(
             asset_id=e["asset_id"],
@@ -1958,7 +1988,9 @@ def _zip_status_payload(export: ZipExport, *, reused: bool = False) -> ZipExport
     url = None
     if ready:
         url = proxy_url_for(
-            export.s3_key, expires_hours=1, download_filename="download.zip"
+            export.s3_key,
+            expires_hours=1,
+            download_filename=_zip_download_name(db, export),
         )
     return ZipExportStatusResponse(
         export_id=export.id,
@@ -1977,7 +2009,8 @@ def _zip_status_payload(export: ZipExport, *, reused: bool = False) -> ZipExport
 
 
 def _start_or_reuse_zip(
-    db, *, plan, resolved, scope_kind, scope_id, project_id, share_link_id, created_by
+    db, *, plan, resolved, scope_kind, scope_id, project_id, share_link_id,
+    created_by, scope="selection",
 ):
     """Reuse an identical archive if one is still alive, else start a build.
 
@@ -2011,6 +2044,13 @@ def _start_or_reuse_zip(
         file_count=len(plan),
         files_done=0,
         manifest=plan,
+        # §175 — affects only the served filename, which is why it is NOT in
+        # `cache_key`: an "all" and a "selection" request over the same files
+        # produce the same bytes and should share one object. A reused row
+        # therefore reports the scope of whichever request built it; the two
+        # surfaces cannot collide today because `scope_id` (link id vs user
+        # id) is part of the key and each surface only ever sends one scope.
+        scope=scope,
     )
     db.add(export)
     db.commit()
@@ -2114,13 +2154,14 @@ def request_share_zip(
         project_id=_get_project_id_from_link(db, link),
         share_link_id=link.id,
         created_by=current_user.id if current_user else None,
+        scope=body.scope,
     )
     _log_share_activity(
         db, link.id, ShareActivityAction.downloaded,
         actor_email=current_user.email if current_user else "anonymous",
         actor_name=current_user.name if current_user else None,
     )
-    return _zip_status_payload(export, reused=reused)
+    return _zip_status_payload(db, export, reused=reused)
 
 
 @router.get("/share/{token}/zip/{export_id}", response_model=ZipExportStatusResponse)
@@ -2147,7 +2188,7 @@ def get_share_zip_status(
     if not export or export.share_link_id != link.id:
         raise HTTPException(status_code=404, detail="Export not found")
     _resolve_if_stale(db, export)
-    return _zip_status_payload(export)
+    return _zip_status_payload(db, export)
 
 
 @router.get("/share/{token}/fields/{asset_id}", response_model=ShareFieldsResponse)
