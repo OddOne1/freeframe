@@ -130,6 +130,13 @@ def process_asset(self, asset_id: str, version_id: str):
         # The project's prefix is already frozen -- upload initiation locks
         # it before this task can ever be dispatched (§14) -- so this reads
         # the stored value rather than deriving anything.
+        # §173 — captured once, here, as a plain string. The failure handler
+        # below needs it AFTER a rollback, and a rollback expires every
+        # instance in the session, so reading `asset.project_id` there would
+        # issue a fresh SELECT — which fails too when the connection is what
+        # broke, taking the retry down with it. Holding a str costs nothing
+        # and keeps the handler free of any ORM access at all.
+        project_id = str(asset.project_id)
         project = db.query(Project).filter(Project.id == asset.project_id).first()
         output_prefix = f"processed/{prefix_for_project(project)}/{asset_id}/{version_id}"
         s3 = get_s3_client()
@@ -150,7 +157,7 @@ def process_asset(self, asset_id: str, version_id: str):
             db.commit()
 
             # Publish SSE event (best-effort)
-            _publish_event(str(asset.project_id), "transcode_complete", {
+            _publish_event(project_id, "transcode_complete", {
                 "asset_id": asset_id,
                 "version_id": version_id,
             })
@@ -192,9 +199,29 @@ def process_asset(self, asset_id: str, version_id: str):
                     )
 
         except Exception as exc:
-            version.processing_status = ProcessingStatus.failed
-            db.commit()
-            _publish_event(str(asset.project_id), "transcode_failed", {
+            logger.exception(
+                "Transcode failed for asset %s version %s", asset_id, version_id
+            )
+            try:
+                # §173 — rollback FIRST, mirroring zip_tasks. If `exc` came
+                # from the database (this task commits progress throughout a
+                # transcode that runs for minutes), the session is in an
+                # aborted transaction and EVERY statement on it raises
+                # InFailedSqlTransaction — including this one. That is how
+                # build_zip_export ended up never recording its own failure.
+                db.rollback()
+                version.processing_status = ProcessingStatus.failed
+                db.commit()
+            except Exception:
+                # Never let a failure to RECORD the failure replace the real
+                # error: that would lose `exc` and skip the retry below,
+                # turning a transient blip into a permanent failure. §114's
+                # stuck-processing sweeper is the backstop for the row.
+                logger.exception(
+                    "Could not mark version %s failed; leaving it for the "
+                    "stuck-processing sweep", version_id,
+                )
+            _publish_event(project_id, "transcode_failed", {
                 "asset_id": asset_id,
                 "error": str(exc),
             })

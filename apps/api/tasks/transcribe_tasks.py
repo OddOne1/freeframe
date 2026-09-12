@@ -135,10 +135,16 @@ def transcribe_asset(self, asset_id: str, version_id: str):
             db.commit()
             return
 
+        # §173 — captured once, as a plain string. The failure handler needs
+        # it after a rollback, which expires every instance in the session;
+        # reading `asset.project_id` there would issue a fresh SELECT that
+        # fails too when the connection is what broke, taking the retry with
+        # it. Holding a str keeps the handler free of any ORM access.
+        project_id = str(asset.project_id)
         media_file.transcription_status = TranscriptionStatus.processing
         media_file.transcription_progress = 0
         db.commit()
-        _publish_event(str(asset.project_id), "transcription_processing", {
+        _publish_event(project_id, "transcription_processing", {
             "asset_id": asset_id,
             "version_id": version_id,
         })
@@ -256,11 +262,25 @@ def transcribe_asset(self, asset_id: str, version_id: str):
 
         except Exception as exc:
             logger.exception("Transcription failed for asset %s version %s", asset_id, version_id)
-            media_file.transcription_task_id = None
-            media_file.transcription_progress = None
-            media_file.transcription_status = TranscriptionStatus.failed
-            db.commit()
-            _publish_event(str(asset.project_id), "transcription_failed", {
+            try:
+                # §173 — rollback FIRST. The progress writes above commit
+                # repeatedly during a run that takes minutes, so `exc` may
+                # well BE a database error; on an aborted transaction every
+                # statement raises InFailedSqlTransaction, including the one
+                # recording the failure. Same trap that left build_zip_export
+                # stuck at "building". The inner progress-commit block at the
+                # top of this file already gets this right.
+                db.rollback()
+                media_file.transcription_task_id = None
+                media_file.transcription_progress = None
+                media_file.transcription_status = TranscriptionStatus.failed
+                db.commit()
+            except Exception:
+                # A failure to record must not replace `exc` or skip the retry.
+                logger.exception(
+                    "Could not mark transcription failed for version %s", version_id
+                )
+            _publish_event(project_id, "transcription_failed", {
                 "asset_id": asset_id,
                 "version_id": version_id,
                 "error": str(exc),
