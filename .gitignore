@@ -234,6 +234,10 @@ docs/superpowers/
 CLAUDE.md
 CLAUDE-ARCHIVE.md
 INDEX.md
+# Claude Code task-handoff notes (§174). Same category as the three above;
+# the glob was missed when this block was added, so 111 of them had been
+# pushed to GitHub as clutter.
+claude-md/
 
 .DS_Store
 .worktrees/
