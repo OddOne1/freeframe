@@ -27,6 +27,10 @@ CONTENT_TYPE_MAP = {
     # object itself has been deleted.
     ".mp4": ("video/mp4", "no-store"),
     ".mov": ("video/quicktime", "no-store"),
+    # Batch/zip exports (§143) are built on demand and purged again — same
+    # short-lived, never-cache story as the graded exports above. Without
+    # this entry a zip download fell back to application/octet-stream.
+    ".zip": ("application/zip", "no-store"),
 }
 
 def _is_aws_s3() -> bool:

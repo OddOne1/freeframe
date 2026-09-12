@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 from jose import jwt, JWTError
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 
 from ..config import settings
@@ -105,13 +105,70 @@ def _rewrite_manifest(content: str, s3_prefix: str, manifest_path: str, token: s
     return "\n".join(result)
 
 
+# `bytes=<first>-<last>`, `bytes=<first>-` and `bytes=-<suffix-length>` are
+# the three single-range forms RFC 9110 §14.1.1 defines. Anything else
+# (notably a multi-range request, `bytes=0-99,200-299`) is deliberately not
+# supported: serving one would mean building a multipart/byteranges body,
+# and no client this proxy actually serves — browsers resuming a download,
+# curl --continue-at, video seeking — ever asks for one.
+_RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+RANGE_UNSATISFIABLE = "unsatisfiable"
+
+
+def _parse_range_header(value: str, total: int):
+    """Resolve a Range header against a known object size.
+
+    Returns an inclusive `(start, end)` pair, `RANGE_UNSATISFIABLE` when the
+    range falls entirely past the end of the object, or `None` when the
+    header should simply be ignored and the whole object served. Per RFC
+    9110 §14.2 an unparseable Range header is ignored, not rejected — that
+    is what keeps a malformed or multi-range header degrading into a plain
+    200 instead of failing the download outright.
+    """
+    match = _RANGE_RE.match(value.strip())
+    if not match:
+        return None
+
+    first, last = match.group(1), match.group(2)
+
+    if not first and not last:
+        return None
+
+    if total == 0:
+        return RANGE_UNSATISFIABLE
+
+    if not first:
+        # Suffix range: the last N bytes. N == 0 is meaningless, not a range.
+        suffix = int(last)
+        if suffix == 0:
+            return RANGE_UNSATISFIABLE
+        start = max(total - suffix, 0)
+        end = total - 1
+    else:
+        start = int(first)
+        end = int(last) if last else total - 1
+        if start >= total:
+            return RANGE_UNSATISFIABLE
+        if end < start:
+            return None
+        end = min(end, total - 1)
+
+    return start, end
+
+
 def _sanitize_download_filename(name: str) -> str:
     safe = re.sub(r"[\x00-\x1f\x7f]", "", name)
     return safe.replace("\\", "\\\\").replace('"', '\\"')
 
 
 @router.get("/hls/{path:path}")
-def hls_proxy(path: str, token: str = Query(...), download: str | None = Query(default=None)):
+def hls_proxy(
+    path: str,
+    token: str = Query(...),
+    download: str | None = Query(default=None),
+    range_header: str | None = Header(default=None, alias="Range"),
+):
     """Proxy any object under a token's S3 prefix.
 
     - `.m3u8` paths are fetched, rewritten (see `_rewrite_manifest`), and
@@ -119,6 +176,14 @@ def hls_proxy(path: str, token: str = Query(...), download: str | None = Query(d
     - Everything else (HLS segments, thumbnails, images, audio, original
       files) is streamed through as raw bytes with the appropriate
       Content-Type, so the client never needs direct S3/AIStor access.
+
+    Non-manifest objects are range-capable (§176). Every large download in
+    this app — zip exports, raw originals, graded LUT exports — comes
+    through here, and without `Accept-Ranges`/`Content-Length` a browser
+    has no way to resume one: a multi-GB transfer that drops at 80% used
+    to restart from byte 0, which made a 13 GB share-link zip effectively
+    undownloadable over a connection that blips even once. Manifests stay
+    a whole-file fetch — they are tiny text and nothing ever seeks them.
     """
     s3_prefix = _verify_hls_token(token)
 
@@ -156,17 +221,60 @@ def hls_proxy(path: str, token: str = Query(...), download: str | None = Query(d
     ext = posixpath.splitext(normalised)[1].lower()
     content_type, cache_control = CONTENT_TYPE_MAP.get(ext, ("application/octet-stream", "no-cache"))
 
+    byte_range = None
+    if range_header:
+        # The object's size has to be known before the range can be resolved
+        # (an open-ended `bytes=500-` or a suffix `bytes=-500` is meaningless
+        # without it), and it is the denominator of every Content-Range this
+        # branch emits. One extra HEAD against the LAN bucket, and only on a
+        # request that actually carries a Range header.
+        try:
+            head = s3.head_object(Bucket=settings.s3_bucket, Key=s3_key)
+        except Exception as e:
+            logger.error("Failed to stat object %s: %s", s3_key, e)
+            raise HTTPException(status_code=404, detail="Object not found")
+
+        total = head["ContentLength"]
+        byte_range = _parse_range_header(range_header, total)
+
+        if byte_range == RANGE_UNSATISFIABLE:
+            raise HTTPException(
+                status_code=416,
+                detail="Requested range not satisfiable",
+                headers={"Content-Range": f"bytes */{total}", "Accept-Ranges": "bytes"},
+            )
+
+    get_kwargs = {"Bucket": settings.s3_bucket, "Key": s3_key}
+    if byte_range:
+        get_kwargs["Range"] = f"bytes={byte_range[0]}-{byte_range[1]}"
+
     try:
-        obj = s3.get_object(Bucket=settings.s3_bucket, Key=s3_key)
+        obj = s3.get_object(**get_kwargs)
     except s3.exceptions.NoSuchKey:
         raise HTTPException(status_code=404, detail="Object not found")
     except Exception as e:
         logger.error("Failed to fetch object %s: %s", s3_key, e)
         raise HTTPException(status_code=404, detail="Object not found")
 
-    headers = {"Cache-Control": cache_control}
+    headers = {"Cache-Control": cache_control, "Accept-Ranges": "bytes"}
     if download:
         headers["Content-Disposition"] = f'attachment; filename="{_sanitize_download_filename(download)}"'
+
+    if byte_range:
+        start, end = byte_range
+        headers["Content-Range"] = f"bytes {start}-{end}/{total}"
+        headers["Content-Length"] = str(end - start + 1)
+        status_code = 206
+    else:
+        # Previously fetched from S3 and thrown away: without Content-Length
+        # the response falls back to chunked transfer encoding, so no client
+        # can show real progress or resume, and nothing downstream knows how
+        # big the transfer is meant to be. Read defensively — every real S3
+        # response carries it, but falling back to chunked beats a 500 if
+        # some S3-compatible backend ever omits it.
+        if obj.get("ContentLength") is not None:
+            headers["Content-Length"] = str(obj["ContentLength"])
+        status_code = 200
 
     def _stream():
         body = obj["Body"]
@@ -176,4 +284,9 @@ def hls_proxy(path: str, token: str = Query(...), download: str | None = Query(d
                 break
             yield chunk
 
-    return StreamingResponse(_stream(), media_type=content_type, headers=headers)
+    return StreamingResponse(
+        _stream(),
+        status_code=status_code,
+        media_type=content_type,
+        headers=headers,
+    )
