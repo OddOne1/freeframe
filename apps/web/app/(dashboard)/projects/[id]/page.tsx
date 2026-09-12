@@ -38,6 +38,11 @@ import {
 import { api } from "@/lib/api";
 import { triggerBrowserDownload } from "@/lib/download";
 import { BatchDownloadDialog, type BatchDownloadApi } from "@/components/shared/batch-download-dialog";
+import {
+  INDIVIDUAL_DOWNLOAD_LIMIT,
+  planBulkDownload,
+  type ZipScope,
+} from "@/lib/bulk-download";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/shared/avatar";
@@ -219,13 +224,32 @@ export default function ProjectDetailPage() {
   // §143 — bulk download opens the shared zip dialog.
   const [zipOpen, setZipOpen] = React.useState(false);
   const [zipAssetIds, setZipAssetIds] = React.useState<string[]>([]);
+  // §177 — the shape of the selection, which is the whole of the naming
+  // scheme. Held in state rather than passed as a constant because one grid
+  // produces all three in-app shapes depending on what is ticked.
+  const [zipScope, setZipScope] = React.useState<ZipScope>("selected");
+  const [zipFolderName, setZipFolderName] = React.useState<string | undefined>(undefined);
+  const [zipAskFormat, setZipAskFormat] = React.useState(false);
   const zipApi = React.useMemo<BatchDownloadApi>(
     () => ({
       fetchOptions: (items) =>
         api.post(`/projects/${projectId}/zip/options`, { items, variant: "raw" }),
-      start: (items, variant, scope) =>
-        api.post(`/projects/${projectId}/zip`, { items, variant, scope }),
+      start: (items, variant, scope, folderName) =>
+        api.post(`/projects/${projectId}/zip`, {
+          items,
+          variant,
+          scope,
+          folder_name: folderName ?? null,
+        }),
       poll: (exportId) => api.get(`/projects/${projectId}/zip/${exportId}`),
+      // §177 — the "download files individually" branch. Same endpoint the
+      // card menu, right-click and the viewer already use for one file.
+      fileUrl: async (assetId) => {
+        const data = await api.get<{ url: string }>(
+          `/assets/${assetId}/stream?download=true`,
+        );
+        return data?.url ?? null;
+      },
     }),
     [projectId],
   );
@@ -503,6 +527,20 @@ export default function ProjectDetailPage() {
   }, [showTrash]);
   const canSeeShareLinks = isProjectManager || currentRole === "editor";
   const canComment = currentRole !== "viewer";
+
+  /** One file, downloaded as itself (§177).
+   *
+   *  Shared by the card menu / right-click entry point and by the bulk
+   *  handler's single-asset branch, so the two cannot drift into naming the
+   *  same download differently. */
+  async function downloadOneAsset(assetId: string) {
+    try {
+      const data = await api.get<{ url: string }>(
+        `/assets/${assetId}/stream?download=true`,
+      );
+      triggerBrowserDownload(data?.url);
+    } catch {}
+  }
 
   function openShareDialog(assetIds: string[], folderIds: string[]) {
     if (folderIds.length === 1 && assetIds.length === 0) {
@@ -1173,14 +1211,7 @@ export default function ProjectDetailPage() {
                 setShareDialogResult(null);
                 setShareDialogOpen(true);
               }}
-              onAssetDownload={async (asset) => {
-                try {
-                  const data = await api.get<{ url: string }>(
-                    `/assets/${asset.id}/stream?download=true`,
-                  );
-                  triggerBrowserDownload(data?.url);
-                } catch {}
-              }}
+              onAssetDownload={(asset) => downloadOneAsset(asset.id)}
               onAssetRename={canEditAssets ? (asset) => setAssetToRename(asset as AssetResponse) : undefined}
               onAssetDelete={canEditAssets ? (asset) => setAssetToDelete(asset as AssetResponse) : undefined}
               onBulkMove={!canEditAssets ? undefined : async (assetIds, folderIds, targetFolderId) => {
@@ -1208,20 +1239,37 @@ export default function ProjectDetailPage() {
                 // dialog. This used to loop one iframe download per file,
                 // which re-triggered the browser's multi-download prompt
                 // once per remaining file with no way to stop it.
-                const ids = [...assetIds];
-                for (const folderId of folderIds) {
-                  try {
+                //
+                // §177 — what is collected, and whether a zip is even the
+                // right answer, is decided by planBulkDownload: ONE file is
+                // not a batch, and the shape of the rest decides the name.
+                const plan = await planBulkDownload({
+                  assetIds,
+                  folderIds,
+                  expandFolder: async (folderId) => {
                     const folderAssets = await api.get<AssetResponse[]>(
                       `/projects/${projectId}/assets?folder_id=${folderId}&skip=0&limit=500`,
                     );
-                    ids.push(...folderAssets.map((fa) => fa.id));
-                  } catch {}
+                    return folderAssets.map((fa) => fa.id);
+                  },
+                  folderNameById: (id) => subfolders?.find((f) => f.id === id)?.name,
+                });
+                if (plan.mode === "none") return;
+                if (plan.mode === "single") {
+                  // Exactly what the card menu, right-click and the viewer
+                  // do for one file. Routing it through the zip dialog
+                  // handed the user `Project_Selected.zip` containing the
+                  // single clip they had just asked for by name.
+                  await downloadOneAsset(plan.assetId);
+                  return;
                 }
-                // Array.from, not spread: this tsconfig targets below es2015
-                // for downlevel iteration.
-                const unique = Array.from(new Set(ids));
-                if (unique.length === 0) return;
-                setZipAssetIds(unique);
+                setZipAssetIds(plan.assetIds);
+                setZipScope(plan.scope);
+                setZipFolderName(plan.folderName);
+                // Offer the choice only where the alternative is survivable:
+                // past the limit, "individually" is that many browser
+                // downloads and the prompt would be a trap, not a choice.
+                setZipAskFormat(plan.assetIds.length <= INDIVIDUAL_DOWNLOAD_LIMIT);
                 setZipOpen(true);
               }}
               actions={
@@ -1312,16 +1360,20 @@ export default function ProjectDetailPage() {
             </Dialog.Portal>
           </Dialog.Root>
 
-          {/* §175 — scope="selection": the only thing that opens this is
-              onBulkDownload, fired from the grid's multi-select. Even when
-              the user happens to have selected everything, they selected it,
-              and nothing here verified it was the whole project. */}
+          {/* §175/§177 — the scope is never "all" here: the only thing that
+              opens this is onBulkDownload, fired from the grid's
+              multi-select. Even when the user happens to have selected
+              everything, they selected it, and nothing here verified it was
+              the whole project — a filter may be hiding the rest. Which of
+              the three subset shapes it is comes from planBulkDownload. */}
           <BatchDownloadDialog
         open={zipOpen}
         onOpenChange={setZipOpen}
         assetIds={zipAssetIds}
         api={zipApi}
-        scope="selection"
+        scope={zipScope}
+        folderName={zipFolderName}
+        askFormat={zipAskFormat}
         title="Download selected"
       />
 

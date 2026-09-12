@@ -35,6 +35,7 @@ from ..services.asset_visibility import usable_asset_filter
 from ..models.zip_export import ZipExport, ZipExportStatus
 from ..services import zip_export_service as zx
 from ..schemas.share import (
+    DEFAULT_ZIP_SCOPE,
     DirectShareCreate,
     ZipExportRequest,
     ZipExportStatusResponse,
@@ -1915,6 +1916,20 @@ def _resolve_zip_selection(db, *, items, variant, link, root_folder_id, allowed_
     return resolved, plan
 
 
+def _normalise_zip_scope(scope) -> str:
+    """One spelling reaches the database.
+
+    §175 called a subset "selection"; §177 calls it "selected" and adds the
+    folder shapes. The old spelling is still ACCEPTED — a browser tab open
+    across the deploy is still sending it — but it is folded here so the
+    column, the tests and the filename logic only ever deal with one name
+    for one thing.
+    """
+    if scope == "selection":
+        return "selected"
+    return scope or DEFAULT_ZIP_SCOPE
+
+
 def _resolve_if_stale(db: Session, export: ZipExport) -> None:
     """Turn a wedged build into a real failure, in the DATABASE (§146).
 
@@ -1966,7 +1981,9 @@ def _zip_download_name(db, export: ZipExport) -> str:
             db.query(Project).filter(Project.id == export.project_id).first()
         )
         name = project.name if project else None
-    return zx.zip_download_filename(name, export.scope, export.s3_key)
+    return zx.zip_download_filename(
+        name, export.scope, export.s3_key, getattr(export, "folder_name", None)
+    )
 
 
 def _zip_status_payload(
@@ -2010,7 +2027,7 @@ def _zip_status_payload(
 
 def _start_or_reuse_zip(
     db, *, plan, resolved, scope_kind, scope_id, project_id, share_link_id,
-    created_by, scope="selection",
+    created_by, scope=DEFAULT_ZIP_SCOPE, folder_name=None,
 ):
     """Reuse an identical archive if one is still alive, else start a build.
 
@@ -2018,6 +2035,7 @@ def _start_or_reuse_zip(
     model. A `failed` row is deliberately NOT reused — retrying should
     retry.
     """
+    scope = _normalise_zip_scope(scope)
     cache_key = zx.compute_cache_key(scope_id, resolved)
     existing = (
         db.query(ZipExport)
@@ -2030,6 +2048,24 @@ def _start_or_reuse_zip(
     )
     if existing:
         logger.info("zip export cache HIT for %s (export %s)", cache_key[:12], existing.id)
+        # §177 — the reused row takes THIS request's shape, not the shape of
+        # whichever request happened to build it. `scope` is deliberately not
+        # in `cache_key` (an "all" and a "selected" request over the same
+        # files are byte-identical and should share one object), which used
+        # to mean the first request's label stuck forever: a genuine
+        # "Download All" over an already-built selection came back named
+        # `{link}_selection.zip`. The filename resolves at serve time, so the
+        # row has to carry what the caller asked for now.
+        if existing.scope != scope or (existing.folder_name or None) != (folder_name or None):
+            existing.scope = scope
+            existing.folder_name = folder_name
+            try:
+                db.commit()
+            except Exception:
+                # A rename is not worth failing the download over — the
+                # archive itself is ready and correct either way.
+                db.rollback()
+                logger.exception("could not update scope on reused zip export %s", existing.id)
         return existing, True
 
     export_id = uuid.uuid4()
@@ -2044,13 +2080,12 @@ def _start_or_reuse_zip(
         file_count=len(plan),
         files_done=0,
         manifest=plan,
-        # §175 — affects only the served filename, which is why it is NOT in
-        # `cache_key`: an "all" and a "selection" request over the same files
-        # produce the same bytes and should share one object. A reused row
-        # therefore reports the scope of whichever request built it; the two
-        # surfaces cannot collide today because `scope_id` (link id vs user
-        # id) is part of the key and each surface only ever sends one scope.
+        # §175/§177 — affects only the served filename, which is why it is
+        # NOT in `cache_key`: an "all" and a "selected" request over the same
+        # files produce the same bytes and should share one object. A reused
+        # row is re-labelled above rather than rebuilt.
         scope=scope,
+        folder_name=folder_name,
     )
     db.add(export)
     db.commit()
@@ -2155,6 +2190,7 @@ def request_share_zip(
         share_link_id=link.id,
         created_by=current_user.id if current_user else None,
         scope=body.scope,
+        folder_name=body.folder_name,
     )
     _log_share_activity(
         db, link.id, ShareActivityAction.downloaded,

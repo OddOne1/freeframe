@@ -110,12 +110,13 @@ class ZipExport(Base):
     #: wedged one must not poll forever.
     progress_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    #: "all" or "selection" (§175) — whether this archive is everything
-    #: downloadable in its scope or a subset the user picked. Persisted so the
+    #: The SHAPE of what was requested (§175, widened §177): "all",
+    #: "selected", "single_folder" or "multiple_folders". Persisted so the
     #: status payload can name the download without re-deriving it, and
     #: recorded as a property of the REQUEST rather than of the contents:
-    #: item-count vs total-count cannot tell the two apart for a scope holding
-    #: one asset.
+    #: item-count vs total-count cannot tell "all of it" from "the one I
+    #: picked" for a scope holding one asset, and folder identity is already
+    #: gone by the time a selection reaches the server as asset ids.
     #:
     #: Deliberately NOT part of `cache_key`. Two requests differing only in
     #: scope produce byte-identical archives and should share one object; the
@@ -123,7 +124,19 @@ class ZipExport(Base):
     #: That is also why the link's TITLE is not stored here — reading it live
     #: means re-titling a link renames its download with no rebuild, matching
     #: what `cache_key` already documents about a re-title reusing the build.
-    scope: Mapped[str] = mapped_column(String(16), nullable=False, server_default="selection")
+    #:
+    #: §177 — because the row outlives one request, this is REWRITTEN on a
+    #: cache hit. It used to be written only on the miss, so the first
+    #: request's shape stuck to the row forever and a later "Download All"
+    #: over the same files came back named `{link}_selection.zip`.
+    scope: Mapped[str] = mapped_column(String(32), nullable=False, server_default="selected")
+
+    #: The folder's own name, for `scope="single_folder"` only — the
+    #: `{FolderName}` in `{base}_{FolderName}.zip` (§177). Stored rather than
+    #: looked up because the server never receives a folder id for a batch:
+    #: the client flattens a folder into asset ids before requesting. Like
+    #: `scope`, it is a property of the request and is refreshed on a reuse.
+    folder_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     #: Which half of the build is running: "gathering" (fetching members and
     #: writing the archive) or "uploading" (sending the finished archive to

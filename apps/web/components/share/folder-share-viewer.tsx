@@ -20,6 +20,7 @@ import {
 import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { triggerBrowserDownload } from '@/lib/download'
 import { BatchDownloadDialog, type BatchDownloadApi } from '@/components/shared/batch-download-dialog'
+import { INDIVIDUAL_DOWNLOAD_LIMIT, type ZipScope } from '@/lib/bulk-download'
 import { useMediaQuery, XL_UP } from '@/hooks/use-media-query'
 import { useSessionPreference } from '@/hooks/use-session-preference'
 import type {
@@ -1124,6 +1125,12 @@ export function FolderShareViewer({
   // §143 — "Download All" opens a dialog instead of firing N downloads.
   const [zipOpen, setZipOpen] = React.useState(false)
   const [zipAssetIds, setZipAssetIds] = React.useState<string[]>([])
+  // §177 — "Download All" at the link's root is the whole scope; the same
+  // button pressed inside a subfolder is exactly one folder and nothing
+  // else, which is a different name.
+  const [zipScope, setZipScope] = React.useState<ZipScope>('all')
+  const [zipFolderName, setZipFolderName] = React.useState<string | undefined>(undefined)
+  const [zipAskFormat, setZipAskFormat] = React.useState(false)
   const [collectingZip, setCollectingZip] = React.useState(false)
 
   const [viewerSort, setViewerSort, sortReady] = useSessionPreference<ShareSortKey>(
@@ -1207,28 +1214,50 @@ export function FolderShareViewer({
       if (!r.ok) throw new Error('Could not load download options')
       return r.json()
     },
-    start: async (items, variant, scope) => {
+    start: async (items, variant, scope, folderName) => {
       const r = await fetch(`${API_URL}/share/${token}/zip?${sessionParam.replace(/^&/, '')}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items, variant, scope }),
+        body: JSON.stringify({ items, variant, scope, folder_name: folderName ?? null }),
       })
       if (!r.ok) throw new Error('Could not start the download')
       return r.json()
     },
+    // §177 — the "download files individually" branch, offered only for a
+    // small enough batch. Same per-asset endpoint the viewer's own download
+    // button uses.
+    fileUrl: (assetId) => fetchDownloadUrl(token, assetId, shareSession),
     poll: async (exportId) => {
       const r = await fetch(`${API_URL}/share/${token}/zip/${exportId}?${sessionParam.replace(/^&/, '')}`)
       if (!r.ok) throw new Error('Lost track of the download')
       return r.json()
     },
-  }), [token, sessionParam])
+  }), [token, sessionParam, shareSession])
 
   async function openZipDialog() {
     setCollectingZip(true)
     try {
       const ids = await collectAllAssetIds(token, currentSubfolderId ?? null, shareSession)
       if (ids.length === 0) return
+      if (ids.length === 1) {
+        // §177 — one file is not a batch. Zipping it would hand the viewer
+        // an archive to unpack for a file they can already see by name.
+        triggerBrowserDownload(await fetchDownloadUrl(token, ids[0], shareSession))
+        return
+      }
       setZipAssetIds(ids)
+      // At the link's root this really is everything; one level in, it is
+      // that subfolder and nothing else.
+      if (currentSubfolderId) {
+        setZipScope('single_folder')
+        setZipFolderName(currentTitle)
+      } else {
+        setZipScope('all')
+        setZipFolderName(undefined)
+      }
+      // Above the limit a zip is forced, as before. At or below it, the
+      // guest is asked rather than having either answer chosen silently.
+      setZipAskFormat(ids.length <= INDIVIDUAL_DOWNLOAD_LIMIT)
       setZipOpen(true)
     } finally {
       setCollectingZip(false)
@@ -1767,16 +1796,19 @@ export function FolderShareViewer({
           </footer>
         </div>
 
-        {/* §175 — scope="all": this surface has exactly one trigger, the
-            "Download All" button above, and it collects every downloadable
-            asset in the link (subfolders included). There is no multi-select
-            here, so the scope is never a subset. */}
+        {/* §175/§177 — this surface has exactly one trigger, the "Download
+            All" button above, and it collects every downloadable asset at
+            the level being viewed (subfolders included). There is no
+            multi-select here, so the scope is only ever the whole link or
+            the one subfolder the viewer has navigated into. */}
         <BatchDownloadDialog
           open={zipOpen}
           onOpenChange={setZipOpen}
           assetIds={zipAssetIds}
           api={zipApi}
-          scope="all"
+          scope={zipScope}
+          folderName={zipFolderName}
+          askFormat={zipAskFormat}
           title="Download all"
         />
 

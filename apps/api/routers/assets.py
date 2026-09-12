@@ -503,6 +503,7 @@ def request_project_zip(
         share_link_id=None,
         created_by=current_user.id,
         scope=body.scope,
+        folder_name=body.folder_name,
     )
     return _zip_status_payload(db, export, reused=reused)
 

@@ -161,32 +161,62 @@ def _cheapest(available: list[str]) -> str:
 ZIP_FALLBACK_NAME = "share"
 
 
-def zip_download_filename(name: Optional[str], scope: str, s3_key: str) -> str:
-    """What the browser saves a batch download as (§175).
+def _filename_safe(value: Optional[str]) -> str:
+    """Fold one free-text name into something a browser will save as.
 
-    `{name}.zip` for a whole scope, `{name}_selection.zip` for a subset. The
-    extension comes from `build_download_filename` against the archive's own
-    S3 key — the key is the authoritative source that helper documents, and a
-    name already ending in `.zip` is left alone rather than doubled.
-
-    Note `build_download_filename` is an extension-appender, NOT a sanitizer;
+    `build_download_filename` is an extension-appender, NOT a sanitizer;
     header safety (control characters, quote escaping) is applied where the
     header is written, in hls_proxy._sanitize_download_filename. The one thing
-    neither covers is a path separator, and a share-link title is free text
-    that can easily contain one ("Client / Round 2"), which would leave a
-    browser saving `Round 2.zip` or refusing the name. So separators are
-    folded to a dash here — deliberately the only cleaning this does, rather
-    than a second, competing sanitizer.
+    neither covers is a path separator, and both a share-link title and a
+    folder name are free text that can easily contain one ("Client / Round
+    2"), which would leave a browser saving `Round 2.zip` or refusing the
+    name. So separators are folded to a dash here — deliberately the only
+    cleaning this does, rather than a second, competing sanitizer.
     """
-    base = (name or "").strip()
+    out = (value or "").strip()
     for sep in ("/", "\\"):
-        base = base.replace(sep, "-")
-    base = base.strip(" .").strip()          # a trailing dot would eat the extension
-    if not base:
-        base = ZIP_FALLBACK_NAME
-    if scope != "all":
-        base = f"{base}_selection"
-    return build_download_filename(base, s3_key)
+        out = out.replace(sep, "-")
+    return out.strip(" .").strip()           # a trailing dot would eat the extension
+
+
+def zip_download_filename(
+    name: Optional[str], scope: str, s3_key: str, folder_name: Optional[str] = None
+) -> str:
+    """What the browser saves a batch download as (§175, extended §177).
+
+    The base is the share link's title, or the project's name in-app. The
+    suffix states the SHAPE of what was downloaded:
+
+        all               -> {base}.zip
+        selected          -> {base}_Selected.zip
+        single_folder     -> {base}_{FolderName}.zip
+        multiple_folders  -> {base}_MultipleFolders.zip
+
+    The extension comes from `build_download_filename` against the archive's
+    own S3 key — the key is the authoritative source that helper documents,
+    and a name already ending in `.zip` is left alone rather than doubled.
+
+    A `single_folder` archive whose folder name is missing or reduces to
+    nothing falls back to `_Selected` rather than to the bare base: naming it
+    `{base}.zip` would claim the whole scope, which is the one lie this
+    function exists to avoid.
+    """
+    base = _filename_safe(name) or ZIP_FALLBACK_NAME
+
+    if scope == "all":
+        return build_download_filename(base, s3_key)
+
+    if scope == "single_folder":
+        folder = _filename_safe(folder_name)
+        suffix = folder or "Selected"
+    elif scope == "multiple_folders":
+        suffix = "MultipleFolders"
+    else:
+        # "selected", §175's "selection" spelling, and anything unrecognised.
+        # An unknown scope is labelled as a subset on purpose — see above.
+        suffix = "Selected"
+
+    return build_download_filename(f"{base}_{suffix}", s3_key)
 
 
 def zip_entry_path(folder_path: list[str], filename: str, taken: set[str]) -> str:

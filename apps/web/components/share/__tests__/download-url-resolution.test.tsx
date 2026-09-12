@@ -105,14 +105,25 @@ describe('share viewer "Download All"', () => {
               file_size: 10, duration_seconds: null, comment_count: 0,
               created_by_name: 'M', created_at: new Date().toISOString(),
               download_variants: ['raw'] },
+            // TWO, since §177: a link holding exactly one asset now hands
+            // that asset over directly (an archive containing one file is
+            // not a batch — see the test below), so a one-asset fixture
+            // would no longer exercise the dialog this test is about.
+            { id: 'a2', name: 'two', asset_type: 'image', thumbnail_url: null,
+              file_size: 10, duration_seconds: null, comment_count: 0,
+              created_by_name: 'M', created_at: new Date().toISOString(),
+              download_variants: ['raw'] },
           ],
-          subfolders: [], total: 1, total_size_bytes: 10, page: 1, per_page: 24,
+          subfolders: [], total: 2, total_size_bytes: 20, page: 1, per_page: 24,
         }) } as unknown as Response
       }
       if (u.includes('/zip/options')) {
         return { ok: true, json: async () => ({
           variants: ['raw'],
-          assets: [{ asset_id: 'a1', asset_name: 'one', versions: [] }],
+          assets: [
+            { asset_id: 'a1', asset_name: 'one', versions: [] },
+            { asset_id: 'a2', asset_name: 'two', versions: [] },
+          ],
         }) } as unknown as Response
       }
       return { ok: true, json: async () => ({ url: RELATIVE }) } as unknown as Response
@@ -133,6 +144,46 @@ describe('share viewer "Download All"', () => {
     // A dialog, and crucially NOT a download per file.
     expect(await screen.findByRole('dialog')).toBeInTheDocument()
     expect(hrefs).toEqual([])
+  })
+
+  it('hands over the file itself when the link holds exactly one (§177)', async () => {
+    // The popup-spam bug §143 fixed cannot happen with one file, and an
+    // archive the viewer has to unpack to reach a single image is worse
+    // than the image. The §141 resolution rule still has to hold on that
+    // direct URL, which is why this lives in this file.
+    captureNavigations()
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/assets?')) {
+        return { ok: true, json: async () => ({
+          assets: [
+            { id: 'a1', name: 'one', asset_type: 'image', thumbnail_url: null,
+              file_size: 10, duration_seconds: null, comment_count: 0,
+              created_by_name: 'M', created_at: new Date().toISOString(),
+              download_variants: ['raw'] },
+          ],
+          subfolders: [], total: 1, total_size_bytes: 10, page: 1, per_page: 24,
+        }) } as unknown as Response
+      }
+      return { ok: true, json: async () => ({ url: RELATIVE }) } as unknown as Response
+    }))
+
+    render(
+      <FolderShareViewer
+        token="tok" shareSession={null} folderName="F" title="F"
+        description={null} permission={'view' as never}
+        downloadVariants={['raw'] as never} fieldsVisibility={'disabled' as never}
+        showVersions={false} appearance={{ layout: 'list', sort_by: 'name' } as never}
+        branding={null}
+      />,
+    )
+    await screen.findByText('one')
+    await userEvent.click(screen.getByRole('button', { name: /download all/i }))
+
+    await waitFor(() => expect(hrefs.length).toBe(1))
+    expect(hrefs[0]).toBe(`/api${RELATIVE}`)
+    expect(hrefs[0]).not.toContain('/api/api')
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })
 

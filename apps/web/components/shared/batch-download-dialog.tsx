@@ -6,6 +6,7 @@ import { Download, Loader2, X } from 'lucide-react'
 import { cn, formatBytes } from '@/lib/utils'
 import { triggerBrowserDownload } from '@/lib/download'
 import { DOWNLOAD_VARIANT_LABELS, type DownloadVariant } from '@/types'
+import type { ZipScope } from '@/lib/bulk-download'
 import type {
   ZipExportAssetOptions,
   ZipExportOptionsResponse,
@@ -27,12 +28,15 @@ import type {
  * here once.
  */
 
-/** Whether this batch is everything downloadable here, or a subset the user
- *  picked. Decides the download's FILENAME only (§175) — `{link}.zip` vs
- *  `{link}_selection.zip`. It comes from the call site rather than being
- *  inferred from the item count, because a scope holding exactly one asset
- *  makes "all of it" and "the one I picked" identical numbers. */
-export type ZipScope = 'all' | 'selection'
+/** The shape of this batch, which decides the download's FILENAME only
+ *  (§175, widened §177). It comes from the call site rather than being
+ *  inferred from the item count: a scope holding exactly one asset makes
+ *  "all of it" and "the one I picked" identical numbers, and folder identity
+ *  is already gone once a selection is flattened into asset ids.
+ *
+ *  Defined in lib/bulk-download alongside the classification rules and
+ *  re-exported here, where every call site already imports from. */
+export type { ZipScope } from '@/lib/bulk-download'
 
 const POLL_INTERVAL_MS = 1000
 /** A build of a large folder is genuinely slow; giving up early would tell
@@ -48,11 +52,16 @@ export interface BatchDownloadApi {
     items: { asset_id: string; version_id?: string }[],
     variant: DownloadVariant,
     scope: ZipScope,
+    folderName?: string,
   ): Promise<ZipExportStatusResponse>
   poll(exportId: string): Promise<ZipExportStatusResponse>
+  /** One asset's own download URL, for the "individually" branch of the
+   *  format prompt (§177). Required only when `askFormat` is set — a surface
+   *  that never offers the choice never needs it. */
+  fileUrl?(assetId: string): Promise<string | null>
 }
 
-type Phase = 'choosing' | 'building' | 'done' | 'error'
+type Phase = 'asking' | 'choosing' | 'building' | 'done' | 'error'
 
 export function BatchDownloadDialog({
   open,
@@ -60,6 +69,8 @@ export function BatchDownloadDialog({
   assetIds,
   api,
   scope,
+  folderName,
+  askFormat = false,
   title = 'Download',
 }: {
   open: boolean
@@ -70,6 +81,17 @@ export function BatchDownloadDialog({
    *  thing that knows whether the user asked for everything or picked items,
    *  and a silent default would mislabel one of them. */
   scope: ZipScope
+  /** The folder's name, for `scope="single_folder"` only (§177). */
+  folderName?: string
+  /** Ask "zip or one file at a time?" before anything else (§177).
+   *
+   *  Off by default, because the surfaces that force a zip are the ones that
+   *  cannot survive the alternative — past ~50 files, "individually" means
+   *  that many browser downloads. Where the choice IS offered, it is an
+   *  explicit one: the per-file popups it can lead to are then something the
+   *  user asked for rather than something the app did silently, which is the
+   *  distinction §143 was originally filed over. */
+  askFormat?: boolean
   title?: string
 }) {
   const [options, setOptions] = React.useState<ZipExportOptionsResponse | null>(null)
@@ -101,7 +123,7 @@ export function BatchDownloadDialog({
   React.useEffect(() => {
     if (!open) return
     cancelled.current = false
-    setPhase('choosing')
+    setPhase(askFormat ? 'asking' : 'choosing')
     setStatus(null)
     setError(null)
     setVersionByAsset({})
@@ -135,7 +157,7 @@ export function BatchDownloadDialog({
     }))
     let first: ZipExportStatusResponse
     try {
-      first = await api.start(items, variant, scope)
+      first = await api.start(items, variant, scope, folderName)
     } catch (e) {
       if (cancelled.current) return
       setPhase('error')
@@ -187,6 +209,29 @@ export function BatchDownloadDialog({
     setError('This is taking longer than expected — try again')
   }
 
+  async function downloadIndividually() {
+    setError(null)
+    if (!api.fileUrl) {
+      // A surface that offers the choice without supplying the fetcher is a
+      // wiring mistake, and silently zipping instead would hide it.
+      setPhase('error')
+      setError('Individual downloads are not available here')
+      return
+    }
+    setPhase('building')
+    for (const id of assetIds) {
+      if (cancelled.current) return
+      try {
+        triggerBrowserDownload(await api.fileUrl(id))
+      } catch {
+        // One file that cannot be resolved does not stop the rest — the
+        // user asked for N downloads, not for an all-or-nothing batch.
+      }
+    }
+    setPhase('done')
+    onOpenChange(false)
+  }
+
   function cancel() {
     // Client-side only, deliberately. The worker keeps building and the
     // finished archive is cached, so pressing Cancel and asking again is
@@ -219,7 +264,50 @@ export function BatchDownloadDialog({
             </Dialog.Close>
           </div>
 
-          {phase === 'building' ? (
+          {phase === 'asking' ? (
+            /* §177 — the choice itself, before any options are loaded.
+               Individual downloads reintroduce one browser popup per file,
+               which is exactly what §143 removed; the difference is that it
+               is now something the user picked, and the surfaces where it
+               would be unbearable (past ~50 files) never render this. */
+            <div className="px-4 py-5 space-y-4">
+              <p className="text-sm text-text-secondary">
+                {assetIds.length} file{assetIds.length === 1 ? '' : 's'} selected. How would
+                you like them?
+              </p>
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => setPhase('choosing')}
+                  className="w-full flex items-start gap-3 rounded-md border border-border bg-bg-tertiary p-3 text-left hover:border-border-focus hover:bg-bg-hover"
+                >
+                  <Download className="h-4 w-4 mt-0.5 shrink-0 text-text-tertiary" />
+                  <span className="min-w-0">
+                    <span className="block text-sm text-text-primary">Download as a zip</span>
+                    <span className="block text-xs text-text-tertiary">
+                      One file, folders preserved.
+                    </span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={downloadIndividually}
+                  className="w-full flex items-start gap-3 rounded-md border border-border bg-bg-tertiary p-3 text-left hover:border-border-focus hover:bg-bg-hover"
+                >
+                  <Download className="h-4 w-4 mt-0.5 shrink-0 text-text-tertiary" />
+                  <span className="min-w-0">
+                    <span className="block text-sm text-text-primary">
+                      Download files individually
+                    </span>
+                    <span className="block text-xs text-text-tertiary">
+                      Your browser may ask permission to download multiple files.
+                    </span>
+                  </span>
+                </button>
+              </div>
+              {error && <p className="text-sm text-status-error">{error}</p>}
+            </div>
+          ) : phase === 'building' ? (
             <div className="px-4 py-8 flex flex-col items-center gap-3">
               <Loader2 className="h-6 w-6 animate-spin text-text-tertiary" />
               {/* ONE message covering gathering and zipping. There is no

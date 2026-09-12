@@ -69,7 +69,8 @@ function makeApi(
 function renderDialog(
   api: BatchDownloadApi,
   ids = ['a1', 'a2'],
-  scope: ZipScope = 'selection',
+  scope: ZipScope = 'selected',
+  extra: { folderName?: string; askFormat?: boolean } = {},
 ) {
   const onOpenChange = vi.fn()
   render(
@@ -79,6 +80,7 @@ function renderDialog(
       assetIds={ids}
       api={api}
       scope={scope}
+      {...extra}
     />,
   )
   return { onOpenChange }
@@ -313,7 +315,7 @@ describe('unmounting stops the poll', () => {
         onOpenChange={vi.fn()}
         assetIds={['a1']}
         api={api}
-        scope="selection"
+        scope="selected"
       />,
     )
     await userEvent.click(await screen.findByRole('button', { name: /download zip/i }))
@@ -350,7 +352,7 @@ describe('unmounting stops the poll', () => {
         onOpenChange={vi.fn()}
         assetIds={['a1']}
         api={api}
-        scope="selection"
+        scope="selected"
       />,
     )
     await userEvent.click(await screen.findByRole('button', { name: /download zip/i }))
@@ -419,7 +421,7 @@ describe('the upload half of a build (§147)', () => {
 })
 
 describe('scope reaches the server (§175)', () => {
-  it.each(['all', 'selection'] as ZipScope[])(
+  it.each(['all', 'selected', 'single_folder', 'multiple_folders'] as ZipScope[])(
     'forwards scope=%s to start()',
     async (scope) => {
       const api = makeApi()
@@ -431,4 +433,109 @@ describe('scope reaches the server (§175)', () => {
       expect((api.start as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe(scope)
     },
   )
+})
+
+
+describe('the folder name rides along with a single-folder scope (§177)', () => {
+  it('forwards it as the fourth argument to start()', async () => {
+    const api = makeApi()
+    renderDialog(api, ['a1', 'a2'], 'single_folder', { folderName: 'Day 2 Rushes' })
+    await userEvent.click(await screen.findByRole('button', { name: /download zip/i }))
+    await waitFor(() => expect(api.start).toHaveBeenCalled())
+    const call = (api.start as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(call[2]).toBe('single_folder')
+    expect(call[3]).toBe('Day 2 Rushes')
+  })
+
+  it('sends nothing for a scope that has no folder', async () => {
+    const api = makeApi()
+    renderDialog(api, ['a1', 'a2'], 'selected')
+    await userEvent.click(await screen.findByRole('button', { name: /download zip/i }))
+    await waitFor(() => expect(api.start).toHaveBeenCalled())
+    expect((api.start as ReturnType<typeof vi.fn>).mock.calls[0][3]).toBeUndefined()
+  })
+})
+
+describe('zip or individual files (§177)', () => {
+  it('asks first when askFormat is set, instead of showing the zip options', async () => {
+    const api = makeApi()
+    renderDialog(api, ['a1', 'a2'], 'selected', { askFormat: true })
+
+    expect(await screen.findByRole('button', { name: /download as a zip/i })).toBeTruthy()
+    expect(
+      await screen.findByRole('button', { name: /download files individually/i }),
+    ).toBeTruthy()
+    // The zip flow has not started: nothing was requested from the server.
+    expect(api.start).not.toHaveBeenCalled()
+  })
+
+  it('goes straight to the zip options when it is not set', async () => {
+    const api = makeApi()
+    renderDialog(api, ['a1', 'a2'], 'selected')
+
+    expect(await screen.findByRole('button', { name: /download zip/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /individually/i })).toBeNull()
+  })
+
+  it('"Download as a zip" continues into the existing flow', async () => {
+    const api = makeApi()
+    renderDialog(api, ['a1', 'a2'], 'selected', { askFormat: true })
+
+    await userEvent.click(await screen.findByRole('button', { name: /download as a zip/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /download zip/i }))
+
+    await waitFor(() => expect(api.start).toHaveBeenCalled())
+  })
+
+  it('"individually" downloads one file per asset and never builds a zip', async () => {
+    /* This deliberately reintroduces one browser download per file — the
+       thing §143 removed. The difference that makes it acceptable is that
+       the user just asked for it by name. */
+    const api = makeApi({ fileUrl: vi.fn(async (id: string) => `/stream/hls/${id}.mov?token=t`) })
+    renderDialog(api, ['a1', 'a2', 'a3'], 'selected', { askFormat: true })
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: /download files individually/i }),
+    )
+
+    await waitFor(() => expect(downloads.length).toBe(3))
+    expect(downloads).toEqual([
+      '/stream/hls/a1.mov?token=t',
+      '/stream/hls/a2.mov?token=t',
+      '/stream/hls/a3.mov?token=t',
+    ])
+    expect(api.start).not.toHaveBeenCalled()
+  })
+
+  it('one file that cannot be resolved does not stop the rest', async () => {
+    const api = makeApi({
+      fileUrl: vi.fn(async (id: string) => {
+        if (id === 'a2') throw new Error('gone')
+        return `/stream/hls/${id}.mov?token=t`
+      }),
+    })
+    renderDialog(api, ['a1', 'a2', 'a3'], 'selected', { askFormat: true })
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: /download files individually/i }),
+    )
+
+    await waitFor(() => expect(downloads.length).toBe(2))
+    expect(downloads).toEqual(['/stream/hls/a1.mov?token=t', '/stream/hls/a3.mov?token=t'])
+  })
+
+  it('says so rather than silently zipping when the surface wired no fetcher', async () => {
+    const api = makeApi()
+    renderDialog(api, ['a1', 'a2'], 'selected', { askFormat: true })
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: /download files individually/i }),
+    )
+
+    await waitFor(() =>
+      expect(screen.getByText(/individual downloads are not available/i)).toBeTruthy(),
+    )
+    expect(api.start).not.toHaveBeenCalled()
+    expect(downloads.length).toBe(0)
+  })
 })

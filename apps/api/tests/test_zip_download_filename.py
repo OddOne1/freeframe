@@ -41,9 +41,19 @@ def test_a_full_download_is_named_after_the_link():
 
 
 def test_a_partial_selection_is_marked_as_one():
-    got = zip_download_filename("Client Review", "selection", S3_KEY)
-    assert got == expected("Client Review_selection")
+    got = zip_download_filename("Client Review", "selected", S3_KEY)
+    assert got == expected("Client Review_Selected")
     assert got != expected("Client Review"), "a subset must not be named like the whole link"
+
+
+def test_the_old_selection_spelling_still_names_a_subset():
+    """§175 called this "selection". A browser tab open across the deploy is
+    still sending that word, and it must not produce a name claiming the
+    whole link."""
+    assert (
+        zip_download_filename("Client Review", "selection", S3_KEY)
+        == zip_download_filename("Client Review", "selected", S3_KEY)
+    )
 
 
 def test_an_untitled_link_falls_back_to_a_non_empty_name():
@@ -81,12 +91,13 @@ def test_a_title_containing_a_path_separator_cannot_produce_a_path():
 
 # ─── what the endpoint actually serves ───────────────────────────────────────
 
-def _export(*, scope="all", share_link_id=None, project_id=None):
+def _export(*, scope="all", share_link_id=None, project_id=None, folder_name=None):
     export = MagicMock()
     export.id = uuid.uuid4()
     export.status = ZipExportStatus.ready
     export.s3_key = S3_KEY
     export.scope = scope
+    export.folder_name = folder_name
     export.share_link_id = share_link_id
     export.project_id = project_id or uuid.uuid4()
     export.manifest = []
@@ -145,9 +156,9 @@ def test_the_status_payload_marks_a_selection():
     link_id = uuid.uuid4()
     name = served_name(
         _db(link_title="Autumn Campaign"),
-        _export(scope="selection", share_link_id=link_id),
+        _export(scope="selected", share_link_id=link_id),
     )
-    assert name == expected("Autumn Campaign_selection")
+    assert name == expected("Autumn Campaign_Selected")
 
 
 def test_a_cache_hit_is_named_exactly_like_a_cold_build():
@@ -214,7 +225,10 @@ def test_the_requested_scope_is_persisted_on_the_row():
     db.add.side_effect = added.append
 
     with patch.object(share_router, "send_task_safe"):
-        for requested in ("all", "selection"):
+        # "selection" is covered separately: §177 folds that spelling to
+        # "selected" on the way in, so it is the one value that legitimately
+        # does NOT round-trip unchanged.
+        for requested in ("all", "selected"):
             added.clear()
             share_router._start_or_reuse_zip(
                 db,
@@ -238,13 +252,13 @@ def test_an_unspecified_scope_is_treated_as_a_selection():
     """The conservative default, and the direction matters.
 
     Labelling a partial archive `{link}.zip` claims a completeness nothing
-    verified. Labelling a complete one `{link}_selection.zip` is merely less
+    verified. Labelling a complete one `{link}_Selected.zip` is merely less
     specific. So a caller that says nothing gets the second.
     """
     from apps.api.schemas.share import ZipExportRequest
 
     req = ZipExportRequest(items=[{"asset_id": str(uuid.uuid4())}])
-    assert req.scope == "selection"
+    assert req.scope == "selected"
 
 
 def test_the_model_default_matches_the_schema_default():
@@ -257,3 +271,234 @@ def test_the_model_default_matches_the_schema_default():
     column_default = ZipExport.__table__.c.scope.server_default.arg
     req = ZipExportRequest(items=[{"asset_id": str(uuid.uuid4())}])
     assert str(column_default).strip("'") == req.scope
+
+
+# ─── §177: the four shapes, and the reuse bug that hid them ──────────────────
+
+class TestTheNamingScheme:
+    """`{base}` is the link title (or the project name in-app). What follows
+    it states the SHAPE of what was downloaded, not how many files it held."""
+
+    def test_a_whole_scope_carries_no_suffix(self):
+        assert zip_download_filename("Rope Challenge", "all", S3_KEY) == expected(
+            "Rope Challenge"
+        )
+
+    def test_a_mixed_selection_is_marked_selected(self):
+        """Loose files, or files alongside folders: nothing more specific can
+        honestly be said about it."""
+        assert zip_download_filename("Rope Challenge", "selected", S3_KEY) == expected(
+            "Rope Challenge_Selected"
+        )
+
+    def test_one_folder_is_named_after_that_folder(self):
+        got = zip_download_filename(
+            "Rope Challenge", "single_folder", S3_KEY, "Day 2 Rushes"
+        )
+        assert got == expected("Rope Challenge_Day 2 Rushes")
+
+    def test_several_folders_say_so(self):
+        assert zip_download_filename(
+            "Rope Challenge", "multiple_folders", S3_KEY
+        ) == expected("Rope Challenge_MultipleFolders")
+
+    @pytest.mark.parametrize("missing", [None, "", "   ", " . "])
+    def test_a_single_folder_with_no_usable_name_falls_back_to_selected(self, missing):
+        """NOT to the bare base. `{base}.zip` is the one name that claims the
+        whole scope, which is exactly the claim this function exists to keep
+        honest — a folder whose name reduces to nothing is still a subset."""
+        got = zip_download_filename("Rope Challenge", "single_folder", S3_KEY, missing)
+        assert got == expected("Rope Challenge_Selected")
+        assert got != expected("Rope Challenge")
+
+    def test_a_folder_name_cannot_smuggle_in_a_path(self):
+        """A folder name is user input, same as a link title (see the title
+        test above) — and a separator in a Content-Disposition leaves a
+        browser saving the tail or rejecting the name."""
+        got = zip_download_filename(
+            "Rope Challenge", "single_folder", S3_KEY, "Day 2 / Rushes"
+        )
+        assert "/" not in got and "\\" not in got, got
+        assert got == expected("Rope Challenge_Day 2 - Rushes")
+
+    def test_an_unknown_scope_is_treated_as_a_subset(self):
+        """Forward compatibility in the safe direction: a scope this build
+        does not recognise must not be named like a complete archive."""
+        got = zip_download_filename("Rope Challenge", "something_new", S3_KEY)
+        assert got == expected("Rope Challenge_Selected")
+
+    def test_the_folder_name_reaches_the_served_url(self):
+        """The pieces above are only wired together at serve time."""
+        name = served_name(
+            _db(link_title="Rope Challenge"),
+            _export(
+                scope="single_folder",
+                share_link_id=uuid.uuid4(),
+                folder_name="Day 2 Rushes",
+            ),
+        )
+        assert name == expected("Rope Challenge_Day 2 Rushes")
+
+
+class TestAReusedRowIsRelabelled:
+    """§177's real bug: `scope` was written on the cache MISS only.
+
+    The row outlives the request that built it, so the first request's label
+    stuck forever. Confirmed live — a genuine "Download All" of the Rope
+    Challenge link came back as `Rope Challenge_selection.zip`, because an
+    earlier request over the identical file set had built the row under a
+    selection scope.
+    """
+
+    def _reuse(self, existing, *, scope, folder_name=None):
+        from unittest.mock import patch
+
+        from apps.api.routers import share as share_router
+
+        db = MagicMock()
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = existing
+
+        with patch.object(share_router, "send_task_safe"):
+            export, reused = share_router._start_or_reuse_zip(
+                db,
+                plan=[{"path": "a.mov"}],
+                resolved=MagicMock(files=[]),
+                scope_kind="link",
+                scope_id=uuid.uuid4(),
+                project_id=uuid.uuid4(),
+                share_link_id=uuid.uuid4(),
+                created_by=None,
+                scope=scope,
+                folder_name=folder_name,
+            )
+        return export, reused, db
+
+    def test_download_all_over_an_existing_selection_renames_the_download(self):
+        """The exact live failure, end to end: build under one scope, ask
+        again for the identical file set as "all", and the served filename
+        must lose the suffix."""
+        row = _export(scope="selected", share_link_id=uuid.uuid4())
+
+        export, reused, db = self._reuse(row, scope="all")
+
+        assert reused is True, "identical contents must still reuse the archive"
+        assert export.scope == "all"
+        db.commit.assert_called_once()
+        assert served_name(_db(link_title="Rope Challenge"), export) == expected(
+            "Rope Challenge"
+        )
+
+    def test_the_folder_name_is_refreshed_on_reuse_too(self):
+        """Same row, a different folder whose contents happen to be identical
+        — the name has to follow the request, not the build."""
+        row = _export(
+            scope="single_folder", share_link_id=uuid.uuid4(), folder_name="Day 1"
+        )
+
+        export, _, _ = self._reuse(row, scope="single_folder", folder_name="Day 2")
+
+        assert export.folder_name == "Day 2"
+        assert served_name(_db(link_title="Rope Challenge"), export) == expected(
+            "Rope Challenge_Day 2"
+        )
+
+    def test_a_reuse_at_the_same_scope_writes_nothing(self):
+        """No pointless UPDATE on the common path — two viewers pulling the
+        same link is the reuse case this cache exists for."""
+        row = _export(scope="all", share_link_id=uuid.uuid4())
+
+        _, reused, db = self._reuse(row, scope="all")
+
+        assert reused is True
+        db.commit.assert_not_called()
+
+    def test_the_old_spelling_is_folded_before_it_reaches_the_row(self):
+        """A stale tab sending §175's "selection" must not leave the database
+        holding two words for one state."""
+        row = _export(scope="all", share_link_id=uuid.uuid4())
+
+        export, _, _ = self._reuse(row, scope="selection")
+
+        assert export.scope == "selected"
+
+    def test_a_failed_rename_still_serves_the_archive(self):
+        """The bytes are ready and correct either way — a commit error here
+        is not worth turning a working download into an error."""
+        from unittest.mock import patch
+
+        from apps.api.routers import share as share_router
+
+        row = _export(scope="selected", share_link_id=uuid.uuid4())
+        db = MagicMock()
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = row
+        db.commit.side_effect = RuntimeError("connection lost")
+
+        with patch.object(share_router, "send_task_safe"):
+            export, reused = share_router._start_or_reuse_zip(
+                db,
+                plan=[{"path": "a.mov"}],
+                resolved=MagicMock(files=[]),
+                scope_kind="link",
+                scope_id=uuid.uuid4(),
+                project_id=uuid.uuid4(),
+                share_link_id=uuid.uuid4(),
+                created_by=None,
+                scope="all",
+            )
+
+        assert reused is True and export is row
+        db.rollback.assert_called_once()
+
+
+class TestTheNewShapesArePersistedOnAColdBuild:
+    """The miss path, for the fields §177 adds — the reuse tests above would
+    all still pass while a fresh build dropped them."""
+
+    def _build(self, *, scope, folder_name=None):
+        from unittest.mock import patch
+
+        from apps.api.routers import share as share_router
+
+        added = []
+        db = MagicMock()
+        db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+        db.add.side_effect = added.append
+
+        with patch.object(share_router, "send_task_safe"):
+            share_router._start_or_reuse_zip(
+                db,
+                plan=[{"path": "a.mov"}],
+                resolved=MagicMock(files=[]),
+                scope_kind="link",
+                scope_id=uuid.uuid4(),
+                project_id=uuid.uuid4(),
+                share_link_id=uuid.uuid4(),
+                created_by=None,
+                scope=scope,
+                folder_name=folder_name,
+            )
+        assert len(added) == 1
+        return added[0]
+
+    @pytest.mark.parametrize(
+        "scope", ["all", "selected", "single_folder", "multiple_folders"]
+    )
+    def test_every_shape_survives_the_trip(self, scope):
+        assert self._build(scope=scope).scope == scope
+
+    def test_the_folder_name_survives_the_trip(self):
+        row = self._build(scope="single_folder", folder_name="Day 2 Rushes")
+        assert row.folder_name == "Day 2 Rushes"
+
+    def test_the_old_spelling_is_folded_on_a_cold_build_too(self):
+        assert self._build(scope="selection").scope == "selected"
+
+
+def test_the_scope_column_fits_the_longest_value():
+    """"multiple_folders" is exactly 16 characters — the width the column had
+    before §177 widened it, with nothing to spare."""
+    from apps.api.models.zip_export import ZipExport
+
+    width = ZipExport.__table__.c.scope.type.length
+    assert width >= len("multiple_folders")
+    assert width > 16, "no headroom is how the next value gets truncated"

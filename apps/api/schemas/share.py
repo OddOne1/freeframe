@@ -192,12 +192,30 @@ class ZipExportItem(BaseModel):
     version_id: Optional[uuid.UUID] = None
 
 
-#: Whether a batch is everything downloadable in its scope, or a subset the
-#: user picked (§175). Carried explicitly rather than inferred from
-#: item-count vs total-asset-count, because those are indistinguishable for a
-#: link holding exactly one asset: "all of it" and "the one I selected" are
-#: the same count.
-ZipScope = Literal["all", "selection"]
+#: What SHAPE of selection this batch is (§175, widened in §177). Carried
+#: explicitly rather than inferred from item-count vs total-asset-count,
+#: because those are indistinguishable for a link holding exactly one asset:
+#: "all of it" and "the one I selected" are the same count. It is also the
+#: only thing that survives the frontend flattening a folder click into a
+#: bare list of asset ids — folder identity is gone by the time the request
+#: is built, so the shape has to be stated, not reconstructed.
+#:
+#: - "all"              -> the whole scope, nothing excluded
+#: - "selected"         -> loose files, or files mixed with folders
+#: - "single_folder"    -> exactly one folder and nothing else
+#: - "multiple_folders" -> two or more folders and no loose files
+#:
+#: "selection" is §175's original spelling of "selected", kept ACCEPTED (and
+#: normalised away on arrival) rather than removed: a browser tab open across
+#: the deploy still holds the old bundle, and rejecting its scope would turn
+#: a rename into a failed download.
+ZipScope = Literal["all", "selected", "single_folder", "multiple_folders", "selection"]
+
+#: The scope a caller that says nothing gets. Labelling a partial archive
+#: `{link}.zip` claims a completeness nothing verified; labelling a complete
+#: one `{link}_Selected.zip` is merely less specific, so the default is the
+#: second.
+DEFAULT_ZIP_SCOPE = "selected"
 
 
 class ZipExportRequest(BaseModel):
@@ -207,11 +225,16 @@ class ZipExportRequest(BaseModel):
     variant: DownloadVariant = DownloadVariant.raw
     #: Only affects the download's FILENAME, never its contents.
     #:
-    #: Defaults to "selection" on purpose: a caller that does not say cannot
+    #: Defaults to "selected" on purpose: a caller that does not say cannot
     #: have its archive labelled as complete. Naming a partial archive
     #: `{link}.zip` would claim a completeness nothing verified, while naming
-    #: a complete one `{link}_selection.zip` is merely less specific.
-    scope: ZipScope = "selection"
+    #: a complete one `{link}_Selected.zip` is merely less specific.
+    scope: ZipScope = DEFAULT_ZIP_SCOPE
+    #: The folder's own name, for `scope="single_folder"` only — it is what
+    #: `{base}_{FolderName}.zip` is built from. Sent by the client because
+    #: the server never sees a folder id here: the selection arrives already
+    #: flattened to asset ids. Ignored for every other scope.
+    folder_name: Optional[str] = None
 
 
 class ZipExportFile(BaseModel):
