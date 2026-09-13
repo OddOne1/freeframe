@@ -143,7 +143,22 @@ class MediaFile(Base):
     file_type: Mapped[FileType] = mapped_column(Enum(FileType), nullable=False)
     original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Set from the CLIENT's declared size at /upload/initiate, then
+    # overwritten with the object's real size once the upload completes
+    # (§180). Both storage-quota checks and every storage figure in the
+    # admin UI are sums of this column, so a client that under-reported used
+    # to walk straight past a quota, and one that over-reported could block
+    # an upload that would have fit.
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: When `file_size_bytes` was last confirmed against S3 itself (§180).
+    #:
+    #: NULL means the number is still whatever the client claimed: either the
+    #: row predates this reconciliation, or the HEAD at completion failed
+    #: (twice — it is retried once) and the row was left for a backfill to
+    #: pick up rather than failing an upload whose bytes are safely stored.
+    #: It is therefore a work queue, not decoration: `WHERE
+    #: size_verified_at IS NULL` is exactly the set still to be checked.
+    size_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     s3_key_raw: Mapped[str] = mapped_column(String(1000), nullable=False)
     s3_key_processed: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     s3_key_thumbnail: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)

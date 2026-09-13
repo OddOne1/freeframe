@@ -1,3 +1,4 @@
+import logging
 import os
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
@@ -12,6 +13,7 @@ from ..models.project import Project
 from ..services.s3_service import (
     create_multipart_upload, presign_upload_part,
     complete_multipart_upload, abort_multipart_upload,
+    head_object_size,
 )
 from ..services.permissions import get_project_member, require_project_role
 from ..models.project import ProjectRole
@@ -24,7 +26,68 @@ from ..schemas.upload import (
     ALLOWED_MIME_TYPES, MAX_FILE_SIZE_BYTES, mime_to_asset_type,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/upload", tags=["upload"])
+
+
+def _reconcile_file_size(media_file: MediaFile) -> None:
+    """Replace the client's declared size with the object's real one (§180).
+
+    `file_size_bytes` is written at /upload/initiate from a number the
+    browser sent, and until now nothing ever checked it. Both storage-quota
+    checks in this file and every storage figure in the admin UI are sums of
+    that column, so under-reporting walked straight past a quota and
+    over-reporting could refuse an upload that would have fit.
+
+    The key HEADed is the one the SERVER generated and stored, not
+    `body.s3_key` from the request: the client supplies that too, and
+    reconciling against a client-chosen key would check a number against
+    whatever object the client pointed at. If the two disagree, this HEAD
+    fails and the row is flagged — which is the correct outcome, since the
+    object this row claims to describe then does not exist.
+
+    ── When the HEAD fails ──────────────────────────────────────────────
+    Retried once, then given up on. The upload itself is NOT failed: the
+    bytes are in S3, complete_multipart_upload has already returned, and
+    refusing the upload over a size check would throw away a good file to
+    protect a number. Nor is the bad value left silently in place —
+    `size_verified_at` stays NULL, which is the work queue a backfill reads
+    (`WHERE size_verified_at IS NULL`), and the mismatch is logged at ERROR
+    with the key so it is findable before that backfill exists.
+
+    One retry rather than several: this runs inside a request the user is
+    waiting on, and the failures worth beating this way are the momentary
+    ones. A bucket that is genuinely unreachable is not going to answer on
+    the fourth try either, and the NULL flag loses nothing by waiting.
+    """
+    declared = media_file.file_size_bytes
+    last_error: Exception | None = None
+
+    for _attempt in (1, 2):
+        try:
+            actual = head_object_size(media_file.s3_key_raw)
+        except Exception as e:  # noqa: BLE001 — every boto3 failure is the same decision here
+            last_error = e
+            continue
+
+        media_file.file_size_bytes = actual
+        media_file.size_verified_at = datetime.now(timezone.utc)
+        if actual != declared:
+            # Worth a line even though it is handled: a large, consistent
+            # gap is either a broken client or someone probing the quota.
+            logger.warning(
+                "upload size mismatch for %s: client declared %s, S3 has %s",
+                media_file.s3_key_raw, declared, actual,
+            )
+        return
+
+    logger.error(
+        "could not verify upload size for %s after 2 attempts (%s); "
+        "leaving the client-declared %s bytes unverified for backfill",
+        media_file.s3_key_raw, last_error, declared,
+    )
+
 
 @router.post("/initiate", response_model=InitiateUploadResponse)
 def initiate_upload(
@@ -208,6 +271,17 @@ def complete_upload(
 
     # Then complete S3 multipart
     complete_multipart_upload(body.s3_key, body.upload_id, [p.model_dump() for p in body.parts])
+
+    # §180 — the object exists now, so its size is knowable. Done BEFORE the
+    # commit below, in the same transaction that marks the version as
+    # processing: the row becomes final and reconciled in one step, so no
+    # quota check can ever read a committed-but-unreconciled number. Every
+    # reader of this column (the two checks in initiate_upload above,
+    # site_settings' platform total, projects' per-project totals) is a live
+    # SQL SUM computed per request, so they all pick this up from here on.
+    media_file = db.query(MediaFile).filter(MediaFile.version_id == version.id).first()
+    if media_file:
+        _reconcile_file_size(media_file)
 
     version.processing_status = ProcessingStatus.processing
     db.commit()

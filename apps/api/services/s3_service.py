@@ -186,6 +186,18 @@ def complete_multipart_upload(s3_key: str, upload_id: str, parts: list[dict]) ->
         MultipartUpload={"Parts": parts},
     )
 
+def head_object_size(s3_key: str) -> int:
+    """The real byte size of a stored object, straight from S3 (§180).
+
+    Raises whatever boto3 raises — a missing key, a network blip, a refused
+    connection. The caller decides what a failure means, because that answer
+    differs by call site; swallowing it here would make every caller's
+    handling implicit.
+    """
+    s3 = get_s3_client()
+    head = s3.head_object(Bucket=settings.s3_bucket, Key=s3_key)
+    return int(head["ContentLength"])
+
 def abort_multipart_upload(s3_key: str, upload_id: str) -> None:
     """Abort a multipart upload and clean up uploaded parts."""
     s3 = get_s3_client()
