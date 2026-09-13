@@ -1045,8 +1045,21 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
       <div className="flex items-center justify-between border-b border-border px-3 h-12 bg-bg-secondary shrink-0">
         {/* Left: back + breadcrumb */}
         <div className="flex items-center gap-1 min-w-0 flex-1">
+          {/* Back to the folder this asset lives in, not the project root
+              (§179). Built from `asset.folder_id` rather than
+              `router.back()`: history only holds the right entry when the
+              user clicked through to get here, and this page is regularly
+              opened cold — a shared link to one asset, a refresh, a new
+              tab. Reconstructing the destination is deterministic however
+              the viewer was reached.
+
+              Same `?folder=` shape the header breadcrumb above already
+              builds from the same field, and the project page derives
+              `currentFolderId` from that param on every render, so landing
+              on it cold renders the folder and its full crumb trail. */}
           <Link
-            href={`/projects/${asset.project_id}`}
+            href={`/projects/${asset.project_id}${asset.folder_id ? `?folder=${asset.folder_id}` : ''}`}
+            aria-label="Back to folder"
             className="flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
           >
             <ArrowLeft className="h-4 w-4" />
