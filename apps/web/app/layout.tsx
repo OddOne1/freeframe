@@ -4,6 +4,7 @@ import { ToastProvider } from "@/components/shared/toast";
 import { ThemeInitializer } from "@/components/shared/theme-initializer";
 import { FaviconInitializer } from "@/components/shared/favicon-initializer";
 import { ThemeColorsInitializer } from "@/components/shared/theme-colors-initializer";
+import { fetchSiteSettingsServer, toPublicMediaUrl } from "@/lib/site-settings-server";
 import "./globals.css";
 
 const dmSans = DM_Sans({
@@ -53,35 +54,17 @@ export async function generateMetadata(): Promise<Metadata> {
   // reason favicon.ico was. If a favicon bug resurfaces again, check for
   // ANY file matching Next's icon/apple-icon/favicon convention re-added
   // under app/ before re-diagnosing as a browser cache issue.
-  let iconHref = "/logo-icon.png";
-  try {
-    const internalUrl = process.env.API_INTERNAL_URL || "http://localhost:8000";
-    const res = await fetch(internalUrl + "/site-settings", {
-      next: { revalidate: 60 },
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.favicon_url) {
-        // NEXT_PUBLIC_API_URL is only guaranteed to exist at *build* time
-        // (it gets inlined into the client bundle). Docker multi-stage
-        // builds do not carry ENV values into the runner stage, so relying
-        // on process.env here at request time used to silently fall back
-        // to "http://localhost:8000" -- pointing every visitor's browser at
-        // their own machine instead of the real API, which meant the
-        // favicon link in the SSR'd HTML was never actually reachable. The
-        // runner stage in Dockerfile.prod now redeclares
-        // NEXT_PUBLIC_API_URL=/api explicitly so this resolves correctly,
-        // but "/api" is hardcoded as the fallback too since that relative
-        // path (routed by Traefik to the api container) is the only value
-        // this has ever been set to in this deployment.
-        const publicPrefix = process.env.NEXT_PUBLIC_API_URL || "/api";
-        iconHref = publicPrefix + data.favicon_url;
-      }
-    }
-  } catch {
-    // Backend unreachable at render time -- fall back to the bundled
-    // default icon rather than failing the whole page render.
-  }
+  //
+  // §178 — the fetch itself moved to lib/site-settings-server so the
+  // sidebar could reuse it rather than grow a third copy. The env reasoning
+  // that used to sit inline here (NEXT_PUBLIC_API_URL is build-time only,
+  // and a Docker multi-stage build does not carry it into the runner stage,
+  // so "/api" is hardcoded as the fallback) moved with it.
+  // An unreachable backend at render time returns null from the helper
+  // (it never throws), so this falls back to the bundled default icon
+  // rather than failing the whole page render.
+  const siteSettings = await fetchSiteSettingsServer();
+  const iconHref = toPublicMediaUrl(siteSettings?.favicon_url) ?? "/logo-icon.png";
   base.icons = { icon: iconHref };
 
   return base;

@@ -197,11 +197,11 @@ describe('branding draft state', () => {
     expect(upload).not.toHaveBeenCalled()
   })
 
-  it('Reset to defaults stages, and can be backed out of', async () => {
+  it('Reset name and colors stages, and can be backed out of', async () => {
     settings = { ...settings, org_name: 'Acme', logo_dark_url: '/stream/logo.png' }
     const user = userEvent.setup()
     await renderPage()
-    await user.click(screen.getByRole('button', { name: /reset to defaults/i }))
+    await user.click(screen.getByRole('button', { name: /reset name and colors/i }))
     // It used to fire resetAll() on click — irreversible, instantly, for
     // everyone.
     expect(patch).not.toHaveBeenCalled()
@@ -215,13 +215,16 @@ describe('branding draft state', () => {
     settings = { ...settings, org_name: 'Acme', logo_dark_url: '/stream/logo.png' }
     const user = userEvent.setup()
     await renderPage()
-    await user.click(screen.getByRole('button', { name: /reset to defaults/i }))
+    await user.click(screen.getByRole('button', { name: /reset name and colors/i }))
     await user.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
     const body = patch.mock.calls[0][1] as Record<string, unknown>
     expect(body.org_name).toBe('FreeFrame')
-    expect(body.logo_dark_s3_key).toBeNull()
     expect(body.theme_colors).toBeNull()
+    // §178 — the logo nulls this used to carry are gone. A brand image that
+    // has been set is never cleared, so sending one would be a request the
+    // server ignores. See logo-never-clears.test.tsx.
+    expect('logo_dark_s3_key' in body).toBe(false)
   })
 
   it('the upload slot itself shows the staged file, not the saved one', async () => {
@@ -251,23 +254,25 @@ describe('branding draft state', () => {
     expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:mock-2')
   })
 
-  it('a reset that is then edited removes only the slots that had something', async () => {
-    // Committed: one logo, custom name. Staging a reset and then typing a
-    // name means it is no longer "everything cleared", so Save takes the
-    // per-field path — where clearing the two slots that were ALREADY empty
-    // would be two pointless requests.
+  it('a reset that is then edited still sends no logo fields', async () => {
+    // §178 — this used to assert the opposite: that a reset-then-edit took
+    // the per-field path and cleared exactly the slots that had something.
+    // Clearing a slot is no longer a thing that can happen, so what is
+    // worth pinning now is that no logo field appears in ANY of the calls.
     settings = { ...settings, org_name: 'Acme', logo_dark_url: '/stream/logo.png' }
     const user = userEvent.setup()
     await renderPage()
-    await user.click(screen.getByRole('button', { name: /reset to defaults/i }))
+    await user.click(screen.getByRole('button', { name: /reset name and colors/i }))
     await user.clear(nameField())
     await user.type(nameField(), 'Still Custom')
     await user.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(patch).toHaveBeenCalled())
-    const keys = patch.mock.calls.map((c) => Object.keys(c[1] as object)[0])
-    expect(keys).toContain('logo_dark_s3_key')
+    const keys = patch.mock.calls.flatMap((c) => Object.keys(c[1] as object))
+    expect(keys).not.toContain('logo_dark_s3_key')
     expect(keys).not.toContain('logo_light_s3_key')
     expect(keys).not.toContain('logo_login_s3_key')
+    expect(keys).not.toContain('favicon_s3_key')
+    expect(keys).toContain('org_name')
   })
 
   it('an abandoned draft does not survive a remount', async () => {

@@ -1,33 +1,18 @@
 import type { Metadata } from 'next'
 import Image from 'next/image'
+import { fetchSiteSettingsServer, toPublicMediaUrl } from '@/lib/site-settings-server'
 
 export const metadata: Metadata = {
   title: 'FreeFrame - Auth',
 }
 
 async function getLoginLogoUrl(): Promise<string | null> {
-  // Same server-side-fetch pattern as generateMetadata in app/layout.tsx
-  // (see the comment there for why NEXT_PUBLIC_API_URL is hardcoded as the
-  // fallback rather than trusted blindly at runtime). This page is
-  // pre-authentication, and GET /site-settings has no auth dependency
-  // (apps/api/routers/site_settings.py), so it's safe to call directly
-  // here without any token.
-  try {
-    const internalUrl = process.env.API_INTERNAL_URL || 'http://localhost:8000'
-    const res = await fetch(internalUrl + '/site-settings', {
-      next: { revalidate: 60 },
-    })
-    if (res.ok) {
-      const data = await res.json()
-      if (data.logo_login_url) {
-        const publicPrefix = process.env.NEXT_PUBLIC_API_URL || '/api'
-        return publicPrefix + data.logo_login_url
-      }
-    }
-  } catch {
-    // Backend unreachable at render time -- fall back to the default logo.
-  }
-  return null
+  // The server-side fetch this page introduced now lives in
+  // lib/site-settings-server, shared with app/layout.tsx's favicon metadata
+  // and — since §178 — the dashboard sidebar. Same call, same 60s revalidate,
+  // same never-throw contract; see that file for the env reasoning.
+  const data = await fetchSiteSettingsServer()
+  return toPublicMediaUrl(data?.logo_login_url)
 }
 
 export default async function AuthLayout({

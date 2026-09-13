@@ -14,13 +14,29 @@ import {
   type ThemeColorTokens,
 } from '@/lib/color-utils'
 
+/**
+ * One image slot: a preview, an upload button, and — only while a picked
+ * file is staged — an Undo.
+ *
+ * §178: there is deliberately no Remove. A brand image that has been set is
+ * never cleared back to the FreeFrame default (the backend ignores a null
+ * for those columns), so a Remove button here would be a control that
+ * visibly did nothing — the worst of the options, and the one this section
+ * used to ship. The honest treatment is not to offer it, and to say why in
+ * the copy rather than leave its absence to be discovered.
+ *
+ * `pending` is the staged-file case. Undoing that is a real, meaningful
+ * action — it goes back to the committed image, not to empty — so it is the
+ * one that stays.
+ */
 function LogoUploadSlot({
   label,
   description,
   logoUrl,
+  pending,
   uploading,
   onUpload,
-  onRemove,
+  onUndo,
   previewBg,
   accept = 'image/png,image/jpeg,image/svg+xml,image/webp',
   hint = 'PNG, JPG, SVG or WebP · Max 2 MB',
@@ -28,9 +44,11 @@ function LogoUploadSlot({
   label: string
   description: string
   logoUrl: string | null
+  /** A file is picked but unsaved. */
+  pending: boolean
   uploading: boolean
   onUpload: (file: File) => void
-  onRemove: () => void
+  onUndo: () => void
   previewBg: string
   accept?: string
   hint?: string
@@ -81,16 +99,15 @@ function LogoUploadSlot({
             <Upload className="h-3.5 w-3.5" />
             {logoUrl ? 'Replace' : 'Upload'}
           </Button>
-          {logoUrl && (
+          {pending && (
             <Button
               variant="ghost"
               size="sm"
-              onClick={onRemove}
+              onClick={onUndo}
               disabled={uploading}
-              className="text-status-error hover:text-status-error hover:bg-status-error/10"
             >
               <X className="h-3.5 w-3.5" />
-              Remove
+              Undo
             </Button>
           )}
         </div>
@@ -174,14 +191,19 @@ type UploadSlot = 'dark' | 'light' | 'login'
  *
  * `keep` is not the same as "no file": it means "whatever is committed
  * stays", which is what makes Discard a pure local operation and lets Save
- * send nothing for a slot nobody touched. `removed` has to be its own state
- * for the same reason — it is a change, and a null URL alone could not tell
- * "cleared it" from "never had one".
+ * send nothing for a slot nobody touched.
+ *
+ * §178 removed the third state, `removed`. A brand image that has been set
+ * is never cleared back to the bundled FreeFrame default — the backend
+ * ignores a null for those columns — so a draft state meaning "clear this"
+ * described an outcome that could not happen. The two states left are the
+ * two real ones: keep what is there, or replace it with a new file. What
+ * used to be the Remove button is now an Undo that exists only while an
+ * unsaved file is staged, and takes the slot back to `keep`.
  */
 type SlotDraft =
   | { kind: 'keep' }
   | { kind: 'file'; file: File; url: string }
-  | { kind: 'removed' }
 
 const KEEP: SlotDraft = { kind: 'keep' }
 
@@ -221,9 +243,7 @@ export default function BrandingPage() {
     themeColors,
     updateOrgName,
     uploadLogo,
-    removeLogo,
     uploadFavicon,
-    removeFavicon,
     updateThemeColors,
     resetThemeColors,
     resetAll,
@@ -317,23 +337,23 @@ export default function BrandingPage() {
   function effectiveLogo(side: UploadSlot): string | null {
     const d = draftLogos[side]
     if (d.kind === 'file') return d.url
-    if (d.kind === 'removed') return null
     return committedLogos[side]
   }
-  const effectiveFavicon =
-    draftFavicon.kind === 'file' ? draftFavicon.url : draftFavicon.kind === 'removed' ? null : faviconUrl
+  const effectiveFavicon = draftFavicon.kind === 'file' ? draftFavicon.url : faviconUrl
 
   function pickLogo(side: UploadSlot, file: File) {
     setDraftLogos((prev) => { revoke(prev[side]); return { ...prev, [side]: { kind: 'file', file, url: trackUrl(file) } } })
   }
-  function clearLogo(side: UploadSlot) {
-    setDraftLogos((prev) => { revoke(prev[side]); return { ...prev, [side]: { kind: 'removed' } } })
+  /** Back out of an unsaved pick — NOT a clear (§178). The slot returns to
+   *  whatever is committed, which for a configured org is its real logo. */
+  function undoLogo(side: UploadSlot) {
+    setDraftLogos((prev) => { revoke(prev[side]); return { ...prev, [side]: KEEP } })
   }
   function pickFavicon(file: File) {
     setDraftFavicon((prev) => { revoke(prev); return { kind: 'file', file, url: trackUrl(file) } })
   }
-  function clearFavicon() {
-    setDraftFavicon((prev) => { revoke(prev); return { kind: 'removed' } })
+  function undoFavicon() {
+    setDraftFavicon((prev) => { revoke(prev); return KEEP })
   }
 
   function changeColor(theme: 'light' | 'dark', key: keyof ThemeColorTokens, value: string) {
@@ -343,11 +363,17 @@ export default function BrandingPage() {
     setDraftColors((prev) => ({ ...prev, [theme]: null }))
   }
 
-  /** Stage "clear everything" rather than doing it. §106: a reset should be
-   *  as reversible as any other edit until Save. */
+  /** Stage "back to defaults" rather than doing it. §106: a reset should be
+   *  as reversible as any other edit until Save.
+   *
+   *  §178 — this no longer touches the logos or favicon. It never could
+   *  have cleared a configured one (the backend ignores that), and staging
+   *  a change that Save cannot make is how a button ends up appearing to do
+   *  something it does not. Any staged, unsaved image pick is dropped,
+   *  which IS reversible and is what "back to defaults" means here. */
   function stageResetAll() {
-    setDraftLogos((prev) => { Object.values(prev).forEach(revoke); return { dark: { kind: 'removed' }, light: { kind: 'removed' }, login: { kind: 'removed' } } })
-    setDraftFavicon((prev) => { revoke(prev); return { kind: 'removed' } })
+    setDraftLogos((prev) => { Object.values(prev).forEach(revoke); return { dark: KEEP, light: KEEP, login: KEEP } })
+    setDraftFavicon((prev) => { revoke(prev); return KEEP })
     setDraftName('FreeFrame')
     setDraftColors({ light: null, dark: null })
     setSaveError(null)
@@ -355,15 +381,10 @@ export default function BrandingPage() {
 
   // ── What actually differs ─────────────────────────────────────────────
   const nameChanged = draftName.trim() !== '' && draftName.trim() !== orgName
-  const changedLogoSides = (['dark', 'light', 'login'] as UploadSlot[]).filter((s) => {
-    const d = draftLogos[s]
-    if (d.kind === 'file') return true
-    // Removing a slot that is already empty is not a change.
-    if (d.kind === 'removed') return committedLogos[s] !== null
-    return false
-  })
-  const faviconChanged =
-    draftFavicon.kind === 'file' || (draftFavicon.kind === 'removed' && faviconUrl !== null)
+  const changedLogoSides = (['dark', 'light', 'login'] as UploadSlot[]).filter(
+    (s) => draftLogos[s].kind === 'file',
+  )
+  const faviconChanged = draftFavicon.kind === 'file'
   const committedColors = seedColors(themeColors)
   const changedThemes = (['light', 'dark'] as const).filter(
     (t) => colorsKey({ ...committedColors, [t]: draftColors[t] }) !== colorsKey(committedColors),
@@ -371,15 +392,20 @@ export default function BrandingPage() {
   const isDirty =
     nameChanged || changedLogoSides.length > 0 || faviconChanged || changedThemes.length > 0
 
-  // "Everything cleared" collapses to the one endpoint that says exactly
-  // that, instead of five separate PATCHes that happen to add up to it.
-  // Derived rather than a flag set by the Reset button: a flag goes stale
-  // the moment the user edits something afterwards.
+  // "Back to defaults" collapses to the one endpoint that says exactly
+  // that, instead of separate PATCHes that happen to add up to it. Derived
+  // rather than a flag set by the Reset button: a flag goes stale the
+  // moment the user edits something afterwards.
+  //
+  // §178 — the logo/favicon conditions are gone from this test along with
+  // the reset itself. They can no longer be part of what a reset means, and
+  // leaving them in would have made this permanently false for any org with
+  // a logo, quietly retiring the single-call path.
   const stagedAsFullReset =
     isDirty &&
     draftName.trim() === 'FreeFrame' &&
-    (['dark', 'light', 'login'] as UploadSlot[]).every((s) => effectiveLogo(s) === null) &&
-    effectiveFavicon === null &&
+    changedLogoSides.length === 0 &&
+    !faviconChanged &&
     draftColors.light === null &&
     draftColors.dark === null
 
@@ -395,13 +421,14 @@ export default function BrandingPage() {
         for (const side of changedLogoSides) {
           const d = draftLogos[side]
           setUploadingSide(side)
+          // Only reachable as 'file' — changedLogoSides filters on exactly
+          // that — but narrowed rather than asserted, so this stays correct
+          // if a third slot state is ever reintroduced.
           if (d.kind === 'file') await uploadLogo(side, d.file)
-          else if (d.kind === 'removed') await removeLogo(side)
         }
-        if (faviconChanged) {
+        if (faviconChanged && draftFavicon.kind === 'file') {
           setUploadingSide('favicon')
-          if (draftFavicon.kind === 'file') await uploadFavicon(draftFavicon.file)
-          else await removeFavicon()
+          await uploadFavicon(draftFavicon.file)
         }
         setUploadingSide(null)
         if (nameChanged) await updateOrgName(draftName.trim())
@@ -418,6 +445,16 @@ export default function BrandingPage() {
       // what was really stored.
       savingRef.current = false
       lastSeeded.current = ''
+      // ...and actually re-run that effect. Clearing the two refs above
+      // cannot: a ref mutation triggers no render, and the effect's only
+      // other trigger — `committedKey` changing — already fired while
+      // `savingRef` was still true, so it returned early and never came
+      // back. The staged picks therefore survived their own save: the slot
+      // kept showing its blob URL and the "Unsaved changes" bar stayed up
+      // after a successful save. This state update is what re-runs it.
+      // Found by §178's test; the staleness predates it.
+      setDraftLogos((prev) => { Object.values(prev).forEach(revoke); return { dark: KEEP, light: KEEP, login: KEEP } })
+      setDraftFavicon((prev) => { revoke(prev); return KEEP })
     } catch (err) {
       savingRef.current = false
       setSaveError(err instanceof Error ? err.message : 'Could not save those changes.')
@@ -435,11 +472,12 @@ export default function BrandingPage() {
     return null
   }
 
-  const hasCustomBranding =
-    effectiveLogo('dark') !== null ||
-    effectiveLogo('light') !== null ||
-    effectiveLogo('login') !== null ||
-    effectiveFavicon !== null ||
+  // Gates the reset button, so it now asks what that button can actually
+  // reset (§178): a custom name or palette. A logo is deliberately not part
+  // of this — an org whose ONLY customisation is a logo has nothing to
+  // reset, and offering the button there promised something it could not
+  // deliver.
+  const hasResettableBranding =
     draftName.trim() !== 'FreeFrame' ||
     draftColors.light !== null ||
     draftColors.dark !== null
@@ -487,6 +525,12 @@ export default function BrandingPage() {
         <p className="text-xs text-text-tertiary -mt-1">
           Upload separate logos for dark and light themes. If only one is set, it will be used for both.
         </p>
+        {/* §178 — stated, not left to be discovered by a Remove button that
+            silently did nothing. */}
+        <p className="text-xs text-text-tertiary -mt-1">
+          Once a logo is set it can be replaced, but not removed — uploading a new file is the only
+          way to change what everyone sees.
+        </p>
 
         <div className="space-y-3">
           <div className="flex items-center gap-2 mb-1">
@@ -497,9 +541,10 @@ export default function BrandingPage() {
             label="Dark theme logo"
             description="Shown when the app is in dark mode. Use a light-colored logo."
             logoUrl={effectiveLogo('dark')}
+            pending={draftLogos.dark.kind === 'file'}
             uploading={uploadingSide === 'dark'}
             onUpload={(file) => pickLogo('dark', file)}
-            onRemove={() => clearLogo('dark')}
+            onUndo={() => undoLogo('dark')}
             previewBg="bg-zinc-900"
           />
 
@@ -511,9 +556,10 @@ export default function BrandingPage() {
             label="Light theme logo"
             description="Shown when the app is in light mode. Use a dark-colored logo."
             logoUrl={effectiveLogo('light')}
+            pending={draftLogos.light.kind === 'file'}
             uploading={uploadingSide === 'light'}
             onUpload={(file) => pickLogo('light', file)}
-            onRemove={() => clearLogo('light')}
+            onUndo={() => undoLogo('light')}
             previewBg="bg-white"
           />
         </div>
@@ -527,15 +573,16 @@ export default function BrandingPage() {
         </div>
         <p className="text-xs text-text-tertiary -mt-1">
           Shown above the sign-in form, before anyone is logged in. Falls back to the default FreeFrame logo
-          when not set.
+          until one is set.
         </p>
         <LogoUploadSlot
           label="Login page logo"
           description="Shown on the sign-in and password-setup screens."
           logoUrl={effectiveLogo('login')}
+          pending={draftLogos.login.kind === 'file'}
           uploading={uploadingSide === 'login'}
           onUpload={(file) => pickLogo('login', file)}
-          onRemove={() => clearLogo('login')}
+          onUndo={() => undoLogo('login')}
           previewBg="bg-zinc-900"
         />
       </section>
@@ -544,15 +591,17 @@ export default function BrandingPage() {
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-text-primary">Favicon</h2>
         <p className="text-xs text-text-tertiary -mt-1">
-          Shown in the browser tab. Use a square image — it&apos;s scaled down automatically.
+          Shown in the browser tab. Use a square image — it&apos;s scaled down automatically. Like the
+          logo, it can be replaced but not removed.
         </p>
         <LogoUploadSlot
           label="Favicon"
           description="Shown in the browser tab for everyone in this workspace."
           logoUrl={effectiveFavicon}
+          pending={draftFavicon.kind === 'file'}
           uploading={uploadingSide === 'favicon'}
           onUpload={pickFavicon}
-          onRemove={clearFavicon}
+          onUndo={undoFavicon}
           previewBg="bg-bg-tertiary"
           accept="image/png"
           hint="PNG only · Max 2 MB"
@@ -612,7 +661,7 @@ export default function BrandingPage() {
       </section>
 
       {/* Reset — stages, like everything else here */}
-      {hasCustomBranding && (
+      {hasResettableBranding && (
         <section className="pt-2 border-t border-border">
           <Button
             variant="ghost"
@@ -622,10 +671,11 @@ export default function BrandingPage() {
             disabled={saving}
           >
             <RotateCcw className="h-3.5 w-3.5" />
-            Reset to defaults
+            Reset name and colors
           </Button>
           <p className="text-2xs text-text-tertiary mt-1.5">
-            Staged like any other change — nothing is cleared until you save.
+            Staged like any other change — nothing is reset until you save. Logos and the favicon are
+            not affected; they can only be replaced.
           </p>
         </section>
       )}

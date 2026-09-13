@@ -23,6 +23,26 @@ router = APIRouter(tags=["site-settings"])
 
 # -- Helpers ---------------------------------------------------------------
 
+#: The four columns holding a custom brand image. Once one of these has a
+#: value, it is never cleared back to NULL (§178).
+#:
+#: NULL means "show the bundled FreeFrame default", and the requirement is
+#: that an organisation which has ever set its own logo is never shown that
+#: default again — not by a Remove click, not by "Reset to defaults", not by
+#: a hand-rolled PATCH. Replacing one with a new upload is unaffected: the
+#: column goes from one key to another, never to NULL.
+#:
+#: A never-configured install is untouched by this. Those columns are
+#: already NULL, so the fresh-install case still shows the default exactly
+#: as before — this rule only protects a value that exists.
+BRAND_IMAGE_FIELDS = (
+    "logo_dark_s3_key",
+    "logo_light_s3_key",
+    "logo_login_s3_key",
+    "favicon_s3_key",
+)
+
+
 def _get_or_create_settings(db: Session) -> SiteSettings:
     site_settings = db.query(SiteSettings).first()
     if not site_settings:
@@ -166,6 +186,16 @@ def update_site_settings(
     site_settings = _get_or_create_settings(db)
     update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
+        # §178 — a configured brand image is never cleared. Ignored rather
+        # than rejected with a 400: the payload that asks for this is the
+        # legacy "Reset to defaults" one, which also carries an org_name and
+        # theme_colors reset that SHOULD still apply, and failing the whole
+        # request would take those down with it. The response is built from
+        # the row afterwards, so a caller that asked for a clear sees the
+        # logo still there rather than a success that silently did nothing.
+        if field in BRAND_IMAGE_FIELDS and value is None:
+            if getattr(site_settings, field) is not None:
+                continue
         setattr(site_settings, field, value)
     db.commit()
     db.refresh(site_settings)

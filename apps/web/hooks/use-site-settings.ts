@@ -6,16 +6,12 @@ import { resolveApiMediaUrl } from '@/lib/utils'
 import type { ThemeColorTokens } from '@/lib/color-utils'
 import type { SiteSettingsResponse } from '@/types'
 
-const SITE_SETTINGS_KEY = '/site-settings'
+/** Exported so the server-seeded SWR fallback keys on exactly this string
+ *  (§178) — a mismatched literal there would silently seed nothing. */
+export const SITE_SETTINGS_KEY = '/site-settings'
 
 type LogoSide = 'dark' | 'light' | 'login'
 type ColorTheme = 'light' | 'dark'
-
-const LOGO_FIELD: Record<LogoSide, string> = {
-  dark: 'logo_dark_s3_key',
-  light: 'logo_light_s3_key',
-  login: 'logo_login_s3_key',
-}
 
 /**
  * Site-wide branding settings (org name + per-theme logo), shared across the
@@ -53,24 +49,10 @@ export function useSiteSettings() {
     await mutate(updated, false)
   }
 
-  async function removeLogo(side: LogoSide): Promise<void> {
-    const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
-      [LOGO_FIELD[side]]: null,
-    })
-    await mutate(updated, false)
-  }
-
   async function uploadFavicon(file: File): Promise<void> {
     const formData = new FormData()
     formData.append('file', file)
     const updated = await api.upload<SiteSettingsResponse>('/site-settings/favicon-upload', formData)
-    await mutate(updated, false)
-  }
-
-  async function removeFavicon(): Promise<void> {
-    const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
-      favicon_s3_key: null,
-    })
     await mutate(updated, false)
   }
 
@@ -112,13 +94,20 @@ export function useSiteSettings() {
     await mutate(updated, false)
   }
 
+  /**
+   * Back to the default workspace name and palette.
+   *
+   * §178 — the four `*_s3_key` nulls this used to send are gone. A brand
+   * image, once set, is never cleared: the backend ignores a null for those
+   * columns (see BRAND_IMAGE_FIELDS in routers/site_settings.py), so sending
+   * them would have been a request that quietly did nothing. Not sending
+   * them is what makes this function's name honest about its own scope.
+   * `removeLogo`/`removeFavicon` are gone from this hook for the same
+   * reason — a clear-to-empty that cannot happen should not be callable.
+   */
   async function resetAll(): Promise<void> {
     const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
       org_name: 'FreeFrame',
-      logo_dark_s3_key: null,
-      logo_light_s3_key: null,
-      logo_login_s3_key: null,
-      favicon_s3_key: null,
       theme_colors: null,
     })
     await mutate(updated, false)
@@ -142,9 +131,7 @@ export function useSiteSettings() {
     totalStorageUsedBytes: data?.total_storage_used_bytes ?? null,
     updateOrgName,
     uploadLogo,
-    removeLogo,
     uploadFavicon,
-    removeFavicon,
     updateThemeColors,
     resetThemeColors,
     updateTotalStorageLimit,
