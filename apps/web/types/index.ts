@@ -797,6 +797,10 @@ export interface SiteSettingsResponse {
   favicon_url: string | null;
   theme_colors: Record<string, unknown> | null;
   total_storage_limit_bytes?: number | null;
+  /** IANA zone deciding when the daily maintenance jobs run (§182).
+   *  Defaults to "UTC" server-side, so this is never absent in practice —
+   *  optional only so an older cached response still validates. */
+  timezone?: string;
   // Only populated for an authenticated superadmin caller -- null for
   // anonymous/non-superadmin requests (GET /site-settings is otherwise
   // public, backing the login page's branding).

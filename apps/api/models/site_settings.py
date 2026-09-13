@@ -27,4 +27,17 @@ class SiteSettings(Base):
     # limits (task 12) -- nullable = no cap, same convention as every other
     # storage limit in this codebase.
     total_storage_limit_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: IANA zone name (e.g. "Europe/Vienna") deciding what "03:00" means for
+    #: the daily maintenance jobs (§182). "UTC" is the default because
+    #: FreeFrame is self-hostable and this deployment's own timezone is not a
+    #: sensible default for anyone else's.
+    #:
+    #: Celery's OWN `timezone` setting stays "UTC" permanently and is NOT
+    #: derived from this. A running beat scheduler does not reliably pick up
+    #: a timezone change, and making it do so is fragile in a way nothing
+    #: here can verify. Instead the wall-clock-sensitive jobs tick every 15
+    #: minutes and decide for themselves whether it is their hour — see
+    #: services/schedule_window.py. A change therefore takes effect on the
+    #: next tick, with no restart.
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, server_default="UTC")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())

@@ -17,6 +17,7 @@ from ..schemas.site_settings import (
     SiteSettingsUpdate,
 )
 from ..services import s3_service
+from ..services.schedule_window import is_valid_timezone
 from .hls_proxy import proxy_url_for
 
 router = APIRouter(tags=["site-settings"])
@@ -121,6 +122,7 @@ def _to_response(site_settings: SiteSettings, include_usage: bool = False, db: O
         favicon_url=favicon_url,
         theme_colors=site_settings.theme_colors,
         total_storage_limit_bytes=site_settings.total_storage_limit_bytes,
+        timezone=site_settings.timezone or "UTC",
         total_storage_used_bytes=_platform_storage_used_bytes(db) if include_usage and db is not None else None,
     )
 # -- Endpoints ---------------------------------------------------------------
@@ -185,6 +187,15 @@ def update_site_settings(
 
     site_settings = _get_or_create_settings(db)
     update_data = body.model_dump(exclude_unset=True)
+
+    # §182 — rejected rather than coerced. An unknown zone would make every
+    # wall-clock check fall back to UTC silently, so the maintenance jobs
+    # would keep running at the old hour with the settings page insisting
+    # otherwise. Better a 400 the admin sees now.
+    tz = update_data.get("timezone")
+    if tz is not None and not is_valid_timezone(tz):
+        raise HTTPException(status_code=400, detail=f"Unknown timezone: {tz}")
+
     for field, value in update_data.items():
         # §178 — a configured brand image is never cleared. Ignored rather
         # than rejected with a 400: the payload that asks for this is the

@@ -10,6 +10,8 @@ class SiteSettingsResponse(BaseModel):
     favicon_url: Optional[str] = None
     theme_colors: Optional[Dict[str, Any]] = None
     total_storage_limit_bytes: Optional[int] = None
+    #: IANA zone name deciding when the daily maintenance jobs run (§182).
+    timezone: str = "UTC"
     # Live-computed, not stored -- sum of MediaFile.file_size_bytes across
     # every non-deleted asset platform-wide. Only populated for an
     # authenticated superadmin caller (GET /site-settings is otherwise
@@ -28,3 +30,7 @@ class SiteSettingsUpdate(BaseModel):
     favicon_s3_key: Optional[str] = None
     theme_colors: Optional[Dict[str, Any]] = None
     total_storage_limit_bytes: Optional[int] = None
+    #: IANA zone name. Validated against the real zone database in the
+    #: router — an unknown string here would make every wall-clock check
+    #: fall back to UTC forever, silently (§182).
+    timezone: Optional[str] = None

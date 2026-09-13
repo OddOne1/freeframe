@@ -12,7 +12,10 @@ they catch are exactly the ones no runtime test sees --
     likewise silent -- the message is accepted by the broker and sits there.
     This is not hypothetical: it is how `purge_expired_trash` and
     `send_due_date_reminders` ended up never executing in production, found
-    while adding the sweeper that would have joined them.
+    while adding the sweeper that would have joined them. `apply_watermark`
+    (§126) and four zip tasks (§143) were the same bug again;
+    `purge_expired_trash` was finally routed for real in §182, which is
+    also when the checks below stopped letting an exemption hide one.
 
 Both are invisible to unit tests of the task functions themselves, which
 pass perfectly while the task is never called.
@@ -324,6 +327,103 @@ def test_known_unrouted_tasks_really_are_unrouted():
     assert not fixed, (
         f"{fixed} now reach(es) a consumed queue -- remove from KNOWN_UNROUTED"
     )
+
+
+def test_the_unrouted_exemption_list_is_exactly_what_we_expect():
+    """The escape hatch, pinned shut (§182).
+
+    `test_every_scheduled_task_lands_on_a_consumed_queue` SKIPS anything in
+    KNOWN_UNROUTED. That is what let `purge_expired_trash` sit broken
+    through three separate discoveries of its own bug class: the check was
+    green the whole time, because the bug was on the exemption list.
+
+    An exemption should be a deliberate, reviewed act. Adding a name here
+    means editing this test, which means saying out loud in a diff that a
+    scheduled task is knowingly not running.
+    """
+    known = set(re.findall(r'"([^"]+)"', re.search(
+        r"KNOWN_UNROUTED = \{([^}]*)\}", _celery_source()).group(1)))
+    assert known == {"send_due_date_reminders"}, (
+        f"KNOWN_UNROUTED changed to {known}. Removing a name is the fix "
+        f"landing — update this test. ADDING one means a scheduled task is "
+        f"being knowingly left broken; say why in the diff."
+    )
+
+
+def test_purge_expired_trash_actually_reaches_a_worker():
+    """§182 — the fix, asserted directly rather than only via the general
+    check above, because this one has a history.
+
+    Present in beat_schedule since Recently Deleted shipped, and never once
+    executed: it declares an explicit name=, so the module glob never
+    matched it and it fell through to `default`, which no container
+    consumes.
+    """
+    registered = _registered_task_names()
+    assert "purge_expired_trash" in registered, "the task is not defined"
+    assert "purge_expired_trash" in _beat_task_names(), "it is not scheduled"
+
+    queue = _queue_for_name("purge_expired_trash")
+    consumed = _consumed_queues()
+    assert queue in consumed, (
+        f"purge_expired_trash routes to {queue!r}, which no worker consumes "
+        f"(consumed: {sorted(consumed)}). 30-day retention would still be a "
+        f"promise nothing keeps."
+    )
+
+
+def test_every_beat_task_is_routed_by_its_registered_name():
+    """The bug CLASS, not this instance of it (§126, §143, §182).
+
+    Three tasks have now been found falling through to `default` for the
+    same reason: an explicit name= that no module glob can match. Each was
+    found by a lucky read-through. This resolves every scheduled task the
+    way Celery itself does — by registered name — and fails on the next one
+    rather than waiting for a fourth accident.
+    """
+    consumed = _consumed_queues()
+    known = set(re.findall(r'"([^"]+)"', re.search(
+        r"KNOWN_UNROUTED = \{([^}]*)\}", _celery_source()).group(1)))
+    registered = _registered_task_names()
+
+    report = {}
+    for name in _beat_task_names():
+        if name in known:
+            continue
+        assert name in registered, f"beat_schedule names undefined task {name!r}"
+        queue = _queue_for_name(name)
+        report[name] = queue
+
+    stranded = {n: q for n, q in report.items() if q not in consumed}
+    assert not stranded, (
+        f"scheduled task(s) whose REGISTERED name routes nowhere a worker "
+        f"listens: {stranded}. Add both an explicit-name route and a module "
+        f"glob, as the zip/LUT/purge tasks do."
+    )
+    # And prove the check has teeth: it must actually have resolved
+    # something, rather than silently iterating an empty list.
+    assert len(report) >= 4, f"only checked {len(report)} scheduled tasks"
+
+
+def test_the_wall_clock_jobs_tick_often_enough_to_hit_their_window():
+    """§182 — the window and the cadence have to agree.
+
+    `purge_expired_trash` and `reconcile_file_sizes` are scheduled every 15
+    minutes and each returns immediately unless it is their hour in
+    `site_settings.timezone`. If either were put back on a daily crontab,
+    it would fire once at a fixed UTC hour and its own window check would
+    then reject it — the job would never run again, silently.
+    """
+    src = _celery_source()
+    block = src[src.index("beat_schedule"):]
+    for entry in ("purge-expired-trash", "reconcile-file-sizes"):
+        at = block.index(f'"{entry}"')
+        chunk = block[at:at + 400]
+        assert 'crontab(minute="*/15")' in chunk, (
+            f"{entry} must tick every 15 minutes; its task self-gates on a "
+            f"local wall-clock window and a daily crontab would make the "
+            f"two disagree"
+        )
 
 
 def test_the_stuck_sweeper_is_actually_scheduled():

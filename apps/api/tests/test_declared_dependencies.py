@@ -38,6 +38,10 @@ STDLIB = {
     "subprocess", "sys", "tempfile", "textwrap", "threading", "time",
     "traceback", "types", "typing", "unittest", "urllib", "uuid", "warnings",
     "xml", "zipfile", "zlib",
+    # §182 — stdlib since 3.9. The `tzdata` PyPI package in requirements.txt
+    # is NOT this module: it is the data zoneinfo reads when the host has no
+    # system zone database, and is declared there for that reason.
+    "zoneinfo",
 }
 
 # Local packages, reached without a relative import in scripts and tests.

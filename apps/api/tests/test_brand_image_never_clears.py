@@ -52,6 +52,7 @@ def _settings_row(**overrides):
     row.favicon_s3_key = None
     row.theme_colors = None
     row.total_storage_limit_bytes = None
+    row.timezone = "UTC"
     for k, v in overrides.items():
         setattr(row, k, v)
     return row

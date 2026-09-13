@@ -66,3 +66,14 @@ Pillow==10.4.0
 # on import (see routers/projects.py). Verified against the pinned
 # Pillow 10.4.0, with a manylinux_2_28_x86_64 wheel for the server.
 pillow-avif-plugin==1.6.0
+
+# §182 — the IANA zone database, for `zoneinfo` (services/schedule_window.py).
+#
+# Not currently load-bearing: python:3.11-slim inherits Debian's
+# /usr/share/zoneinfo and resolves Europe/Vienna without this, verified
+# directly. It is declared anyway because the failure mode if a future base
+# image drops it is the worst kind — ZoneInfo raises, resolve_zone falls
+# back to UTC, and every nightly job silently runs at the wrong local hour
+# while the settings page insists otherwise. zoneinfo prefers the system
+# database and uses this only as a fallback, so it costs nothing here.
+tzdata==2024.2

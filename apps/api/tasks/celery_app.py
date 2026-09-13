@@ -22,6 +22,7 @@ celery_app = Celery(
         "apps.api.tasks.purge_tasks",
         "apps.api.tasks.cleanup_tasks",
         "apps.api.tasks.zip_tasks",
+        "apps.api.tasks.reconcile_tasks",
     ],
 )
 
@@ -136,6 +137,28 @@ celery_app.conf.update(
         "delete_zip_export": {"queue": "transcoding"},
         "purge_share_link_zips": {"queue": "transcoding"},
         "sweep_zip_exports": {"queue": "transcoding"},
+        # §182 — the third instance of the SAME bug, and the one that had
+        # been live longest. `purge_expired_trash` carries an explicit
+        # name=, so `apps.api.tasks.purge_tasks.*` never matched it and it
+        # fell through to `default`, which nothing consumes. It has been in
+        # beat_schedule since Recently Deleted shipped and has never once
+        # executed: the 30-day retention has been a promise the scheduler
+        # made and no worker kept.
+        #
+        # `transcoding` for the same reasons the zip and LUT sweeps sit
+        # there: it needs the DB, it issues a lot of S3 deletes, and it is
+        # not latency-sensitive.
+        #
+        # Both forms, as above — the bare name is what Celery routes on,
+        # and the glob covers anything added to purge_tasks later that does
+        # not declare a name= of its own.
+        "apps.api.tasks.purge_tasks.*": {"queue": "transcoding"},
+        "purge_expired_trash": {"queue": "transcoding"},
+        # §181/§182 — the file-size reconciliation sweep. Routed explicitly
+        # from the start rather than after someone notices it never ran:
+        # that is the whole lesson of the four tasks above.
+        "apps.api.tasks.reconcile_tasks.*": {"queue": "transcoding"},
+        "reconcile_file_sizes": {"queue": "transcoding"},
     },
     # Rate limiting for email queues (SES limits)
     task_annotations={
@@ -174,11 +197,21 @@ celery_app.conf.beat_schedule = {
     # thirtieth day by a few hours, which nobody can perceive and which
     # errs towards keeping data rather than destroying it early.
     #
-    # 03:15 keeps it clear of both jobs above and out of working hours —
-    # this one deletes real footage and issues a lot of S3 calls.
+    # §182 — every 15 minutes, NOT daily, and this is not a cadence change.
+    # The task itself returns immediately unless it is 03:00–03:15 in
+    # `site_settings.timezone`, so it still runs once a night; the tick is
+    # what makes a timezone change take effect on the next tick instead of
+    # needing a beat restart. Celery's own timezone stays UTC and is not
+    # involved — see services/schedule_window.py.
+    #
+    # The other four entries in this dict are deliberately untouched:
+    # `sweep-stuck-processing` (*/15), `sweep-zip-exports` (hourly),
+    # `due-date-reminders` (hourly) and `sweep-lut-exports` (*/12h) are all
+    # interval jobs whose comments describe a CADENCE, not a wall-clock
+    # time. None of them means anything different in one zone than another.
     "purge-expired-trash": {
         "task": "purge_expired_trash",
-        "schedule": crontab(minute="15", hour="3"),
+        "schedule": crontab(minute="*/15"),
     },
     # §114 — the backstop for anything acks_late still cannot save (a worker
     # lost inside the ack window itself, or a task that hangs rather than
@@ -187,6 +220,18 @@ celery_app.conf.beat_schedule = {
     # — it is one indexed query that normally matches nothing.
     "sweep-stuck-processing": {
         "task": "sweep_stuck_processing",
+        "schedule": crontab(minute="*/15"),
+    },
+    # §181/§182 — drains the `size_verified_at IS NULL` queue nightly, so
+    # the backfill stays done rather than needing someone to remember the
+    # script. Same */15-tick-plus-local-window shape as the purge above,
+    # for the same reason.
+    #
+    # Its window is 03:45 local, offset from the purge's 03:00: both do
+    # meaningful volumes of S3 calls against the same AIStor endpoint, and
+    # they are individually cheap only when there is nothing to do.
+    "reconcile-file-sizes": {
+        "task": "reconcile_file_sizes",
         "schedule": crontab(minute="*/15"),
     },
 }
@@ -249,26 +294,26 @@ def send_task_safe(task, *args, **kwargs):
 
 # §114 — scheduled tasks knowingly left on the unconsumed `default` queue.
 #
-# Both are real bugs, found while wiring the stuck-processing sweeper, and
-# both are one line away from being fixed. Neither line is safe to add
-# without someone deciding to:
-#
-#   purge_expired_trash       Its first successful run permanently deletes
-#                             every asset and folder soft-deleted more than
-#                             30 days ago -- DB rows and the S3 objects with
-#                             them. Because the job has never run, that is
-#                             the entire accumulated Recently Deleted backlog
-#                             since the feature shipped, destroyed in one
-#                             tick at 03:15 with no preview and no undo.
+# Real bugs, found while wiring the stuck-processing sweeper, each one line
+# away from being fixed. That line is not safe to add without someone
+# deciding to:
 #
 #   send_due_date_reminders   Starts emailing real users on the hour. The
 #                             first runs would fire reminders for due dates
 #                             that are long past.
 #
-# Enabling either is an operational decision with a blast radius, not a
+# Enabling it is an operational decision with a blast radius, not a
 # refactor. tests/test_celery_wiring.py asserts every OTHER scheduled task
-# reaches a consumed queue, and treats these two as known -- so the check
+# reaches a consumed queue, and treats this one as known -- so the check
 # stays green and honest, and removing a name from this set is what turns
 # the fix on.
-KNOWN_UNROUTED = {"purge_expired_trash", "send_due_date_reminders"}
+#
+# §182 — `purge_expired_trash` was removed from this set and routed for
+# real. Its blast radius was never a reason to leave it silently broken,
+# only a reason to look before switching it on: the backlog is reported
+# first and cleaned up as a separate, deliberate action. The set is pinned
+# by test_the_unrouted_exemption_list_is_exactly_what_we_expect, so nothing
+# can be added to it quietly — which is how this bug survived three
+# separate discoveries of its own bug class.
+KNOWN_UNROUTED = {"send_due_date_reminders"}
 

@@ -85,6 +85,17 @@ export function useSiteSettings() {
     await mutate(updated, false)
   }
 
+  /** The IANA zone the daily maintenance jobs read their wall clock from
+   *  (§182). Celery itself stays on UTC; the jobs tick every 15 minutes and
+   *  compare against this, so a change takes effect on the next tick with
+   *  no restart. The server rejects an unknown zone with a 400. */
+  async function updateTimezone(tz: string): Promise<void> {
+    const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
+      timezone: tz,
+    })
+    await mutate(updated, false)
+  }
+
   /** Platform-wide total storage cap (superadmin-only in practice --
    * PATCH /site-settings 403s for anyone else). null clears it (no cap). */
   async function updateTotalStorageLimit(bytes: number | null): Promise<void> {
@@ -127,6 +138,7 @@ export function useSiteSettings() {
     faviconUrl: resolveApiMediaUrl(data?.favicon_url ?? null),
     themeColors: data?.theme_colors ?? null,
     totalStorageLimitBytes: data?.total_storage_limit_bytes ?? null,
+    timezone: data?.timezone ?? 'UTC',
     // Null for non-superadmins/anonymous callers -- see SiteSettingsResponse.
     totalStorageUsedBytes: data?.total_storage_used_bytes ?? null,
     updateOrgName,
@@ -135,6 +147,7 @@ export function useSiteSettings() {
     updateThemeColors,
     resetThemeColors,
     updateTotalStorageLimit,
+    updateTimezone,
     resetAll,
   }
 }
