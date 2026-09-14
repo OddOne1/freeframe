@@ -205,11 +205,39 @@ export function AssetGrid({
     })
   }
 
-  const clearSelection = () => {
+  /** useCallback so the navigation effect below can depend on it honestly.
+   *  A plain function is a new identity every render, and an effect keyed on
+   *  that would clear the selection on every render — i.e. make selecting
+   *  anything impossible. The three setters are stable by React's contract,
+   *  so the empty dep list is correct rather than a lie. */
+  const clearSelection = React.useCallback(() => {
     setSelectedAssetIds(new Set())
     setSelectedFolderIds(new Set())
     setLastClickedId(null)
-  }
+  }, [])
+
+  /**
+   * A selection belongs to the folder it was made in.
+   *
+   * Selecting three clips in A and navigating to B used to leave those ids
+   * in state: the bulk bar stayed up claiming "3 Items selected" with
+   * nothing on screen selected, and Download/Move/Delete would then act on
+   * files the user could no longer see. Nothing cleared it — the only
+   * existing reset was the shareMode effect above.
+   *
+   * `projectId` is in the deps as well as `currentFolderId`, because this
+   * grid can outlive a project switch. Neither mount site passes
+   * `key={projectId}`, and the project page reads its id from `useParams()`
+   * — so /projects/A -> /projects/B is a same-route transition that React
+   * reconciles into the SAME component instance. That is the identical
+   * trap §29 documented for `currentFolderId` itself, one level up.
+   *
+   * Clearing on mount (when both are first defined) is a deliberate no-op:
+   * the sets are already empty then.
+   */
+  React.useEffect(() => {
+    clearSelection()
+  }, [currentFolderId, projectId, clearSelection])
 
   /**
    * Standard desktop right-click semantics (§28):
