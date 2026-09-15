@@ -636,7 +636,13 @@ export function VideoPlayer({
             <button
               onClick={() => setCaptionsOn((on) => !on)}
               className={cn(
-                "flex h-7 items-center justify-center rounded px-1.5 text-xs font-medium border transition-colors shrink-0",
+                // §185 — px-1 to match the LUT button's trimmed footprint
+                // (§184). With Quality now rendering on BOTH paths, this row
+                // holds four controls where only three were ever visible
+                // together before: LUT, Captions, Quality, Fullscreen. The
+                // row's own gap-2 is left alone so the spacing between all
+                // four stays uniform; it is the buttons that give ground.
+                "flex h-7 items-center justify-center rounded px-1 text-xs font-medium border transition-colors shrink-0",
                 captionsOn
                   ? "border-accent text-accent"
                   : "border-border text-text-tertiary hover:text-text-primary hover:bg-bg-hover",

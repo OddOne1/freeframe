@@ -3,6 +3,7 @@
 import Hls, { type Level } from 'hls.js'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useReviewStore } from '@/stores/review-store'
+import { parseHlsMasterPlaylist } from '@/lib/hls-master-playlist'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -11,6 +12,10 @@ export interface QualityLevel {
   height: number
   bitrate: number
   label: string
+  /** This rendition's own playlist URL — set only on the native-HLS path
+   *  (§185), where switching quality means pointing `video.src` at it.
+   *  hls.js owns level switching itself and has no use for it. */
+  url?: string
 }
 
 export interface VideoPlayerControls {
@@ -107,6 +112,12 @@ export function useVideoPlayer(
   const detached = options?.detached === true
   const videoRef = useRef<HTMLVideoElement>(null)
   const hlsRef = useRef<Hls | null>(null)
+  /** §185 — the native-HLS path's equivalent of hls.js's level list: the
+   *  master URL to go back to for Auto, and each rendition's own playlist.
+   *  Null whenever hls.js is driving, which is what keeps the two switching
+   *  implementations from ever both being live. */
+  const nativeHlsRef = useRef<{ masterUrl: string; levels: QualityLevel[] } | null>(null)
+  const nativeAbortRef = useRef<AbortController | null>(null)
   const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const { setPlayheadTime, seekTarget, setActiveAnnotation } = useReviewStore()
@@ -299,6 +310,34 @@ export function useVideoPlayer(
 
     if (nativeHls) {
       video.src = src
+
+      // §185 — the level list §117 said this path could not have.
+      //
+      // It is not hls.js that knows the renditions, it is the master
+      // playlist, which is plain text the browser is fetching anyway. Read
+      // it, and the same dropdown the hls.js path feeds gets the same data
+      // — while Safari keeps decoding through its own native engine, which
+      // is the whole point of being on this branch.
+      //
+      // Failure is silent by design: no list means no dropdown, which is
+      // exactly the behaviour that shipped before this. A quality control
+      // is not worth an error banner over a video that is playing fine.
+      const controller = new AbortController()
+      nativeAbortRef.current = controller
+      fetch(src, { signal: controller.signal })
+        .then((r) => (r.ok ? r.text() : null))
+        .then((text) => {
+          if (!text || controller.signal.aborted) return
+          const levels = parseHlsMasterPlaylist(text, src)
+          if (levels.length === 0) return
+          nativeHlsRef.current = { masterUrl: src, levels }
+          setQualityLevels(levels)
+          setCurrentQuality(-1) // Auto — the native ABR that was already running
+        })
+        .catch(() => {
+          // Aborted on unmount, or the manifest could not be read. Either
+          // way the video is unaffected; only the picker is absent.
+        })
     } else if (isHlsSource && Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
@@ -361,6 +400,17 @@ export function useVideoPlayer(
         hlsRef.current.destroy()
         hlsRef.current = null
       }
+      // §185 — a manifest fetch still in flight when the asset changes would
+      // otherwise publish the OLD asset's renditions into the new one's
+      // picker, and `setQuality` would then point video.src at a playlist
+      // belonging to a different video.
+      if (nativeAbortRef.current) {
+        nativeAbortRef.current.abort()
+        nativeAbortRef.current = null
+      }
+      nativeHlsRef.current = null
+      setQualityLevels([])
+      setCurrentQuality(-1)
     }
   }, [src, setPlayheadTime])
 
@@ -404,8 +454,52 @@ export function useVideoPlayer(
 
   const setQuality = useCallback((levelIndex: number) => {
     const hls = hlsRef.current
-    if (!hls) return
-    hls.currentLevel = levelIndex // -1 = auto
+    if (hls) {
+      hls.currentLevel = levelIndex // -1 = auto
+      setCurrentQuality(levelIndex)
+      return
+    }
+
+    // §185 — the native-HLS path (Safari). hls.js switches renditions inside
+    // one media session; here the rendition IS the source, so switching
+    // means reloading `video.src` with a different playlist — the master for
+    // Auto, one rendition's own playlist otherwise.
+    //
+    // Which makes continuity the entire risk. A reload starts at 0:00,
+    // paused, so a picker that dropped the viewer back to the beginning of
+    // a take every time they touched it would be worse than no picker. The
+    // position and play state are captured before the swap and restored on
+    // `loadedmetadata`, which is the first moment a seek is legal on the new
+    // source.
+    const native = nativeHlsRef.current
+    const video = videoRef.current
+    if (!native || !video) return
+
+    const target =
+      levelIndex === -1
+        ? native.masterUrl
+        : native.levels.find((l) => l.index === levelIndex)?.url
+    if (!target) return
+
+    const resumeAt = video.currentTime
+    const wasPlaying = !video.paused
+
+    const onReady = () => {
+      video.removeEventListener('loadedmetadata', onReady)
+      // Guard the seek: a rendition whose duration reads 0 (still loading)
+      // would clamp to 0 and undo the whole point of this.
+      if (resumeAt > 0 && Number.isFinite(video.duration) && video.duration > 0) {
+        video.currentTime = Math.min(resumeAt, video.duration)
+      }
+      if (wasPlaying) video.play().catch(() => {})
+    }
+    video.addEventListener('loadedmetadata', onReady)
+
+    video.src = target
+    // Explicit: some engines will not begin fetching a reassigned src until
+    // asked, and a picker that silently does nothing is the failure mode
+    // hardest to notice.
+    video.load()
     setCurrentQuality(levelIndex)
   }, [])
 
