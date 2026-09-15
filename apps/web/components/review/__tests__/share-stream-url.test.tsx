@@ -15,6 +15,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { resolveApiMediaUrl } from '@/lib/utils'
 
 // Production builds NEXT_PUBLIC_API_URL as "/api" (docker-compose.prod.yml:181).
 // With an absolute origin the bug is invisible, because a resolved URL no
@@ -139,5 +142,76 @@ describe('the composition end to end', () => {
     const raw = (await screen.findByTestId('stream-url')).textContent!
     // What the browser would actually request.
     expect(playerResolve(raw)).toBe('/api/stream/hls/master.m3u8?token=abc')
+  })
+})
+
+// ─── §186: the SECOND caller, added by §184 ─────────────────────────────────
+//
+// Everything above covers ReviewProvider's share branch, which is how a
+// FOLDER share reaches the player. §184 added a second route — a SINGLE-ASSET
+// share link, where app/share/[token]/page.tsx does its own stream fetch and
+// hands the result to VideoPlayer as `initialStreamUrl` — and that one
+// resolved on the way in, producing the same `/api/api/...` 404 this file was
+// written for, in a path it did not know existed.
+//
+// Read from the source because the component is module-local to a page and
+// unexported. Comments are STRIPPED first: the fix explains itself in prose
+// that names `resolveApiMediaUrl`, so matching the raw text matches the
+// explanation rather than the code — the trap §184's and §185's own tests
+// both fell into first.
+
+describe('§186 — the single-asset share page stores the url RAW', () => {
+  const RAW = readFileSync(
+    join(__dirname, '..', '..', '..', 'app', 'share', '[token]', 'page.tsx'),
+    'utf8',
+  )
+  const PAGE = RAW.replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
+    .join('\n')
+
+  it('never resolves at the point it stores the stream url', () => {
+    /* The §184 regression, exactly: `setStreamUrl(resolveApiMediaUrl(...))`
+       put an already-prefixed url into state, and VideoPlayer then prefixed
+       it again. */
+    const stores = PAGE.match(/setStreamUrl\([^)]*\)/g) ?? []
+    expect(stores.length).toBeGreaterThan(0)
+    for (const call of stores) {
+      expect(call).not.toContain('resolveApiMediaUrl')
+    }
+  })
+
+  it('does not resolve in the useState initializer either', () => {
+    // The initial value is the same hazard by another route.
+    const init = PAGE.match(/useState<string \| null>\([^)]*\)/g) ?? []
+    for (const call of init) {
+      expect(call).not.toContain('resolveApiMediaUrl')
+    }
+  })
+
+  it('hands SharePlayer the raw state value, unwrapped', () => {
+    expect(PAGE).toMatch(/<SharePlayer[^>]*streamUrl=\{streamUrl\}/)
+  })
+
+  it('STILL resolves for the bare <audio> tag, which nothing else resolves for', () => {
+    /* The other half of the fix: making the video path raw must not strip
+       resolution from the paths that genuinely need it. */
+    expect(PAGE).toMatch(/<audio\s+src=\{resolveApiMediaUrl\(streamUrl\)/)
+  })
+})
+
+describe('§186 — what the browser ends up requesting', () => {
+  const FROM_API = '/stream/hls/master.m3u8?token=abc'
+
+  it('one prefix when the page stores raw (the fix)', () => {
+    expect(playerResolve(FROM_API)).toBe('/api/stream/hls/master.m3u8?token=abc')
+  })
+
+  it('two prefixes when the page resolves first (the live 404)', () => {
+    /* Pinning the broken composition, so the failure is documented as a
+       value rather than as prose. This is the exact string from Mathias's
+       Safari console. */
+    const preResolved = resolveApiMediaUrl(FROM_API)!
+    expect(playerResolve(preResolved)).toBe('/api/api/stream/hls/master.m3u8?token=abc')
   })
 })

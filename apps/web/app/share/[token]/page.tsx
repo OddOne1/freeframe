@@ -260,7 +260,6 @@ interface ShareTopBarProps {
   shareName: string
   assetName?: string
   downloadVariants: DownloadVariant[]
-  downloadUrl: string | null
   token: string
   assetId: string
   sidebarOpen: boolean
@@ -275,7 +274,6 @@ function ShareTopBar({
   shareName,
   assetName,
   downloadVariants,
-  downloadUrl,
   token,
   assetId,
   sidebarOpen,
@@ -405,7 +403,10 @@ function ShareMediaViewer({ asset, token, streamUrl, streamLoading }: ShareMedia
                 </div>
                 <p className="text-sm font-medium text-zinc-300">{asset.name}</p>
               </div>
-              <audio src={streamUrl} controls className="w-full">
+              {/* Resolved HERE, not in state (§186): a bare <audio> tag has
+                  nothing downstream to resolve for it — unlike the video
+                  branch, which hands the RAW url to VideoPlayer. */}
+              <audio src={resolveApiMediaUrl(streamUrl) ?? undefined} controls className="w-full">
                 Your browser does not support audio playback.
               </audio>
             </div>
@@ -567,7 +568,24 @@ function ShareViewer({
   shareName,
   onBack,
 }: ShareViewerProps) {
-  const [streamUrl, setStreamUrl] = React.useState<string | null>(resolveApiMediaUrl(asset.stream_url))
+  /**
+   * RAW, exactly as the API returned it — `/stream/hls/...?token=...` (§186).
+   *
+   * It used to be resolved here, at the point of storage. That was fine
+   * while the only consumers were bare `<audio>`/`<video>` tags, and became
+   * a 404 the moment §184 routed the video through the real `VideoPlayer`:
+   * that component resolves `initialStreamUrl` itself, by design and by its
+   * own docstring ("this player is the ONE place a stream URL may be
+   * resolved"), so the URL arrived already resolved and came out
+   * `/api/api/stream/...`.
+   *
+   * The rule lib/utils.ts states: exactly one place may resolve, and in
+   * production NEXT_PUBLIC_API_URL is itself "/api" so nothing downstream
+   * can detect a second pass. Third occurrence — §32, §139, now this. So
+   * the value travels raw and each consumer resolves at the point of use,
+   * or hands it to something that does.
+   */
+  const [streamUrl, setStreamUrl] = React.useState<string | null>(asset.stream_url ?? null)
   const [streamLoading, setStreamLoading] = React.useState(false)
   const [commentKey, setCommentKey] = React.useState(0)
   const [sidebarOpen, setSidebarOpen] = React.useState(true)
@@ -577,7 +595,7 @@ function ShareViewer({
   // For video/audio assets, get a stream URL if not already provided
   React.useEffect(() => {
     if (asset.stream_url) {
-      setStreamUrl(resolveApiMediaUrl(asset.stream_url))
+      setStreamUrl(asset.stream_url)
       return
     }
     if (asset.asset_type !== 'video' && asset.asset_type !== 'audio') return
@@ -585,8 +603,8 @@ function ShareViewer({
     fetch(`${API_URL}/share/${token}/stream/${asset.id}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
-        if (data?.stream_url) setStreamUrl(resolveApiMediaUrl(data.stream_url))
-        else if (data?.url) setStreamUrl(resolveApiMediaUrl(data.url))
+        if (data?.stream_url) setStreamUrl(data.stream_url)
+        else if (data?.url) setStreamUrl(data.url)
       })
       .catch(() => null)
       .finally(() => setStreamLoading(false))
@@ -601,7 +619,6 @@ function ShareViewer({
         shareName={displayName}
         assetName={asset.name}
         downloadVariants={downloadVariants}
-        downloadUrl={streamUrl}
         token={token}
         assetId={asset.id}
         sidebarOpen={sidebarOpen}
@@ -699,7 +716,15 @@ function FolderAssetViewer({
 
     Promise.all([streamPromise, thumbPromise]).then(([streamData, thumbData]) => {
       if (cancelled) return
-      if (streamData?.url) setStreamUrl(resolveApiMediaUrl(streamData.url))
+      // RAW, like ShareViewer's own state (§186) — this value is handed
+      // straight to <ShareViewer asset={pseudoAsset}> as `stream_url`, and
+      // from there to VideoPlayer, which does the one resolve. Resolving
+      // here made that two.
+      //
+      // NOTE: nothing renders this component today (no <FolderAssetViewer>
+      // anywhere) — a folder share goes through FolderShareViewer instead.
+      // Kept correct rather than left as a landmine for whoever revives it.
+      if (streamData?.url) setStreamUrl(streamData.url)
       if (streamData?.name)
         setAssetInfo({
           name: streamData.name,
