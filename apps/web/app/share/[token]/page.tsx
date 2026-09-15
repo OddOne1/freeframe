@@ -44,6 +44,8 @@ interface ShareValidateResponse {
   allowed_download_variants?: DownloadVariant[]
   fields_visibility?: FieldsVisibility
   show_versions?: boolean
+  /** §188 — read access to comments, separate from `permission`. */
+  show_comments?: boolean
   show_watermark?: boolean
   appearance?: ShareLinkAppearance | null
   visibility?: string
@@ -524,14 +526,21 @@ function ShareRightPanel({
             )}
 
             {/* Comment input */}
-            {/* §33 — no "comments are disabled" placeholder any more: the
-                Comments panel is not rendered at all for a view-only link,
-                so there is nothing left to apologise for. */}
-            <GuestCommentInput
-              token={token}
-              onCommentPosted={onCommentPosted}
-              className="border-t border-white/[0.06] bg-[#141416]"
-            />
+            {/* §33 — no "comments are disabled" placeholder: the panel used
+                to be absent entirely for a view-only link.
+                §188 — it can now be PRESENT on one, because reading and
+                posting became separate settings. So the input needs the
+                gate the panel's own existence used to provide, or a
+                read-only viewer gets a compose box whose every submit
+                403s at POST /share/{token}/comment. Same condition the
+                folder viewer's `canComment` uses. */}
+            {(permission === 'comment' || permission === 'approve') && (
+              <GuestCommentInput
+                token={token}
+                onCommentPosted={onCommentPosted}
+                className="border-t border-white/[0.06] bg-[#141416]"
+              />
+            )}
           </>
         ) : (
           // §33 — the same panel the folder viewer uses, fed by the same
@@ -553,6 +562,8 @@ interface ShareViewerProps {
   permission: SharePermission
   downloadVariants: DownloadVariant[]
   fieldsVisibility: FieldsVisibility
+  /** §188 — read access to existing comments, separate from `permission`. */
+  showComments?: boolean
   branding: ProjectBranding | null
   shareName?: string
   onBack?: () => void
@@ -564,6 +575,7 @@ function ShareViewer({
   permission,
   downloadVariants,
   fieldsVisibility,
+  showComments,
   branding,
   shareName,
   onBack,
@@ -590,7 +602,7 @@ function ShareViewer({
   const [commentKey, setCommentKey] = React.useState(0)
   const [sidebarOpen, setSidebarOpen] = React.useState(true)
   // §33 — one decision, shared with the folder viewer.
-  const sidebar = useShareSidebar({ permission, fieldsVisibility })
+  const sidebar = useShareSidebar({ permission, fieldsVisibility, showComments })
 
   // For video/audio assets, get a stream URL if not already provided
   React.useEffect(() => {
@@ -801,6 +813,7 @@ export default function SharePage({
         downloadVariants: DownloadVariant[]
         fieldsVisibility: FieldsVisibility
         showVersions: boolean
+        showComments: boolean
         branding: ProjectBranding | null
       }
     | {
@@ -814,6 +827,7 @@ export default function SharePage({
         downloadVariants: DownloadVariant[]
         fieldsVisibility: FieldsVisibility
         showVersions: boolean
+        showComments: boolean
         appearance: ShareLinkAppearance
         branding: any
       }
@@ -877,6 +891,7 @@ export default function SharePage({
           downloadVariants: data.allowed_download_variants ?? [],
           fieldsVisibility: data.fields_visibility ?? 'disabled',
           showVersions: data.show_versions ?? true,
+          showComments: data.show_comments ?? true,
           appearance: { ...defaultAppearance, ...(data.appearance ?? {}) },
           branding: data.branding ?? null,
         })
@@ -895,6 +910,7 @@ export default function SharePage({
         downloadVariants: data.allowed_download_variants ?? [],
         fieldsVisibility: data.fields_visibility ?? 'disabled',
         showVersions: data.show_versions ?? true,
+        showComments: data.show_comments ?? true,
         branding: data.branding ?? null,
       })
     } catch {
@@ -971,6 +987,7 @@ export default function SharePage({
         downloadVariants={state.downloadVariants}
         fieldsVisibility={state.fieldsVisibility}
         showVersions={state.showVersions}
+        showComments={state.showComments}
         appearance={state.appearance}
         branding={state.branding}
       />
@@ -984,6 +1001,7 @@ export default function SharePage({
       permission={state.permission}
       downloadVariants={state.downloadVariants}
       fieldsVisibility={state.fieldsVisibility}
+      showComments={state.showComments}
       branding={state.branding}
     />
   )

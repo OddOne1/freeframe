@@ -479,6 +479,11 @@ export interface ShareLink {
   is_enabled: boolean;
   visibility: "public" | "secure";
   show_versions: boolean;
+  /** §188 — whether a viewer may READ existing comments. Independent of
+   *  `permission`, which decides whether they may POST one. Name matches
+   *  the backend schema field exactly; a mismatch is silent (the field
+   *  reads undefined) and falls back to showing comments. */
+  show_comments: boolean;
   show_watermark: boolean;
   appearance: ShareLinkAppearance | null;
   created_at: string;

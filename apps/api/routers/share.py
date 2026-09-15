@@ -306,6 +306,7 @@ def create_share_link(
         allowed_download_variants=variant_values(body.allowed_download_variants),
         fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
+        show_comments=body.show_comments,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
     )
@@ -450,6 +451,7 @@ def validate_share_link_endpoint(
         allowed_download_variants=link.allowed_download_variants or [],
         fields_visibility=link.fields_visibility,
         show_versions=link.show_versions,
+        show_comments=link.show_comments,
         show_watermark=link.show_watermark,
         appearance=link.appearance,
         requires_password=False,
@@ -614,6 +616,7 @@ def create_folder_share_link(
         allowed_download_variants=variant_values(body.allowed_download_variants),
         fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
+        show_comments=body.show_comments,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
     )
@@ -659,6 +662,7 @@ def create_project_share_link(
         allowed_download_variants=variant_values(body.allowed_download_variants),
         fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
+        show_comments=body.show_comments,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
     )
@@ -1273,6 +1277,7 @@ def create_multi_share_link(
         allowed_download_variants=variant_values(body.allowed_download_variants),
         fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
+        show_comments=body.show_comments,
         show_watermark=body.show_watermark,
         password_hash=password_hash,
         password_encrypted=password_encrypted,

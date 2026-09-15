@@ -4,17 +4,28 @@
  * The two bugs this replaces were both "a tab that is visible but does
  * nothing" — so what is asserted here is the absence of surfaces, not just
  * their presence.
+ *
+ * §188 — `showComments` is now its own persisted flag rather than something
+ * derived from `permission`. The cases below used to say `view` and mean
+ * "comments hidden"; they now say so directly, because those became two
+ * different statements the moment a view-only link could show comments.
  */
 import { describe, it, expect } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useShareSidebar } from '../use-share-sidebar'
 
-const run = (permission: string, fieldsVisibility: 'disabled' | 'basic' | 'full') =>
-  renderHook(() => useShareSidebar({ permission: permission as never, fieldsVisibility }))
+const run = (
+  permission: string,
+  fieldsVisibility: 'disabled' | 'basic' | 'full',
+  showComments = true,
+) =>
+  renderHook(() =>
+    useShareSidebar({ permission: permission as never, fieldsVisibility, showComments }),
+  )
 
 describe('neither panel enabled', () => {
   it('hides the sidebar entirely, toggle included', () => {
-    const { result } = run('view', 'disabled')
+    const { result } = run('view', 'disabled', false)
     expect(result.current.showSidebar).toBe(false)
     expect(result.current.showComments).toBe(false)
     expect(result.current.showFields).toBe(false)
@@ -24,7 +35,7 @@ describe('neither panel enabled', () => {
 
 describe('exactly one panel enabled', () => {
   it('shows Fields with no switcher when comments are off', () => {
-    const { result } = run('view', 'basic')
+    const { result } = run('view', 'basic', false)
     expect(result.current.showSidebar).toBe(true)
     expect(result.current.showTabSwitcher).toBe(false)
     expect(result.current.activeTab).toBe('fields')
@@ -40,7 +51,7 @@ describe('exactly one panel enabled', () => {
   it('never lands on a hidden tab, whatever was clicked before', () => {
     // The original folder-viewer bug in miniature: a stored tab pointing at
     // a panel that is not rendered.
-    const { result } = run('view', 'full')
+    const { result } = run('view', 'full', false)
     act(() => result.current.setActiveTab('comments'))
     expect(result.current.activeTab).toBe('fields')
   })
@@ -64,9 +75,54 @@ describe('fields is independent of the comments permission', () => {
   })
 
   it('is on for a view-only link that did enable it', () => {
-    const { result } = run('view', 'full')
+    const { result } = run('view', 'full', false)
     expect(result.current.showComments).toBe(false)
     expect(result.current.showFields).toBe(true)
+  })
+})
+
+// ─── §188: reading comments is independent of posting them ──────────────────
+
+describe('comments visibility no longer follows the permission', () => {
+  it('shows the panel on a VIEW-ONLY link when the owner enabled it', () => {
+    /* The point of §188. A client can read the team's discussion on a
+       read-only link; whether they may reply is a separate switch, checked
+       elsewhere (`canComment`) and untouched here. */
+    const { result } = run('view', 'disabled', true)
+    expect(result.current.showComments).toBe(true)
+    expect(result.current.showSidebar).toBe(true)
+    expect(result.current.activeTab).toBe('comments')
+  })
+
+  it('hides the panel on a COMMENT link when the owner turned it off', () => {
+    /* The inverse, and deliberately allowed rather than auto-corrected:
+       comments can be collected through a link whose panel stays hidden.
+       See the model comment on `show_comments`. */
+    const { result } = run('comment', 'disabled', false)
+    expect(result.current.showComments).toBe(false)
+    expect(result.current.showSidebar).toBe(false)
+  })
+
+  it('hides it on an APPROVE link too when turned off', () => {
+    const { result } = run('approve', 'disabled', false)
+    expect(result.current.showComments).toBe(false)
+  })
+
+  it.each(['view', 'comment', 'approve'])(
+    'ignores permission=%s entirely when deciding visibility',
+    (permission) => {
+      expect(run(permission, 'disabled', true).result.current.showComments).toBe(true)
+      expect(run(permission, 'disabled', false).result.current.showComments).toBe(false)
+    },
+  )
+
+  it('defaults to SHOWING when the flag is missing', () => {
+    /* An older cached validate response, or the field renamed on one side.
+       A missing panel reads as a broken app; an extra one does not. */
+    const { result } = renderHook(() =>
+      useShareSidebar({ permission: 'view' as never, fieldsVisibility: 'disabled' }),
+    )
+    expect(result.current.showComments).toBe(true)
   })
 })
 

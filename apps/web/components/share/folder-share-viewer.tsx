@@ -53,6 +53,8 @@ interface FolderShareViewerProps {
   downloadVariants: DownloadVariant[]
   fieldsVisibility: FieldsVisibility
   showVersions: boolean
+  /** §188 — read access to existing comments, separate from `permission`. */
+  showComments?: boolean
   appearance: ShareLinkAppearance
   branding: {
     logo_url?: string
@@ -689,10 +691,11 @@ interface AssetViewerProps {
   permission: SharePermission
   downloadVariants: DownloadVariant[]
   fieldsVisibility: FieldsVisibility
+  showComments?: boolean
   onBack: () => void
 }
 
-function AssetViewer({ token, shareSession, asset, permission, downloadVariants, fieldsVisibility, onBack }: AssetViewerProps) {
+function AssetViewer({ token, shareSession, asset, permission, downloadVariants, fieldsVisibility, showComments, onBack }: AssetViewerProps) {
   // Use the same ReviewProvider as the project review page, but with shareToken
   // This gives us the same video player, image viewer, comment panel, etc.
   return (
@@ -705,6 +708,7 @@ function AssetViewer({ token, shareSession, asset, permission, downloadVariants,
         permission={permission}
         downloadVariants={downloadVariants}
         fieldsVisibility={fieldsVisibility}
+        showComments={showComments}
         onBack={onBack}
       />
     </div>
@@ -713,9 +717,9 @@ function AssetViewer({ token, shareSession, asset, permission, downloadVariants,
 
 /** Lazy-imported review components to avoid circular deps */
 function ShareReviewScreen({
-  token, shareSession, assetId, assetName, permission, downloadVariants, fieldsVisibility, onBack,
+  token, shareSession, assetId, assetName, permission, downloadVariants, fieldsVisibility, showComments, onBack,
 }: {
-  token: string; shareSession?: string | null; assetId: string; assetName: string; permission: SharePermission; downloadVariants: DownloadVariant[]; fieldsVisibility: FieldsVisibility; onBack: () => void
+  token: string; shareSession?: string | null; assetId: string; assetName: string; permission: SharePermission; downloadVariants: DownloadVariant[]; fieldsVisibility: FieldsVisibility; showComments?: boolean; onBack: () => void
 }) {
   const [ReviewProvider, setProvider] = React.useState<any>(null)
   const [VideoPlayer, setVideoPlayer] = React.useState<any>(null)
@@ -758,6 +762,7 @@ function ShareReviewScreen({
         permission={permission}
         downloadVariants={downloadVariants}
         fieldsVisibility={fieldsVisibility}
+        showComments={showComments}
         onBack={onBack}
         VideoPlayer={VideoPlayer}
         ImageViewer={ImageViewer}
@@ -770,7 +775,7 @@ function ShareReviewScreen({
 }
 
 function ShareReviewInner({
-  token, shareSession, assetName, permission, downloadVariants, fieldsVisibility, onBack,
+  token, shareSession, assetName, permission, downloadVariants, fieldsVisibility, showComments, onBack,
   VideoPlayer, ImageViewer, AudioPlayer, CommentPanel, CommentInput,
 }: any) {
   // Import hooks from the review system
@@ -789,7 +794,7 @@ function ShareReviewInner({
   // §33 — the same decision page.tsx's ShareViewer makes, from the same
   // hook. This file previously showed a Fields tab that rendered nothing
   // and a Comments tab that ignored the permission entirely.
-  const sidebar = useShareSidebar({ permission, fieldsVisibility })
+  const sidebar = useShareSidebar({ permission, fieldsVisibility, showComments })
   const { activeTab, setActiveTab } = sidebar
   const [AnnotationOverlay, setAnnotationOverlay] = React.useState<any>(null)
   const [AnnotationCanvas, setAnnotationCanvas] = React.useState<any>(null)
@@ -1047,6 +1052,7 @@ export function FolderShareViewer({
   downloadVariants,
   fieldsVisibility,
   showVersions: _showVersions,
+  showComments,
   appearance,
   branding,
   onAssetClick,
@@ -1395,6 +1401,7 @@ export function FolderShareViewer({
         permission={permission}
         downloadVariants={downloadVariants}
         fieldsVisibility={fieldsVisibility}
+        showComments={showComments}
         onBack={() => setViewingAsset(null)}
       />
     )

@@ -40,6 +40,9 @@ class ShareLinkCreate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     show_versions: bool = True
+    #: §188 — whether a viewer may READ existing comments. Independent of
+    #: `permission`, which decides whether they may POST one.
+    show_comments: bool = True
     show_watermark: bool = False
     appearance: ShareLinkAppearance = ShareLinkAppearance()
 
@@ -55,6 +58,9 @@ class MultiShareCreate(BaseModel):
     allowed_download_variants: list[DownloadVariant] = []
     fields_visibility: FieldsVisibility = FieldsVisibility.disabled
     show_versions: bool = True
+    #: §188 — whether a viewer may READ existing comments. Independent of
+    #: `permission`, which decides whether they may POST one.
+    show_comments: bool = True
     show_watermark: bool = False
     appearance: ShareLinkAppearance = ShareLinkAppearance()
 
@@ -73,6 +79,7 @@ class ShareLinkResponse(BaseModel):
     allowed_download_variants: list[DownloadVariant] = []
     fields_visibility: FieldsVisibility = FieldsVisibility.disabled
     show_versions: bool
+    show_comments: bool
     show_watermark: bool
     appearance: dict
     expires_at: Optional[datetime] = None
@@ -94,6 +101,7 @@ class ShareLinkValidateResponse(BaseModel):
     allowed_download_variants: list[DownloadVariant] = []
     fields_visibility: FieldsVisibility = FieldsVisibility.disabled
     show_versions: bool = True
+    show_comments: bool = True
     show_watermark: bool = False
     appearance: Optional[dict] = None
     visibility: str = "public"
@@ -114,6 +122,7 @@ class ShareLinkUpdate(BaseModel):
     visibility: Optional[str] = None
     is_enabled: Optional[bool] = None
     show_versions: Optional[bool] = None
+    show_comments: Optional[bool] = None
     show_watermark: Optional[bool] = None
     appearance: Optional[ShareLinkAppearance] = None
     password: Optional[str] = None

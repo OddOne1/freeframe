@@ -23,6 +23,14 @@ import type { SharePermission, FieldsVisibility } from '@/types'
  *  - both enabled -> today's switcher.
  *
  * Fields is independent of the comments permission, not a fallback for it.
+ *
+ * §188 — and so is READING comments, now. `permission` used to decide both
+ * whether a viewer could post a comment and whether the panel existed at
+ * all, so a view-only link hid the team's existing discussion outright.
+ * Those were never one decision on the server: GET /share/{token}/comments
+ * has no permission gate and never had one; only POST does. `showComments`
+ * below reads its own persisted flag, and the posting gates (`canComment`,
+ * and the `approve` checks) are deliberately left alone.
  */
 
 export type { FieldsVisibility }
@@ -45,12 +53,20 @@ export interface ShareSidebar {
 export function useShareSidebar({
   permission,
   fieldsVisibility,
+  showComments: showCommentsSetting,
 }: {
-  permission: SharePermission | string | undefined
+  /** Kept in the signature though the sidebar no longer branches on it:
+   *  every caller already holds it, and dropping it would make the next
+   *  visibility rule that DOES need it a signature change. */
+  permission?: SharePermission | string | undefined
   fieldsVisibility: FieldsVisibility | undefined
+  /** `show_comments` off the link. Undefined — an older cached response,
+   *  or the field renamed on one side only — falls back to SHOWING them:
+   *  that is the column default, and the safer failure for a panel a
+   *  reader expects. A missing panel looks like a broken app. */
+  showComments?: boolean | undefined
 }): ShareSidebar {
-  // Same rule the comment input already uses: 'view' is read-only.
-  const showComments = permission === 'comment' || permission === 'approve'
+  const showComments = showCommentsSetting ?? true
   const level: FieldsVisibility = fieldsVisibility ?? 'disabled'
   const showFields = level !== 'disabled'
 

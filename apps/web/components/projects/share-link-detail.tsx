@@ -948,15 +948,34 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
               title="Permissions"
               icon={<MessageSquare className="h-3.5 w-3.5" />}
             >
+              {/* §188 — two decisions, deliberately not coupled. The upper
+                  toggle writes `permission` and governs POSTING; the lower
+                  one writes `show_comments` and governs READING. The server
+                  always treated them separately (GET /share/{token}/comments
+                  has no permission gate, only POST does); until now the
+                  frontend collapsed both into `permission`, so a view-only
+                  link hid the team's existing discussion outright.
+
+                  Labels say which is which — "leave" vs "see existing" —
+                  because "Comments" and "Show comments" side by side read as
+                  duplicates otherwise. */}
               <ToggleRow
-                label="Comments"
-                description="Allow viewers to leave comments"
+                label="Let viewers comment"
+                description="Viewers can post new comments and replies"
                 checked={
                   shareLink.permission === "comment" ||
                   shareLink.permission === "approve"
                 }
                 onCheckedChange={(checked) =>
                   immediateUpdate({ permission: checked ? "comment" : "view" })
+                }
+              />
+              <ToggleRow
+                label="Show comments"
+                description="Viewers can see existing comments, even if they can't post"
+                checked={shareLink.show_comments ?? true}
+                onCheckedChange={(checked) =>
+                  immediateUpdate({ show_comments: checked })
                 }
               />
               <div className="py-2">
