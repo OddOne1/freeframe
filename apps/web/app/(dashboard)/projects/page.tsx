@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -15,7 +16,7 @@ import {
   Globe,
   UserPlus,
 } from "lucide-react";
-import { cn, formatBytes } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { useProjectViewStore } from "@/stores/project-view-store";
 import type { CardSize } from "@/stores/view-store";
 import { api } from "@/lib/api";
@@ -42,6 +43,7 @@ function ProjectListRow({
   project: Project;
   showRole?: boolean;
 }) {
+  const formatBytes = useFormatBytes()
   const roleName =
     project.role === "owner"
       ? "Owner"

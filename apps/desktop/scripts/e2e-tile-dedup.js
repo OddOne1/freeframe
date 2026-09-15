@@ -237,12 +237,16 @@ const check = (ok, label, detail = "") => {
 
     // 512 total - 100 free = 412 used. Asserting the NUMBER, not just the
     // word: showing free space labelled "used" would pass a word check.
-    check(meta.source && meta.source.text === "412.0 GB used",
+    // §190 — these three were the same byte counts divided by 1024 and
+    // labelled GB/TB (412.0 GB / 3.0 TB / 1.0 TB). The volume sizes in the
+    // fixture are unchanged; only the convention they are printed in is,
+    // and it now matches what the user's own file manager shows.
+    check(meta.source && meta.source.text === "442.4 GB used",
       "a source shows what the card HOLDS — that is what is about to be copied",
       meta.source && meta.source.text);
-    check(meta.dest && meta.dest.text === "3.0 TB free",
+    check(meta.dest && meta.dest.text === "3.3 TB free",
       "a destination still shows what REMAINS, unchanged", meta.dest && meta.dest.text);
-    check(meta.idle && /3\.0 TB used/.test(meta.idle.text) && /1\.0 TB free/.test(meta.idle.text),
+    check(meta.idle && /3\.3 TB used/.test(meta.idle.text) && /1\.1 TB free/.test(meta.idle.text),
       "an unassigned tile shows both, since neither question has been asked yet",
       meta.idle && JSON.stringify(meta.idle.text));
     // The Volumes column caps tiles at 118px (§22f) and the pair does not

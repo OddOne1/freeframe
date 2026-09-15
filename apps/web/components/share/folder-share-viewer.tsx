@@ -21,6 +21,7 @@ import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { triggerBrowserDownload } from '@/lib/download'
 import { BatchDownloadDialog, type BatchDownloadApi } from '@/components/shared/batch-download-dialog'
 import { INDIVIDUAL_DOWNLOAD_LIMIT, type ZipScope } from '@/lib/bulk-download'
+import { useFormatBytesOrDash } from '@/hooks/use-byte-units'
 import { useMediaQuery, XL_UP } from '@/hooks/use-media-query'
 import { useSessionPreference } from '@/hooks/use-session-preference'
 import type {
@@ -67,13 +68,12 @@ interface FolderShareViewerProps {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function formatFileSize(bytes: number | null): string {
-  if (bytes == null) return '—'
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
-}
+/* §190 — the local `formatFileSize` that stood here is gone. It was an
+   independent second copy of the byte maths, with the same bug as the
+   shared one (divide by 1024, label it "MB") plus a "kB" spelling and a
+   2-decimal GB that agreed with nothing else in the app. Call sites now
+   use `useFormatBytes()`, so there is one implementation and one
+   convention. */
 
 function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString(undefined, {
@@ -303,6 +303,7 @@ interface AssetGridCardProps {
 }
 
 function AssetGridCard({ asset, downloadVariants, token, shareSession, isSelected, onSelect, onOpen, aspectClass = 'aspect-[16/10]', thumbnailScale = 'fill', showCardInfo = true }: AssetGridCardProps) {
+  const formatFileSize = useFormatBytesOrDash()
   const TypeIcon = getAssetTypeIcon(asset.asset_type)
   const [imgError, setImgError] = React.useState(false)
 
@@ -1057,6 +1058,7 @@ export function FolderShareViewer({
   branding,
   onAssetClick,
 }: FolderShareViewerProps) {
+  const formatFileSize = useFormatBytesOrDash()
   // Build share_session query param for all API calls
   const sessionParam = shareSession ? `&share_session=${encodeURIComponent(shareSession)}` : ''
   const [currentSubfolderId, setCurrentSubfolderId] = React.useState<string | null>(null)

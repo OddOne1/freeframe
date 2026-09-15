@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import useSWR, { mutate } from "swr";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Popover from "@radix-ui/react-popover";
@@ -17,7 +18,7 @@ import {
   Send,
   Clock,
 } from "lucide-react";
-import { cn, formatBytes } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -166,6 +167,7 @@ function BulkInviteDialog() {
 // caller (see SiteSettingsResponse), which this page always is.
 
 function PlatformStorageSection() {
+  const formatBytes = useFormatBytes()
   const { totalStorageLimitBytes, totalStorageUsedBytes, updateTotalStorageLimit } =
     useSiteSettings();
   const [value, setValue] = React.useState<string>(
@@ -902,6 +904,7 @@ function roleBadgeClass(role: ProjectRole): string {
 // was not showing.
 
 function UserStorageLimit({ user }: { user: AdminUser }) {
+  const formatBytes = useFormatBytes()
   const toField = React.useCallback(
     (bytes: number | null | undefined) =>
       bytes === null || bytes === undefined ? "" : String(Math.round(bytes / GB)),

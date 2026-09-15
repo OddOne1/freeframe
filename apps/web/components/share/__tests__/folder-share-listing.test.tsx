@@ -20,7 +20,14 @@ vi.stubEnv('NEXT_PUBLIC_API_URL', '/api')
 
 import { FolderShareViewer } from '../folder-share-viewer'
 
-const GB = 1024 ** 3
+// §190 — decimal, matching what the app now prints. These fixtures existed
+// to say "the link total is 10 GB and the loaded page is 7 GB"; with 1024**3
+// they were really 10 GiB and 7 GiB, which the old duplicate `formatFileSize`
+// then rendered as "10.00 GB" because it divided by 1024 and labelled it GB.
+// The sizes here are incidental to what these tests check (link total vs
+// loaded page), so they are stated in the units actually shown rather than
+// the assertions being bent around the old bug.
+const GB = 1000 ** 3
 
 function asset(name: string, i: number, size: number) {
   return {
@@ -193,8 +200,8 @@ describe('counts and size describe the link, not the loaded page', () => {
     renderViewer()
     await screen.findByText('zulu')
     // Loaded page is 7 GB; the link is 10 GB.
-    expect(screen.getByText(/10\.00 GB/)).toBeInTheDocument()
-    expect(screen.queryByText(/\b7\.00 GB/)).not.toBeInTheDocument()
+    expect(screen.getByText(/10 GB/)).toBeInTheDocument()
+    expect(screen.queryByText(/\b7 GB/)).not.toBeInTheDocument()
   })
 
   it('footer counts the link total, not the rows on screen', async () => {
@@ -209,7 +216,7 @@ describe('counts and size describe the link, not the loaded page', () => {
     mockApi({ totalSizeBytes: undefined })
     renderViewer()
     await screen.findByText('zulu')
-    expect(screen.getByText(/7\.00 GB/)).toBeInTheDocument()
+    expect(screen.getByText(/7 GB/)).toBeInTheDocument()
   })
 
   it('a search narrows the count to the matches on screen', async () => {

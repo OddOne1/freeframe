@@ -12,7 +12,8 @@ import {
   FolderPlus,
   Trash,
 } from 'lucide-react'
-import { cn, formatBytes } from '@/lib/utils'
+import { cn } from '@/lib/utils'
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import type { FolderTreeNode } from '@/types'
 
 interface FolderTreeProps {
@@ -50,6 +51,7 @@ function FolderNode({
   onDeleteFolder,
   onDropItems,
 }: FolderNodeProps) {
+  const formatBytes = useFormatBytes()
   const [expanded, setExpanded] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)

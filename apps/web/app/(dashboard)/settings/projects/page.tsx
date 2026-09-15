@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import useSWR, { mutate } from "swr";
@@ -22,7 +23,7 @@ import {
   Settings,
   Crown,
 } from "lucide-react";
-import { cn, formatBytes, resolveApiMediaUrl } from "@/lib/utils";
+import { cn, resolveApiMediaUrl } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -418,6 +419,7 @@ function EditableStorageLimit({
   personalTotalBytes: number | null;
   onSaved: () => void;
 }) {
+  const formatBytes = useFormatBytes()
   const [value, setValue] = React.useState(
     project.storage_limit_bytes ? String(Math.round(project.storage_limit_bytes / GB)) : "",
   );
@@ -483,6 +485,7 @@ function EditableStorageLimit({
 }
 
 function OwnedProjectsView() {
+  const formatBytes = useFormatBytes()
   const { user } = useAuthStore();
   const { data: projects, isLoading } = useSWR<Project[]>("/projects", () =>
     api.get<Project[]>("/projects"),
@@ -779,6 +782,7 @@ function OwnedProjectsView() {
 }
 
 export default function SettingsProjectsPage() {
+  const formatBytes = useFormatBytes()
   const router = useRouter();
   const { user, isSuperAdmin } = useAuthStore();
   const hasProjectPrivilege = useHasProjectPrivilege();

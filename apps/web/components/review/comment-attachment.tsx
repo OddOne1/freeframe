@@ -2,7 +2,8 @@
 
 import * as React from 'react'
 import { FileText, Film, ImageIcon, Download, Trash2, Loader2 } from 'lucide-react'
-import { cn, formatBytes } from '@/lib/utils'
+import { cn } from '@/lib/utils'
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import type { CommentAttachment as CommentAttachmentType } from '@/types'
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -38,6 +39,7 @@ export function CommentAttachment({
   onDelete,
   className,
 }: CommentAttachmentProps) {
+  const formatBytes = useFormatBytes()
   const [deleting, setDeleting] = React.useState(false)
   const [imageError, setImageError] = React.useState(false)
 

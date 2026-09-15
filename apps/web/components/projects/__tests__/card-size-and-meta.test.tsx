@@ -110,10 +110,14 @@ describe('the metadata row', () => {
         projectId="p1"
         asset={asset()}
         authorName={'Bartholomew Featherstonehaugh-Cholmondeley'.repeat(2)}
-        fileSize={5 * 1024 * 1024}
+        fileSize={5_000_000}
       />,
     )
     // The whole line used to be clamped, so a long name ate the size.
+    // §190 — the fixture was 5 MiB, which the old formatter printed as
+    // "5 MB". Sizes now follow the viewer's own OS convention and jsdom is
+    // not Windows, so this says 5 MB by being 5 MB. What the test is about
+    // (a long name must not eat the size) is unchanged.
     expect(screen.getByText('5 MB')).toBeInTheDocument()
   })
 

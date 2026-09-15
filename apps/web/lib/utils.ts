@@ -1,6 +1,8 @@
 import { clsx, type ClassValue } from 'clsx'
 import { twMerge } from 'tailwind-merge'
 
+import { DEFAULT_BYTE_UNIT_MODE, formatBytesIn } from './byte-units'
+
 export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs))
 }
@@ -112,20 +114,33 @@ export function formatFrames(seconds: number, fps = 24): string {
 }
 
 /**
- * Format bytes into human-readable size string
- * e.g. 1_610_612_736 → "1.5 GB"
+ * Bytes as a human-readable size, in the SSR-safe default convention.
+ *
+ * §190 — this used to divide by 1024 and label the result "MB", which by
+ * SI definition means 1000-based. A 135,458,109-byte file that macOS Finder
+ * calls "135,5 MB" showed here as "129.2 MB": same file, same byte count
+ * (verified straight from the database, which was never wrong), two
+ * different numbers on screen.
+ *
+ * COMPONENTS SHOULD USE `useFormatBytes()` (hooks/use-byte-units) instead,
+ * which matches the convention of the VIEWER's own OS — Windows Explorer
+ * really does use 1024 while still printing "MB", so a single hardcoded
+ * convention is wrong for somebody either way. This function remains for
+ * the places that cannot call a hook, and answers decimal: correct for the
+ * units it prints, and what the majority of file managers show.
  */
 export function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  const value = bytes / Math.pow(1024, i)
-  return `${parseFloat(value.toFixed(1))} ${units[i]}`
+  return formatBytesIn(bytes, DEFAULT_BYTE_UNIT_MODE)
 }
 
 /**
  * Format a transfer rate in bytes/sec into a human-readable string.
  * e.g. 8_400_000 → "8.4 MB/s"
+ *
+ * Always decimal, deliberately NOT following the viewer's OS (§190): a
+ * throughput figure is not something any file manager shows next to it, so
+ * there is nothing to agree with — and MB/s is decimal by every
+ * networking convention.
  */
 export function formatSpeed(bytesPerSecond: number): string {
   return `${formatBytes(bytesPerSecond)}/s`

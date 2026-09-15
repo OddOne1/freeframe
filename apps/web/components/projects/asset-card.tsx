@@ -4,7 +4,8 @@ import * as React from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { AssetMenuItems } from './asset-menu-items'
 import { Film, Music, Image as ImageIcon, Images, MessageSquare, MoreHorizontal, Check, Share2, Download, Link as LinkIcon, Pencil, Trash2, Folder as FolderIcon } from 'lucide-react'
-import { cn, formatRelativeTime, formatBytes } from '@/lib/utils'
+import { cn, formatRelativeTime } from '@/lib/utils'
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import { StarRating } from '@/components/shared/star-rating'
 import type { Asset, AssetType, User } from '@/types'
 import type { AspectRatio, ThumbnailScale, TitleLines } from '@/stores/view-store'
@@ -96,6 +97,7 @@ export function AssetCard({
   thumbnailScale = 'fit',
   className,
 }: AssetCardProps) {
+  const formatBytes = useFormatBytes()
   const TypeIcon = assetTypeIcons[asset.asset_type]
   const lineClamp = titleLines === '1' ? 'line-clamp-1' : titleLines === '2' ? 'line-clamp-2' : 'line-clamp-3'
   const [imgError, setImgError] = React.useState(false)

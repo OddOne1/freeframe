@@ -3,7 +3,8 @@
 import * as React from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { X, Download, MoreHorizontal, Layers, Share2, Trash2, FolderInput, FolderIcon, Check, Film, Music, Image as ImageIcon, Images, Link as LinkIcon, Pencil, FolderPlus, Upload, CheckSquare } from 'lucide-react'
-import { cn, formatRelativeTime, formatBytes } from '@/lib/utils'
+import { cn, formatRelativeTime } from '@/lib/utils'
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/shared/avatar'
 import { EmptyState } from '@/components/shared/empty-state'
@@ -141,6 +142,7 @@ export function AssetGrid({
   canVote = false,
   onAssetVote,
 }: AssetGridProps) {
+  const formatBytes = useFormatBytes()
   const [selectedAssetIds, setSelectedAssetIds] = React.useState<Set<string>>(new Set())
   const [selectedFolderIds, setSelectedFolderIds] = React.useState<Set<string>>(new Set())
   const [moveDialogOpen, setMoveDialogOpen] = React.useState(false)

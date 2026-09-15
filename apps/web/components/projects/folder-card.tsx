@@ -3,7 +3,8 @@
 import React, { useCallback, useState } from 'react'
 import useSWR from 'swr'
 import { Folder, Film, Music, Image as ImageIcon, Images, MoreHorizontal, Pencil, Trash, Share2 } from 'lucide-react'
-import { cn, resolveApiMediaUrl, formatBytes } from '@/lib/utils'
+import { cn, resolveApiMediaUrl } from '@/lib/utils'
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import { api } from '@/lib/api'
 import { NameDialog } from './name-dialog'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -100,6 +101,7 @@ export function FolderCard({
   onDropItems,
   className,
 }: FolderCardProps) {
+  const formatBytes = useFormatBytes()
   const [menuOpen, setMenuOpen] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)

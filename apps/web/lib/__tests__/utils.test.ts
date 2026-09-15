@@ -58,16 +58,29 @@ describe('formatBytes', () => {
     expect(formatBytes(500)).toBe('500 B')
   })
 
+  // §190 — these three asserted the bug: divide by 1024, print "MB", which
+  // by SI definition means 1000-based. A 135,458,109-byte file that macOS
+  // Finder calls "135,5 MB" therefore showed as "129.2 MB". The old
+  // assertions were wrong about what the label means, so they are corrected
+  // here rather than deleted. Windows' 1024-with-MB convention is not lost —
+  // it moved to `useFormatBytes()`, which asks the viewer's own OS, and is
+  // covered in lib/__tests__/byte-units.test.ts.
   it('formats KB', () => {
+    expect(formatBytes(1000)).toBe('1 KB')
+    // 1024 rounds to "1 KB" either way, so this case never distinguished
+    // the two conventions at all.
     expect(formatBytes(1024)).toBe('1 KB')
   })
 
   it('formats MB', () => {
-    expect(formatBytes(1.5 * 1024 * 1024)).toBe('1.5 MB')
+    expect(formatBytes(1_500_000)).toBe('1.5 MB')
+    // 1.5 MiB, correctly labelled as the 1.6 MB it is.
+    expect(formatBytes(1.5 * 1024 * 1024)).toBe('1.6 MB')
   })
 
   it('formats GB', () => {
-    expect(formatBytes(1610612736)).toBe('1.5 GB')
+    expect(formatBytes(1_500_000_000)).toBe('1.5 GB')
+    expect(formatBytes(1610612736)).toBe('1.6 GB')
   })
 })
 

@@ -9,13 +9,16 @@
 // is loaded with a <script> tag in both documents and hangs one function
 // off window.
 (function () {
-  function fmtBytes(b) {
-    if (b == null) return "—";
-    const u = ["B", "KB", "MB", "GB", "TB"];
-    let i = 0, n = b;
-    while (n >= 1024 && i < u.length - 1) { n /= 1024; i += 1; }
-    return `${n.toFixed(1)} ${u[i]}`;
-  }
+  // §190 — the byte maths that stood here is gone. It divided by 1024 and
+  // labelled the result "MB", and was one of FOUR independent copies of
+  // that same bug (a second one inline in index.html, two more in
+  // apps/web). byte-units.js is now the one implementation for this app,
+  // and it follows the user's own platform — Windows Explorer really does
+  // print 1024-based sizes as "MB", while Finder does not.
+  //
+  // Same "one implementation" reasoning this file's header already gives
+  // for the docked/detached split, applied to the formatting too.
+  const fmtBytes = (b) => window.ByteUnits.formatBytes(b);
 
   /** Coarse on purpose: this is an estimate from a five-second window, and
    *  reporting it to the second invites more trust than it has earned. */

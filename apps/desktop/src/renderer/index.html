@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="tokens.css" />
   <link rel="stylesheet" href="panel.css" />
   <link rel="stylesheet" href="forms.css" />
+  <script src="byte-units.js"></script>
   <script src="icons.js"></script>
   <script src="panel.js" defer></script>
   <style>
@@ -1447,13 +1448,11 @@
     }
 
     // ── Helpers ──
-    function formatBytes(bytes) {
-      if (bytes == null) return "—";
-      const u = ["B", "KB", "MB", "GB", "TB"];
-      let i = 0, n = bytes;
-      while (n >= 1024 && i < u.length - 1) { n /= 1024; i += 1; }
-      return `${n.toFixed(1)} ${u[i]}`;
-    }
+    // §190 — was a second, independent copy of the byte maths inside this
+    // one app (panel.js had the other), both dividing by 1024 and printing
+    // "MB". byte-units.js is the single implementation now, and it follows
+    // the user's own platform.
+    const formatBytes = (bytes) => window.ByteUnits.formatBytes(bytes);
     const baseName = (p) => p.split("/").filter(Boolean).pop() || p;
 
     /**

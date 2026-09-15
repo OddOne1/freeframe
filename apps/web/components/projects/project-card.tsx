@@ -4,7 +4,8 @@ import * as React from 'react'
 import Link from 'next/link'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { MoreHorizontal, ImagePlus, Settings, Trash2, Globe, Lock, Users, ArrowRightLeft, Archive, ArchiveRestore } from 'lucide-react'
-import { cn, formatRelativeTime, formatBytes, resolveApiMediaUrl } from '@/lib/utils'
+import { cn, formatRelativeTime, resolveApiMediaUrl } from '@/lib/utils'
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import { getGradientForProject } from '@/lib/gradient-utils'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
@@ -26,6 +27,7 @@ export function ProjectCard({
   className,
   onMutate,
 }: ProjectCardProps) {
+  const formatBytes = useFormatBytes()
   const { isSuperAdmin } = useAuthStore()
   const gradient = getGradientForProject(project.id)
   const assetCount = project.asset_count ?? 0

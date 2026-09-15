@@ -64,7 +64,8 @@ import {
   GitCompareArrows,
 } from 'lucide-react'
 import Link from 'next/link'
-import { cn, formatBytes, formatRelativeTime, formatTime, resolveApiMediaUrl } from '@/lib/utils'
+import { cn, formatRelativeTime, formatTime, resolveApiMediaUrl } from '@/lib/utils'
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import { triggerBrowserDownload } from '@/lib/download'
 import { usePageTitle } from '@/hooks/use-page-title'
 import type {
@@ -306,6 +307,7 @@ const acceptByType: Record<string, string> = {
 }
 
 function ReviewScreenInner({ projectId }: { projectId: string }) {
+  const formatBytes = useFormatBytes()
   const router = useRouter()
   const searchParams = useSearchParams()
   const pathname = usePathname()

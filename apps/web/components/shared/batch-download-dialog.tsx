@@ -3,7 +3,8 @@
 import * as React from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { Download, Loader2, X } from 'lucide-react'
-import { cn, formatBytes } from '@/lib/utils'
+import { cn } from '@/lib/utils'
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import { triggerBrowserDownload } from '@/lib/download'
 import { DOWNLOAD_VARIANT_LABELS, type DownloadVariant } from '@/types'
 import type { ZipScope } from '@/lib/bulk-download'
@@ -94,6 +95,7 @@ export function BatchDownloadDialog({
   askFormat?: boolean
   title?: string
 }) {
+  const formatBytes = useFormatBytes()
   const [options, setOptions] = React.useState<ZipExportOptionsResponse | null>(null)
   const [loadingOptions, setLoadingOptions] = React.useState(false)
   const [variant, setVariant] = React.useState<DownloadVariant>('raw')

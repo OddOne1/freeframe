@@ -6,6 +6,15 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 // content describing user-supplied file/volume names) can't invoke
 // arbitrary IPC channels.
 contextBridge.exposeInMainWorld("freeframe", {
+  // §190 — which byte convention to print file sizes in. The renderer has
+  // no `process` of its own (contextIsolation on, nodeIntegration off), and
+  // this is the one fact it needs: Windows Explorer shows 1024-based sizes
+  // labelled "MB" while Finder, iOS, Android and GNOME all show 1000-based,
+  // so a size only agrees with the user's own file manager if it follows
+  // their platform. A plain value, not an invoke(): it cannot change during
+  // a session, and byte-units.js reads it synchronously while rendering.
+  platform: process.platform,
+
   listVolumes: () => ipcRenderer.invoke("volumes:list"),
 
   // `nodes` is the destination tree: [{ id, path, parentId }], where

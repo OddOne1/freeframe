@@ -5,7 +5,8 @@ import useSWR from 'swr'
 import * as Dialog from '@radix-ui/react-dialog'
 import * as Switch from '@radix-ui/react-switch'
 import { X, ImagePlus, Globe, Lock, Star, Users, FileText } from 'lucide-react'
-import { cn, resolveApiMediaUrl, formatBytes } from '@/lib/utils'
+import { cn, resolveApiMediaUrl } from '@/lib/utils'
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import { getGradientForProject } from '@/lib/gradient-utils'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -34,6 +35,7 @@ export function ProjectSettingsDialog({
   onUpdated,
   onOpenMembers,
 }: ProjectSettingsDialogProps) {
+  const formatBytes = useFormatBytes()
   const [name, setName] = React.useState(project.name)
   const [description, setDescription] = React.useState(project.description || '')
   // §14. Locked once the project's first upload has frozen the prefix.

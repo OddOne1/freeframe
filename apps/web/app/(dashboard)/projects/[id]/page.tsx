@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import Link from "next/link";
@@ -29,7 +30,6 @@ import {
 import {
   cn,
   formatRelativeTime,
-  formatBytes,
   resolveApiMediaUrl,
   trashExpiresAt,
   formatTimeRemaining,
@@ -126,6 +126,7 @@ function TrashExpiry({ deletedAt }: { deletedAt: string | null }) {
 }
 
 export default function ProjectDetailPage() {
+  const formatBytes = useFormatBytes()
   const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();

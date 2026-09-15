@@ -372,13 +372,13 @@ describe('the upload half of a build (§147)', () => {
     const api = makeApi({
       start: vi.fn(async () => ({
         export_id: 'e1', status: 'building', reused: false, ready: false,
-        file_count: 12, files_done: 12, total_bytes: 6442450944,
-        phase: 'uploading', bytes_done: 1610612736, files: [],
+        file_count: 12, files_done: 12, total_bytes: 6_000_000_000,
+        phase: 'uploading', bytes_done: 1_500_000_000, files: [],
       } as never)),
       poll: vi.fn(async () => ({
         export_id: 'e1', status: 'building', reused: false, ready: false,
-        file_count: 12, files_done: 12, total_bytes: 6442450944,
-        phase: 'uploading', bytes_done: 3221225472, files: [],
+        file_count: 12, files_done: 12, total_bytes: 6_000_000_000,
+        phase: 'uploading', bytes_done: 3_000_000_000, files: [],
       } as never)),
     })
     renderDialog(api)
@@ -388,6 +388,10 @@ describe('the upload half of a build (§147)', () => {
     const msg = await screen.findByTestId('zip-progress')
     expect(msg.textContent).toMatch(/finishing the zip/i)
     // The count that is standing still must NOT be what is shown.
+    // §190 — the byte fixtures above were GiB values (6442450944 etc.) that
+    // the old formatter printed as "6 GB". They are stated in decimal now
+    // so they mean what the assertion says; what this test is about (bytes
+    // transferred, not a frozen file count) is unchanged.
     expect(msg.parentElement?.textContent).not.toMatch(/12 of 12 added/)
     await waitFor(() =>
       expect(msg.parentElement?.textContent).toMatch(/of 6(\.0+)? GB transferred/i),

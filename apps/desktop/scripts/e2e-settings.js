@@ -759,7 +759,11 @@ async function waitFor(ev, expr, tries = 40) {
   for (const [label, needle] of [
     ["file count", "Files 120"], ["verified count", "Verified 118/120"],
     ["destinations", "Destinations 2"], ["cascade legs", "Cascade Legs 2"],
-    ["data", "Data 4.7 GB"], ["duration", "Duration 91.0s"], ["mismatches", "Mismatches 1"],
+    // §190 — was "Data 4.7 GB", which was this fixture's bytes divided by
+    // 1024 and then labelled GB. Sizes now follow the viewer's own OS
+    // convention, and on anything but Windows that is decimal — the same
+    // number Finder shows. The fixture's byte count did not change.
+    ["data", "Data 5.0 GB"], ["duration", "Duration 91.0s"], ["mismatches", "Mismatches 1"],
   ]) {
     check(detail && detail.stats.includes(needle), `keeps the ${label}`, detail && detail.stats);
   }

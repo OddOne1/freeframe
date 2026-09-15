@@ -16,7 +16,8 @@ import {
   Pause,
   Play,
 } from 'lucide-react'
-import { cn, formatBytes, formatRelativeTime, formatSpeed, formatEta } from '@/lib/utils'
+import { cn, formatRelativeTime, formatSpeed, formatEta } from '@/lib/utils'
+import { useFormatBytes } from '@/hooks/use-byte-units'
 import { useUploadStore, type UploadFile, type UploadStatus } from '@/stores/upload-store'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -89,6 +90,7 @@ function StatusBadge({ status }: { status: UploadStatus }) {
 // ─── Upload Item ──────────────────────────────────────────────────────────────
 
 function UploadItem({ upload }: { upload: UploadFile }) {
+  const formatBytes = useFormatBytes()
   const { cancelUpload, pauseUpload, resumeUpload, removeFile } = useUploadStore()
   const isActive = upload.status === 'pending' || upload.status === 'uploading' || upload.status === 'paused'
   const isProcessing = upload.status === 'processing'
