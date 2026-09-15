@@ -121,14 +121,23 @@ class ShareLink(Base):
         Enum(FieldsVisibility), nullable=False, server_default="disabled"
     )
     show_versions: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
-    # §188 — whether a viewer can READ existing comments, independent of
-    # `permission`, which governs whether they may POST one. Same asymmetry
-    # `fields_visibility` above is deliberately allowed: a link may show the
-    # team's discussion to a client who cannot join it, or (unusual but
-    # valid) collect comments through a panel nobody reading the link can
-    # see. The server already treated these as separate operations —
-    # GET /share/{token}/comments has never had a permission gate, only
-    # POST does — so this adds the missing UI-side half, not new authz.
+    # §188 — whether a viewer can READ existing comments, separate from
+    # `permission`, which governs whether they may POST one. The server
+    # always treated these as separate operations: GET
+    # /share/{token}/comments has never had a permission gate, only POST
+    # does. This is the missing UI-side half, not new authz.
+    #
+    # The combination it exists for: `permission=view` with show_comments
+    # True, so a client reads the team's discussion without joining it.
+    #
+    # §189 — but NOT fully independent, which is what §188 claimed by
+    # analogy with `fields_visibility` above. That analogy was wrong and
+    # live testing found it: `permission=comment` with show_comments False
+    # allows posting into a panel that is not rendered — no box anywhere, a
+    # dead end rather than an asymmetric config. `fields_visibility` is
+    # genuinely independent because it interacts with nothing; these two
+    # describe one panel from two sides. `_reconcile_comment_settings` in
+    # routers/share.py collapses that one pair on every write.
     show_comments: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     show_watermark: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     appearance: Mapped[dict] = mapped_column(JSON, nullable=False, server_default='{"layout":"grid","theme":"dark","accent_color":null,"open_in_viewer":true,"sort_by":"created_at"}')

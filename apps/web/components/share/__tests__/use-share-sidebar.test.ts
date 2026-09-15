@@ -94,10 +94,15 @@ describe('comments visibility no longer follows the permission', () => {
     expect(result.current.activeTab).toBe('comments')
   })
 
-  it('hides the panel on a COMMENT link when the owner turned it off', () => {
-    /* The inverse, and deliberately allowed rather than auto-corrected:
-       comments can be collected through a link whose panel stays hidden.
-       See the model comment on `show_comments`. */
+  it('still hides the panel if it somehow receives the forbidden pair', () => {
+    /* §188 called this a valid configuration. §189 removed it — posting
+       with no visible panel is a dead end, and the server now reconciles
+       the two fields so it cannot be stored (see
+       _reconcile_comment_settings). The assertion is KEPT rather than
+       deleted because the hook is a pure function that can still be handed
+       this pair: a row written before §189, a stale cached validate
+       response, an older client. Hiding the panel is the right response to
+       it; what changed is that this is defensive, not a supported setting. */
     const { result } = run('comment', 'disabled', false)
     expect(result.current.showComments).toBe(false)
     expect(result.current.showSidebar).toBe(false)

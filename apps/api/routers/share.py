@@ -73,6 +73,37 @@ from ..config import settings
 router = APIRouter(tags=["sharing"])
 
 
+def _reconcile_comment_settings(link: ShareLink) -> None:
+    """`permission` and `show_comments` are not allowed to disagree (§189).
+
+    §188 split reading comments from posting them and called every
+    combination valid, citing `fields_visibility`'s deliberate independence
+    as precedent. That was wrong, and live testing found it: a link with
+    `permission=comment` and `show_comments=False` lets a viewer post,
+    server-side, into a panel that is not rendered — there is no box. One of
+    the four combinations is a dead end, not an asymmetric configuration.
+
+    `fields_visibility` is genuinely independent because it interacts with
+    nothing; these two describe the same panel from two sides.
+
+    The combination that DOES stay is the one the feature was built for:
+    `permission=view` with `show_comments=True`, so a client reads the
+    team's discussion without joining it. Only the reverse is collapsed.
+
+    Applied last, after the caller has written whichever fields the request
+    carried, so it reconciles against current values rather than against
+    what happened to arrive. Enforced here rather than only in the UI
+    because this is what a hand-made PATCH, an older client, or the next
+    surface to write these fields will go through.
+    """
+    if link.permission in (SharePermission.comment, SharePermission.approve):
+        # Posting implies a place to post into.
+        link.show_comments = True
+    elif not link.show_comments:
+        # Nothing visible to comment on, so nothing to permit.
+        link.permission = SharePermission.view
+
+
 def _require_fields_visibility(link: ShareLink, minimum: FieldsVisibility) -> None:
     """Refuse a metadata level this link does not permit (§33).
 
@@ -310,6 +341,9 @@ def create_share_link(
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
     )
+    # §189 — a create request can hand-construct the same contradiction in
+    # one shot, with no PATCH involved.
+    _reconcile_comment_settings(link)
     db.add(link)
     db.add(ActivityLog(user_id=current_user.id, asset_id=asset_id, action=ActivityAction.shared))
     db.commit()
@@ -556,6 +590,10 @@ def update_share_link(
     for key, value in updates.items():
         setattr(link, key, value)
 
+    # AFTER the loop: whichever of the two arrived is now on `link`, so this
+    # reconciles the pair rather than guessing which one the caller meant.
+    _reconcile_comment_settings(link)
+
     db.commit()
     db.refresh(link)
 
@@ -620,6 +658,9 @@ def create_folder_share_link(
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
     )
+    # §189 — a create request can hand-construct the same contradiction in
+    # one shot, with no PATCH involved.
+    _reconcile_comment_settings(link)
     db.add(link)
     db.commit()
     db.refresh(link)
@@ -666,6 +707,9 @@ def create_project_share_link(
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
     )
+    # §189 — a create request can hand-construct the same contradiction in
+    # one shot, with no PATCH involved.
+    _reconcile_comment_settings(link)
     db.add(link)
     db.commit()
     db.refresh(link)
@@ -1285,6 +1329,9 @@ def create_multi_share_link(
         appearance=body.appearance.model_dump(),
         created_by=current_user.id,
     )
+    # §189 — a create request can hand-construct the same contradiction in
+    # one shot, with no PATCH involved.
+    _reconcile_comment_settings(link)
     db.add(link)
     db.flush()
 

@@ -97,7 +97,16 @@ describe('view-only link with comments shown', () => {
   })
 })
 
-describe('comment-permission link with comments hidden', () => {
+describe('comment-permission link with comments hidden — no longer storable', () => {
+  /* §188 shipped this as a valid configuration. Live testing found it is a
+     dead end: posting is allowed server-side with no box anywhere to type
+     into. §189 reconciles the two fields on every write, so this pair
+     cannot be persisted any more.
+
+     These stay as DEFENSIVE cases, not as a supported setting: a row
+     written before §189, or a stale cached response, can still produce it,
+     and hiding the panel remains the right response. The rule itself is
+     asserted in test_share_comment_settings_invariant.py. */
   it('hides the panel entirely', () => {
     render(<Panel permission="comment" showComments={false} />)
 
@@ -106,9 +115,10 @@ describe('comment-permission link with comments hidden', () => {
   })
 
   it('hides the compose input with it', () => {
-    /* Deliberately a valid configuration rather than auto-corrected:
-       comments can be collected through a link whose panel stays hidden.
-       Nothing to post INTO here, though, since the panel is gone. */
+    /* The dead end itself, in miniature: permission says post, and there
+       is nowhere to. §189 stops this pair being stored at all; if one
+       reaches the UI anyway, hiding the input is right — an input inside a
+       panel that is not rendered could not be reached regardless. */
     render(<Panel permission="comment" showComments={false} />)
 
     expect(screen.queryByTestId(COMMENT_INPUT)).toBeNull()
@@ -165,5 +175,61 @@ describe('the page really applies these rules', () => {
   it('does not gate the comments PANEL on permission any more', () => {
     // The whole point: visibility comes from the flag, not the ladder.
     expect(PAGE).toMatch(/activeTab === 'comments' && showComments/)
+  })
+})
+
+// ─── §189: the toggles cannot produce the dead-end pair ─────────────────────
+
+describe('the Permissions toggles send both fields together', () => {
+  /* Each toggle writes BOTH fields when its change would otherwise leave
+     them contradicting. One immediateUpdate call, not two: it PATCHes the
+     object it is handed, so a single call never renders the invalid
+     in-between state.
+
+     Read from the source — ShareLinkDetail needs a project, SWR and a share
+     link to mount, and what is being checked is the payload shape, which is
+     literal in the file. Comments stripped: the §189 comment above these
+     toggles names both fields, so raw text matches the prose. */
+  const RAW = readFileSync(
+    join(process.cwd(), 'components/projects/share-link-detail.tsx'),
+    'utf8',
+  )
+  const SRC = RAW.replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('//'))
+    .join('\n')
+
+  it('turning posting ON also shows the panel', () => {
+    expect(SRC).toMatch(
+      /\{ permission: "comment", show_comments: true \}/,
+    )
+  })
+
+  it('hiding the panel also revokes posting', () => {
+    expect(SRC).toMatch(
+      /\{ show_comments: false, permission: "view" \}/,
+    )
+  })
+
+  it('never sends a bare permission:comment that could strand the panel', () => {
+    /* The §188 shape. `permission: "comment"` on its own leaves
+       show_comments at whatever it was — which is exactly the dead end. */
+    expect(SRC).not.toMatch(/permission: checked \? "comment" : "view"/)
+  })
+
+  it('never sends a bare show_comments:false', () => {
+    expect(SRC).not.toMatch(/immediateUpdate\(\{ show_comments: checked \}\)/)
+  })
+
+  it('still lets view-only + comments-shown be set — the real use case', () => {
+    /* Turning the panel ON must NOT touch permission, or the feature's
+       whole point is undone. */
+    expect(SRC).toMatch(/\{ show_comments: true \}/)
+  })
+
+  it('turning posting OFF leaves the panel alone', () => {
+    /* A reader can keep seeing the discussion after posting is revoked. */
+    expect(SRC).toMatch(/\{ permission: "view" \}/)
   })
 })

@@ -959,6 +959,18 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
                   Labels say which is which — "leave" vs "see existing" —
                   because "Comments" and "Show comments" side by side read as
                   duplicates otherwise. */}
+              {/* §189 — each toggle sends BOTH fields when its change would
+                  otherwise leave them contradicting each other. Posting with
+                  no visible panel is a dead end: allowed server-side, with
+                  no box anywhere to type into. §188 shipped that as a valid
+                  configuration and it is not one.
+
+                  One immediateUpdate call, not two: it PATCHes the object it
+                  is given, so a single call never renders the invalid
+                  in-between state. The server applies the same rule
+                  (_reconcile_comment_settings) and is the actual guarantee —
+                  this is so the panel is right immediately, without waiting
+                  for a refetch to correct it. */}
               <ToggleRow
                 label="Let viewers comment"
                 description="Viewers can post new comments and replies"
@@ -967,7 +979,11 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
                   shareLink.permission === "approve"
                 }
                 onCheckedChange={(checked) =>
-                  immediateUpdate({ permission: checked ? "comment" : "view" })
+                  immediateUpdate(
+                    checked
+                      ? { permission: "comment", show_comments: true }
+                      : { permission: "view" },
+                  )
                 }
               />
               <ToggleRow
@@ -975,7 +991,11 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
                 description="Viewers can see existing comments, even if they can't post"
                 checked={shareLink.show_comments ?? true}
                 onCheckedChange={(checked) =>
-                  immediateUpdate({ show_comments: checked })
+                  immediateUpdate(
+                    checked
+                      ? { show_comments: true }
+                      : { show_comments: false, permission: "view" },
+                  )
                 }
               />
               <div className="py-2">
