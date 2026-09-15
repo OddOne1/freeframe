@@ -27,6 +27,7 @@ import type { Asset, SharePermission, ProjectBranding, ShareLinkAppearance, Down
 import { ShareFieldsPanel } from '@/components/share/share-fields-panel'
 import { useShareSidebar, type FieldsVisibility, type ShareSidebar } from '@/components/share/use-share-sidebar'
 import { DownloadMenu } from '@/components/share/download-menu'
+import { SharePlayer } from '@/components/share/share-player'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -373,18 +374,16 @@ function ShareMediaViewer({ asset, token, streamUrl, streamLoading }: ShareMedia
   return (
     <div className="flex-1 flex items-center justify-center bg-black min-h-0 overflow-hidden">
       {asset.asset_type === 'video' && (
-        <div className="w-full h-full flex items-center justify-center">
+        // flex-col, not the centring box the bare <video> needed: the
+        // player sizes itself (`flex flex-col h-full w-full`) and centres
+        // its own frame, exactly as it does on the folder-share path.
+        <div className="w-full h-full flex flex-col">
           {streamLoading ? (
-            <Loader2 className="h-8 w-8 animate-spin text-zinc-500" />
+            <div className="flex-1 flex items-center justify-center">
+              <Loader2 className="h-8 w-8 animate-spin text-zinc-500" />
+            </div>
           ) : streamUrl ? (
-            <video
-              src={streamUrl}
-              controls
-              className="max-h-full max-w-full"
-              preload="metadata"
-            >
-              Your browser does not support video playback.
-            </video>
+            <SharePlayer assetId={asset.id} streamUrl={streamUrl} token={token} />
           ) : (
             <div className="flex flex-col items-center gap-2">
               <Video className="h-10 w-10 text-zinc-700" />

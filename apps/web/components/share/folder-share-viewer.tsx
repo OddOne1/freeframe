@@ -692,36 +692,6 @@ interface AssetViewerProps {
   onBack: () => void
 }
 
-function HlsVideo({ src, className }: { src: string; className?: string }) {
-  const videoRef = React.useRef<HTMLVideoElement>(null)
-
-  React.useEffect(() => {
-    const video = videoRef.current
-    if (!video || !src) return
-
-    if (src.includes('.m3u8')) {
-      // HLS stream — use HLS.js
-      import('hls.js').then(({ default: Hls }) => {
-        if (Hls.isSupported()) {
-          const hls = new Hls()
-          hls.loadSource(src)
-          hls.attachMedia(video)
-          hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}))
-          return () => hls.destroy()
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = src
-          video.play().catch(() => {})
-        }
-      })
-    } else {
-      video.src = src
-      video.play().catch(() => {})
-    }
-  }, [src])
-
-  return <video ref={videoRef} controls className={className} />
-}
-
 function AssetViewer({ token, shareSession, asset, permission, downloadVariants, fieldsVisibility, onBack }: AssetViewerProps) {
   // Use the same ReviewProvider as the project review page, but with shareToken
   // This gives us the same video player, image viewer, comment panel, etc.

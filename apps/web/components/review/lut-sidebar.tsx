@@ -81,7 +81,12 @@ export function LutSidebarToggle({
       aria-label="Color LUT"
       title={selectedName ? `LUT: ${selectedName}` : 'No LUT applied'}
       className={cn(
-        'flex h-7 shrink-0 items-center gap-1.5 rounded border px-2 text-xs',
+        // §184 — px-1.5/gap-1 rather than px-2/gap-1.5: with the Quality
+        // dropdown beside it (Chromium/Firefox; Safari never renders one,
+        // see §117) the cluster read as cramped. Trimmed on the button
+        // rather than by widening the row's gap, so the spacing between
+        // every control in that cluster stays uniform.
+        'flex h-7 shrink-0 items-center gap-1 rounded border px-1.5 text-xs',
         'bg-black/40 backdrop-blur-sm transition-colors',
         selectedName || open
           ? 'border-accent text-accent'
@@ -96,7 +101,7 @@ export function LutSidebarToggle({
       )}
       {/* No max-width clamp: the sidebar carries the full names, and this
           label only ever holds one of them. */}
-      <span className="max-w-[160px] truncate">{selectedName ?? 'LUT'}</span>
+      <span className="max-w-[140px] truncate">{selectedName ?? 'LUT'}</span>
     </button>
   )
 }
