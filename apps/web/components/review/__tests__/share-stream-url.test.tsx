@@ -207,11 +207,15 @@ describe('§186 — what the browser ends up requesting', () => {
     expect(playerResolve(FROM_API)).toBe('/api/stream/hls/master.m3u8?token=abc')
   })
 
-  it('two prefixes when the page resolves first (the live 404)', () => {
-    /* Pinning the broken composition, so the failure is documented as a
-       value rather than as prose. This is the exact string from Mathias's
-       Safari console. */
+  it('STILL one prefix even if the page resolves first — §187 backstop', () => {
+    /* Written in §186 asserting `/api/api/stream/...`, the exact string from
+       Mathias's Safari console, to document the broken composition as a
+       value rather than as prose. §187 made that composition impossible:
+       the same mistake is now a no-op.
+       The §186 fix above is unchanged and still the real defence — this is
+       what happens when someone does not follow it. */
     const preResolved = resolveApiMediaUrl(FROM_API)!
-    expect(playerResolve(preResolved)).toBe('/api/api/stream/hls/master.m3u8?token=abc')
+    expect(playerResolve(preResolved)).toBe('/api/stream/hls/master.m3u8?token=abc')
+    expect(playerResolve(preResolved)).not.toContain('/api/api')
   })
 })

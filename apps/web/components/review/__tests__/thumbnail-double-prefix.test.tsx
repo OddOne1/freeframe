@@ -135,11 +135,20 @@ describe('the share branch', () => {
 })
 
 describe('the resolution rule itself', () => {
-  it('is idempotent-hostile — which is why it may only run once', () => {
-    // Not a fix, a statement of the constraint the fix exists to respect.
-    // If this ever becomes safe to apply twice, the raw-passing above can
-    // relax; while it holds, it cannot.
-    expect(playerResolve(playerResolve(THUMB))).toBe('/api/api/stream/hls/thumbnail.jpg?token=abc')
+  it('IS idempotent now — the constraint above was lifted in §187', () => {
+    // This assertion used to read the other way, and said of itself: "if
+    // this ever becomes safe to apply twice, the raw-passing above can
+    // relax; while it holds, it cannot." §187 made it safe, after a fourth
+    // occurrence of the doubling bug (§32, §139, §184, and the
+    // FolderAssetViewer instance §186 found).
+    //
+    // The raw-passing discipline is deliberately NOT relaxed, though, and
+    // the tests above still assert it. Idempotence is a backstop for the
+    // next caller who forgets the rule — not permission to stop following
+    // it, because resolving defensively everywhere hides which layer owns
+    // the decision.
+    expect(playerResolve(playerResolve(THUMB))).toBe('/api/stream/hls/thumbnail.jpg?token=abc')
+    expect(playerResolve(playerResolve(THUMB))).not.toContain('/api/api')
   })
 
   it('leaves an already-absolute url alone', () => {

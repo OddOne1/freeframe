@@ -57,11 +57,15 @@ describe('resolveApiMediaUrl', () => {
     expect(resolveApiMediaUrl(RELATIVE)).toBe(`/api${RELATIVE}`)
   })
 
-  it('is NOT idempotent under a relative API base — so resolve exactly once', () => {
-    // This is documentation as much as assertion: it is why the fix resolves
-    // at one boundary per path instead of defensively everywhere.
+  it('is idempotent under a relative API base since §187 — but still resolve once', () => {
+    // This read `/api/api${RELATIVE}` until §187, as documentation of why
+    // the rule resolves at one boundary per path rather than defensively
+    // everywhere. That reason still stands and the tests below still pin
+    // it; what changed is only that getting it wrong is now a no-op rather
+    // than a 404. Four occurrences earned the backstop (§32, §139, §184,
+    // and the FolderAssetViewer instance §186 found).
     const once = resolveApiMediaUrl(RELATIVE)!
-    expect(resolveApiMediaUrl(once)).toBe(`/api/api${RELATIVE}`)
+    expect(resolveApiMediaUrl(once)).toBe(once)
   })
 })
 

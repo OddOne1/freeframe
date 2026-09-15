@@ -14,15 +14,36 @@ export function cn(...inputs: ClassValue[]): string {
  * mode is two places applying it: in production NEXT_PUBLIC_API_URL is
  * itself "/api", so an already-resolved url STILL starts with "/" and the
  * `startsWith` guard cannot tell it from a raw one. Resolve twice and you
- * get "/api/api/stream/..." and a 404. That has now happened twice — §32
- * for stream_url, §139 for thumbnail_url.
+ * get "/api/api/stream/..." and a 404. Four times now — §32 (stream_url),
+ * §139 (thumbnail_url), §184 (the single-asset share page), and the
+ * FolderAssetViewer instance §186 turned up while auditing that one. The
+ * second guard below is §187's answer to the count.
  *
  * Read from process.env inside the function, not into a module constant:
  * tests stub it with vi.stubEnv after this module is imported.
+ *
+ * §187 — it is now IDEMPOTENT, so a fifth occurrence fails safe.
+ *
+ * Resolving in exactly one place is still the rule, and §186 restored it at
+ * every caller. This is the backstop for the next time someone does not
+ * follow it: a url that already carries the origin is returned untouched
+ * rather than given a second one. Four occurrences (§32, §139, §184, and
+ * the FolderAssetViewer instance §186 found while checking) is enough
+ * evidence that the discipline alone does not hold.
+ *
+ * Worth knowing why this only ever bites in production: in dev
+ * NEXT_PUBLIC_API_URL is an absolute origin, so a resolved url no longer
+ * starts with "/" and the first guard already catches a second pass by
+ * accident. In production it is "/api", so it does not.
  */
 function withApiOrigin(url: string): string {
+  const origin = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
   if (!url.startsWith('/')) return url
-  return `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}${url}`
+  // Matched at a path BOUNDARY, not as a bare prefix: with origin "/api",
+  // a plain `startsWith` would also swallow a genuinely raw "/apiary/..."
+  // and leave it unresolved — trading a doubled prefix for a missing one.
+  if (url === origin || url.startsWith(`${origin}/`)) return url
+  return `${origin}${url}`
 }
 
 /**
