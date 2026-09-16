@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, DateTime, BigInteger, func
+from sqlalchemy import String, DateTime, BigInteger, Boolean, func
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -40,4 +40,18 @@ class SiteSettings(Base):
     #: services/schedule_window.py. A change therefore takes effect on the
     #: next tick, with no restart.
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, server_default="UTC")
+    #: Whether every user on this instance must have 2FA (§191).
+    #:
+    #: False by default, and that default is load-bearing: a self-hosted
+    #: install that upgrades into this feature must keep logging in exactly
+    #: as it did until an admin decides otherwise. Turning it on does not
+    #: lock anyone out either — a user without 2FA is routed into forced
+    #: SETUP on their next correct password, not refused.
+    #:
+    #: Read fresh per request like `timezone` above, never cached: an admin
+    #: enabling this expects it to bind on the next login, not after a
+    #: restart.
+    require_2fa: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())

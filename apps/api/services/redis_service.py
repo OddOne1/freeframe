@@ -68,6 +68,67 @@ def verify_magic_code(email: str, code: str) -> tuple[bool, str]:
     return True, ""
 
 
+# ── 2FA email fallback (§191) ────────────────────────────────────────────
+#
+# Deliberately its OWN key prefix, not the magic-code one above. A person
+# requesting passwordless login and a person completing 2FA are different
+# operations on the same address, and sharing a key would let either
+# overwrite the other's pending code — or let one be redeemed for the
+# other, which is worse: a magic code is a FULL login, so accepting one as
+# a second factor would collapse 2FA back into single-factor.
+#
+# Same shape, same TTL, same attempt ceiling, copied rather than
+# parameterised so neither can be changed for one and silently changed for
+# both.
+TWOFA_EMAIL_CODE_PREFIX = "2fa_email_code:"
+TWOFA_EMAIL_ATTEMPTS_PREFIX = "2fa_email_attempts:"
+TWOFA_EMAIL_CODE_EXPIRY_SECONDS = 600  # 10 minutes
+MAX_TWOFA_EMAIL_ATTEMPTS = 5
+
+
+def generate_2fa_email_code() -> str:
+    """A 6-digit fallback code."""
+    return str(secrets.randbelow(900000) + 100000)
+
+
+def store_2fa_email_code(email: str, code: str) -> None:
+    r = get_redis()
+    r.setex(
+        f"{TWOFA_EMAIL_CODE_PREFIX}{email.lower()}",
+        TWOFA_EMAIL_CODE_EXPIRY_SECONDS,
+        code,
+    )
+    r.delete(f"{TWOFA_EMAIL_ATTEMPTS_PREFIX}{email.lower()}")
+
+
+def verify_2fa_email_code(email: str, code: str) -> tuple[bool, str]:
+    """Verify a 2FA fallback code. Returns (success, error_message).
+
+    Consumes the code on success, like its magic-code twin: a second factor
+    that could be replayed would not be one.
+    """
+    r = get_redis()
+    key = f"{TWOFA_EMAIL_CODE_PREFIX}{email.lower()}"
+    attempts_key = f"{TWOFA_EMAIL_ATTEMPTS_PREFIX}{email.lower()}"
+
+    attempts = r.get(attempts_key)
+    if attempts and int(attempts) >= MAX_TWOFA_EMAIL_ATTEMPTS:
+        return False, "Too many attempts. Request a new code."
+
+    stored_code = r.get(key)
+    if not stored_code:
+        return False, "Code expired or not found"
+
+    if stored_code != code:
+        r.incr(attempts_key)
+        r.expire(attempts_key, TWOFA_EMAIL_CODE_EXPIRY_SECONDS)
+        return False, "Invalid code"
+
+    r.delete(key)
+    r.delete(attempts_key)
+    return True, ""
+
+
 def delete_magic_code(email: str) -> None:
     """Delete magic code from Redis."""
     r = get_redis()

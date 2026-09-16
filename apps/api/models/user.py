@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional
-from sqlalchemy import String, Enum, DateTime, JSON, BigInteger, func
+from sqlalchemy import String, Enum, DateTime, JSON, BigInteger, Boolean, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 try:
@@ -53,6 +53,31 @@ class User(Base):
     invite_token: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     invite_token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     preferences: Mapped[dict] = mapped_column(JSON, nullable=False, server_default='{}')
+
+    # ── Two-factor authentication (§191) ───────────────────────────────────
+    #
+    # The shared TOTP secret, Fernet-encrypted at rest — never plaintext in
+    # the database. See services/totp_service.py for where the key comes
+    # from. A value here does NOT mean 2FA is on: setup generates a secret
+    # and confirmation enables it, and between those two moments the secret
+    # exists while `totp_enabled` is still false.
+    totp_secret_encrypted: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    #: True only once the user has typed a real code from their authenticator.
+    #: Generating a secret must never gate login on its own — a half-finished
+    #: setup would otherwise lock someone out of their own account.
+    totp_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    #: Single-use recovery codes, bcrypt-hashed with the same helper that
+    #: hashes passwords (services/auth_service.hash_password) — not a second
+    #: scheme invented for this. Issued once at confirmation, shown once, and
+    #: each one is removed from this list the moment it is spent. They exist
+    #: for the case where BOTH the authenticator and email access are gone.
+    #:
+    #: JSON rather than a child table, matching `allowed_download_variants`
+    #: on ShareLink: a short fixed-size list read and rewritten as a whole,
+    #: never queried into.
+    backup_codes_hashed: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

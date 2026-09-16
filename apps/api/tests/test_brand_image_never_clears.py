@@ -53,6 +53,7 @@ def _settings_row(**overrides):
     row.theme_colors = None
     row.total_storage_limit_bytes = None
     row.timezone = "UTC"
+    row.require_2fa = False
     for k, v in overrides.items():
         setattr(row, k, v)
     return row

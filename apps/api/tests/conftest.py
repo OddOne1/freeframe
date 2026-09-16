@@ -59,6 +59,18 @@ def _make_user(
     u.storage_limit_bytes = 200 * 1024 ** 3
     u.email_verified = False
     u.preferences = {}
+    # §191 — same reason as test_auth's own stub: every MagicMock attribute
+    # is truthy, so leaving these unset routes any login through this
+    # fixture into the 2FA branch.
+    u.totp_enabled = False
+    u.totp_secret_encrypted = None
+    u.backup_codes_hashed = None
+    # And `require_2fa`, which is not a User field at all: this suite's
+    # mock_db returns ONE object from every `.first()`, so the site-settings
+    # lookup inside /auth/login gets this same stub. Without it that lookup
+    # reads a truthy MagicMock and every plain login is forced into 2FA
+    # enrolment.
+    u.require_2fa = False
     u.invite_token = None
     return u
 

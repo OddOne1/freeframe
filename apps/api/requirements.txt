@@ -77,3 +77,15 @@ pillow-avif-plugin==1.6.0
 # while the settings page insists otherwise. zoneinfo prefers the system
 # database and uses this only as a fallback, so it costs nothing here.
 tzdata==2024.2
+
+# §191 — two-factor authentication.
+#
+# pyotp is the TOTP implementation (RFC 6238); qrcode renders the
+# provisioning URI as a scannable image server-side, so the browser never
+# needs a QR library and the secret never has to reach a third-party
+# rendering service. [pil] is the PNG backend — Pillow is already pinned
+# above for poster thumbnails, so this adds no new image dependency.
+#
+# The secret's encryption at rest uses `cryptography`, already pinned above.
+pyotp==2.9.0
+qrcode[pil]==7.4.2

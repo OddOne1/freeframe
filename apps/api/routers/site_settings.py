@@ -123,6 +123,7 @@ def _to_response(site_settings: SiteSettings, include_usage: bool = False, db: O
         theme_colors=site_settings.theme_colors,
         total_storage_limit_bytes=site_settings.total_storage_limit_bytes,
         timezone=site_settings.timezone or "UTC",
+        require_2fa=bool(site_settings.require_2fa),
         total_storage_used_bytes=_platform_storage_used_bytes(db) if include_usage and db is not None else None,
     )
 # -- Endpoints ---------------------------------------------------------------

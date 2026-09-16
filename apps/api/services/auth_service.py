@@ -33,6 +33,44 @@ def create_refresh_token(user_id: str) -> str:
     payload = {"sub": str(user_id), "type": "refresh", "exp": expire}
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
+#: How long a half-finished login stays valid (§191). Long enough to open an
+#: authenticator app or wait for an email, short enough that a token lifted
+#: off a screen is not a standing invitation.
+TWOFA_PENDING_EXPIRY_MINUTES = 10
+
+#: The `type` claim that marks a token as "password accepted, second factor
+#: outstanding".
+#:
+#: This is the whole security model of the 2FA flow and it costs no new
+#: code: middleware/auth.py's get_current_user already rejects anything
+#: whose type is not exactly "access", so a pending token cannot reach a
+#: single authenticated endpoint. Verified by reading that middleware, and
+#: asserted in tests/test_two_factor.py rather than assumed.
+TWOFA_PENDING_TOKEN_TYPE = "2fa_pending"
+
+
+def create_2fa_pending_token(user_id: str) -> str:
+    """A token that proves the password step passed and nothing more."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=TWOFA_PENDING_EXPIRY_MINUTES)
+    payload = {"sub": str(user_id), "type": TWOFA_PENDING_TOKEN_TYPE, "exp": expire}
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def decode_2fa_pending_token(token: str) -> Optional[str]:
+    """The user id inside a valid pending token, or None.
+
+    None covers every failure the caller treats identically — expired,
+    tampered, or an access/refresh token being passed where a pending one
+    belongs. That last case matters: without the type check, a real access
+    token would satisfy the 2FA step and complete a login it was never
+    issued for.
+    """
+    payload = decode_token(token)
+    if not payload or payload.get("type") != TWOFA_PENDING_TOKEN_TYPE:
+        return None
+    return payload.get("sub")
+
+
 def decode_token(token: str) -> Optional[dict]:
     try:
         return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])

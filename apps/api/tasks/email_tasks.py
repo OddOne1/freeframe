@@ -57,7 +57,26 @@ def _send_email(to_email: str, subject: str, html_body: str, text_body: Optional
 def send_magic_code_email(self, to_email: str, code: str, expiry_minutes: int = 10, purpose: str = "login", contact_url: Optional[str] = None):
     """Send magic code email - high priority, immediate delivery."""
     try:
-        if purpose == "password_reset":
+        if purpose == "two_factor":
+            # §191 — its own copy, deliberately. "Here is your login code"
+            # and "you could not reach your authenticator" are different
+            # messages to the person reading them: one is routine, the
+            # other means something went wrong and is worth acting on if
+            # they did not ask for it.
+            subject = f"Your FreeFrame verification code: {code}"
+            html_body = render_template(
+                "email/magic_code.html",
+                subject=subject,
+                code=code,
+                expiry_minutes=expiry_minutes,
+            )
+            text_body = (
+                f"Your FreeFrame two-factor verification code is: {code}. "
+                f"It expires in {expiry_minutes} minutes. "
+                f"If you did not try to sign in, someone has your password — "
+                f"change it and tell your admin."
+            )
+        elif purpose == "password_reset":
             subject = f"Password reset code: {code}"
             html_body = render_template(
                 "email/password_reset_code.html",

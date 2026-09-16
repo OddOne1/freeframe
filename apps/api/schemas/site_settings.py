@@ -12,6 +12,8 @@ class SiteSettingsResponse(BaseModel):
     total_storage_limit_bytes: Optional[int] = None
     #: IANA zone name deciding when the daily maintenance jobs run (§182).
     timezone: str = "UTC"
+    #: §191 — whether every user on this instance must have 2FA.
+    require_2fa: bool = False
     # Live-computed, not stored -- sum of MediaFile.file_size_bytes across
     # every non-deleted asset platform-wide. Only populated for an
     # authenticated superadmin caller (GET /site-settings is otherwise
@@ -34,3 +36,6 @@ class SiteSettingsUpdate(BaseModel):
     #: router — an unknown string here would make every wall-clock check
     #: fall back to UTC forever, silently (§182).
     timezone: Optional[str] = None
+    #: §191 — turning this ON routes users without 2FA into forced ENROLMENT
+    #: on their next correct password; it does not lock anyone out.
+    require_2fa: Optional[bool] = None

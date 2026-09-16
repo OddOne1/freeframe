@@ -1,6 +1,7 @@
 from pydantic import BaseModel, EmailStr
 import uuid
 from datetime import datetime
+from typing import Literal, Optional, Union
 from ..models.user import UserStatus, UserGlobalRole
 from ..models.project import ProjectRole
 
@@ -18,6 +19,109 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     needs_password: bool = False  # True if user needs to set password
+    #: §191 — ALWAYS present and always False here, so a caller has exactly
+    #: one field to branch on rather than inferring from what is missing.
+    #: Added to the success shape too, deliberately: a discriminator that
+    #: only appears in one arm of a union is one an older or careless client
+    #: reads as `undefined` and treats as falsy by accident rather than by
+    #: decision.
+    requires_2fa: Literal[False] = False
+
+
+class TwoFactorRequiredResponse(BaseModel):
+    """Password accepted, second factor outstanding (§191).
+
+    Carries NO access_token and NO refresh_token — not nullable ones,
+    absent ones. That is the point of making this a separate shape rather
+    than letting TokenResponse's fields go optional: a client that forgets
+    to check `requires_2fa` and reaches for `access_token` gets undefined
+    and fails where the mistake is, instead of storing the string "null"
+    and failing later on an unrelated request. The existing web client does
+    exactly that kind of unguarded read today.
+    """
+
+    requires_2fa: Literal[True] = True
+    #: True  -> the user has no 2FA yet and the instance now requires it;
+    #:          the client should show enrolment (QR code), not a code box.
+    #: False -> the user is enrolled; ask for a code.
+    #: One flag rather than two endpoints because the backend mechanism is
+    #: identical either way — only what the client draws differs.
+    setup_required: bool
+    #: Short-lived (10 min), `type: "2fa_pending"`. Useless anywhere in the
+    #: app except the /auth/2fa/* completion endpoints: get_current_user
+    #: rejects any token whose type is not exactly "access".
+    pending_token: str
+
+
+#: What POST /auth/login returns. The two arms are distinguished by
+#: `requires_2fa`, which is present in both.
+LoginResponse = Union[TokenResponse, TwoFactorRequiredResponse]
+
+
+# ── 2FA request/response bodies (§191) ──────────────────────────────────────
+
+class TwoFactorVerifyRequest(BaseModel):
+    pending_token: str
+    #: A TOTP code, an emailed fallback code, or a backup code. The server
+    #: tries each in turn rather than making the client say which it is —
+    #: the user does not reliably know either, and a wrong guess would be a
+    #: confusing failure on a correct code.
+    code: str
+
+
+class TwoFactorSetupRequest(BaseModel):
+    """Carries the pending token when there is no session yet.
+
+    Optional because the same endpoint serves an already-signed-in user
+    turning 2FA on from settings, who has a bearer token instead.
+    """
+
+    pending_token: Optional[str] = None
+
+
+class TwoFactorSetupResponse(BaseModel):
+    """What the client needs to draw an enrolment screen."""
+
+    #: otpauth:// URI. Everything the authenticator needs.
+    provisioning_uri: str
+    #: The same URI as a PNG data: URI, rendered server-side so no QR
+    #: library is needed in the browser and the secret never travels to a
+    #: third-party image service.
+    qr_code_data_uri: str
+    #: For manual entry when a camera is not available. This IS the secret
+    #: in plaintext — it is shown once, on a screen the user is already
+    #: authenticated to, which is the same exposure the QR code has.
+    secret: str
+
+
+class TwoFactorConfirmRequest(BaseModel):
+    code: str
+    #: Present when confirming during a forced first login; omitted when an
+    #: already-signed-in user turns 2FA on from settings.
+    pending_token: Optional[str] = None
+
+
+class TwoFactorConfirmResponse(BaseModel):
+    """Enrolment finished.
+
+    Carries the backup codes ONCE, in plaintext. They are bcrypt-hashed
+    server-side and this is the only moment they exist in readable form —
+    there is no endpoint that returns them again.
+    """
+
+    backup_codes: list[str]
+    #: Present only when this completed a forced first login, in which case
+    #: the user is now fully authenticated and these are their real tokens.
+    #: Absent when an already-signed-in user enabled 2FA from settings —
+    #: they already hold valid tokens and re-issuing would be pointless
+    #: churn.
+    tokens: Optional[TokenResponse] = None
+
+
+class TwoFactorEmailFallbackResponse(BaseModel):
+    #: Deliberately says nothing about whether the address exists or
+    #: whether a code was really sent.
+    message: str = "If that account needs a code, one has been sent."
 
 class RefreshRequest(BaseModel):
     refresh_token: str

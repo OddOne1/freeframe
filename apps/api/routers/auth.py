@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from typing import Optional
 import uuid
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -11,20 +12,29 @@ from ..schemas.auth import (
     SendMagicCodeRequest, SendMagicCodeResponse,
     VerifyMagicCodeRequest, SetPasswordRequest,
     AcceptInviteRequest, InviteInfoResponse,
+    LoginResponse, TwoFactorRequiredResponse, TwoFactorVerifyRequest,
+    TwoFactorSetupRequest, TwoFactorSetupResponse,
+    TwoFactorConfirmRequest, TwoFactorConfirmResponse,
+    TwoFactorEmailFallbackResponse,
 )
 from ..services.auth_service import (
     hash_password, verify_password,
     create_access_token, create_refresh_token, decode_token,
+    create_2fa_pending_token, decode_2fa_pending_token,
     get_user_by_email, get_user_by_id, split_full_name,
 )
 from ..services.redis_service import (
     generate_magic_code, store_magic_code, verify_magic_code as redis_verify_magic_code,
     MAGIC_CODE_EXPIRY_SECONDS,
+    generate_2fa_email_code, store_2fa_email_code, verify_2fa_email_code,
+    TWOFA_EMAIL_CODE_EXPIRY_SECONDS,
 )
+from ..services import totp_service
+from ..services.site_settings_service import require_2fa_enabled, instance_org_name
 from ..tasks.email_tasks import send_magic_code_email, send_invite_email
 from ..tasks.celery_app import send_task_safe
 from ..models.user import User, UserStatus, UserGlobalRole
-from ..middleware.auth import get_current_user
+from ..middleware.auth import get_current_user, get_optional_user
 from ..middleware.rate_limit import rate_limit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -205,9 +215,26 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
     return user
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=LoginResponse)
 def login(body: LoginRequest, db: Session = Depends(get_db)):
-    """Login with email + password."""
+    """Login with email + password.
+
+    §191 — the password check below is UNCHANGED. What changed is what
+    happens after it succeeds, and there are three outcomes:
+
+      no enforcement, user not enrolled  -> full tokens, exactly as before
+      user enrolled (whatever the site says) -> pending token, ask for a code
+      enforcement on, user not enrolled  -> pending token, force enrolment
+
+    The first case is the one that matters most on an existing install:
+    until an admin turns `require_2fa` on, and for every user who has not
+    opted in, this endpoint behaves identically to how it did before this
+    feature existed. That is regression-tested, not assumed.
+
+    A user who HAS enrolled is asked for a code even when the site-wide
+    setting is off — turning the instance-wide requirement off must not
+    silently downgrade someone who chose 2FA for themselves.
+    """
     user = get_user_by_email(db, body.email)
     if (
         not user
@@ -216,11 +243,220 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         or user.status == UserStatus.deactivated
     ):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if user.totp_enabled:
+        return TwoFactorRequiredResponse(
+            setup_required=False,
+            pending_token=create_2fa_pending_token(str(user.id)),
+        )
+
+    if require_2fa_enabled(db):
+        # Enrolment is forced, not refused: locking out everyone the moment
+        # an admin flips the switch would make the switch unusable.
+        return TwoFactorRequiredResponse(
+            setup_required=True,
+            pending_token=create_2fa_pending_token(str(user.id)),
+        )
+
     return TokenResponse(
         access_token=create_access_token(str(user.id)),
         refresh_token=create_refresh_token(str(user.id)),
         needs_password=False,
     )
+
+
+# ── Two-factor authentication (§191) ────────────────────────────────────────
+
+
+def _user_from_pending(db: Session, pending_token: str) -> User:
+    """The user behind a pending token, or 401.
+
+    Rejects an access or refresh token passed here — without that check a
+    real access token would satisfy the second factor for a login it was
+    never part of.
+    """
+    user_id = decode_2fa_pending_token(pending_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    try:
+        user = get_user_by_id(db, uuid.UUID(user_id))
+    except (ValueError, TypeError):
+        user = None
+    if not user or user.status == UserStatus.deactivated:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return user
+
+
+def _issue_tokens(user: User) -> TokenResponse:
+    return TokenResponse(
+        access_token=create_access_token(str(user.id)),
+        refresh_token=create_refresh_token(str(user.id)),
+        needs_password=user.password_hash is None,
+    )
+
+
+def _second_factor_matches(db: Session, user: User, code: str) -> bool:
+    """Whether `code` satisfies the second factor, by ANY of its three forms.
+
+    Tried in order — authenticator, emailed fallback, backup code — because
+    the user does not reliably know which kind they are holding, and making
+    the client declare it would fail correct codes over a wrong guess.
+
+    A spent backup code is persisted here rather than by the caller: it is
+    single-use, and a path that verified without consuming would turn a
+    recovery code into a permanent password.
+    """
+    secret = totp_service.decrypt_secret(user.totp_secret_encrypted)
+    if totp_service.verify_totp_code(secret, code):
+        return True
+
+    ok, _ = verify_2fa_email_code(user.email, code.strip())
+    if ok:
+        return True
+
+    matched, remaining = totp_service.consume_backup_code(user.backup_codes_hashed, code)
+    if matched:
+        user.backup_codes_hashed = remaining
+        db.commit()
+        return True
+
+    return False
+
+
+@router.post(
+    "/2fa/verify-login",
+    response_model=TokenResponse,
+    dependencies=[Depends(rate_limit("verify_2fa", 10, 600))],
+)
+def verify_two_factor_login(body: TwoFactorVerifyRequest, db: Session = Depends(get_db)):
+    """Complete a login that stopped at the second factor."""
+    user = _user_from_pending(db, body.pending_token)
+
+    if not user.totp_enabled:
+        # A pending token issued for FORCED SETUP cannot be redeemed here —
+        # that path has to go through confirm-setup, which is what actually
+        # enrols them. Otherwise "enforcement on" would be satisfiable by
+        # anyone who never enrolled.
+        raise HTTPException(status_code=401, detail="Invalid code")
+
+    if not _second_factor_matches(db, user, body.code):
+        # One message for every failure: which factor was wrong is not the
+        # caller's business, and saying so would confirm whether a fallback
+        # code had been requested.
+        raise HTTPException(status_code=401, detail="Invalid code")
+
+    return _issue_tokens(user)
+
+
+@router.post("/2fa/setup", response_model=TwoFactorSetupResponse)
+def setup_two_factor(
+    body: Optional[TwoFactorSetupRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    """Begin enrolment. Does NOT enable 2FA.
+
+    Reachable two ways, because enrolment happens in two situations: during
+    a forced first login (pending token, no session yet) and from settings
+    by someone already signed in (session, no pending token). Both land
+    here rather than in two near-identical endpoints.
+
+    The generated secret is stored encrypted immediately but
+    `totp_enabled` stays false until a real code confirms it. Storing it
+    now is what lets confirm-setup verify against the same secret the QR
+    code showed; leaving `totp_enabled` false is what stops an abandoned
+    setup from locking the user out of their own account.
+    """
+    user = current_user
+    if user is None:
+        if not body or not body.pending_token:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        user = _user_from_pending(db, body.pending_token)
+
+    secret = totp_service.generate_totp_secret()
+    user.totp_secret_encrypted = totp_service.encrypt_secret(secret)
+    db.commit()
+
+    uri = totp_service.totp_provisioning_uri(
+        secret, user.email, issuer=instance_org_name(db)
+    )
+    return TwoFactorSetupResponse(
+        provisioning_uri=uri,
+        qr_code_data_uri=totp_service.qr_code_data_uri(uri),
+        secret=secret,
+    )
+
+
+@router.post("/2fa/confirm-setup", response_model=TwoFactorConfirmResponse)
+def confirm_two_factor_setup(
+    body: TwoFactorConfirmRequest,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    """Finish enrolment: prove the authenticator works, then switch it on.
+
+    Returns the backup codes once, in plaintext. They are bcrypt-hashed
+    server-side and nothing can read them back — losing this response means
+    regenerating them (a §192 concern), not recovering them.
+    """
+    user = current_user
+    forced_first_login = False
+    if user is None:
+        if not body.pending_token:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        user = _user_from_pending(db, body.pending_token)
+        forced_first_login = True
+
+    secret = totp_service.decrypt_secret(user.totp_secret_encrypted)
+    if not secret:
+        raise HTTPException(status_code=400, detail="Start setup again")
+
+    # Only the authenticator counts here. An emailed fallback or a backup
+    # code proves nothing about whether the app the user just configured
+    # actually works, which is the single thing this step exists to check.
+    if not totp_service.verify_totp_code(secret, body.code):
+        raise HTTPException(status_code=401, detail="Invalid code")
+
+    codes = totp_service.generate_backup_codes()
+    user.backup_codes_hashed = totp_service.hash_backup_codes(codes)
+    user.totp_enabled = True
+    db.commit()
+
+    return TwoFactorConfirmResponse(
+        backup_codes=codes,
+        # Only when this completed a forced login. An already-signed-in user
+        # holds working tokens already; re-issuing would be churn.
+        tokens=_issue_tokens(user) if forced_first_login else None,
+    )
+
+
+@router.post(
+    "/2fa/send-email-fallback",
+    response_model=TwoFactorEmailFallbackResponse,
+    # Its OWN bucket, not send_magic_code's. A 2FA-locked-out user hammering
+    # this is a different risk from someone requesting passwordless login,
+    # and a shared bucket would let either drain the other's allowance.
+    dependencies=[Depends(rate_limit("send_2fa_email_fallback", 3, 600))],
+)
+def send_two_factor_email_fallback(
+    body: TwoFactorSetupRequest, db: Session = Depends(get_db)
+):
+    """Email a one-time code to someone who has lost their authenticator."""
+    user = _user_from_pending(db, body.pending_token)
+
+    if user.totp_enabled:
+        code = generate_2fa_email_code()
+        store_2fa_email_code(user.email, code)
+        send_task_safe(
+            send_magic_code_email,
+            user.email,
+            code,
+            TWOFA_EMAIL_CODE_EXPIRY_SECONDS // 60,
+            "two_factor",
+        )
+    # Falls through with the same response either way: whether this account
+    # is enrolled is not something an unauthenticated caller learns here.
+    return TwoFactorEmailFallbackResponse()
 
 
 @router.post("/refresh", response_model=TokenResponse)
