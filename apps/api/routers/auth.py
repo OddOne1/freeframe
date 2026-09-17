@@ -16,6 +16,7 @@ from ..schemas.auth import (
     TwoFactorSetupRequest, TwoFactorSetupResponse,
     TwoFactorConfirmRequest, TwoFactorConfirmResponse,
     TwoFactorEmailFallbackResponse,
+    TwoFactorReauthRequest, TwoFactorDisableResponse, TwoFactorBackupCodesResponse,
 )
 from ..services.auth_service import (
     hash_password, verify_password,
@@ -439,10 +440,32 @@ def confirm_two_factor_setup(
     dependencies=[Depends(rate_limit("send_2fa_email_fallback", 3, 600))],
 )
 def send_two_factor_email_fallback(
-    body: TwoFactorSetupRequest, db: Session = Depends(get_db)
+    body: TwoFactorSetupRequest,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
-    """Email a one-time code to someone who has lost their authenticator."""
-    user = _user_from_pending(db, body.pending_token)
+    """Email a one-time code to someone who has lost their authenticator.
+
+    §192 — reachable two ways, like /auth/2fa/setup: mid-login with a
+    pending token, and from a SESSION with none.
+
+    The authenticated case is not hypothetical. §192's self-service disable
+    and regenerate both accept an emailed fallback as their re-auth proof,
+    and an authenticated user has no pending token — so without this branch
+    that proof would be listed as acceptable and be impossible to obtain.
+    The verification half already worked unchanged, because
+    `verify_2fa_email_code` is keyed by EMAIL rather than by token; it was
+    only the sending half that was gated behind a token the caller does not
+    have. Traced rather than assumed, and the asymmetry is what made it
+    worth tracing.
+
+    One rate-limit bucket for both, deliberately: it is the same operation
+    with the same abuse profile, and splitting it would give an attacker two
+    allowances for one thing.
+    """
+    user = current_user
+    if user is None:
+        user = _user_from_pending(db, body.pending_token)
 
     if user.totp_enabled:
         code = generate_2fa_email_code()
@@ -457,6 +480,72 @@ def send_two_factor_email_fallback(
     # Falls through with the same response either way: whether this account
     # is enrolled is not something an unauthenticated caller learns here.
     return TwoFactorEmailFallbackResponse()
+
+
+@router.post("/2fa/disable", response_model=TwoFactorDisableResponse)
+def disable_two_factor(
+    body: TwoFactorReauthRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Turn your own 2FA off, having proved you still hold a second factor.
+
+    The re-auth is the whole point. Disabling 2FA is the one action that
+    removes the protection which exists precisely because sessions get
+    stolen, so a valid access token alone must not be enough to do it —
+    otherwise the feature protects everything except its own off switch.
+
+    Reuses `_second_factor_matches`, the same three-way check
+    /auth/2fa/verify-login uses, rather than a second implementation: two
+    copies of "what counts as a second factor" is how one of them quietly
+    stops accepting backup codes.
+    """
+    if not current_user.totp_enabled:
+        # Idempotent rather than an error: the end state the caller asked
+        # for is already true, and a 400 here would make a double-click
+        # look like a failure.
+        return TwoFactorDisableResponse(totp_enabled=False)
+
+    if not _second_factor_matches(db, current_user, body.code):
+        raise HTTPException(status_code=401, detail="Invalid code")
+
+    # All three, not just the flag. A secret left behind would be re-enabled
+    # by a later `totp_enabled = True` with the OLD authenticator still
+    # paired — and stale backup codes would outlive the enrolment they were
+    # issued for.
+    current_user.totp_enabled = False
+    current_user.totp_secret_encrypted = None
+    current_user.backup_codes_hashed = None
+    db.commit()
+    return TwoFactorDisableResponse(totp_enabled=False)
+
+
+@router.post("/2fa/regenerate-backup-codes", response_model=TwoFactorBackupCodesResponse)
+def regenerate_backup_codes(
+    body: TwoFactorReauthRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Replace the backup codes with a fresh set, shown once.
+
+    Same re-auth gate as disable, for the same reason: a stolen session that
+    could mint itself ten permanent recovery codes would have turned a
+    session into an account.
+    """
+    if not current_user.totp_enabled:
+        raise HTTPException(status_code=400, detail="Two-factor authentication is not enabled")
+
+    if not _second_factor_matches(db, current_user, body.code):
+        # Nothing is regenerated on a failed attempt — the existing set must
+        # survive a wrong guess, or a bad code would be a denial of service
+        # against the codes the user still has written down.
+        raise HTTPException(status_code=401, detail="Invalid code")
+
+    codes = totp_service.generate_backup_codes()
+    # Overwritten, never appended: the previous set stops working here.
+    current_user.backup_codes_hashed = totp_service.hash_backup_codes(codes)
+    db.commit()
+    return TwoFactorBackupCodesResponse(backup_codes=codes)
 
 
 @router.post("/refresh", response_model=TokenResponse)

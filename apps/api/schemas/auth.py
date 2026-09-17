@@ -118,6 +118,41 @@ class TwoFactorConfirmResponse(BaseModel):
     tokens: Optional[TokenResponse] = None
 
 
+class TwoFactorReauthRequest(BaseModel):
+    """Proof that the caller still holds a second factor (§192).
+
+    Used by the two self-service operations that WEAKEN an account —
+    disabling 2FA and replacing the backup codes. An access token alone is
+    not enough for either: a stolen session should not be able to strip the
+    protection that exists because sessions get stolen.
+
+    Accepts any of the three forms the login path accepts (authenticator,
+    emailed fallback, backup code), for the same reason it does there — the
+    user does not reliably know which kind they are holding.
+    """
+
+    code: str
+
+
+class TwoFactorDisableResponse(BaseModel):
+    #: Always False after this call. Returned rather than implied so a
+    #: client can update its own state from the response instead of
+    #: assuming the write landed.
+    totp_enabled: bool = False
+
+
+class TwoFactorBackupCodesResponse(BaseModel):
+    """A fresh set, shown once.
+
+    Replaces the previous set entirely — regeneration is not "add more".
+    The old codes stop working the moment this returns, which is the point:
+    a set that might have been seen by someone else is not made safer by
+    being extended.
+    """
+
+    backup_codes: list[str]
+
+
 class TwoFactorEmailFallbackResponse(BaseModel):
     #: Deliberately says nothing about whether the address exists or
     #: whether a code was really sent.

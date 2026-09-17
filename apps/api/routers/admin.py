@@ -11,6 +11,7 @@ from ..middleware.auth import get_current_user
 from ..models.user import User, UserStatus, UserGlobalRole
 from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.asset import Asset, AssetVersion, MediaFile
+from ..models.activity import ActivityLog
 from ..schemas.auth import (
     UserResponse, UpdateUserRoleRequest, UpdateUserStorageLimitRequest,
     AdminUserResponse, AdminUserProjectSummary,
@@ -120,6 +121,70 @@ def reactivate_user(
     db.commit()
     db.refresh(user)
     return user
+
+@router.patch("/users/{user_id}/disable-2fa", response_model=UserResponse)
+def admin_disable_two_factor(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Strip a user's 2FA when they have lost every factor (§192).
+
+    No code from that user, because the situation this exists for is
+    precisely the one where they cannot produce one: authenticator gone,
+    email inaccessible, backup codes lost. Self-service is impossible by
+    definition there, so requiring proof would make this endpoint useless
+    for its only purpose.
+
+    NOT usable on yourself, matching `deactivate_user` right above. That is
+    a real gate, not symmetry for its own sake: without it a superadmin's
+    stolen session could strip that superadmin's OWN 2FA with no code, and
+    the re-auth on /auth/2fa/disable would be a formality the highest
+    privileged accounts could always walk around. A superadmin disabling
+    their own 2FA goes through self-service and proves possession like
+    everyone else; if they have genuinely lost every factor, another
+    superadmin does it for them.
+
+    Logged to ActivityLog, because an unlogged way to remove someone else's
+    second factor is indistinguishable after the fact from an attacker
+    having done it.
+    """
+    _require_superadmin(current_user)
+
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Use your own security settings to disable your 2FA",
+        )
+
+    user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    had_2fa = bool(user.totp_enabled)
+    # The same three fields the self-service path clears — a secret or a
+    # stale code set left behind would outlive the enrolment it belonged to.
+    user.totp_enabled = False
+    user.totp_secret_encrypted = None
+    user.backup_codes_hashed = None
+
+    db.add(
+        ActivityLog(
+            user_id=current_user.id,  # the ACTOR, per the column's own comment
+            action="admin_disabled_2fa",
+            payload={
+                "target_user_id": str(user.id),
+                "target_email": user.email,
+                # Distinguishes "an admin removed a live second factor" from
+                # "an admin clicked it on an account that had none".
+                "was_enabled": had_2fa,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
 
 @router.patch("/users/{user_id}/role", response_model=UserResponse)
 def update_user_role(

@@ -65,6 +65,13 @@ def decode_2fa_pending_token(token: str) -> Optional[str]:
     token would satisfy the 2FA step and complete a login it was never
     issued for.
     """
+    # Guarded before decode_token, not inside the try: python-jose raises
+    # AttributeError (not JWTError) on a None/empty token, which escapes
+    # decode_token's except and surfaces as a 500 instead of a 401. Reached
+    # by a caller that has neither a session nor a pending token — §192's
+    # authenticated fallback path made that combination possible.
+    if not token:
+        return None
     payload = decode_token(token)
     if not payload or payload.get("type") != TWOFA_PENDING_TOKEN_TYPE:
         return None
