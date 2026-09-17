@@ -96,7 +96,7 @@ def send_magic_code(body: SendMagicCodeRequest, db: Session = Depends(get_db)):
         message="Magic code sent to your email",
         email=body.email,
     )
-@router.post("/verify-magic-code", response_model=TokenResponse, dependencies=[Depends(rate_limit("verify_magic_code", 10, 600))])
+@router.post("/verify-magic-code", response_model=LoginResponse, dependencies=[Depends(rate_limit("verify_magic_code", 10, 600))])
 def verify_magic_code(body: VerifyMagicCodeRequest, db: Session = Depends(get_db)):
     """
     Verify magic code and return tokens.
@@ -123,15 +123,23 @@ def verify_magic_code(body: VerifyMagicCodeRequest, db: Session = Depends(get_db
         user.status = UserStatus.active
     
     db.commit()
-    
-    # Check if user needs to set password
-    needs_password = user.password_hash is None
-    
-    return TokenResponse(
-        access_token=create_access_token(str(user.id)),
-        refresh_token=create_refresh_token(str(user.id)),
-        needs_password=needs_password,
-    )
+
+    # §193 — a correct magic code is a COMPLETE primary credential, not a
+    # second factor, so it lands in the same gate a correct password does.
+    # Until this, an enrolled user was fully authenticated by anyone who
+    # could read one email — which defeats 2FA against precisely the threat
+    # it is usually deployed for.
+    #
+    # Everything above still runs regardless of what this returns: the code
+    # was genuinely correct, so the email IS verified and a
+    # pending_verification account IS activated. Those are facts about the
+    # address, not grants of access.
+    #
+    # `needs_password` is deliberately no longer computed here. It rides on
+    # TokenResponse, which _login_outcome only produces once the second
+    # factor is settled — so a caller stopped at the 2FA gate is never told
+    # to go and create a password. See test_needs_password_is_deferred.
+    return _login_outcome(db, user)
 
 
 @router.post("/set-password", response_model=UserResponse)
@@ -245,25 +253,9 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     ):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    if user.totp_enabled:
-        return TwoFactorRequiredResponse(
-            setup_required=False,
-            pending_token=create_2fa_pending_token(str(user.id)),
-        )
-
-    if require_2fa_enabled(db):
-        # Enrolment is forced, not refused: locking out everyone the moment
-        # an admin flips the switch would make the switch unusable.
-        return TwoFactorRequiredResponse(
-            setup_required=True,
-            pending_token=create_2fa_pending_token(str(user.id)),
-        )
-
-    return TokenResponse(
-        access_token=create_access_token(str(user.id)),
-        refresh_token=create_refresh_token(str(user.id)),
-        needs_password=False,
-    )
+    # §193 — shared with /auth/verify-magic-code, which is the same login
+    # screen's other half. See _login_outcome.
+    return _login_outcome(db, user)
 
 
 # ── Two-factor authentication (§191) ────────────────────────────────────────
@@ -294,6 +286,48 @@ def _issue_tokens(user: User) -> TokenResponse:
         refresh_token=create_refresh_token(str(user.id)),
         needs_password=user.password_hash is None,
     )
+
+
+def _login_outcome(db: Session, user: User) -> LoginResponse:
+    """What a successful primary-credential check leads to (§193).
+
+    ONE implementation, called by BOTH login paths. The password check in
+    /auth/login and the magic-code check in /auth/verify-magic-code are two
+    complete ways into the same account — the same login screen offers them
+    as "email + code" and "sign in with password instead" — so whatever one
+    concludes about a second factor, the other has to conclude identically.
+
+    Shared rather than copied on purpose. Two copies that agree today are
+    the shape this codebase keeps getting bitten by; §190 found the same
+    byte-formatting rule written four separate times, each wrong the same
+    way, before it was fixed once. A second copy here would be worse than
+    wrong output: it would be a login path that silently stops asking for a
+    second factor.
+
+    The three outcomes:
+      user enrolled                     -> pending token, ask for a code
+      enforcement on, user not enrolled -> pending token, force enrolment
+      neither                           -> real tokens, exactly as before
+
+    An enrolled user is asked even when the instance-wide setting is off:
+    turning the requirement off must not silently downgrade someone who
+    chose 2FA for themselves.
+    """
+    if user.totp_enabled:
+        return TwoFactorRequiredResponse(
+            setup_required=False,
+            pending_token=create_2fa_pending_token(str(user.id)),
+        )
+
+    if require_2fa_enabled(db):
+        # Enrolment is forced, not refused: locking out everyone the moment
+        # an admin flips the switch would make the switch unusable.
+        return TwoFactorRequiredResponse(
+            setup_required=True,
+            pending_token=create_2fa_pending_token(str(user.id)),
+        )
+
+    return _issue_tokens(user)
 
 
 def _second_factor_matches(db: Session, user: User, code: str) -> bool:
