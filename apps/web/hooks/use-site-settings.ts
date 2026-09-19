@@ -96,6 +96,21 @@ export function useSiteSettings() {
     await mutate(updated, false)
   }
 
+  /** Whether every user on this instance must have 2FA (§191).
+   *
+   *  Superadmin-only in practice, like the storage cap below — PATCH
+   *  /site-settings 403s for anyone else. Turning it ON does not lock
+   *  anyone out: an unenrolled user's next login is routed into enrolment
+   *  rather than refused. Turning it OFF does not un-enrol anyone who
+   *  opted in themselves, which is why the login screen still has to
+   *  handle a 2FA challenge with this set to false. */
+  async function updateRequireTwoFactor(enabled: boolean): Promise<void> {
+    const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
+      require_2fa: enabled,
+    })
+    await mutate(updated, false)
+  }
+
   /** Platform-wide total storage cap (superadmin-only in practice --
    * PATCH /site-settings 403s for anyone else). null clears it (no cap). */
   async function updateTotalStorageLimit(bytes: number | null): Promise<void> {
@@ -139,6 +154,12 @@ export function useSiteSettings() {
     themeColors: data?.theme_colors ?? null,
     totalStorageLimitBytes: data?.total_storage_limit_bytes ?? null,
     timezone: data?.timezone ?? 'UTC',
+    // Defaults to false for the same reason the backend's column does: an
+    // instance that has not answered this question does not require 2FA.
+    // The login screen reads this to decide which sign-in method to offer,
+    // so it is seeded server-side (see app/(auth)/layout.tsx) rather than
+    // left to arrive after the first paint.
+    requireTwoFactor: data?.require_2fa ?? false,
     // Null for non-superadmins/anonymous callers -- see SiteSettingsResponse.
     totalStorageUsedBytes: data?.total_storage_used_bytes ?? null,
     updateOrgName,
@@ -148,6 +169,7 @@ export function useSiteSettings() {
     resetThemeColors,
     updateTotalStorageLimit,
     updateTimezone,
+    updateRequireTwoFactor,
     resetAll,
   }
 }

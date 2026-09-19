@@ -1,18 +1,10 @@
 import type { Metadata } from 'next'
 import Image from 'next/image'
+import { SiteSettingsProvider } from '@/components/layout/site-settings-provider'
 import { fetchSiteSettingsServer, toPublicMediaUrl } from '@/lib/site-settings-server'
 
 export const metadata: Metadata = {
   title: 'FreeFrame - Auth',
-}
-
-async function getLoginLogoUrl(): Promise<string | null> {
-  // The server-side fetch this page introduced now lives in
-  // lib/site-settings-server, shared with app/layout.tsx's favicon metadata
-  // and — since §178 — the dashboard sidebar. Same call, same 60s revalidate,
-  // same never-throw contract; see that file for the env reasoning.
-  const data = await fetchSiteSettingsServer()
-  return toPublicMediaUrl(data?.logo_login_url)
 }
 
 export default async function AuthLayout({
@@ -20,9 +12,24 @@ export default async function AuthLayout({
 }: {
   children: React.ReactNode
 }) {
-  const loginLogoUrl = await getLoginLogoUrl()
+  // One fetch, two consumers. The logo was always read here; §196 added the
+  // second reason: the login form has to know `require_2fa` BEFORE its first
+  // paint, because that setting decides whether the default screen is
+  // email+password or the magic-code step — and magic-code sign-in 403s on
+  // an instance that requires 2FA (§195). Seeding SWR from the value this
+  // layout already awaited is the §178 pattern the dashboard layout uses,
+  // and costs no extra request; without it the form would paint the wrong
+  // screen and swap it out once a client fetch resolved.
+  //
+  // `null` when the backend was unreachable at render time: the provider
+  // then seeds nothing, the client fetch behaves exactly as it would have,
+  // and the form holds its first paint until the answer arrives rather than
+  // guessing.
+  const siteSettings = await fetchSiteSettingsServer()
+  const loginLogoUrl = toPublicMediaUrl(siteSettings?.logo_login_url)
 
   return (
+    <SiteSettingsProvider value={siteSettings}>
     <div className="relative min-h-screen bg-bg-primary flex flex-col items-center justify-center px-4">
       {/* Subtle radial glow */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -57,5 +64,6 @@ export default async function AuthLayout({
         Collaborative media review &amp; approval
       </p>
     </div>
+    </SiteSettingsProvider>
   )
 }

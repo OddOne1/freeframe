@@ -784,12 +784,101 @@ export interface VerifyCodeResponse {
   refresh_token: string;
   token_type: string;
   needs_password: boolean;
+  /** §191 — always present and always false on this arm. The backend adds
+   *  it to the SUCCESS shape as well as the 2FA one on purpose: a
+   *  discriminator that appears in only one arm is one a careless client
+   *  reads as `undefined` and treats as falsy by accident rather than by
+   *  decision. Required here for the same reason — the union below is only
+   *  narrowable if both arms declare it. */
+  requires_2fa: false;
 }
 
 export interface AuthTokens {
   access_token: string;
   refresh_token: string;
   token_type: string;
+  /** Present on every TokenResponse the API returns (§191). Optional here
+   *  only because this type also describes endpoints whose response this
+   *  app does not narrow on — /auth/accept-invite, /auth/refresh. Where the
+   *  union matters, use LoginResponse. */
+  requires_2fa?: false;
+}
+
+// ─── Two-factor authentication (§191-§195) ────────────────────────────────────
+
+/** Which second factor a user enrolled with. "email" started as a fallback
+ *  for a lost authenticator (§191) and became selectable as the primary
+ *  method in §194. */
+export type TwoFactorMethod = 'totp' | 'email';
+
+/** Password (or magic code) accepted, second factor outstanding.
+ *
+ *  Carries no tokens: the caller holds a `pending_token` that is inert
+ *  everywhere except /auth/2fa/verify-login and the enrolment endpoints. */
+export interface TwoFactorRequiredResponse {
+  requires_2fa: true;
+  /** True when this user has NEVER enrolled and the instance requires it —
+   *  the pending token has to be redeemed through enrolment, not through
+   *  /auth/2fa/verify-login. */
+  setup_required: boolean;
+  pending_token: string;
+  /** Which code to ask for. Null exactly when `setup_required` is true: the
+   *  user has not chosen a method yet, and choosing is what the enrolment
+   *  screen is for. */
+  method: TwoFactorMethod | null;
+  /** §194 — true when a code has ALREADY been mailed as part of this
+   *  response (email-primary users only), so the screen can say "we've sent
+   *  you a code" instead of offering to send one that is already in
+   *  flight. */
+  email_code_sent: boolean;
+}
+
+/** What /auth/login and /auth/verify-magic-code both return. Narrow on
+ *  `requires_2fa` — never on whether `access_token` happens to be there. */
+export type LoginResponse = VerifyCodeResponse | TwoFactorRequiredResponse;
+
+export interface TwoFactorSetupRequest {
+  /** Mid-login enrolment; omitted when an already-signed-in user enrols
+   *  from settings. */
+  pending_token?: string;
+  method: TwoFactorMethod;
+  /** §194b — proof of the CURRENT factor, required only when the user is
+   *  already enrolled and is replacing what they have. */
+  reauth_code?: string;
+}
+
+export interface TwoFactorSetupResponse {
+  method: TwoFactorMethod;
+  /** TOTP only. */
+  provisioning_uri?: string;
+  /** TOTP only — already a data: URI, usable directly as an <img src>. */
+  qr_code_data_uri?: string;
+  /** TOTP only — the secret in plaintext, for manual entry. */
+  secret?: string;
+  /** Email only. False when a code was already outstanding and this call
+   *  therefore did not send a second one (§194's per-TTL idempotency). */
+  email_code_sent: boolean;
+}
+
+export interface TwoFactorVerifyRequest {
+  pending_token: string;
+  code: string;
+}
+
+export interface TwoFactorConfirmRequest {
+  pending_token?: string;
+  code: string;
+}
+
+export interface TwoFactorConfirmResponse {
+  /** Shown ONCE. Nothing can read them back — they are hashed server-side,
+   *  so a screen that skips past them has destroyed them. */
+  backup_codes: string[];
+  method: TwoFactorMethod;
+  /** Non-null only when this completed a forced first login; an
+   *  already-signed-in user enrolling from settings keeps the tokens they
+   *  already hold. */
+  tokens: AuthTokens | null;
 }
 
 // ─── Site Settings ────────────────────────────────────────────────────────────
@@ -806,6 +895,10 @@ export interface SiteSettingsResponse {
    *  Defaults to "UTC" server-side, so this is never absent in practice —
    *  optional only so an older cached response still validates. */
   timezone?: string;
+  /** §191 — whether every user on this instance must have 2FA. Public: this
+   *  endpoint is unauthenticated (it backs the login page's branding), and
+   *  the login screen needs it to decide which sign-in method to offer. */
+  require_2fa?: boolean;
   // Only populated for an authenticated superadmin caller -- null for
   // anonymous/non-superadmin requests (GET /site-settings is otherwise
   // public, backing the login page's branding).
