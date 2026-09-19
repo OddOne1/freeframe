@@ -56,7 +56,47 @@ def send_magic_code(body: SendMagicCodeRequest, db: Session = Depends(get_db)):
     Send magic code to email.
     - If user exists: send code for login
     - If user doesn't exist: create pending user and send code
+
+    §195 — both of those stop once 2FA is required instance-wide. A magic
+    code is a COMPLETE primary credential (§193's finding), so an instance
+    that has decided every sign-in needs two factors cannot also offer a
+    one-step sign-in that starts from reading an email. The self-registration
+    half goes with it: this endpoint creating a `pending_verification` user
+    for any address that asks is a way in that no invite and no admin
+    approved, and it is reachable by anyone who can load the login page.
+
+    `password_reset` is deliberately exempt, and that is not a loophole —
+    it is the recovery path. Magic-code login has always worked without a
+    password, so this instance has users whose `password_hash` is NULL;
+    closing the reset purpose too would lock them out permanently with no
+    way back in. A reset still lands in §193's 2FA gate on the way through,
+    so it grants nothing on its own.
     """
+    if body.purpose != "password_reset" and require_2fa_enabled(db):
+        # Refused before the user lookup, before any write, and before
+        # Redis: the security property is that nothing happens, and a check
+        # placed after the lookup would invite a later edit to slip a write
+        # in above it.
+        #
+        # An error rather than today's cheerful success message. A 200 with
+        # "a code has been sent" would leave a legitimate user watching an
+        # inbox that never fills, and any client that reads the status
+        # rather than the message string would report success for a request
+        # that did nothing.
+        #
+        # The same message either way, existing account or not, so it says
+        # nothing about the address — only about the instance, which
+        # GET /site-settings already publishes anonymously in `require_2fa`.
+        # That is a policy disclosure, not the account-enumeration risk the
+        # password_reset branch below is written to avoid.
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Magic-code sign-in is disabled on this instance. "
+                "Sign in with your email and password."
+            ),
+        )
+
     user = get_user_by_email(db, body.email)
 
     if not user:
