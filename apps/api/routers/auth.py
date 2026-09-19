@@ -31,6 +31,8 @@ from ..services.redis_service import (
     generate_2fa_email_code, store_2fa_email_code, verify_2fa_email_code,
     has_live_2fa_email_code, TWOFA_EMAIL_CODE_EXPIRY_SECONDS,
     store_pending_2fa_setup, read_pending_2fa_setup, clear_pending_2fa_setup,
+    generate_password_reset_code, store_password_reset_code,
+    verify_password_reset_code,
 )
 from ..services import totp_service
 from ..services.site_settings_service import require_2fa_enabled, instance_org_name
@@ -123,9 +125,17 @@ def send_magic_code(body: SendMagicCodeRequest, db: Session = Depends(get_db)):
         db.add(user)
         db.commit()
         
-    # Generate and store magic code in Redis
-    code = generate_magic_code()
-    store_magic_code(body.email, code)
+    # §197 — a reset code goes into its own pool, never the login one. They
+    # shared `magic_code:{email}` and an unconditional setex, so asking for
+    # one destroyed the other; and since §195 they are not even subject to
+    # the same policy, which is what made one shared slot untenable rather
+    # than merely untidy.
+    if body.purpose == "password_reset":
+        code = generate_password_reset_code()
+        store_password_reset_code(body.email, code)
+    else:
+        code = generate_magic_code()
+        store_magic_code(body.email, code)
 
     # Queue email via Celery (async)
     try:
@@ -152,8 +162,14 @@ def verify_magic_code(body: VerifyMagicCodeRequest, db: Session = Depends(get_db
     if user.status == UserStatus.deactivated:
         raise HTTPException(status_code=401, detail="Account deactivated")
     
-    # Verify magic code from Redis
-    success, error = redis_verify_magic_code(body.email, body.code)
+    # §197 — checks the pool matching the stated purpose. Trusting the
+    # client's claim is safe because it can only ever LOSE: naming the wrong
+    # pool means checking a code that is not there, which fails. There is no
+    # purpose a caller can claim that makes a wrong code verify.
+    if body.purpose == "password_reset":
+        success, error = verify_password_reset_code(body.email, body.code)
+    else:
+        success, error = redis_verify_magic_code(body.email, body.code)
     if not success:
         raise HTTPException(status_code=401, detail=error)
     

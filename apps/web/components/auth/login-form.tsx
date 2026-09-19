@@ -9,6 +9,7 @@ import { useSiteSettings } from '@/hooks/use-site-settings'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { CodeInput, EMPTY_CODE } from '@/components/auth/code-input'
+import { BackupCodes } from '@/components/auth/backup-codes'
 import type {
   VerifyCodeResponse,
   AuthTokens,
@@ -65,7 +66,6 @@ export function LoginForm() {
   const [setupSecret, setSetupSecret] = useState('')
   const [setupQr, setSetupQr] = useState('')
   const [backupCodes, setBackupCodes] = useState<string[] | null>(null)
-  const [backupCopied, setBackupCopied] = useState(false)
   const [enrolledTokens, setEnrolledTokens] = useState<AuthTokens | null>(null)
 
   /**
@@ -379,7 +379,6 @@ export function LoginForm() {
       // redirecting on arrival would destroy them by design.
       setBackupCodes(res.backup_codes)
       setEnrolledTokens(res.tokens)
-      setBackupCopied(false)
       setSetupStage('backup')
     } catch (err) {
       setCodeError(err instanceof ApiError ? err.detail : 'Invalid code. Please try again.')
@@ -397,17 +396,6 @@ export function LoginForm() {
       return
     }
     await submitSetupCode(codeStr)
-  }
-
-  async function handleCopyBackupCodes() {
-    try {
-      await navigator.clipboard?.writeText((backupCodes ?? []).join('\n'))
-      setBackupCopied(true)
-    } catch {
-      // A blocked clipboard is not a failure worth blocking on: the codes
-      // are on screen and can be written down.
-      setBackupCopied(false)
-    }
   }
 
   /** Only after the user confirms they have the codes. */
@@ -436,30 +424,12 @@ export function LoginForm() {
 
   if (activeStep === '2fa-setup') {
     if (setupStage === 'backup') {
+      // Shared with the settings page's own enrolment (§197) — the codes are
+      // hashed the instant they are issued, so the acknowledgement gate is
+      // the only thing standing between a user and having destroyed them.
       return (
         <div className="animate-slide-up">
-          <div className="mb-6">
-            <h1 className="text-xl font-semibold text-text-primary mb-1">Save your backup codes</h1>
-            <p className="text-sm text-text-secondary">
-              Each code works once, if you ever lose access to your second factor.
-              This is the only time they are shown.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 rounded-md border border-border bg-bg-secondary p-3 font-mono text-sm text-text-primary">
-            {(backupCodes ?? []).map((c) => (
-              <span key={c}>{c}</span>
-            ))}
-          </div>
-
-          <div className="mt-4 flex flex-col gap-3">
-            <Button type="button" variant="secondary" onClick={handleCopyBackupCodes} className="w-full">
-              {backupCopied ? 'Copied' : 'Copy codes'}
-            </Button>
-            <Button type="button" size="lg" onClick={handleBackupCodesSaved} className="w-full">
-              I&apos;ve saved these codes
-            </Button>
-          </div>
+          <BackupCodes codes={backupCodes ?? []} onAcknowledge={handleBackupCodesSaved} />
         </div>
       )
     }

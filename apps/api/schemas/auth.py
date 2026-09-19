@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 import uuid
 from datetime import datetime
 from typing import Literal, Optional, Union
@@ -237,8 +237,33 @@ class UserResponse(BaseModel):
     preferences: dict = {}
     created_at: datetime
     storage_limit_bytes: int | None = None
+    #: §197 — a user's own second-factor state, so the settings screen can
+    #: render "on, via an authenticator app" without a second endpoint.
+    #: Read-only here: enrolling and disabling go through /auth/2fa/*, which
+    #: is where the proofs those actions require are enforced. A PATCH that
+    #: happened to include these is not a way to turn 2FA off, because
+    #: nothing writes them from this schema.
+    two_factor_enabled: bool = False
+    two_factor_method: Optional[TwoFactorMethod] = None
 
     model_config = {"from_attributes": True}
+
+    @field_validator("two_factor_enabled", mode="before")
+    @classmethod
+    def _unset_means_not_enrolled(cls, v):
+        """A User that has never been flushed reads None here.
+
+        The column is NOT NULL with a server default, so a row in the
+        database is never None — but /auth/register serialises the object it
+        just created, before any default has been applied. "Not enrolled" is
+        the honest answer for a user who was created a millisecond ago.
+
+        Deliberately not `bool(v)`: that would quietly turn any unexpected
+        object into True, which in a test suite built on MagicMock users
+        means a fixture that forgot this field would claim 2FA is ON and be
+        believed.
+        """
+        return False if v is None else v
 
 
 class ContactUserResponse(BaseModel):
@@ -285,6 +310,15 @@ class SendMagicCodeResponse(BaseModel):
 class VerifyMagicCodeRequest(BaseModel):
     email: EmailStr
     code: str
+    #: §197 — which pool to check. Login codes and password-reset codes are
+    #: stored separately now, so verification has to know which one it is
+    #: looking at. Defaults to "login" so callers written before this field
+    #: existed keep working.
+    #:
+    #: Trusting the client here is safe: a wrong value checks the wrong
+    #: pool, which fails. No claimed purpose can make an incorrect code
+    #: verify, and a correct code is still spent by exactly one pool.
+    purpose: str = "login"
 
 class SetPasswordRequest(BaseModel):
     password: str

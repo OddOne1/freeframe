@@ -23,6 +23,7 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/shared/avatar";
+import { RequireTwoFactorSection } from "@/components/settings/require-two-factor-section";
 import { EmptyState } from "@/components/shared/empty-state";
 import { CollapsibleSection } from "@/components/shared/collapsible-section";
 import { PlainTh, SortableTh, useSort } from "@/components/shared/sortable";
@@ -1365,6 +1366,7 @@ export default function AdminPage() {
 
       <PlatformStorageSection />
       <TimezoneSection />
+      <RequireTwoFactorSection />
 
       <EmailSettingsSection />
 

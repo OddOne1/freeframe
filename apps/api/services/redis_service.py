@@ -69,6 +69,70 @@ def verify_magic_code(email: str, code: str) -> tuple[bool, str]:
     return True, ""
 
 
+# ── Password-reset codes (§197) ──────────────────────────────────────────
+#
+# Its own pool, for the same reason the 2FA block below has one: a login
+# code and a password-reset code for the same address used to share
+# `magic_code:{email}`, and `store_magic_code` overwrites unconditionally —
+# so requesting one silently destroyed the other, whichever order they came
+# in. Since §195 the two are not even governed by the same policy: login
+# codes are refused instance-wide once 2FA is required, reset codes are
+# deliberately still issued, because they are the recovery path for users
+# who never had a password. Two policies sharing one mutable slot is the
+# collision §191 already refused to accept between login and 2FA codes.
+#
+# Copied rather than parameterised, deliberately, exactly as the 2FA block
+# below was: the expiry and attempt ceiling happen to match today, and a
+# shared constant would mean changing one of these three pools silently
+# changed the others.
+PASSWORD_RESET_CODE_PREFIX = "password_reset_code:"
+PASSWORD_RESET_ATTEMPTS_PREFIX = "password_reset_attempts:"
+PASSWORD_RESET_CODE_EXPIRY_SECONDS = 600  # 10 minutes
+MAX_PASSWORD_RESET_ATTEMPTS = 5
+
+
+def generate_password_reset_code() -> str:
+    """A 6-digit password-reset code."""
+    return str(secrets.randbelow(900000) + 100000)
+
+
+def store_password_reset_code(email: str, code: str) -> None:
+    r = get_redis()
+    r.setex(
+        f"{PASSWORD_RESET_CODE_PREFIX}{email.lower()}",
+        PASSWORD_RESET_CODE_EXPIRY_SECONDS,
+        code,
+    )
+    r.delete(f"{PASSWORD_RESET_ATTEMPTS_PREFIX}{email.lower()}")
+
+
+def verify_password_reset_code(email: str, code: str) -> tuple[bool, str]:
+    """Verify a password-reset code. Returns (success, error_message).
+
+    Consumes the code on success, like both of its twins.
+    """
+    r = get_redis()
+    key = f"{PASSWORD_RESET_CODE_PREFIX}{email.lower()}"
+    attempts_key = f"{PASSWORD_RESET_ATTEMPTS_PREFIX}{email.lower()}"
+
+    attempts = r.get(attempts_key)
+    if attempts and int(attempts) >= MAX_PASSWORD_RESET_ATTEMPTS:
+        return False, "Too many attempts. Request a new code."
+
+    stored_code = r.get(key)
+    if not stored_code:
+        return False, "Code expired or not found"
+
+    if stored_code != code:
+        r.incr(attempts_key)
+        r.expire(attempts_key, PASSWORD_RESET_CODE_EXPIRY_SECONDS)
+        return False, "Invalid code"
+
+    r.delete(key)
+    r.delete(attempts_key)
+    return True, ""
+
+
 # ── 2FA email fallback (§191) ────────────────────────────────────────────
 #
 # Deliberately its OWN key prefix, not the magic-code one above. A person

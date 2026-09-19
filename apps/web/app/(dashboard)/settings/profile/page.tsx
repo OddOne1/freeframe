@@ -10,7 +10,9 @@ import { Input } from '@/components/ui/input'
 import { Avatar } from '@/components/shared/avatar'
 import { AvatarCropper } from '@/components/shared/avatar-cropper'
 import { setTokens } from '@/lib/auth'
-import type { VerifyCodeResponse } from '@/types'
+import { CodeInput, EMPTY_CODE } from '@/components/auth/code-input'
+import { TwoFactorSettings } from '@/components/auth/two-factor-settings'
+import type { LoginResponse, VerifyCodeResponse, TwoFactorMethod } from '@/types'
 
 export default function ProfilePage() {
   const { user, fetchUser, logout } = useAuthStore()
@@ -27,9 +29,16 @@ export default function ProfilePage() {
   const [passwordError, setPasswordError] = React.useState('')
   const [passwordSuccess, setPasswordSuccess] = React.useState(false)
   const [pwCodeDialogOpen, setPwCodeDialogOpen] = React.useState(false)
-  const [pwCode, setPwCode] = React.useState('')
+  const [pwCode, setPwCode] = React.useState<string[]>(EMPTY_CODE)
   const [codeError, setCodeError] = React.useState('')
   const [isVerifyingCode, setIsVerifyingCode] = React.useState(false)
+  // §197 — a 2FA-enrolled user's emailed reset code does not, on its own,
+  // produce a session (§193 gates it), so the password change has a second
+  // step for them. The pending token is the whole of what carries across it.
+  const [pwPendingToken, setPwPendingToken] = React.useState('')
+  const [pw2faMethod, setPw2faMethod] = React.useState<TwoFactorMethod | null>(null)
+  const [pw2faDialogOpen, setPw2faDialogOpen] = React.useState(false)
+  const [pw2faCode, setPw2faCode] = React.useState<string[]>(EMPTY_CODE)
   const [avatarFile, setAvatarFile] = React.useState<File | null>(null)
   const [cropperOpen, setCropperOpen] = React.useState(false)
   const [isSavingAvatar, setIsSavingAvatar] = React.useState(false)
@@ -124,29 +133,86 @@ async function handleAvatarCropped(blob: Blob) {
     }
   }
 
-  async function handleConfirmPasswordCode() {
+  /** Sets the password and clears the form. Shared by both routes into it —
+   *  straight through for a user without 2FA, and after the second factor
+   *  for a user with it. */
+  async function finishPasswordChange(tokens: VerifyCodeResponse) {
+    setTokens(tokens.access_token, tokens.refresh_token)
+    await api.post('/auth/set-password', { password: newPassword })
+    setPwCodeDialogOpen(false)
+    setPw2faDialogOpen(false)
+    setPwCode(EMPTY_CODE)
+    setPw2faCode(EMPTY_CODE)
+    setPwPendingToken('')
+    setNewPassword('')
+    setConfirmPassword('')
+    setPasswordSuccess(true)
+    setTimeout(() => setPasswordSuccess(false), 3000)
+  }
+
+  async function handleConfirmPasswordCode(value?: string) {
+    const entered = value ?? pwCode.join('')
     setCodeError('')
-    if (pwCode.length < 6) {
+    if (entered.length < 6) {
       setCodeError('Enter the 6-digit code')
       return
     }
     setIsVerifyingCode(true)
     try {
-      const res = await api.post<VerifyCodeResponse>('/auth/verify-magic-code', {
+      // §196's rule, on the surface it deliberately left alone: branch on
+      // `requires_2fa`, never on whether a token happens to be present.
+      // Unpacking this unguarded is what used to overwrite an enrolled
+      // user's working session with `undefined` halfway through a password
+      // change.
+      //
+      // §197 — `purpose` names the pool this code was minted into. Reset
+      // codes no longer share the login pool, so verifying without it would
+      // check a slot this code was never written to.
+      const res = await api.post<LoginResponse>('/auth/verify-magic-code', {
         email: user?.email,
-        code: pwCode,
+        code: entered,
+        purpose: 'password_reset',
       })
-      setTokens(res.access_token, res.refresh_token)
-      await api.post('/auth/set-password', { password: newPassword })
-      setPwCodeDialogOpen(false)
-      setPwCode('')
-      setNewPassword('')
-      setConfirmPassword('')
-      setPasswordSuccess(true)
-      setTimeout(() => setPasswordSuccess(false), 3000)
+
+      if (res.requires_2fa) {
+        // Correct, not a failure: /auth/verify-magic-code hands back a real
+        // session, so an enrolled user still has to clear the second factor
+        // before one is issued. Nothing is stored until they do.
+        setPwPendingToken(res.pending_token)
+        setPw2faMethod(res.method)
+        setPwCode(EMPTY_CODE)
+        setPw2faCode(EMPTY_CODE)
+        setPwCodeDialogOpen(false)
+        setPw2faDialogOpen(true)
+        return
+      }
+
+      await finishPasswordChange(res)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Invalid or expired code'
       setCodeError(message)
+    } finally {
+      setIsVerifyingCode(false)
+    }
+  }
+
+  async function handleConfirmSecondFactor(value?: string) {
+    const entered = value ?? pw2faCode.join('')
+    setCodeError('')
+    if (entered.length < 6) {
+      setCodeError('Enter the 6-digit code')
+      return
+    }
+    setIsVerifyingCode(true)
+    try {
+      const res = await api.post<VerifyCodeResponse>('/auth/2fa/verify-login', {
+        pending_token: pwPendingToken,
+        code: entered,
+      })
+      await finishPasswordChange(res)
+    } catch (err: unknown) {
+      setCodeError(err instanceof Error ? err.message : 'Invalid code')
+      setPw2faCode(EMPTY_CODE)
     } finally {
       setIsVerifyingCode(false)
     }
@@ -264,6 +330,8 @@ async function handleAvatarCropped(blob: Blob) {
         </form>
       </section>
 
+      <TwoFactorSettings />
+
       {/* Log out lives here now that the sidebar avatar is a plain link
           rather than a menu (§46). Removing the popup should not remove the
           only way out. */}
@@ -291,13 +359,51 @@ async function handleAvatarCropped(blob: Blob) {
             <Dialog.Description className="mt-1.5 text-sm text-text-tertiary leading-relaxed">
               We emailed a verification code to {user?.email}. Enter it below to finish changing your password. If you did not request this, ignore the email and your password will stay the same.
             </Dialog.Description>
-            <div className="mt-4 space-y-1.5">
-              <Input value={pwCode} onChange={(e) => setPwCode(e.target.value)} placeholder="6-digit code" />
+            <div className="mt-4 space-y-2">
+              {/* The shared digit boxes (§196), rather than a seventh
+                  free-text code field. */}
+              <CodeInput
+                value={pwCode}
+                onChange={(next) => { setPwCode(next); setCodeError('') }}
+                onComplete={(code) => handleConfirmPasswordCode(code)}
+                invalid={!!codeError}
+                autoFocus
+              />
               {codeError && <p className="text-xs text-status-error">{codeError}</p>}
             </div>
             <div className="flex items-center justify-end gap-2 mt-5">
               <Button variant="secondary" size="sm" onClick={() => setPwCodeDialogOpen(false)} disabled={isVerifyingCode}>Cancel</Button>
-              <Button variant="primary" size="sm" onClick={handleConfirmPasswordCode} loading={isVerifyingCode}>Confirm</Button>
+              <Button variant="primary" size="sm" onClick={() => handleConfirmPasswordCode()} loading={isVerifyingCode}>Confirm</Button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* Second factor, for an enrolled user finishing a password change. */}
+      <Dialog.Root open={pw2faDialogOpen} onOpenChange={setPw2faDialogOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary shadow-xl p-6">
+            <Dialog.Title className="text-sm font-semibold text-text-primary">One more step</Dialog.Title>
+            <Dialog.Description className="mt-1.5 text-sm text-text-tertiary leading-relaxed">
+              {pw2faMethod === 'email'
+                ? 'Enter the sign-in code we emailed you.'
+                : 'Enter the 6-digit code from your authenticator app.'}
+              {' '}A backup code works too.
+            </Dialog.Description>
+            <div className="mt-4 space-y-2">
+              <CodeInput
+                value={pw2faCode}
+                onChange={(next) => { setPw2faCode(next); setCodeError('') }}
+                onComplete={(code) => handleConfirmSecondFactor(code)}
+                invalid={!!codeError}
+                autoFocus
+              />
+              {codeError && <p className="text-xs text-status-error">{codeError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-2 mt-5">
+              <Button variant="secondary" size="sm" onClick={() => setPw2faDialogOpen(false)} disabled={isVerifyingCode}>Cancel</Button>
+              <Button variant="primary" size="sm" onClick={() => handleConfirmSecondFactor()} loading={isVerifyingCode}>Confirm</Button>
             </div>
           </Dialog.Content>
         </Dialog.Portal>

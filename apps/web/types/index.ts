@@ -60,6 +60,12 @@ export interface User {
   created_at: string;
   deleted_at: string | null;
   storage_limit_bytes?: number | null;
+  /** §197 — the user's own second-factor state, as /auth/me reports it.
+   *  Read-only: enrolling and disabling go through /auth/2fa/*, which is
+   *  where the proofs those actions require are enforced. Optional so an
+   *  older cached /auth/me response still validates. */
+  two_factor_enabled?: boolean;
+  two_factor_method?: TwoFactorMethod | null;
 }
 
 export interface Team {
@@ -868,6 +874,29 @@ export interface TwoFactorVerifyRequest {
 export interface TwoFactorConfirmRequest {
   pending_token?: string;
   code: string;
+}
+
+/** Proof that the caller still holds a second factor (§192).
+ *
+ *  Accepts any of the three forms the login path accepts — authenticator,
+ *  emailed fallback, backup code — because the user does not reliably know
+ *  which kind they are holding. Required by the two self-service actions
+ *  that WEAKEN an account (disable, regenerate) and, since §194b, by
+ *  starting a replacement enrolment. */
+export interface TwoFactorReauthRequest {
+  code: string;
+}
+
+export interface TwoFactorDisableResponse {
+  /** Always false after the call. Returned rather than implied so a client
+   *  updates from the response instead of assuming the write landed. */
+  two_factor_enabled: boolean;
+}
+
+export interface TwoFactorBackupCodesResponse {
+  /** A fresh set, shown once. Replaces the previous set entirely — the old
+   *  codes stop working the moment this returns. */
+  backup_codes: string[];
 }
 
 export interface TwoFactorConfirmResponse {

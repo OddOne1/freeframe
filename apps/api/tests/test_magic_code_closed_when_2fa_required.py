@@ -34,6 +34,12 @@ from apps.api.services.auth_service import create_2fa_pending_token
 
 _REQUIRE_2FA = "apps.api.routers.auth.require_2fa_enabled"
 _STORE_CODE = "apps.api.routers.auth.store_magic_code"
+#: §197 — password-reset codes live in their own Redis pool, so the reset
+#: path stores through a different function than the login path. Patching
+#: only the login one would make a reset test pass while reaching a Redis
+#: that is not there.
+_STORE_RESET = "apps.api.routers.auth.store_password_reset_code"
+_VERIFY_RESET = "apps.api.routers.auth.verify_password_reset_code"
 _SEND_TASK = "apps.api.routers.auth.send_task_safe"
 _VERIFY_CODE = "apps.api.routers.auth.redis_verify_magic_code"
 
@@ -73,10 +79,14 @@ def _send(client, mock_db, *, user, require_2fa, purpose=None, email="u@example.
     body = {"email": email}
     if purpose is not None:
         body["purpose"] = purpose
+    reset = purpose == "password_reset"
     with patch(_REQUIRE_2FA, return_value=require_2fa), \
-         patch(_STORE_CODE) as store, \
+         patch(_STORE_RESET if reset else _STORE_CODE) as store, \
+         patch(_STORE_CODE if reset else _STORE_RESET) as other_pool, \
          patch(_SEND_TASK) as send:
         resp = client.post("/auth/send-magic-code", json=body)
+    # The pool this purpose does NOT belong to is never written (§197).
+    other_pool.assert_not_called()
     return resp, store, send
 
 
@@ -252,7 +262,7 @@ class TestAPasswordlessUserCanStillGetBackIn:
 
         # 1. The reset code is still issued.
         with patch(_REQUIRE_2FA, return_value=True), \
-             patch(_STORE_CODE) as store, \
+             patch(_STORE_RESET) as store, \
              patch(_SEND_TASK):
             sent = client.post(
                 "/auth/send-magic-code",
@@ -264,11 +274,11 @@ class TestAPasswordlessUserCanStillGetBackIn:
         # 2. Redeeming it does NOT sign them in — it lands in §193's gate,
         #    which for an unenrolled user on a require_2fa instance means
         #    forced enrolment.
-        with patch(_VERIFY_CODE, return_value=(True, "")), \
+        with patch(_VERIFY_RESET, return_value=(True, "")), \
              patch(_REQUIRE_2FA, return_value=True):
             verified = client.post(
                 "/auth/verify-magic-code",
-                json={"email": user.email, "code": "123456"},
+                json={"email": user.email, "code": "123456", "purpose": "password_reset"},
             ).json()
         assert verified["requires_2fa"] is True
         assert verified["setup_required"] is True

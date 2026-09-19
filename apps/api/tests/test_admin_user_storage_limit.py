@@ -41,6 +41,12 @@ def _target(limit=TWO_HUNDRED_GB):
     u.invite_token = None
     u.preferences = {}
     u.storage_limit_bytes = limit
+    # §197 — UserResponse now carries the user's own 2FA state, and a
+    # MagicMock attribute is an object rather than a bool, which fails
+    # serialisation. Explicit here for the same reason the auth fixtures
+    # set it.
+    u.two_factor_enabled = False
+    u.two_factor_method = None
     return u
 
 
