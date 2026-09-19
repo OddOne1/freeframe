@@ -53,9 +53,12 @@ def _enrolled(secret=None, codes=None, email="u@example.com"):
     u.storage_limit_bytes = None
     u.deleted_at = None
     u.password_hash = "$2b$12$fake"
-    u.totp_enabled = True
+    u.two_factor_enabled = True
     u.totp_secret_encrypted = totp_service.encrypt_secret(secret)
     u.backup_codes_hashed = totp_service.hash_backup_codes(codes) if codes else None
+    # §194 — an enrolled user always has one, and disable has to clear it
+    # along with the secret and the codes.
+    u.two_factor_method = "totp"
     u._secret = secret
     return u
 
@@ -101,7 +104,7 @@ class TestSelfServiceDisable:
             resp = self._post(client, app, user, pyotp.TOTP(user._secret).now(), mock_db)
 
         assert resp.status_code == 200
-        assert resp.json()["totp_enabled"] is False
+        assert resp.json()["two_factor_enabled"] is False
 
     def test_it_clears_the_secret_and_the_codes_too_not_just_the_flag(
         self, client, app, mock_db
@@ -114,9 +117,21 @@ class TestSelfServiceDisable:
         with patch(_NO_EMAIL_CODE, return_value=(False, "")):
             self._post(client, app, user, pyotp.TOTP(user._secret).now(), mock_db)
 
-        assert user.totp_enabled is False
+        assert user.two_factor_enabled is False
         assert user.totp_secret_encrypted is None
         assert user.backup_codes_hashed is None
+
+    def test_it_clears_the_chosen_method_too(self, client, app, mock_db):
+        """§194 — a stale "totp"/"email" left on a disabled account would
+        make a later re-enrolment look like it had already picked one, and
+        the login screen would say which code to open for an account that
+        has no second factor at all."""
+        user = _enrolled()
+
+        with patch(_NO_EMAIL_CODE, return_value=(False, "")):
+            self._post(client, app, user, pyotp.TOTP(user._secret).now(), mock_db)
+
+        assert user.two_factor_method is None
 
     def test_a_wrong_code_is_401_and_changes_NOTHING(self, client, app, mock_db):
         """The gate, stated as an assertion: a stolen session alone cannot
@@ -128,7 +143,7 @@ class TestSelfServiceDisable:
             resp = self._post(client, app, user, "000000", mock_db)
 
         assert resp.status_code == 401
-        assert user.totp_enabled is True
+        assert user.two_factor_enabled is True
         assert user.totp_secret_encrypted == before
 
     def test_the_failure_does_not_say_which_factor_was_wrong(self, client, app, mock_db):
@@ -147,7 +162,7 @@ class TestSelfServiceDisable:
             resp = self._post(client, app, user, codes[2], mock_db)
 
         assert resp.status_code == 200
-        assert user.totp_enabled is False
+        assert user.two_factor_enabled is False
 
     def test_an_emailed_fallback_code_is_accepted_as_the_proof(self, client, app, mock_db):
         user = _enrolled()
@@ -156,7 +171,7 @@ class TestSelfServiceDisable:
             resp = self._post(client, app, user, "123456", mock_db)
 
         assert resp.status_code == 200
-        assert user.totp_enabled is False
+        assert user.two_factor_enabled is False
 
     def test_disabling_when_already_off_is_idempotent_not_an_error(
         self, client, app, mock_db
@@ -164,12 +179,12 @@ class TestSelfServiceDisable:
         """A double-click should not look like a failure when the end state
         the caller asked for is already true."""
         user = _enrolled()
-        user.totp_enabled = False
+        user.two_factor_enabled = False
 
         resp = self._post(client, app, user, "whatever", mock_db)
 
         assert resp.status_code == 200
-        assert resp.json()["totp_enabled"] is False
+        assert resp.json()["two_factor_enabled"] is False
 
     def test_it_requires_a_session_at_all(self, client, mock_db):
         assert client.post("/auth/2fa/disable", json={"code": "123456"}).status_code in (401, 403)
@@ -243,7 +258,7 @@ class TestRegenerateBackupCodes:
 
     def test_regenerating_without_2fa_enabled_is_a_400(self, client, app, mock_db):
         user = _enrolled()
-        user.totp_enabled = False
+        user.two_factor_enabled = False
 
         resp = self._post(client, app, user, "123456", mock_db)
 
@@ -283,7 +298,7 @@ class TestAdminOverride:
             resp = self._patch(client, app, self._admin(), target, mock_db)
 
         assert resp.status_code == 200
-        assert target.totp_enabled is False
+        assert target.two_factor_enabled is False
         assert target.totp_secret_encrypted is None
 
     def test_no_code_is_required_from_the_target(self, client, app, mock_db):
@@ -299,9 +314,19 @@ class TestAdminOverride:
 
         self._patch(client, app, self._admin(), target, mock_db)
 
-        assert target.totp_enabled is False
+        assert target.two_factor_enabled is False
         assert target.totp_secret_encrypted is None
         assert target.backup_codes_hashed is None
+
+    def test_it_clears_the_chosen_method_too(self, client, app, mock_db):
+        """§194 — the admin path clears exactly what the self-service path
+        clears. Two lists of "what an enrolment consists of" is how one of
+        them quietly stops clearing something."""
+        target = _enrolled()
+
+        self._patch(client, app, self._admin(), target, mock_db)
+
+        assert target.two_factor_method is None
 
     def test_a_non_superadmin_gets_403(self, client, app, mock_db):
         actor = self._admin()
@@ -317,14 +342,14 @@ class TestAdminOverride:
         self-service path would be a formality the highest-privileged
         accounts could always walk around."""
         admin = self._admin()
-        admin.totp_enabled = True
+        admin.two_factor_enabled = True
         _as(client, app, admin)
         mock_db.query.return_value.filter.return_value.first.return_value = admin
 
         resp = client.patch(f"/admin/users/{admin.id}/disable-2fa")
 
         assert resp.status_code == 400
-        assert admin.totp_enabled is True
+        assert admin.two_factor_enabled is True
 
     def test_an_unknown_user_is_a_404(self, client, app, mock_db):
         _as(client, app, self._admin())
@@ -365,7 +390,7 @@ class TestAdminOverride:
         added = []
         mock_db.add.side_effect = added.append
         target = _enrolled()
-        target.totp_enabled = False
+        target.two_factor_enabled = False
 
         self._patch(client, app, self._admin(), target, mock_db)
 

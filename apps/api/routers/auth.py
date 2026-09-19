@@ -17,6 +17,7 @@ from ..schemas.auth import (
     TwoFactorConfirmRequest, TwoFactorConfirmResponse,
     TwoFactorEmailFallbackResponse,
     TwoFactorReauthRequest, TwoFactorDisableResponse, TwoFactorBackupCodesResponse,
+    TwoFactorMethod,
 )
 from ..services.auth_service import (
     hash_password, verify_password,
@@ -28,7 +29,7 @@ from ..services.redis_service import (
     generate_magic_code, store_magic_code, verify_magic_code as redis_verify_magic_code,
     MAGIC_CODE_EXPIRY_SECONDS,
     generate_2fa_email_code, store_2fa_email_code, verify_2fa_email_code,
-    TWOFA_EMAIL_CODE_EXPIRY_SECONDS,
+    has_live_2fa_email_code, TWOFA_EMAIL_CODE_EXPIRY_SECONDS,
 )
 from ..services import totp_service
 from ..services.site_settings_service import require_2fa_enabled, instance_org_name
@@ -313,21 +314,72 @@ def _login_outcome(db: Session, user: User) -> LoginResponse:
     turning the requirement off must not silently downgrade someone who
     chose 2FA for themselves.
     """
-    if user.totp_enabled:
+    if user.two_factor_enabled:
+        method: TwoFactorMethod = user.two_factor_method or "totp"
+        # §194 — for an email-primary user the code is sent HERE, without
+        # waiting for them to ask.
+        #
+        # The asymmetry with the fallback flow is deliberate. A TOTP user
+        # clicking "email me a code instead" is making a claim — "I have
+        # lost my authenticator" — which is unusual enough to be worth a
+        # deliberate action. An email-primary user has nothing to claim:
+        # email IS their factor, so requiring a click before sending the
+        # thing they are waiting for would be a pointless step on every
+        # single login.
+        #
+        # Idempotent per TTL window (see _send_2fa_email_code), so repeated
+        # hits on the gate neither spam the inbox nor invalidate a code the
+        # person is already reading.
+        sent = _send_2fa_email_code(user) if method == "email" else False
         return TwoFactorRequiredResponse(
             setup_required=False,
             pending_token=create_2fa_pending_token(str(user.id)),
+            method=method,
+            email_code_sent=sent,
         )
 
     if require_2fa_enabled(db):
         # Enrolment is forced, not refused: locking out everyone the moment
         # an admin flips the switch would make the switch unusable.
+        # No `method`: the user has not chosen one, and choosing is what the
+        # enrolment screen exists for.
         return TwoFactorRequiredResponse(
             setup_required=True,
             pending_token=create_2fa_pending_token(str(user.id)),
         )
 
     return _issue_tokens(user)
+
+
+def _send_2fa_email_code(user: User, *, force: bool = False) -> bool:
+    """Mail this user a one-time code. Returns whether one was sent (§194).
+
+    Extracted from the HTTP endpoint so login can call it directly — the
+    endpoint carries a rate-limit dependency and a request object that a
+    server-side call has neither of, and reaching into it would mean
+    fabricating both.
+
+    `force=False` skips the send when an unexpired code is already
+    outstanding. That is the default because this is called automatically
+    for an email-primary user at every login: without it, two page loads
+    would mail two codes and the second would silently invalidate the first
+    one already sitting in the person's inbox. The explicit "send me a code"
+    endpoint passes force=True, because there the user is telling us the
+    code did not arrive.
+    """
+    if not force and has_live_2fa_email_code(user.email):
+        return False
+
+    code = generate_2fa_email_code()
+    store_2fa_email_code(user.email, code)
+    send_task_safe(
+        send_magic_code_email,
+        user.email,
+        code,
+        TWOFA_EMAIL_CODE_EXPIRY_SECONDS // 60,
+        "two_factor",
+    )
+    return True
 
 
 def _second_factor_matches(db: Session, user: User, code: str) -> bool:
@@ -367,7 +419,7 @@ def verify_two_factor_login(body: TwoFactorVerifyRequest, db: Session = Depends(
     """Complete a login that stopped at the second factor."""
     user = _user_from_pending(db, body.pending_token)
 
-    if not user.totp_enabled:
+    if not user.two_factor_enabled:
         # A pending token issued for FORCED SETUP cannot be redeemed here —
         # that path has to go through confirm-setup, which is what actually
         # enrols them. Otherwise "enforcement on" would be satisfiable by
@@ -397,16 +449,40 @@ def setup_two_factor(
     here rather than in two near-identical endpoints.
 
     The generated secret is stored encrypted immediately but
-    `totp_enabled` stays false until a real code confirms it. Storing it
+    `two_factor_enabled` stays false until a real code confirms it. Storing it
     now is what lets confirm-setup verify against the same secret the QR
-    code showed; leaving `totp_enabled` false is what stops an abandoned
+    code showed; leaving `two_factor_enabled` false is what stops an abandoned
     setup from locking the user out of their own account.
+
+    §194 — `method` picks which factor is being enrolled. It is recorded on
+    the user here, while 2FA is still off, for the same reason the secret
+    is: confirm-setup has to know which kind of code it is checking. The
+    alternative — the client naming the method again at confirm — would let
+    the two halves of one enrolment disagree about what was enrolled.
     """
     user = current_user
     if user is None:
         if not body or not body.pending_token:
             raise HTTPException(status_code=401, detail="Not authenticated")
         user = _user_from_pending(db, body.pending_token)
+
+    method: TwoFactorMethod = body.method if body else "totp"
+    user.two_factor_method = method
+
+    if method == "email":
+        # No secret is generated: an email enrolment has nothing to scan and
+        # nothing to keep. A secret already on the row is left alone rather
+        # than cleared here — it may still be this user's LIVE second factor,
+        # and this setup can still be abandoned. Confirm clears it, at the
+        # one moment the new enrolment actually takes effect.
+        db.commit()
+        # Not forced: this endpoint has no rate-limit bucket of its own, and
+        # the idempotency window is what bounds how much mail repeated calls
+        # can send. A code already in the inbox still works, so re-sending
+        # would only invalidate the one the user is reading.
+        return TwoFactorSetupResponse(
+            method="email", email_code_sent=_send_2fa_email_code(user)
+        )
 
     secret = totp_service.generate_totp_secret()
     user.totp_secret_encrypted = totp_service.encrypt_secret(secret)
@@ -416,6 +492,7 @@ def setup_two_factor(
         secret, user.email, issuer=instance_org_name(db)
     )
     return TwoFactorSetupResponse(
+        method="totp",
         provisioning_uri=uri,
         qr_code_data_uri=totp_service.qr_code_data_uri(uri),
         secret=secret,
@@ -428,7 +505,12 @@ def confirm_two_factor_setup(
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
 ):
-    """Finish enrolment: prove the authenticator works, then switch it on.
+    """Finish enrolment: prove the chosen factor works, then switch it on.
+
+    §194 — "the chosen factor" rather than "the authenticator": for an email
+    enrolment the proof is the code that was just mailed, which is the same
+    kind of evidence a TOTP code is — that the thing the user will be asked
+    for at every future login actually reaches them.
 
     Returns the backup codes once, in plaintext. They are bcrypt-hashed
     server-side and nothing can read them back — losing this response means
@@ -442,23 +524,47 @@ def confirm_two_factor_setup(
         user = _user_from_pending(db, body.pending_token)
         forced_first_login = True
 
-    secret = totp_service.decrypt_secret(user.totp_secret_encrypted)
-    if not secret:
-        raise HTTPException(status_code=400, detail="Start setup again")
+    # §194 — whichever factor setup recorded is the one that has to prove
+    # itself. NULL means an enrolment started before this field existed,
+    # which could only have been TOTP.
+    method: TwoFactorMethod = user.two_factor_method or "totp"
 
-    # Only the authenticator counts here. An emailed fallback or a backup
-    # code proves nothing about whether the app the user just configured
-    # actually works, which is the single thing this step exists to check.
-    if not totp_service.verify_totp_code(secret, body.code):
-        raise HTTPException(status_code=401, detail="Invalid code")
+    if method == "email":
+        # Only the code just mailed counts. A backup code would prove
+        # nothing about whether mail actually reaches this address, which is
+        # the single thing this step exists to check — the same rule the
+        # TOTP branch applies to its own factor.
+        ok, _ = verify_2fa_email_code(user.email, body.code.strip())
+        if not ok:
+            raise HTTPException(status_code=401, detail="Invalid code")
+        # An authenticator paired during some earlier, abandoned setup must
+        # not stay a way in for a user whose second factor is now email:
+        # `_second_factor_matches` tries TOTP first and would keep accepting
+        # a secret nobody remembers agreeing to.
+        user.totp_secret_encrypted = None
+    else:
+        secret = totp_service.decrypt_secret(user.totp_secret_encrypted)
+        if not secret:
+            raise HTTPException(status_code=400, detail="Start setup again")
+
+        # Only the authenticator counts here. An emailed fallback or a backup
+        # code proves nothing about whether the app the user just configured
+        # actually works, which is the single thing this step exists to check.
+        if not totp_service.verify_totp_code(secret, body.code):
+            raise HTTPException(status_code=401, detail="Invalid code")
 
     codes = totp_service.generate_backup_codes()
     user.backup_codes_hashed = totp_service.hash_backup_codes(codes)
-    user.totp_enabled = True
+    user.two_factor_enabled = True
+    # Written again rather than trusted from setup, so that an enrolled row
+    # always carries a method — the same invariant §194's migration
+    # backfilled for rows that predate the column.
+    user.two_factor_method = method
     db.commit()
 
     return TwoFactorConfirmResponse(
         backup_codes=codes,
+        method=method,
         # Only when this completed a forced login. An already-signed-in user
         # holds working tokens already; re-issuing would be churn.
         tokens=_issue_tokens(user) if forced_first_login else None,
@@ -501,16 +607,12 @@ def send_two_factor_email_fallback(
     if user is None:
         user = _user_from_pending(db, body.pending_token)
 
-    if user.totp_enabled:
-        code = generate_2fa_email_code()
-        store_2fa_email_code(user.email, code)
-        send_task_safe(
-            send_magic_code_email,
-            user.email,
-            code,
-            TWOFA_EMAIL_CODE_EXPIRY_SECONDS // 60,
-            "two_factor",
-        )
+    if user.two_factor_enabled:
+        # force=True: reaching this endpoint IS the user saying the code they
+        # have did not arrive or no longer works, so the outstanding one is
+        # replaced rather than reused. Login's automatic send is the opposite
+        # case and is deliberately idempotent (see _send_2fa_email_code).
+        _send_2fa_email_code(user, force=True)
     # Falls through with the same response either way: whether this account
     # is enrolled is not something an unauthenticated caller learns here.
     return TwoFactorEmailFallbackResponse()
@@ -534,24 +636,28 @@ def disable_two_factor(
     copies of "what counts as a second factor" is how one of them quietly
     stops accepting backup codes.
     """
-    if not current_user.totp_enabled:
+    if not current_user.two_factor_enabled:
         # Idempotent rather than an error: the end state the caller asked
         # for is already true, and a 400 here would make a double-click
         # look like a failure.
-        return TwoFactorDisableResponse(totp_enabled=False)
+        return TwoFactorDisableResponse(two_factor_enabled=False)
 
     if not _second_factor_matches(db, current_user, body.code):
         raise HTTPException(status_code=401, detail="Invalid code")
 
     # All three, not just the flag. A secret left behind would be re-enabled
-    # by a later `totp_enabled = True` with the OLD authenticator still
+    # by a later `two_factor_enabled = True` with the OLD authenticator still
     # paired — and stale backup codes would outlive the enrolment they were
     # issued for.
-    current_user.totp_enabled = False
+    current_user.two_factor_enabled = False
     current_user.totp_secret_encrypted = None
     current_user.backup_codes_hashed = None
+    # §194 — the chosen method goes with it. A stale "email" left on a
+    # disabled account would make a later re-enrolment look like it had
+    # already picked one.
+    current_user.two_factor_method = None
     db.commit()
-    return TwoFactorDisableResponse(totp_enabled=False)
+    return TwoFactorDisableResponse(two_factor_enabled=False)
 
 
 @router.post("/2fa/regenerate-backup-codes", response_model=TwoFactorBackupCodesResponse)
@@ -566,7 +672,7 @@ def regenerate_backup_codes(
     could mint itself ten permanent recovery codes would have turned a
     session into an account.
     """
-    if not current_user.totp_enabled:
+    if not current_user.two_factor_enabled:
         raise HTTPException(status_code=400, detail="Two-factor authentication is not enabled")
 
     if not _second_factor_matches(db, current_user, body.code):

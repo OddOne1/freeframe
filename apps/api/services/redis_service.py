@@ -101,6 +101,21 @@ def store_2fa_email_code(email: str, code: str) -> None:
     r.delete(f"{TWOFA_EMAIL_ATTEMPTS_PREFIX}{email.lower()}")
 
 
+def has_live_2fa_email_code(email: str) -> bool:
+    """Whether an unexpired 2FA code is already outstanding (§194).
+
+    Used to make login's automatic send idempotent for an email-primary
+    user: hitting the login screen twice must not mail two codes, and must
+    not invalidate the one already in the person's inbox by replacing it.
+
+    It also bounds the blast radius of the automatic send. An attacker who
+    holds someone's password can reach the 2FA gate repeatedly; without this
+    that would mail a code per attempt. With it, at most one per TTL window
+    however many times the gate is hit.
+    """
+    return bool(get_redis().get(f"{TWOFA_EMAIL_CODE_PREFIX}{email.lower()}"))
+
+
 def verify_2fa_email_code(email: str, code: str) -> tuple[bool, str]:
     """Verify a 2FA fallback code. Returns (success, error_message).
 

@@ -25,7 +25,7 @@ _REDIS_OK = "apps.api.routers.auth.redis_verify_magic_code"
 _REQUIRE_2FA = "apps.api.routers.auth.require_2fa_enabled"
 
 
-def _user(*, totp_enabled=False, password_hash="$2b$12$fake", email="u@example.com"):
+def _user(*, two_factor_enabled=False, password_hash="$2b$12$fake", email="u@example.com"):
     u = MagicMock()
     u.id = uuid.uuid4()
     u.email = email
@@ -33,13 +33,17 @@ def _user(*, totp_enabled=False, password_hash="$2b$12$fake", email="u@example.c
     u.deleted_at = None
     u.password_hash = password_hash
     u.email_verified = False
-    u.totp_enabled = totp_enabled
+    u.two_factor_enabled = two_factor_enabled
     u.totp_secret_encrypted = (
         totp_service.encrypt_secret(totp_service.generate_totp_secret())
-        if totp_enabled
+        if two_factor_enabled
         else None
     )
     u.backup_codes_hashed = None
+    # §194 — explicit for the same reason as the fields above: validated
+    # against Literal["totp", "email"] on the way out, so a MagicMock
+    # attribute would fail serialisation.
+    u.two_factor_method = "totp" if two_factor_enabled else None
     return u
 
 
@@ -61,7 +65,7 @@ class TestTheBypass:
     ):
         """The regression this whole change exists for. Anyone holding the
         email must still be stopped at the second factor."""
-        resp = _verify(client, mock_db, _user(totp_enabled=True))
+        resp = _verify(client, mock_db, _user(two_factor_enabled=True))
 
         body = resp.json()
         assert resp.status_code == 200
@@ -75,12 +79,12 @@ class TestTheBypass:
     def test_reading_the_email_alone_no_longer_authenticates(self, client, mock_db):
         """Stated as the threat rather than the mechanism: a correct code,
         correctly verified, and still no session."""
-        resp = _verify(client, mock_db, _user(totp_enabled=True))
+        resp = _verify(client, mock_db, _user(two_factor_enabled=True))
 
         assert "access_token" not in resp.json()
 
     def test_enforcement_on_routes_an_unenrolled_user_into_setup(self, client, mock_db):
-        resp = _verify(client, mock_db, _user(totp_enabled=False), require_2fa=True)
+        resp = _verify(client, mock_db, _user(two_factor_enabled=False), require_2fa=True)
 
         body = resp.json()
         assert body["requires_2fa"] is True
@@ -92,7 +96,7 @@ class TestTheBypass:
     ):
         """Turning the instance-wide requirement off must not silently
         downgrade someone who chose 2FA for themselves."""
-        resp = _verify(client, mock_db, _user(totp_enabled=True), require_2fa=False)
+        resp = _verify(client, mock_db, _user(two_factor_enabled=True), require_2fa=False)
 
         assert resp.json()["requires_2fa"] is True
 
@@ -113,7 +117,7 @@ class TestNothingElseChanged:
         assert body["requires_2fa"] is False
 
     def test_a_wrong_code_is_still_a_401_before_any_2fa_question(self, client, mock_db):
-        mock_db.first.return_value = _user(totp_enabled=True)
+        mock_db.first.return_value = _user(two_factor_enabled=True)
         with patch(_REDIS_OK, return_value=(False, "Invalid code")):
             resp = client.post(
                 "/auth/verify-magic-code",
@@ -131,7 +135,7 @@ class TestNothingElseChanged:
         assert resp.status_code == 404
 
     def test_a_deactivated_account_is_still_refused(self, client, mock_db):
-        user = _user(totp_enabled=True)
+        user = _user(two_factor_enabled=True)
         user.status = UserStatus.deactivated
         mock_db.first.return_value = user
 
@@ -147,7 +151,7 @@ class TestNothingElseChanged:
         """The code WAS correct, so the address is genuinely verified. That
         is a fact about the address, not a grant of access, and it must not
         be rolled back just because the login stops here."""
-        user = _user(totp_enabled=True)
+        user = _user(two_factor_enabled=True)
 
         _verify(client, mock_db, user)
 
@@ -157,7 +161,7 @@ class TestNothingElseChanged:
     def test_a_pending_verification_account_is_still_activated(self, client, mock_db):
         """Same reasoning. The activation side effect predates 2FA and is
         about the address being real."""
-        user = _user(totp_enabled=True)
+        user = _user(two_factor_enabled=True)
         user.status = UserStatus.pending_verification
 
         _verify(client, mock_db, user)
@@ -185,7 +189,7 @@ class TestNeedsPasswordIsDeferred:
     def test_a_passwordless_ENROLLED_user_is_not_told_to_set_a_password(
         self, client, mock_db
     ):
-        user = _user(totp_enabled=True, password_hash=None)
+        user = _user(two_factor_enabled=True, password_hash=None)
 
         body = _verify(client, mock_db, user).json()
 
@@ -195,7 +199,7 @@ class TestNeedsPasswordIsDeferred:
     def test_a_passwordless_unenrolled_user_is_told_immediately_as_before(
         self, client, mock_db
     ):
-        user = _user(totp_enabled=False, password_hash=None)
+        user = _user(two_factor_enabled=False, password_hash=None)
 
         body = _verify(client, mock_db, user).json()
 
@@ -208,7 +212,7 @@ class TestNeedsPasswordIsDeferred:
         import pyotp
 
         secret = totp_service.generate_totp_secret()
-        user = _user(totp_enabled=True, password_hash=None)
+        user = _user(two_factor_enabled=True, password_hash=None)
         user.totp_secret_encrypted = totp_service.encrypt_secret(secret)
         pending = _verify(client, mock_db, user).json()["pending_token"]
 
@@ -268,7 +272,7 @@ class TestTheBranchIsActuallyShared:
         from apps.api.routers import auth as auth_router
 
         src = inspect.getsource(auth_router._login_outcome)
-        assert "user.totp_enabled" in src
+        assert "user.two_factor_enabled" in src
         assert "require_2fa_enabled(db)" in src
 
     def test_both_endpoints_declare_the_same_response_model(self):

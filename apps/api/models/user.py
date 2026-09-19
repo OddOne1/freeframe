@@ -60,14 +60,31 @@ class User(Base):
     # the database. See services/totp_service.py for where the key comes
     # from. A value here does NOT mean 2FA is on: setup generates a secret
     # and confirmation enables it, and between those two moments the secret
-    # exists while `totp_enabled` is still false.
+    # exists while `two_factor_enabled` is still false.
     totp_secret_encrypted: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    #: True only once the user has typed a real code from their authenticator.
+    #: True only once the user has confirmed their chosen second factor.
     #: Generating a secret must never gate login on its own — a half-finished
     #: setup would otherwise lock someone out of their own account.
-    totp_enabled: Mapped[bool] = mapped_column(
+    #:
+    #: §194 — renamed from `totp_enabled`. Once email can be the PRIMARY
+    #: second factor rather than only a fallback, a user can be enrolled
+    #: with no TOTP secret at all, and a flag called `totp_enabled` reading
+    #: True for someone who has no authenticator is a lie to whoever reads
+    #: this next. Renaming cost a migration and ~74 call sites; leaving it
+    #: would have cost the next person an hour and a wrong assumption.
+    two_factor_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    #: Which factor this user actually enrolled with: "totp" or "email".
+    #: NULL when not enrolled.
+    #:
+    #: Stored rather than inferred from `totp_secret_encrypted is None`,
+    #: which would work today and is exactly the kind of implementation
+    #: detail that should not decide what a login screen renders. The
+    #: frontend needs "open your authenticator" vs "check your email", and
+    #: that is a question about the user's choice, not about which column
+    #: happens to be populated.
+    two_factor_method: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     #: Single-use recovery codes, bcrypt-hashed with the same helper that
     #: hashes passwords (services/auth_service.hash_password) — not a second
     #: scheme invented for this. Issued once at confirmation, shown once, and

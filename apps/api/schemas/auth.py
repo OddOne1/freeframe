@@ -28,6 +28,20 @@ class TokenResponse(BaseModel):
     requires_2fa: Literal[False] = False
 
 
+#: Which second factor a user enrolled with (§194).
+#:
+#: "totp"  — an authenticator app holds a shared secret.
+#: "email" — a one-time code is mailed each time they sign in.
+#:
+#: Email started life in §191 as a fallback for a lost authenticator and is
+#: now selectable as the primary method. The login-time verification path
+#: needed no change for it: `_second_factor_matches` already tries TOTP,
+#: then email, then a backup code, and `verify_totp_code` returns False for
+#: a null secret rather than raising — so an email-only user falls through
+#: the TOTP branch harmlessly. Verified before this was built on.
+TwoFactorMethod = Literal["totp", "email"]
+
+
 class TwoFactorRequiredResponse(BaseModel):
     """Password accepted, second factor outstanding (§191).
 
@@ -51,6 +65,19 @@ class TwoFactorRequiredResponse(BaseModel):
     #: app except the /auth/2fa/* completion endpoints: get_current_user
     #: rejects any token whose type is not exactly "access".
     pending_token: str
+    #: §194 — which code to ask for, so the client can draw the right screen
+    #: without a second round-trip: "open your authenticator" vs "check your
+    #: email".
+    #:
+    #: NULL exactly when `setup_required` is True — a user being forced into
+    #: enrolment has not chosen a method yet; choosing one is what the
+    #: enrolment screen is for.
+    method: Optional[TwoFactorMethod] = None
+    #: True when a code has ALREADY been sent to this user's address as part
+    #: of this response (email-primary only). Lets the client say "we've sent
+    #: you a code" rather than showing a "send me one" button for something
+    #: already in flight.
+    email_code_sent: bool = False
 
 
 #: What POST /auth/login returns. The two arms are distinguished by
@@ -77,21 +104,38 @@ class TwoFactorSetupRequest(BaseModel):
     """
 
     pending_token: Optional[str] = None
+    #: §194 — which second factor to enrol. Defaults to "totp", so every
+    #: caller written before this field existed keeps working unchanged.
+    method: TwoFactorMethod = "totp"
 
 
 class TwoFactorSetupResponse(BaseModel):
-    """What the client needs to draw an enrolment screen."""
+    """What the client needs to draw an enrolment screen.
 
-    #: otpauth:// URI. Everything the authenticator needs.
-    provisioning_uri: str
+    §194 — the TOTP fields are now optional, because an email enrolment has
+    no secret and nothing to scan. `method` says which set to expect rather
+    than leaving the client to test for null and guess why.
+    """
+
+    #: Echoes back what was enrolled, so a client does not have to remember
+    #: what it asked for across a round-trip.
+    method: TwoFactorMethod = "totp"
+    #: otpauth:// URI. Everything the authenticator needs. TOTP only.
+    provisioning_uri: Optional[str] = None
     #: The same URI as a PNG data: URI, rendered server-side so no QR
     #: library is needed in the browser and the secret never travels to a
-    #: third-party image service.
-    qr_code_data_uri: str
+    #: third-party image service. TOTP only.
+    qr_code_data_uri: Optional[str] = None
     #: For manual entry when a camera is not available. This IS the secret
     #: in plaintext — it is shown once, on a screen the user is already
     #: authenticated to, which is the same exposure the QR code has.
-    secret: str
+    #: TOTP only.
+    secret: Optional[str] = None
+    #: Email only: a code has been sent to the user's address and confirming
+    #: it is what completes enrolment. True rather than implied by
+    #: `method == "email"`, so a send that could not be attempted is
+    #: distinguishable from one that was.
+    email_code_sent: bool = False
 
 
 class TwoFactorConfirmRequest(BaseModel):
@@ -110,6 +154,8 @@ class TwoFactorConfirmResponse(BaseModel):
     """
 
     backup_codes: list[str]
+    #: §194 — what the user ended up enrolled with.
+    method: TwoFactorMethod = "totp"
     #: Present only when this completed a forced first login, in which case
     #: the user is now fully authenticated and these are their real tokens.
     #: Absent when an already-signed-in user enabled 2FA from settings —
@@ -138,7 +184,7 @@ class TwoFactorDisableResponse(BaseModel):
     #: Always False after this call. Returned rather than implied so a
     #: client can update its own state from the response instead of
     #: assuming the write landed.
-    totp_enabled: bool = False
+    two_factor_enabled: bool = False
 
 
 class TwoFactorBackupCodesResponse(BaseModel):

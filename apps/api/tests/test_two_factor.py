@@ -29,16 +29,25 @@ _VERIFY_PATCH = "apps.api.routers.auth.verify_password"
 _REQUIRE_2FA_PATCH = "apps.api.routers.auth.require_2fa_enabled"
 
 
-def _user(*, totp_enabled=False, secret=None, backup=None, email="u@example.com"):
+def _user(
+    *, two_factor_enabled=False, secret=None, backup=None, email="u@example.com",
+    method=None,
+):
     u = MagicMock()
     u.id = uuid.uuid4()
     u.email = email
     u.password_hash = "$2b$12$fake"
     u.status = UserStatus.active
     u.deleted_at = None
-    u.totp_enabled = totp_enabled
+    u.two_factor_enabled = two_factor_enabled
     u.totp_secret_encrypted = totp_service.encrypt_secret(secret) if secret else None
     u.backup_codes_hashed = backup
+    # §194 — set explicitly, never left as a MagicMock attribute: it is
+    # serialised against Literal["totp", "email"], so a stray mock object
+    # here fails the response rather than the assertion under test. An
+    # enrolled user always has one, which is the invariant confirm-setup and
+    # the migration's backfill both maintain.
+    u.two_factor_method = method or ("totp" if two_factor_enabled else None)
     return u
 
 
@@ -87,14 +96,14 @@ class TestNothingChangesUntilItIsTurnedOn:
     def test_no_user_starts_enrolled(self):
         from apps.api.models.user import User
 
-        assert str(User.__table__.c.totp_enabled.server_default.arg) == "false"
+        assert str(User.__table__.c.two_factor_enabled.server_default.arg) == "false"
 
 
 # ── the three branches of /auth/login ───────────────────────────────────────
 
 class TestLoginBranches:
     def test_an_enrolled_user_gets_a_pending_token_and_no_real_ones(self, client, mock_db):
-        resp = _login(client, mock_db, _user(totp_enabled=True), require_2fa=False)
+        resp = _login(client, mock_db, _user(two_factor_enabled=True), require_2fa=False)
 
         body = resp.json()
         assert body["requires_2fa"] is True
@@ -109,7 +118,7 @@ class TestLoginBranches:
     def test_enrolment_is_forced_not_refused_when_the_admin_turns_it_on(self, client, mock_db):
         """Locking everyone out the moment the switch flips would make the
         switch unusable."""
-        resp = _login(client, mock_db, _user(totp_enabled=False), require_2fa=True)
+        resp = _login(client, mock_db, _user(two_factor_enabled=False), require_2fa=True)
 
         body = resp.json()
         assert resp.status_code == 200
@@ -122,7 +131,7 @@ class TestLoginBranches:
     ):
         """Turning the instance-wide requirement off must not silently
         downgrade someone who chose 2FA for themselves."""
-        resp = _login(client, mock_db, _user(totp_enabled=True), require_2fa=False)
+        resp = _login(client, mock_db, _user(two_factor_enabled=True), require_2fa=False)
 
         assert resp.json()["requires_2fa"] is True
 
@@ -131,7 +140,7 @@ class TestLoginBranches:
         arm is one a careless client reads as undefined and treats as false
         by accident rather than by decision."""
         plain = _login(client, mock_db, _user(), require_2fa=False).json()
-        pending = _login(client, mock_db, _user(totp_enabled=True)).json()
+        pending = _login(client, mock_db, _user(two_factor_enabled=True)).json()
 
         assert plain["requires_2fa"] is False
         assert pending["requires_2fa"] is True
@@ -382,7 +391,7 @@ class TestVerifyLogin:
 
     def test_a_correct_totp_code_completes_the_login(self, client, mock_db):
         secret = totp_service.generate_totp_secret()
-        user = _user(totp_enabled=True, secret=secret)
+        user = _user(two_factor_enabled=True, secret=secret)
 
         resp = self._post(client, mock_db, user, pyotp.TOTP(secret).now())
 
@@ -391,7 +400,7 @@ class TestVerifyLogin:
 
     def test_a_wrong_code_is_401(self, client, mock_db):
         secret = totp_service.generate_totp_secret()
-        user = _user(totp_enabled=True, secret=secret)
+        user = _user(two_factor_enabled=True, secret=secret)
 
         with patch("apps.api.routers.auth.verify_2fa_email_code", return_value=(False, "")):
             resp = self._post(client, mock_db, user, "000000")
@@ -400,7 +409,7 @@ class TestVerifyLogin:
 
     def test_the_failure_does_not_say_WHICH_factor_failed(self, client, mock_db):
         """Saying so would confirm whether a fallback code had been sent."""
-        user = _user(totp_enabled=True, secret=totp_service.generate_totp_secret())
+        user = _user(two_factor_enabled=True, secret=totp_service.generate_totp_secret())
 
         with patch("apps.api.routers.auth.verify_2fa_email_code", return_value=(False, "")):
             resp = self._post(client, mock_db, user, "000000")
@@ -410,7 +419,7 @@ class TestVerifyLogin:
     def test_a_backup_code_completes_the_login_too(self, client, mock_db):
         codes = totp_service.generate_backup_codes()
         user = _user(
-            totp_enabled=True,
+            two_factor_enabled=True,
             secret=totp_service.generate_totp_secret(),
             backup=totp_service.hash_backup_codes(codes),
         )
@@ -424,7 +433,7 @@ class TestVerifyLogin:
     def test_a_spent_backup_code_is_persisted_as_spent(self, client, mock_db):
         codes = totp_service.generate_backup_codes()
         user = _user(
-            totp_enabled=True,
+            two_factor_enabled=True,
             secret=totp_service.generate_totp_secret(),
             backup=totp_service.hash_backup_codes(codes),
         )
@@ -436,7 +445,7 @@ class TestVerifyLogin:
         mock_db.commit.assert_called()
 
     def test_an_emailed_fallback_code_completes_the_login(self, client, mock_db):
-        user = _user(totp_enabled=True, secret=totp_service.generate_totp_secret())
+        user = _user(two_factor_enabled=True, secret=totp_service.generate_totp_secret())
 
         with patch("apps.api.routers.auth.verify_2fa_email_code", return_value=(True, "")):
             resp = self._post(client, mock_db, user, "123456")
@@ -449,14 +458,14 @@ class TestVerifyLogin:
         """A forced-setup pending token must go through confirm-setup, which
         actually enrols them. Otherwise 'enforcement on' would be satisfiable
         by anyone who never enrolled."""
-        user = _user(totp_enabled=False)
+        user = _user(two_factor_enabled=False)
 
         resp = self._post(client, mock_db, user, "123456")
 
         assert resp.status_code == 401
 
     def test_an_access_token_cannot_be_used_as_the_pending_token(self, client, mock_db):
-        user = _user(totp_enabled=True, secret=totp_service.generate_totp_secret())
+        user = _user(two_factor_enabled=True, secret=totp_service.generate_totp_secret())
 
         resp = self._post(
             client, mock_db, user, "123456", token=create_access_token(str(user.id))
@@ -466,7 +475,7 @@ class TestVerifyLogin:
 
     def test_a_deactivated_account_cannot_complete_a_login(self, client, mock_db):
         secret = totp_service.generate_totp_secret()
-        user = _user(totp_enabled=True, secret=secret)
+        user = _user(two_factor_enabled=True, secret=secret)
         user.status = UserStatus.deactivated
 
         resp = self._post(client, mock_db, user, pyotp.TOTP(secret).now())
@@ -490,7 +499,7 @@ class TestSetupAndConfirm:
 
         assert resp.status_code == 200
         assert user.totp_secret_encrypted is not None
-        assert user.totp_enabled is False
+        assert user.two_factor_enabled is False
 
     def test_setup_returns_everything_a_client_needs_to_draw_the_screen(
         self, client, mock_db
@@ -526,7 +535,7 @@ class TestSetupAndConfirm:
 
         body = resp.json()
         assert resp.status_code == 200
-        assert user.totp_enabled is True
+        assert user.two_factor_enabled is True
         assert len(body["backup_codes"]) == 10
         # Stored hashed, never readable again.
         assert all(c not in str(user.backup_codes_hashed) for c in body["backup_codes"])
@@ -560,7 +569,7 @@ class TestSetupAndConfirm:
         )
 
         assert resp.status_code == 401
-        assert user.totp_enabled is False
+        assert user.two_factor_enabled is False
 
     def test_confirm_accepts_ONLY_the_authenticator(self, client, mock_db):
         """A backup code proves nothing about whether the app the user just
@@ -581,7 +590,7 @@ class TestSetupAndConfirm:
         )
 
         assert resp.status_code == 401
-        assert user.totp_enabled is False
+        assert user.two_factor_enabled is False
 
     def test_confirming_without_ever_starting_setup_is_a_400(self, client, mock_db):
         user = _user()
@@ -601,7 +610,7 @@ class TestSetupAndConfirm:
 
 class TestEmailFallbackEndpoint:
     def test_it_sends_for_an_enrolled_user(self, client, mock_db):
-        user = _user(totp_enabled=True, secret=totp_service.generate_totp_secret())
+        user = _user(two_factor_enabled=True, secret=totp_service.generate_totp_secret())
         mock_db.first.return_value = user
 
         with patch("apps.api.routers.auth.store_2fa_email_code") as store, \
@@ -618,7 +627,7 @@ class TestEmailFallbackEndpoint:
     def test_it_says_the_same_thing_for_a_user_who_is_not_enrolled(self, client, mock_db):
         """Whether an account has 2FA is not something an unauthenticated
         caller learns from this endpoint."""
-        enrolled = _user(totp_enabled=True, secret=totp_service.generate_totp_secret())
+        enrolled = _user(two_factor_enabled=True, secret=totp_service.generate_totp_secret())
         mock_db.first.return_value = enrolled
         with patch("apps.api.routers.auth.store_2fa_email_code"), \
              patch("apps.api.routers.auth.send_task_safe"):
@@ -627,7 +636,7 @@ class TestEmailFallbackEndpoint:
                 json={"pending_token": create_2fa_pending_token(str(enrolled.id))},
             )
 
-        plain = _user(totp_enabled=False)
+        plain = _user(two_factor_enabled=False)
         mock_db.first.return_value = plain
         with patch("apps.api.routers.auth.store_2fa_email_code") as store:
             no = client.post(

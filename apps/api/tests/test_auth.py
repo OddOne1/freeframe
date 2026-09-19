@@ -32,12 +32,16 @@ def _mock_user(
     u.created_at = datetime.now(timezone.utc)
     u.deleted_at = None
     # §191 — explicit, because a MagicMock's attributes are all truthy: an
-    # unset `totp_enabled` would send every one of these tests down the
+    # unset `two_factor_enabled` would send every one of these tests down the
     # 2FA branch and make the plain-login assertions fail for a reason that
     # has nothing to do with what they test.
-    u.totp_enabled = False
+    u.two_factor_enabled = False
     u.totp_secret_encrypted = None
     u.backup_codes_hashed = None
+    # §194 — explicit for the same reason as the fields above: a MagicMock
+    # attribute is a truthy object, and this one is now validated against
+    # Literal["totp", "email"], so leaving it unset fails serialisation.
+    u.two_factor_method = None
     # And `require_2fa`, which is not a User field at all: this suite's
     # mock_db returns ONE object from every `.first()`, so the site-settings
     # lookup inside /auth/login gets this same stub. Without it that lookup

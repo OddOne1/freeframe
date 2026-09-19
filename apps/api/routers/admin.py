@@ -161,12 +161,13 @@ def admin_disable_two_factor(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    had_2fa = bool(user.totp_enabled)
+    had_2fa = bool(user.two_factor_enabled)
     # The same three fields the self-service path clears — a secret or a
     # stale code set left behind would outlive the enrolment it belonged to.
-    user.totp_enabled = False
+    user.two_factor_enabled = False
     user.totp_secret_encrypted = None
     user.backup_codes_hashed = None
+    user.two_factor_method = None  # §194 — cleared with the rest.
 
     db.add(
         ActivityLog(
