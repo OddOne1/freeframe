@@ -177,10 +177,19 @@ async function main() {
       // hideInterrupted with §105A: park an interrupted job — keep the
       // journal, stop the blocking modal. Distinct from
       // discardInterruptedUpload, which deletes it.
+      // `platform` predates §198 (it arrived with §190's byte-unit
+      // formatting, which needs the host OS to pick 1000 vs 1024) and was
+      // never added here — so this allowlist has been failing on it since.
+      // Added rather than left, since the point of the list is to notice
+      // exactly this.
+      // The six freeframe*TwoFactor*/Backup channels with §198: completing
+      // a second factor at sign-in, and managing one from Settings. They
+      // carry a pending token and a 6-digit code — never a session token,
+      // which stays in main exactly as it always has.
       // This list is an allowlist, not a snapshot: it is here so a new
       // channel has to be a deliberate act rather than something that
       // arrives unnoticed.
-      bridge === "appInfo,bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearFinishedJobs,clearRecentFolders,dailyOverview,deletePreset,detachPanel,discardInterruptedUpload,dockPanel,ejectVolume,exportDailyOverview,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeStatus,freeframeUpload,getAlgorithms,getDisplayNames,getRecentFolders,getSettings,hideInterrupted,hideWebView,interruptedUploads,listJobs,listPresets,listVolumes,onAccountChanged,onCopyProgress,onDailyOverviewChanged,onJobsChanged,onPanelDockChanged,onPresetsChanged,onSettingsChanged,onSettingsTab,onVolumesChanged,openJobLog,openLogsFolder,openSettingsWindow,pathForFile,pauseCopy,previewNaming,reloadWebView,rememberFolder,removeJob,renamesFiles,resetDailyOverview,resumeCopy,savePreset,setDisplayName,setSettings,setSourceCounter,setWebViewInset,showWebView,startCopy,validateFolderPattern",
+      bridge === "appInfo,bumpSourceCounter,cancelCopy,chooseFolder,chooseSource,classifyPaths,clearFinishedJobs,clearRecentFolders,dailyOverview,deletePreset,detachPanel,discardInterruptedUpload,dockPanel,ejectVolume,exportDailyOverview,freeframeConfirmTwoFactorSetup,freeframeDisableTwoFactor,freeframeFolderTree,freeframeListAssets,freeframeLogin,freeframeLogout,freeframeProjects,freeframeRegenerateBackupCodes,freeframeSendTwoFactorEmailFallback,freeframeStatus,freeframeTwoFactorSetup,freeframeUpload,freeframeVerifyTwoFactor,getAlgorithms,getDisplayNames,getRecentFolders,getSettings,hideInterrupted,hideWebView,interruptedUploads,listJobs,listPresets,listVolumes,onAccountChanged,onCopyProgress,onDailyOverviewChanged,onJobsChanged,onPanelDockChanged,onPresetsChanged,onSettingsChanged,onSettingsTab,onVolumesChanged,openJobLog,openLogsFolder,openSettingsWindow,pathForFile,pauseCopy,platform,previewNaming,reloadWebView,rememberFolder,removeJob,renamesFiles,resetDailyOverview,resumeCopy,savePreset,setDisplayName,setSettings,setSourceCounter,setWebViewInset,showWebView,startCopy,validateFolderPattern",
       "contextBridge exposes exactly the intended API", bridge);
     check(await cdp.eval("typeof window.require") === "undefined", "no window.require");
     check(await cdp.eval("typeof window.process") === "undefined", "no window.process");

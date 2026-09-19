@@ -251,11 +251,239 @@ function setLoginError(msg) {
   box.classList.toggle("show", Boolean(msg));
 }
 
+// ── Two-factor (§198) ────────────────────────────────────────────────────
+//
+// One code-entry panel, driven by a promise-returning helper, serves every
+// place this app asks for a 6-digit code: the login challenge, confirming
+// an enrolment, and the three actions that weaken or replace a live
+// enrolment. The panels live in the account tab and take it over while
+// active — this window has no modal layer and does not need one.
+
+/** Hide the normal account blocks while a 2FA panel owns the tab. */
+function showAccountPanel(id) {
+  for (const el of ["account-signed-out", "account-signed-in", "tfa-choose", "tfa-prompt", "tfa-backup"]) {
+    $(el).hidden = true;
+  }
+  if (id) $(id).hidden = false;
+  else renderAccount();
+}
+
+/**
+ * Ask for a code. Resolves with the digits, or null if the user backs out.
+ *
+ * `qr`/`secret` are for the authenticator setup screen, which is the same
+ * question with a picture above it rather than a different screen.
+ * `extraLabel`/`onExtra` back the "resend" action an email-primary
+ * challenge needs.
+ */
+function promptForCode({ title, description, confirmLabel = "Confirm", qr = null, secret = null, error = "", extraLabel = null, onExtra = null }) {
+  return new Promise((resolve) => {
+    $("tfa-prompt-title").textContent = title;
+    $("tfa-prompt-desc").textContent = description || "";
+    $("tfa-prompt-confirm").textContent = confirmLabel;
+    $("tfa-prompt-code").value = "";
+    const err = $("tfa-prompt-error");
+    err.textContent = error || "";
+    err.classList.toggle("show", Boolean(error));
+
+    const qrEl = $("tfa-prompt-qr");
+    qrEl.hidden = !qr;
+    if (qr) qrEl.src = qr;
+    const secretEl = $("tfa-prompt-secret");
+    secretEl.hidden = !secret;
+    if (secret) secretEl.textContent = `Can't scan? Enter this key: ${secret}`;
+
+    const extra = $("tfa-prompt-extra");
+    extra.hidden = !extraLabel;
+    if (extraLabel) extra.textContent = extraLabel;
+
+    showAccountPanel("tfa-prompt");
+    $("tfa-prompt-code").focus();
+
+    const done = (value) => {
+      $("tfa-prompt-confirm").removeEventListener("click", onConfirm);
+      $("tfa-prompt-cancel").removeEventListener("click", onCancel);
+      $("tfa-prompt-code").removeEventListener("keydown", onKey);
+      extra.removeEventListener("click", onExtraClick);
+      resolve(value);
+    };
+    const onConfirm = () => {
+      const code = $("tfa-prompt-code").value.replace(/\D/g, "");
+      if (code.length < 6) {
+        err.textContent = "Enter the 6-digit code";
+        err.classList.add("show");
+        return;
+      }
+      done(code);
+    };
+    const onCancel = () => done(null);
+    const onKey = (e) => { if (e.key === "Enter") onConfirm(); };
+    const onExtraClick = async () => {
+      if (!onExtra) return;
+      extra.disabled = true;
+      try {
+        const res = await onExtra();
+        err.textContent = res && res.ok === false ? res.error : "";
+        err.classList.toggle("show", Boolean(res && res.ok === false));
+        if (!res || res.ok !== false) {
+          $("tfa-prompt-desc").textContent = "We sent a new code. Check your inbox.";
+        }
+      } finally {
+        extra.disabled = false;
+      }
+    };
+
+    $("tfa-prompt-confirm").addEventListener("click", onConfirm);
+    $("tfa-prompt-cancel").addEventListener("click", onCancel);
+    $("tfa-prompt-code").addEventListener("keydown", onKey);
+    extra.addEventListener("click", onExtraClick);
+  });
+}
+
+/** TOTP or email. Resolves null if the user backs out. */
+function chooseTwoFactorMethod(title) {
+  return new Promise((resolve) => {
+    $("tfa-choose-title").textContent = title;
+    showAccountPanel("tfa-choose");
+    const done = (value) => {
+      $("tfa-pick-totp").removeEventListener("click", pickTotp);
+      $("tfa-pick-email").removeEventListener("click", pickEmail);
+      $("tfa-choose-cancel").removeEventListener("click", cancel);
+      resolve(value);
+    };
+    const pickTotp = () => done("totp");
+    const pickEmail = () => done("email");
+    const cancel = () => done(null);
+    $("tfa-pick-totp").addEventListener("click", pickTotp);
+    $("tfa-pick-email").addEventListener("click", pickEmail);
+    $("tfa-choose-cancel").addEventListener("click", cancel);
+  });
+}
+
+/**
+ * Show the codes and WAIT.
+ *
+ * The acknowledgement is the whole point: the codes are hashed server-side
+ * the instant they are issued, so a screen that advances on its own has
+ * destroyed them. Same rule the web app's enrolment enforces.
+ */
+function showBackupCodes(codes) {
+  return new Promise((resolve) => {
+    $("tfa-backup-codes").textContent = (codes || []).join("\n");
+    showAccountPanel("tfa-backup");
+    const done = () => {
+      $("tfa-backup-done").removeEventListener("click", done);
+      $("tfa-backup-copy").removeEventListener("click", copy);
+      resolve();
+    };
+    const copy = async () => {
+      try {
+        await navigator.clipboard.writeText((codes || []).join("\n"));
+        $("tfa-backup-copy").textContent = "Copied";
+      } catch {
+        /* a blocked clipboard is not worth blocking on — they are on screen */
+      }
+    };
+    $("tfa-backup-done").addEventListener("click", done);
+    $("tfa-backup-copy").addEventListener("click", copy);
+  });
+}
+
+/** Enrol, from a forced first login (pendingToken) or from Settings.
+ *  Returns true when the enrolment completed. */
+async function runTwoFactorEnrolment({ pendingToken = null, reauthCode = null } = {}) {
+  const method = await chooseTwoFactorMethod(
+    pendingToken ? "Set up two-factor sign-in" : "Two-factor authentication",
+  );
+  if (!method) { showAccountPanel(null); return false; }
+
+  const setup = await window.freeframe.freeframeTwoFactorSetup(pendingToken, method, reauthCode);
+  if (!setup || !setup.ok) {
+    showAccountPanel(null);
+    setTwoFactorError((setup && setup.error) || "Could not start setup.");
+    return false;
+  }
+
+  let error = "";
+  for (;;) {
+    const code = await promptForCode({
+      title: method === "totp" ? "Scan and confirm" : "Confirm your email",
+      description: method === "totp"
+        ? "Scan this with your authenticator app, then enter the 6-digit code it shows."
+        : (setup.emailCodeSent
+          ? "We sent a 6-digit code to your email address."
+          : "A code was already sent to your email address — check your inbox."),
+      confirmLabel: "Turn on two-factor",
+      qr: method === "totp" ? setup.qrCodeDataUri : null,
+      secret: method === "totp" ? setup.secret : null,
+      error,
+    });
+    if (!code) { showAccountPanel(null); return false; }
+
+    const res = await window.freeframe.freeframeConfirmTwoFactorSetup(pendingToken, code);
+    if (!res || !res.ok) { error = (res && res.error) || "Invalid code."; continue; }
+
+    await showBackupCodes(res.backupCodes);
+    return true;
+  }
+}
+
+/** Complete a login that stopped at the second factor. */
+async function runTwoFactorChallenge(challenge) {
+  if (challenge.setupRequired) {
+    // No method chosen yet — this account has never enrolled and the
+    // instance requires it, so enrolment IS the way through the gate.
+    return runTwoFactorEnrolment({ pendingToken: challenge.pendingToken });
+  }
+
+  const byEmail = challenge.method === "email";
+  let error = "";
+  for (;;) {
+    const code = await promptForCode({
+      title: byEmail ? "Check your email" : "Enter your code",
+      description: byEmail
+        ? (challenge.emailCodeSent
+          ? "We sent a 6-digit code to your email address."
+          : "Enter the 6-digit code sent to your email address.")
+        : "Open your authenticator app and enter the 6-digit code. A backup code works too.",
+      confirmLabel: "Verify",
+      error,
+      extraLabel: byEmail ? "Resend code" : null,
+      onExtra: byEmail
+        ? () => window.freeframe.freeframeSendTwoFactorEmailFallback(challenge.pendingToken)
+        : null,
+    });
+    if (!code) { showAccountPanel(null); return false; }
+
+    const res = await window.freeframe.freeframeVerifyTwoFactor(challenge.pendingToken, code);
+    if (!res || !res.ok) { error = (res && res.error) || "Invalid code."; continue; }
+    return true;
+  }
+}
+
+function setTwoFactorError(msg) {
+  const box = $("tfa-error");
+  box.textContent = msg || "";
+  box.classList.toggle("show", Boolean(msg));
+}
+
 function renderAccount() {
   const inn = ffStatus.loggedIn;
   $("account-signed-out").hidden = inn;
   $("account-signed-in").hidden = !inn;
   if (inn) {
+    // §197 put these on /auth/me, so they arrive with the user object and
+    // need no call of their own.
+    const on = Boolean(ffStatus.user?.two_factor_enabled);
+    const method = ffStatus.user?.two_factor_method;
+    $("tfa-state").textContent = on
+      ? `On, using ${method === "email" ? "email" : "an authenticator app"}. You'll be asked for a code each time you sign in.`
+      : "Off. A second step at sign-in means a stolen password is not enough on its own.";
+    $("tfa-enable").hidden = on;
+    $("tfa-change").hidden = !on;
+    $("tfa-regen").hidden = !on;
+    $("tfa-disable").hidden = !on;
+
     $("account-who").textContent =
       ffStatus.user?.name || ffStatus.user?.email || "Signed in";
     $("account-where").textContent = ffStatus.baseUrl || "";
@@ -290,7 +518,22 @@ $("ff-submit").addEventListener("click", async () => {
     if (!res || !res.ok) { setLoginError((res && res.error) || "Sign-in failed."); return; }
     // Never leave the password sitting in a live DOM node.
     $("ff-pass").value = "";
+
+    // §198 — the password was right but the login is not finished. Nothing
+    // was stored by main in this case, so there is no half-signed-in state
+    // to unwind: either the challenge completes or we are exactly where we
+    // started.
+    if (res.requiresTwoFactor) {
+      const done = await runTwoFactorChallenge(res);
+      if (!done) {
+        showAccountPanel(null);
+        setLoginError("Sign-in needs your second factor to finish.");
+        return;
+      }
+    }
+
     ffStatus = await window.freeframe.freeframeStatus();
+    showAccountPanel(null);
     renderAccount();
     await loadProjectsForHideList();
   } finally {
@@ -307,6 +550,64 @@ $("ff-logout").addEventListener("click", async () => {
   projects = [];
   renderAccount();
   renderHideList();
+});
+
+// Each of these three changes or removes what the account answers to, so
+// each asks for a current code first. "Change method" is the one that looks
+// harmless and is the most destructive — §194b makes the server refuse it
+// without proof, and this is the place a UI forgets to collect it.
+
+$("tfa-enable").addEventListener("click", async () => {
+  setTwoFactorError("");
+  const done = await runTwoFactorEnrolment({});
+  ffStatus = await window.freeframe.freeframeStatus();
+  showAccountPanel(null);
+  if (done) setTwoFactorError("");
+});
+
+$("tfa-change").addEventListener("click", async () => {
+  setTwoFactorError("");
+  const reauth = await promptForCode({
+    title: "Confirm it's you",
+    description: "Enter a code from your current second factor before setting up a new one. A backup code works too.",
+    confirmLabel: "Continue",
+  });
+  if (!reauth) { showAccountPanel(null); return; }
+  await runTwoFactorEnrolment({ reauthCode: reauth });
+  ffStatus = await window.freeframe.freeframeStatus();
+  showAccountPanel(null);
+});
+
+$("tfa-regen").addEventListener("click", async () => {
+  setTwoFactorError("");
+  const code = await promptForCode({
+    title: "Replace your backup codes",
+    description: "Enter a current code. Your existing backup codes stop working as soon as new ones are issued.",
+    confirmLabel: "Replace",
+  });
+  if (!code) { showAccountPanel(null); return; }
+  const res = await window.freeframe.freeframeRegenerateBackupCodes(code);
+  if (!res || !res.ok) {
+    showAccountPanel(null);
+    setTwoFactorError((res && res.error) || "Could not replace the codes.");
+    return;
+  }
+  await showBackupCodes(res.backupCodes);
+  showAccountPanel(null);
+});
+
+$("tfa-disable").addEventListener("click", async () => {
+  setTwoFactorError("");
+  const code = await promptForCode({
+    title: "Turn off two-factor authentication",
+    description: "Enter a code from your current second factor. A backup code works too.",
+    confirmLabel: "Turn off",
+  });
+  if (!code) { showAccountPanel(null); return; }
+  const res = await window.freeframe.freeframeDisableTwoFactor(code);
+  ffStatus = await window.freeframe.freeframeStatus();
+  showAccountPanel(null);
+  if (!res || !res.ok) setTwoFactorError((res && res.error) || "Could not turn it off.");
 });
 
 async function loadProjectsForHideList() {

@@ -182,6 +182,21 @@ contextBridge.exposeInMainWorld("freeframe", {
   freeframeLogin: (email, password, baseUrl) =>
     ipcRenderer.invoke("freeframe:login", { email, password, baseUrl }),
   freeframeLogout: () => ipcRenderer.invoke("freeframe:logout"),
+  // §198 — completing or setting up a second factor. Same plain-invoke
+  // shape as everything else here; the pending token is just a string the
+  // renderer carries between two calls, inert anywhere else.
+  freeframeVerifyTwoFactor: (pendingToken, code) =>
+    ipcRenderer.invoke("freeframe:2fa-verify-login", { pendingToken, code }),
+  freeframeSendTwoFactorEmailFallback: (pendingToken) =>
+    ipcRenderer.invoke("freeframe:2fa-send-email-fallback", { pendingToken }),
+  freeframeTwoFactorSetup: (pendingToken, method, reauthCode) =>
+    ipcRenderer.invoke("freeframe:2fa-setup", { pendingToken, method, reauthCode }),
+  freeframeConfirmTwoFactorSetup: (pendingToken, code) =>
+    ipcRenderer.invoke("freeframe:2fa-confirm-setup", { pendingToken, code }),
+  freeframeDisableTwoFactor: (code) =>
+    ipcRenderer.invoke("freeframe:2fa-disable", { code }),
+  freeframeRegenerateBackupCodes: (code) =>
+    ipcRenderer.invoke("freeframe:2fa-regenerate-backup-codes", { code }),
   /** §64 — login lives in the Settings window now, so every window learns
    *  about a sign-in or sign-out from main rather than from the form. */
   onAccountChanged: (cb) => ipcRenderer.on("account:changed", (_e, st) => cb(st)),

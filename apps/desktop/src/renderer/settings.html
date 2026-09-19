@@ -389,6 +389,75 @@
           A transfer is using this account right now — signing out would
           invalidate the token it is uploading with.
         </div>
+
+        <!-- §198 — self-service two-factor, mirroring what the web app's
+             profile settings offer, against the same endpoints. -->
+        <div class="setting-label" style="margin-top:16px">Two-factor authentication</div>
+        <div class="setting-sub" id="tfa-state"></div>
+        <div id="tfa-actions" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+          <button id="tfa-enable">Enable two-factor</button>
+          <button id="tfa-change" hidden>Change method</button>
+          <button id="tfa-regen" hidden>Regenerate backup codes</button>
+          <button id="tfa-disable" class="danger" hidden>Turn off</button>
+        </div>
+        <div class="login-error" id="tfa-error" role="alert"></div>
+      </div>
+
+      <!-- ── §198: shared two-factor panels ───────────────────────────────
+           One code-entry panel serves every place this app asks for a
+           6-digit code — the login challenge, confirming an enrolment, and
+           the three re-auth gated actions. Four hand-rolled copies is how
+           one of them ends up not clearing its error, or being the one that
+           forgets the gate it exists for; apps/web extracted
+           code-confirm-dialog.tsx for the identical reason. -->
+
+      <div class="setting" id="tfa-choose" hidden>
+        <div class="setting-label" id="tfa-choose-title">Set up two-factor sign-in</div>
+        <div class="setting-sub">Choose how you'd like to receive your sign-in codes.</div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <button id="tfa-pick-totp" class="primary">Authenticator app</button>
+          <button id="tfa-pick-email">Email</button>
+        </div>
+        <div class="setting-sub" style="margin-top:6px">
+          An authenticator app works without a network connection. Email sends
+          a code to your inbox each time you sign in.
+        </div>
+        <button id="tfa-choose-cancel" style="margin-top:10px">Cancel</button>
+      </div>
+
+      <div class="setting" id="tfa-prompt" hidden>
+        <div class="setting-label" id="tfa-prompt-title"></div>
+        <div class="setting-sub" id="tfa-prompt-desc"></div>
+        <img id="tfa-prompt-qr" alt="Two-factor setup QR code"
+             style="width:160px;height:160px;background:#fff;padding:8px;border-radius:6px;margin:10px 0"
+             hidden />
+        <div class="setting-sub" id="tfa-prompt-secret" hidden></div>
+        <div class="login-field" style="margin-top:8px">
+          <label for="tfa-prompt-code">6-digit code</label>
+          <input id="tfa-prompt-code" type="text" inputmode="numeric" maxlength="6"
+                 autocomplete="one-time-code" spellcheck="false" placeholder="000000" />
+        </div>
+        <div class="login-error" id="tfa-prompt-error" role="alert"></div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button id="tfa-prompt-confirm" class="primary">Confirm</button>
+          <button id="tfa-prompt-cancel">Cancel</button>
+          <button id="tfa-prompt-extra" hidden></button>
+        </div>
+      </div>
+
+      <div class="setting" id="tfa-backup" hidden>
+        <div class="setting-label">Save your backup codes</div>
+        <div class="setting-sub">
+          Each code works once, if you ever lose access to your second factor.
+          This is the only time they are shown.
+        </div>
+        <pre id="tfa-backup-codes"
+             style="margin:10px 0;padding:10px;border-radius:6px;background:var(--bg-primary);
+                    font-family:ui-monospace,monospace;font-size:12px;line-height:1.7"></pre>
+        <div style="display:flex;gap:6px">
+          <button id="tfa-backup-copy">Copy codes</button>
+          <button id="tfa-backup-done" class="primary">I&rsquo;ve saved these codes</button>
+        </div>
       </div>
     </section>
 

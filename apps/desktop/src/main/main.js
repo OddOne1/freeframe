@@ -790,6 +790,79 @@ ipcMain.handle("freeframe:login", async (_e, { email, password, baseUrl } = {}) 
   }
 });
 
+// ── Two-factor (§198) ────────────────────────────────────────────────────
+//
+// Thin wrappers, same shape as freeframe:login above: the client module
+// owns the protocol and the session, this layer only carries the result
+// across the contextBridge. `account:changed` is broadcast by whichever of
+// these actually CHANGES what freeframe.status() reports — a sign-in the
+// main window did not run (§64's reason for that broadcast existing), and
+// an enrolment or a disable, which change the user object the account tab
+// renders from.
+
+ipcMain.handle("freeframe:2fa-verify-login", async (_e, { pendingToken, code } = {}) => {
+  if (typeof pendingToken !== "string" || typeof code !== "string") {
+    return { ok: false, error: "A pending session and a code are required" };
+  }
+  try {
+    const res = await freeframe.verifyTwoFactorLogin({ pendingToken, code });
+    if (res && res.ok) broadcast("account:changed", freeframe.status());
+    return res;
+  } catch (err) {
+    return { ok: false, error: String(err.message || err) };
+  }
+});
+
+ipcMain.handle("freeframe:2fa-send-email-fallback", async (_e, { pendingToken } = {}) => {
+  try {
+    return await freeframe.sendTwoFactorEmailFallback({ pendingToken });
+  } catch (err) {
+    return { ok: false, error: String(err.message || err) };
+  }
+});
+
+ipcMain.handle("freeframe:2fa-setup", async (_e, { pendingToken, method, reauthCode } = {}) => {
+  try {
+    return await freeframe.setupTwoFactor({ pendingToken, method, reauthCode });
+  } catch (err) {
+    return { ok: false, error: String(err.message || err) };
+  }
+});
+
+ipcMain.handle("freeframe:2fa-confirm-setup", async (_e, { pendingToken, code } = {}) => {
+  if (typeof code !== "string") return { ok: false, error: "A code is required" };
+  try {
+    const res = await freeframe.confirmTwoFactorSetup({ pendingToken, code });
+    // Both cases change status(): one completes a login, the other flips
+    // this user's two_factor_enabled.
+    if (res && res.ok) broadcast("account:changed", freeframe.status());
+    return res;
+  } catch (err) {
+    return { ok: false, error: String(err.message || err) };
+  }
+});
+
+ipcMain.handle("freeframe:2fa-disable", async (_e, { code } = {}) => {
+  if (typeof code !== "string") return { ok: false, error: "A code is required" };
+  try {
+    const res = await freeframe.disableTwoFactor({ code });
+    if (res && res.ok) broadcast("account:changed", freeframe.status());
+    return res;
+  } catch (err) {
+    return { ok: false, error: String(err.message || err) };
+  }
+});
+
+ipcMain.handle("freeframe:2fa-regenerate-backup-codes", async (_e, { code } = {}) => {
+  if (typeof code !== "string") return { ok: false, error: "A code is required" };
+  try {
+    // No broadcast: new backup codes change nothing status() reports.
+    return await freeframe.regenerateBackupCodes({ code });
+  } catch (err) {
+    return { ok: false, error: String(err.message || err) };
+  }
+});
+
 // Logging out of the desktop app also destroys the embedded web view —
 // see webview.js's destroy() for why this direction is synced and the
 // other deliberately is not.

@@ -166,6 +166,45 @@ async function apiRequest(method, endpoint, body) {
 
 // ── Auth ─────────────────────────────────────────────────────────────────
 
+/**
+ * Everything that happens once a login is genuinely FINISHED (§198).
+ *
+ * ONE implementation, called by /auth/login, /auth/2fa/verify-login and
+ * the enrolment that completes a forced first login. That is not tidiness:
+ * this is the third surface in this series with the same fork, and the
+ * first two both grew two copies that drifted — the API collapsed them into
+ * `_login_outcome` (§193) and the web app into `handleLoginResponse`
+ * (§196). A second copy here is how one path forgets to persist the
+ * session, or forgets to fetch the user, and the symptom shows up a week
+ * later as "it signs me out when I restart".
+ */
+async function adoptSession(tokens, { fallbackEmail } = {}) {
+  state.accessToken = tokens.access_token;
+  state.refreshToken = tokens.refresh_token;
+
+  try {
+    state.user = await apiRequest("GET", "/auth/me");
+  } catch {
+    // §197 put two_factor_enabled/two_factor_method on this response, so
+    // the settings UI gets them for free — but only when the call lands.
+    // The fallback is deliberately minimal rather than invented.
+    if (fallbackEmail) state.user = { email: fallbackEmail };
+  }
+  await saveSession();
+  return { ok: true, user: state.user, needsPassword: Boolean(tokens.needs_password) };
+}
+
+/** Re-read the signed-in user, for actions that change what /auth/me says
+ *  about them (enrolling in 2FA from settings, turning it off). */
+async function refreshUser() {
+  try {
+    state.user = await apiRequest("GET", "/auth/me");
+    await saveSession();
+  } catch {
+    /* the action still succeeded; the cached user is just stale */
+  }
+}
+
 async function login({ email, password, baseUrl }) {
   if (baseUrl) state.baseUrl = baseUrl.replace(/\/+$/, "");
   const res = await rawRequest("POST", "/auth/login", { body: { email, password } });
@@ -173,16 +212,180 @@ async function login({ email, password, baseUrl }) {
     return { ok: false, error: await readError(res) };
   }
   const data = await res.json();
-  state.accessToken = data.access_token;
-  state.refreshToken = data.refresh_token;
+
+  // §198 — /auth/login answers 200 for BOTH a finished login and a second
+  // factor still outstanding (§191's TwoFactorRequiredResponse), so `res.ok`
+  // does not mean what this function used to assume. Unpacked blindly, a
+  // challenge set accessToken to undefined, PERSISTED that, and reported
+  // `{ ok: true }` — a false success that left the app claiming to be
+  // signed in with nothing behind it. Branch on the discriminator, never on
+  // whether a token happens to be present; same rule as apps/web (§196).
+  //
+  // Nothing is written to `state` and nothing is saved here: there is no
+  // session yet. The pending token is inert everywhere except the /auth/2fa
+  // endpoints, so handing it back to the caller grants nothing.
+  if (data && data.requires_2fa) {
+    return {
+      ok: true,
+      requiresTwoFactor: true,
+      setupRequired: Boolean(data.setup_required),
+      pendingToken: data.pending_token,
+      method: data.method || null,
+      emailCodeSent: Boolean(data.email_code_sent),
+    };
+  }
+
+  return adoptSession(data, { fallbackEmail: email });
+}
+
+// ── Two-factor (§198) ────────────────────────────────────────────────────
+//
+// `rawRequest` for the calls that carry a pending_token — there is no
+// session to authenticate with yet, by definition — and `apiRequest` for
+// the ones a signed-in user makes from Settings. Several endpoints accept
+// either, which is why the choice is made per call from what the caller
+// supplied rather than by having two functions each.
+
+/** Finish a login that stopped at the second factor. */
+async function verifyTwoFactorLogin({ pendingToken, code }) {
+  const res = await rawRequest("POST", "/auth/2fa/verify-login", {
+    body: { pending_token: pendingToken, code },
+  });
+  if (!res.ok) return { ok: false, error: await readError(res) };
+  return adoptSession(await res.json());
+}
+
+/**
+ * Mail a fresh code to an email-primary user mid-login.
+ *
+ * force=True server-side: reaching this IS the user saying the code they
+ * have did not arrive, so it replaces the outstanding one. Safe to call
+ * more than once.
+ */
+async function sendTwoFactorEmailFallback({ pendingToken } = {}) {
+  try {
+    if (pendingToken) {
+      const res = await rawRequest("POST", "/auth/2fa/send-email-fallback", {
+        body: { pending_token: pendingToken },
+      });
+      if (!res.ok) return { ok: false, error: await readError(res) };
+      return { ok: true };
+    }
+    await apiRequest("POST", "/auth/2fa/send-email-fallback", {});
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+
+/**
+ * Begin enrolment. Does NOT enable anything — confirm does.
+ *
+ * `reauthCode` is for the session-authenticated case where the user is
+ * ALREADY enrolled and is replacing their method: §194b makes the server
+ * refuse that without proof of the current factor, because starting a
+ * replacement decides what the account answers to next. Passed through
+ * rather than filtered here — the server owns the gate, this just must not
+ * make it unreachable.
+ */
+async function setupTwoFactor({ pendingToken, method = "totp", reauthCode } = {}) {
+  const body = { method };
+  if (pendingToken) body.pending_token = pendingToken;
+  if (reauthCode) body.reauth_code = reauthCode;
 
   try {
-    state.user = await apiRequest("GET", "/auth/me");
-  } catch {
-    state.user = { email };
+    let data;
+    if (pendingToken) {
+      const res = await rawRequest("POST", "/auth/2fa/setup", { body });
+      if (!res.ok) return { ok: false, error: await readError(res) };
+      data = await res.json();
+    } else {
+      data = await apiRequest("POST", "/auth/2fa/setup", body);
+    }
+    return {
+      ok: true,
+      method: data.method,
+      provisioningUri: data.provisioning_uri || null,
+      qrCodeDataUri: data.qr_code_data_uri || null,
+      secret: data.secret || null,
+      emailCodeSent: Boolean(data.email_code_sent),
+    };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
   }
-  await saveSession();
-  return { ok: true, user: state.user, needsPassword: Boolean(data.needs_password) };
+}
+
+/**
+ * Finish enrolment.
+ *
+ * Returns `backupCodes` — shown once, hashed server-side the instant they
+ * are issued, never retrievable again. The caller must not move past
+ * displaying them without an explicit acknowledgement.
+ *
+ * When this completed a FORCED first login the response carries real
+ * tokens, and they are adopted here, through the same tail as every other
+ * finished login. Deliberately NOT held back pending the UI's
+ * acknowledgement: holding them would mean either handing tokens to the
+ * renderer — which this whole module exists to avoid — or parking them in a
+ * half-adopted limbo where main and the UI disagree about whether the user
+ * is signed in. There is nothing to protect by waiting: the enrolment is
+ * already complete server-side by the time this returns, so the account is
+ * 2FA-on whether or not the user clicks. What the acknowledgement protects
+ * is the CODES, and what protects those is not advancing the screen — which
+ * the UI still enforces.
+ */
+async function confirmTwoFactorSetup({ pendingToken, code } = {}) {
+  const body = { code };
+  if (pendingToken) body.pending_token = pendingToken;
+
+  try {
+    let data;
+    if (pendingToken) {
+      const res = await rawRequest("POST", "/auth/2fa/confirm-setup", { body });
+      if (!res.ok) return { ok: false, error: await readError(res) };
+      data = await res.json();
+    } else {
+      data = await apiRequest("POST", "/auth/2fa/confirm-setup", body);
+    }
+
+    if (data.tokens) {
+      await adoptSession(data.tokens);
+    } else {
+      // Enrolled from an existing session: the tokens in hand are still
+      // valid, but what /auth/me says about this user just changed.
+      await refreshUser();
+    }
+
+    return {
+      ok: true,
+      backupCodes: data.backup_codes || [],
+      method: data.method,
+      loggedIn: Boolean(data.tokens),
+    };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+
+/** Turn 2FA off, having proved the caller still holds a second factor. */
+async function disableTwoFactor({ code } = {}) {
+  try {
+    const data = await apiRequest("POST", "/auth/2fa/disable", { code });
+    await refreshUser();
+    return { ok: true, twoFactorEnabled: Boolean(data && data.two_factor_enabled) };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+
+/** A fresh set of backup codes, shown once. The old set stops working. */
+async function regenerateBackupCodes({ code } = {}) {
+  try {
+    const data = await apiRequest("POST", "/auth/2fa/regenerate-backup-codes", { code });
+    return { ok: true, backupCodes: (data && data.backup_codes) || [] };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
 }
 
 function status() {
@@ -451,6 +654,13 @@ module.exports = {
   loadSession,
   clearSession,
   login,
+  adoptSession,
+  verifyTwoFactorLogin,
+  sendTwoFactorEmailFallback,
+  setupTwoFactor,
+  confirmTwoFactorSetup,
+  disableTwoFactor,
+  regenerateBackupCodes,
   status,
   refreshAccessToken,
   apiRequest,
