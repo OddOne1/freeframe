@@ -116,6 +116,37 @@ def client(mock_db):
 
 
 @pytest.fixture
+def staged_2fa_setup():
+    """In-memory stand-in for §194b's Redis enrolment staging.
+
+    A dict rather than a fakeredis: the three functions are the whole
+    contract between /auth/2fa/setup and /auth/2fa/confirm-setup, and
+    patching them keeps a test's assertions about what was staged readable
+    as a dict rather than as a JSON blob under a key prefix.
+
+    Yields the store itself, so a test can assert what setup staged and can
+    plant a staged enrolment for a confirm it does not want to run setup
+    for. Any test touching either endpoint needs this — without it the real
+    functions reach for a Redis that is not there.
+    """
+    store = {}
+
+    def _store(user_id, method, secret_encrypted):
+        store[str(user_id)] = {"method": method, "secret": secret_encrypted}
+
+    def _read(user_id):
+        return store.get(str(user_id))
+
+    def _clear(user_id):
+        store.pop(str(user_id), None)
+
+    with patch("apps.api.routers.auth.store_pending_2fa_setup", side_effect=_store), \
+         patch("apps.api.routers.auth.read_pending_2fa_setup", side_effect=_read), \
+         patch("apps.api.routers.auth.clear_pending_2fa_setup", side_effect=_clear):
+        yield store
+
+
+@pytest.fixture
 def test_user(mock_db):
     """A mock user for use in auth-dependent tests."""
     return _make_user()

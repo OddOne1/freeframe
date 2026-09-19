@@ -107,6 +107,22 @@ class TwoFactorSetupRequest(BaseModel):
     #: §194 — which second factor to enrol. Defaults to "totp", so every
     #: caller written before this field existed keeps working unchanged.
     method: TwoFactorMethod = "totp"
+    #: §194b — proof that the caller still holds the CURRENT second factor,
+    #: required only from a user who is already enrolled and is replacing
+    #: what they have. Same three accepted forms as TwoFactorReauthRequest
+    #: below, and for the same reason: re-enrolling fully replaces what "a
+    #: valid second factor" means for the account, which is the same class
+    #: of weakening action as turning it off.
+    #:
+    #: A field here rather than a second request model, because this is one
+    #: endpoint serving one operation in two situations — first enrolment
+    #: (pending token, nothing to protect yet) and re-enrolment (session,
+    #: a live factor to protect). Splitting the model would fork the body
+    #: by caller type for a difference the endpoint already decides from
+    #: the user's own state, and would leave two places to keep `method` in
+    #: step. Optional for exactly that reason: the forced-first-login path
+    #: has no current factor to prove and must not be asked for one.
+    reauth_code: Optional[str] = None
 
 
 class TwoFactorSetupResponse(BaseModel):

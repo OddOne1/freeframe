@@ -30,6 +30,7 @@ from ..services.redis_service import (
     MAGIC_CODE_EXPIRY_SECONDS,
     generate_2fa_email_code, store_2fa_email_code, verify_2fa_email_code,
     has_live_2fa_email_code, TWOFA_EMAIL_CODE_EXPIRY_SECONDS,
+    store_pending_2fa_setup, read_pending_2fa_setup, clear_pending_2fa_setup,
 )
 from ..services import totp_service
 from ..services.site_settings_service import require_2fa_enabled, instance_org_name
@@ -448,17 +449,35 @@ def setup_two_factor(
     by someone already signed in (session, no pending token). Both land
     here rather than in two near-identical endpoints.
 
-    The generated secret is stored encrypted immediately but
-    `two_factor_enabled` stays false until a real code confirms it. Storing it
-    now is what lets confirm-setup verify against the same secret the QR
-    code showed; leaving `two_factor_enabled` false is what stops an abandoned
+    The generated secret is staged encrypted, under a short TTL, and
+    `two_factor_enabled` is not touched here at all. Staging it is what lets
+    confirm-setup verify against the same secret the QR code showed;
+    promoting nothing until confirm succeeds is what stops an abandoned
     setup from locking the user out of their own account.
 
-    §194 — `method` picks which factor is being enrolled. It is recorded on
-    the user here, while 2FA is still off, for the same reason the secret
-    is: confirm-setup has to know which kind of code it is checking. The
-    alternative — the client naming the method again at confirm — would let
-    the two halves of one enrolment disagree about what was enrolled.
+    Both paths stage — the first enrolment as well as a replacement —
+    although only the replacement has live state to protect. One path is
+    the point: if confirm had to decide whether to read the candidate from
+    Redis or from the row, that decision would be the whole bug again,
+    just moved. Writing directly to an unenrolled row is not unsafe, it is
+    merely the last place still doing the thing this change exists to stop.
+    The cost is that a Redis loss between setup and confirm makes the user
+    start setup again — a clean 400 within a ten-minute window, in a flow
+    that already depends on Redis for the emailed code and the rate limits.
+
+    §194 — `method` picks which factor is being enrolled. confirm-setup has
+    to know which kind of code it is checking, and the alternative — the
+    client naming the method again at confirm — would let the two halves of
+    one enrolment disagree about what was enrolled. So the choice travels
+    with the staged setup (§194b) rather than being re-declared later.
+
+    §194b — this endpoint no longer writes to the user row at all. It used
+    to store the new secret and method immediately, which meant a single
+    call from an ALREADY-ENROLLED user destroyed the factor they were
+    actually using, before anything had proved the replacement worked:
+    `two_factor_enabled` stayed True throughout, so the account remained
+    gated on a factor nobody had ever confirmed. Now the candidate is
+    staged in Redis and promoted only by a successful confirm.
     """
     user = current_user
     if user is None:
@@ -467,15 +486,38 @@ def setup_two_factor(
         user = _user_from_pending(db, body.pending_token)
 
     method: TwoFactorMethod = body.method if body else "totp"
-    user.two_factor_method = method
+
+    if user.two_factor_enabled:
+        # §194b — replacing a live second factor is the same class of action
+        # as removing one: it decides what "a valid second factor" means for
+        # this account from here on. §192 already refuses removal on a bearer
+        # token alone, for the reason written into TwoFactorReauthRequest —
+        # a stolen session must not be able to strip the protection that
+        # exists because sessions get stolen. Starting a replacement was the
+        # one path still doing it for free, and it is the more dangerous of
+        # the two: it locks the owner out rather than merely letting them in.
+        #
+        # Gated on the user's STATE, not on how they reached this endpoint.
+        # An enrolled user holding a mid-login pending token is asked for the
+        # same proof a signed-in one is, so the pending token is not a way
+        # around the gate — and they can always produce it, being mid-login
+        # on that very factor.
+        #
+        # The same undifferentiated message every other 2FA failure uses.
+        if (
+            not body
+            or not body.reauth_code
+            or not _second_factor_matches(db, user, body.reauth_code)
+        ):
+            raise HTTPException(status_code=401, detail="Invalid code")
 
     if method == "email":
         # No secret is generated: an email enrolment has nothing to scan and
-        # nothing to keep. A secret already on the row is left alone rather
-        # than cleared here — it may still be this user's LIVE second factor,
-        # and this setup can still be abandoned. Confirm clears it, at the
-        # one moment the new enrolment actually takes effect.
-        db.commit()
+        # nothing to keep. Any secret already on the row is left untouched —
+        # it may still be this user's LIVE second factor, and this setup can
+        # still be abandoned. Confirm clears it, at the one moment the new
+        # enrolment actually takes effect.
+        store_pending_2fa_setup(str(user.id), "email", None)
         # Not forced: this endpoint has no rate-limit bucket of its own, and
         # the idempotency window is what bounds how much mail repeated calls
         # can send. A code already in the inbox still works, so re-sending
@@ -485,8 +527,9 @@ def setup_two_factor(
         )
 
     secret = totp_service.generate_totp_secret()
-    user.totp_secret_encrypted = totp_service.encrypt_secret(secret)
-    db.commit()
+    # Staged encrypted, in the same form the column holds, so promotion at
+    # confirm is a copy rather than a re-encryption.
+    store_pending_2fa_setup(str(user.id), "totp", totp_service.encrypt_secret(secret))
 
     uri = totp_service.totp_provisioning_uri(
         secret, user.email, issuer=instance_org_name(db)
@@ -524,10 +567,19 @@ def confirm_two_factor_setup(
         user = _user_from_pending(db, body.pending_token)
         forced_first_login = True
 
-    # §194 — whichever factor setup recorded is the one that has to prove
-    # itself. NULL means an enrolment started before this field existed,
-    # which could only have been TOTP.
-    method: TwoFactorMethod = user.two_factor_method or "totp"
+    # §194b — the candidate this confirms is the one setup staged, never the
+    # live row: the live row still holds whatever factor is currently in
+    # use, and reading the method or the secret from it is what made a
+    # re-enrolment destructive before it was confirmed.
+    #
+    # Nothing staged means setup was never started, or the window expired.
+    # Both are the same instruction to the caller, and the same 400 this
+    # endpoint has always answered when there was nothing to confirm.
+    staged = read_pending_2fa_setup(str(user.id))
+    if not staged:
+        raise HTTPException(status_code=400, detail="Start setup again")
+
+    method: TwoFactorMethod = staged["method"]
 
     if method == "email":
         # Only the code just mailed counts. A backup code would prove
@@ -543,7 +595,7 @@ def confirm_two_factor_setup(
         # a secret nobody remembers agreeing to.
         user.totp_secret_encrypted = None
     else:
-        secret = totp_service.decrypt_secret(user.totp_secret_encrypted)
+        secret = totp_service.decrypt_secret(staged.get("secret"))
         if not secret:
             raise HTTPException(status_code=400, detail="Start setup again")
 
@@ -553,14 +605,21 @@ def confirm_two_factor_setup(
         if not totp_service.verify_totp_code(secret, body.code):
             raise HTTPException(status_code=401, detail="Invalid code")
 
+        # Promoted only now — the first moment this authenticator is known
+        # to work. Until this line the user's previous secret, if any, is
+        # still the one the account answers to.
+        user.totp_secret_encrypted = staged["secret"]
+
     codes = totp_service.generate_backup_codes()
     user.backup_codes_hashed = totp_service.hash_backup_codes(codes)
     user.two_factor_enabled = True
-    # Written again rather than trusted from setup, so that an enrolled row
-    # always carries a method — the same invariant §194's migration
-    # backfilled for rows that predate the column.
     user.two_factor_method = method
     db.commit()
+    # After the commit, not before: a staged setup dropped ahead of a write
+    # that then failed would leave the user with nothing to confirm and no
+    # way to finish. A stale one costs nothing — it expires on its own, and
+    # a later setup replaces it.
+    clear_pending_2fa_setup(str(user.id))
 
     return TwoFactorConfirmResponse(
         backup_codes=codes,

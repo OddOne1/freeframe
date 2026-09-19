@@ -72,6 +72,19 @@ def _setup(client, mock_db, user, body):
     return resp, store, send
 
 
+def _stage(store, user, method, secret=None):
+    """What /auth/2fa/setup would have staged (§194b).
+
+    Confirm reads the method and the secret from the staging store rather
+    than from the user row, so a test that confirms without running setup
+    has to plant them here.
+    """
+    store[str(user.id)] = {
+        "method": method,
+        "secret": totp_service.encrypt_secret(secret) if secret else None,
+    }
+
+
 def _confirm(client, mock_db, user, code, *, email_code_ok=False):
     mock_db.first.return_value = user
     with patch(_VERIFY_EMAIL_CODE, return_value=(email_code_ok, "")):
@@ -171,28 +184,36 @@ class TestEnrolByEmail:
     def _body(self, user, **extra):
         return {"pending_token": create_2fa_pending_token(str(user.id)), **extra}
 
-    def test_setup_mails_a_code_and_generates_no_secret(self, client, mock_db):
+    def test_setup_mails_a_code_and_generates_no_secret(
+        self, client, mock_db, staged_2fa_setup
+    ):
         user = _user()
 
         resp, store, send = _setup(client, mock_db, user, self._body(user, method="email"))
 
         assert resp.status_code == 200
+        assert staged_2fa_setup[str(user.id)]["secret"] is None
         assert user.totp_secret_encrypted is None
         store.assert_called_once()
         send.assert_called_once()
         assert resp.json()["email_code_sent"] is True
 
-    def test_setup_records_the_choice_but_does_NOT_enable_2fa(self, client, mock_db):
-        """Same rule the TOTP path has followed since §191: an abandoned
-        setup must not lock someone out of their own account."""
+    def test_setup_stages_the_choice_and_leaves_the_row_alone(
+        self, client, mock_db, staged_2fa_setup
+    ):
+        """§194b — the choice is staged, not written. An abandoned setup
+        must leave the account exactly as it found it."""
         user = _user()
 
         _setup(client, mock_db, user, self._body(user, method="email"))
 
-        assert user.two_factor_method == "email"
+        assert staged_2fa_setup[str(user.id)]["method"] == "email"
+        assert user.two_factor_method is None
         assert user.two_factor_enabled is False
 
-    def test_setup_returns_no_totp_fields_to_draw(self, client, mock_db):
+    def test_setup_returns_no_totp_fields_to_draw(
+        self, client, mock_db, staged_2fa_setup
+    ):
         """There is nothing to scan, and a null provisioning_uri the client
         has to test for is why `method` is in the response at all."""
         user = _user()
@@ -204,7 +225,9 @@ class TestEnrolByEmail:
         assert body["qr_code_data_uri"] is None
         assert body["secret"] is None
 
-    def test_omitting_the_method_still_enrols_TOTP(self, client, mock_db):
+    def test_omitting_the_method_still_enrols_TOTP(
+        self, client, mock_db, staged_2fa_setup
+    ):
         """Every caller written before this field existed keeps working."""
         user = _user()
 
@@ -212,10 +235,13 @@ class TestEnrolByEmail:
 
         assert body["method"] == "totp"
         assert body["provisioning_uri"].startswith("otpauth://")
-        assert user.totp_secret_encrypted is not None
+        assert staged_2fa_setup[str(user.id)]["method"] == "totp"
 
-    def test_the_mailed_code_completes_enrolment(self, client, mock_db):
-        user = _user(method="email")
+    def test_the_mailed_code_completes_enrolment(
+        self, client, mock_db, staged_2fa_setup
+    ):
+        user = _user()
+        _stage(staged_2fa_setup, user, "email")
 
         resp = _confirm(client, mock_db, user, "123456", email_code_ok=True)
 
@@ -226,43 +252,55 @@ class TestEnrolByEmail:
         assert body["method"] == "email"
         assert len(body["backup_codes"]) == 10
 
-    def test_a_wrong_mailed_code_enables_nothing(self, client, mock_db):
-        user = _user(method="email")
+    def test_a_wrong_mailed_code_enables_nothing(
+        self, client, mock_db, staged_2fa_setup
+    ):
+        user = _user()
+        _stage(staged_2fa_setup, user, "email")
 
         resp = _confirm(client, mock_db, user, "000000", email_code_ok=False)
 
         assert resp.status_code == 401
         assert user.two_factor_enabled is False
 
-    def test_confirm_accepts_ONLY_the_mailed_code(self, client, mock_db):
+    def test_confirm_accepts_ONLY_the_mailed_code(
+        self, client, mock_db, staged_2fa_setup
+    ):
         """A backup code proves nothing about whether mail reaches this
         address, which is the one thing this step checks — the same rule the
         TOTP branch applies to its own factor."""
         codes = totp_service.generate_backup_codes()
-        user = _user(method="email", backup=totp_service.hash_backup_codes(codes))
+        user = _user(backup=totp_service.hash_backup_codes(codes))
+        _stage(staged_2fa_setup, user, "email")
 
         resp = _confirm(client, mock_db, user, codes[0], email_code_ok=False)
 
         assert resp.status_code == 401
         assert user.two_factor_enabled is False
 
-    def test_confirming_email_clears_a_leftover_authenticator(self, client, mock_db):
-        """An abandoned TOTP setup leaves a secret behind, and
+    def test_confirming_email_clears_a_leftover_authenticator(
+        self, client, mock_db, staged_2fa_setup
+    ):
+        """A previous TOTP enrolment leaves a secret on the row, and
         `_second_factor_matches` tries TOTP first — so without this, a user
-        whose second factor is email would keep a way in nobody remembers
-        agreeing to."""
-        user = _user(method="email", secret=totp_service.generate_totp_secret())
+        whose second factor is now email would keep a way in nobody
+        remembers agreeing to."""
+        user = _user(secret=totp_service.generate_totp_secret())
+        _stage(staged_2fa_setup, user, "email")
 
         _confirm(client, mock_db, user, "123456", email_code_ok=True)
 
         assert user.totp_secret_encrypted is None
 
-    def test_a_totp_enrolment_still_demands_the_authenticator(self, client, mock_db):
+    def test_a_totp_enrolment_still_demands_the_authenticator(
+        self, client, mock_db, staged_2fa_setup
+    ):
         """The regression that matters: the email branch must not become a
         second way to satisfy a TOTP enrolment. A valid emailed code is
         offered here and must be refused."""
         secret = totp_service.generate_totp_secret()
-        user = _user(method="totp", secret=secret)
+        user = _user()
+        _stage(staged_2fa_setup, user, "totp", secret)
 
         resp = _confirm(client, mock_db, user, "000000", email_code_ok=True)
 

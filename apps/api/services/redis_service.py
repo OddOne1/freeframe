@@ -1,3 +1,4 @@
+import json
 import redis
 import secrets
 from typing import Optional
@@ -114,6 +115,72 @@ def has_live_2fa_email_code(email: str) -> bool:
     however many times the gate is hit.
     """
     return bool(get_redis().get(f"{TWOFA_EMAIL_CODE_PREFIX}{email.lower()}"))
+
+
+# ── 2FA enrolment staging (§194b) ────────────────────────────────────────
+#
+# A setup that has not been confirmed must not touch the user row. Writing
+# the new secret or method straight onto an ALREADY-ENROLLED user replaced
+# their working second factor before the replacement had proved it worked:
+# one stray call to /auth/2fa/setup, no confirm, and the owner is locked
+# out of an account that is still gated — now on a factor nobody has ever
+# used. The half-finished enrolment lives here instead, and only
+# confirm-setup promotes it into the database.
+#
+# Keyed by USER ID, unlike the code keys above, which are keyed by email:
+# this is state about one account's enrolment attempt rather than about an
+# address, and it must not be orphaned by an email change mid-flight.
+#
+# The secret is staged in exactly the form the column stores — encrypted.
+# Redis is a different trust boundary from Postgres, and that column is
+# encrypted precisely so a database dump does not yield working secrets;
+# staging the plaintext would hand out through the back door what the front
+# door encrypts.
+TWOFA_SETUP_PREFIX = "2fa_pending_setup:"
+#: Same ten minutes as the emailed code, which for an email enrolment is
+#: the binding constraint anyway — a staging window that outlived the code
+#: it is waiting for would only offer a confirm that cannot succeed.
+TWOFA_SETUP_EXPIRY_SECONDS = 600
+
+
+def store_pending_2fa_setup(
+    user_id: str, method: str, secret_encrypted: Optional[str]
+) -> None:
+    """Stage an enrolment that has not been confirmed yet (§194b).
+
+    Replaces any previous staged setup for this user: starting enrolment
+    again abandons whatever the last attempt offered, and two live
+    candidates would mean confirm-setup had to choose between them.
+    """
+    get_redis().setex(
+        f"{TWOFA_SETUP_PREFIX}{user_id}",
+        TWOFA_SETUP_EXPIRY_SECONDS,
+        json.dumps({"method": method, "secret": secret_encrypted}),
+    )
+
+
+def read_pending_2fa_setup(user_id: str) -> Optional[dict]:
+    """The staged enrolment, or None if there is none to confirm.
+
+    A malformed or unrecognised document reads as None rather than raising:
+    the caller's answer to "nothing staged" is already the right one —
+    start setup again — and a 500 would be a worse way to say it.
+    """
+    raw = get_redis().get(f"{TWOFA_SETUP_PREFIX}{user_id}")
+    if not raw:
+        return None
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(doc, dict) or doc.get("method") not in ("totp", "email"):
+        return None
+    return doc
+
+
+def clear_pending_2fa_setup(user_id: str) -> None:
+    """Drop a staged enrolment, once it has been promoted or abandoned."""
+    get_redis().delete(f"{TWOFA_SETUP_PREFIX}{user_id}")
 
 
 def verify_2fa_email_code(email: str, code: str) -> tuple[bool, str]:

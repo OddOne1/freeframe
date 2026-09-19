@@ -51,6 +51,19 @@ def _user(
     return u
 
 
+def _stage(store, user, secret, method="totp"):
+    """Plant what /auth/2fa/setup would have staged (§194b).
+
+    Confirm reads its candidate from the staging store, never from the user
+    row — that separation is the fix — so a test for confirm has to put it
+    there rather than on the fixture user.
+    """
+    store[str(user.id)] = {
+        "method": method,
+        "secret": totp_service.encrypt_secret(secret) if secret else None,
+    }
+
+
 def _login(client, mock_db, user, *, require_2fa=False):
     mock_db.first.return_value = user
     with patch(_VERIFY_PATCH, return_value=True), \
@@ -486,9 +499,12 @@ class TestVerifyLogin:
 # ── enrolment ───────────────────────────────────────────────────────────────
 
 class TestSetupAndConfirm:
-    def test_setup_stores_a_secret_but_does_NOT_enable_2fa(self, client, mock_db):
-        """An abandoned setup must not lock someone out of their own
-        account."""
+    def test_setup_stages_a_secret_and_writes_NOTHING_to_the_row(
+        self, client, mock_db, staged_2fa_setup
+    ):
+        """§194b — this used to assert the secret landed on the user. It
+        now asserts the opposite, because storing it there before anything
+        had confirmed it is what could destroy a live enrolment."""
         user = _user()
         mock_db.first.return_value = user
 
@@ -498,11 +514,12 @@ class TestSetupAndConfirm:
         )
 
         assert resp.status_code == 200
-        assert user.totp_secret_encrypted is not None
+        assert staged_2fa_setup[str(user.id)]["secret"] is not None
+        assert user.totp_secret_encrypted is None
         assert user.two_factor_enabled is False
 
     def test_setup_returns_everything_a_client_needs_to_draw_the_screen(
-        self, client, mock_db
+        self, client, mock_db, staged_2fa_setup
     ):
         user = _user()
         mock_db.first.return_value = user
@@ -520,9 +537,12 @@ class TestSetupAndConfirm:
         resp = client.post("/auth/2fa/setup", json={})
         assert resp.status_code == 401
 
-    def test_confirm_enables_2fa_and_returns_backup_codes_once(self, client, mock_db):
+    def test_confirm_enables_2fa_and_returns_backup_codes_once(
+        self, client, mock_db, staged_2fa_setup
+    ):
         secret = totp_service.generate_totp_secret()
-        user = _user(secret=secret)
+        user = _user()
+        _stage(staged_2fa_setup, user, secret)
         mock_db.first.return_value = user
 
         resp = client.post(
@@ -540,9 +560,12 @@ class TestSetupAndConfirm:
         # Stored hashed, never readable again.
         assert all(c not in str(user.backup_codes_hashed) for c in body["backup_codes"])
 
-    def test_confirm_via_a_forced_login_hands_back_real_tokens(self, client, mock_db):
+    def test_confirm_via_a_forced_login_hands_back_real_tokens(
+        self, client, mock_db, staged_2fa_setup
+    ):
         secret = totp_service.generate_totp_secret()
-        user = _user(secret=secret)
+        user = _user()
+        _stage(staged_2fa_setup, user, secret)
         mock_db.first.return_value = user
 
         body = client.post(
@@ -556,8 +579,9 @@ class TestSetupAndConfirm:
         assert body["tokens"] is not None
         assert body["tokens"]["access_token"]
 
-    def test_a_wrong_code_does_not_enable_2fa(self, client, mock_db):
-        user = _user(secret=totp_service.generate_totp_secret())
+    def test_a_wrong_code_does_not_enable_2fa(self, client, mock_db, staged_2fa_setup):
+        user = _user()
+        _stage(staged_2fa_setup, user, totp_service.generate_totp_secret())
         mock_db.first.return_value = user
 
         resp = client.post(
@@ -571,14 +595,14 @@ class TestSetupAndConfirm:
         assert resp.status_code == 401
         assert user.two_factor_enabled is False
 
-    def test_confirm_accepts_ONLY_the_authenticator(self, client, mock_db):
+    def test_confirm_accepts_ONLY_the_authenticator(
+        self, client, mock_db, staged_2fa_setup
+    ):
         """A backup code proves nothing about whether the app the user just
         configured actually works, which is the one thing this step checks."""
         codes = totp_service.generate_backup_codes()
-        user = _user(
-            secret=totp_service.generate_totp_secret(),
-            backup=totp_service.hash_backup_codes(codes),
-        )
+        user = _user(backup=totp_service.hash_backup_codes(codes))
+        _stage(staged_2fa_setup, user, totp_service.generate_totp_secret())
         mock_db.first.return_value = user
 
         resp = client.post(
@@ -592,9 +616,12 @@ class TestSetupAndConfirm:
         assert resp.status_code == 401
         assert user.two_factor_enabled is False
 
-    def test_confirming_without_ever_starting_setup_is_a_400(self, client, mock_db):
+    def test_confirming_without_ever_starting_setup_is_a_400(
+        self, client, mock_db, staged_2fa_setup
+    ):
+        """§194b — "nothing staged" is now what this means, and it covers
+        an expired staging window as well as a setup never started."""
         user = _user()
-        user.totp_secret_encrypted = None
         mock_db.first.return_value = user
 
         resp = client.post(
