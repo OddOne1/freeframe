@@ -3,12 +3,14 @@
 import * as React from 'react'
 import { ShieldCheck } from 'lucide-react'
 import { api, ApiError } from '@/lib/api'
+import { setTokens } from '@/lib/auth'
 import { useAuthStore } from '@/stores/auth-store'
 import { Button } from '@/components/ui/button'
 import { CodeInput, EMPTY_CODE } from '@/components/auth/code-input'
 import { BackupCodes } from '@/components/auth/backup-codes'
 import { CodeConfirmDialog } from '@/components/auth/code-confirm-dialog'
 import type {
+  AuthTokens,
   TwoFactorMethod,
   TwoFactorSetupResponse,
   TwoFactorConfirmResponse,
@@ -23,6 +25,21 @@ const METHOD_LABEL: Record<TwoFactorMethod, string> = {
 }
 
 type Stage = 'idle' | 'choose' | 'totp' | 'email' | 'backup'
+
+/**
+ * Swap in the replacement pair an action handed back (§199).
+ *
+ * Null-tolerant on purpose. Every §199 endpoint populates `tokens`, but
+ * typing it nullable and checking here means this component keeps working
+ * against an API that has not deployed the change yet — where the honest
+ * behaviour is "keep the tokens we have", not "store undefined". Storing
+ * undefined is exactly the bug §196 had to fix on the login screen, and
+ * `setTokens` would write the literal string.
+ */
+function adoptTokens(tokens: AuthTokens | null | undefined) {
+  if (!tokens?.access_token || !tokens?.refresh_token) return
+  setTokens(tokens.access_token, tokens.refresh_token)
+}
 
 /**
  * Self-service two-factor, for the profile settings page (§197).
@@ -118,6 +135,13 @@ export function TwoFactorSettings() {
       const res = await api.post<TwoFactorConfirmResponse>('/auth/2fa/confirm-setup', {
         code: value,
       })
+      // §199 — adopted BEFORE anything else this component does, including
+      // the /auth/me refetch on the way out of the backup-codes screen.
+      // Enrolling bumps token_version, so the tokens this tab is holding
+      // stopped working the moment that response was written; the next
+      // request would 401 and sign the user out of the enrolment they just
+      // completed.
+      adoptTokens(res.tokens)
       // Held, not redirected past: hashed server-side the moment they are
       // issued, so this screen is the only time they exist in readable form.
       setBackupCodes(res.backup_codes)
@@ -154,7 +178,10 @@ export function TwoFactorSettings() {
       return
     }
     if (reauthFor === 'disable') {
-      await api.post<TwoFactorDisableResponse>('/auth/2fa/disable', { code: value })
+      const res = await api.post<TwoFactorDisableResponse>('/auth/2fa/disable', {
+        code: value,
+      })
+      adoptTokens(res.tokens) // §199 — see confirmSetup
       setReauthFor(null)
       reset()
       await fetchUser()
@@ -166,6 +193,7 @@ export function TwoFactorSettings() {
         '/auth/2fa/regenerate-backup-codes',
         { code: value },
       )
+      adoptTokens(res.tokens) // §199 — see confirmSetup
       setReauthFor(null)
       setBackupCodes(res.backup_codes)
       setBackupReason('regenerate')

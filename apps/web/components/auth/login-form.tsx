@@ -14,6 +14,7 @@ import type {
   VerifyCodeResponse,
   AuthTokens,
   LoginResponse,
+  SetPasswordResponse,
   TwoFactorMethod,
   TwoFactorSetupResponse,
   TwoFactorConfirmResponse,
@@ -214,7 +215,13 @@ export function LoginForm() {
 
     setLoading(true)
     try {
-      const res = await api.post<AuthTokens>('/auth/set-password', {
+      // §199 — typed against what this endpoint actually returns. It was
+      // typed `AuthTokens` while the backend returned only a user, so
+      // `setTokens` stored the literal string "undefined" over the tokens
+      // the magic-code step had just set. The endpoint now returns a real
+      // pair (it has to: setting a password bumps token_version and ends
+      // the session that did it), so the fields this already read exist.
+      const res = await api.post<SetPasswordResponse>('/auth/set-password', {
         email,
         code: code.join(''),
         password,

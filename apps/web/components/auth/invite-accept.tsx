@@ -9,11 +9,25 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { AuthTokens, OrgRole } from '@/types'
 
+/**
+ * What GET /auth/invite/{token} actually returns.
+ *
+ * §199 — `org_name` is newly populated; it was declared on the backend's
+ * response model and never filled, so this card rendered an empty line
+ * where the instance name belongs.
+ *
+ * `inviter_name` and `role` were never on that endpoint AT ALL — not
+ * declared, not returned — and they cannot be: `users` has no `invited_by`
+ * column and the invite carries no role (roles are per-project in this app,
+ * and /users/invite does not take one). They are typed optional here so the
+ * card can omit the line rather than render "Invited by  as ". Adding them
+ * for real needs a schema change and is deliberately out of §199's scope.
+ */
 interface InviteDetails {
   email: string
-  org_name: string
-  inviter_name: string
-  role: OrgRole
+  org_name: string | null
+  inviter_name?: string | null
+  role?: OrgRole | null
 }
 
 interface InviteAcceptProps {
@@ -127,11 +141,17 @@ export function InviteAccept({ token }: InviteAcceptProps) {
       {invite && (
         <div className="mb-8 rounded-lg border border-border bg-bg-secondary p-4">
           <p className="text-xs text-text-tertiary uppercase tracking-wider mb-2">You&apos;ve been invited to</p>
-          <p className="text-base font-semibold text-text-primary mb-1">{invite.org_name}</p>
-          <p className="text-sm text-text-secondary">
-            Invited by <span className="text-text-primary">{invite.inviter_name}</span>{' '}
-            as <span className="capitalize text-text-primary">{invite.role}</span>
+          <p className="text-base font-semibold text-text-primary mb-1">
+            {invite.org_name || 'FreeFrame'}
           </p>
+          {invite.inviter_name && (
+            <p className="text-sm text-text-secondary">
+              Invited by <span className="text-text-primary">{invite.inviter_name}</span>
+              {invite.role && (
+                <> as <span className="capitalize text-text-primary">{invite.role}</span></>
+              )}
+            </p>
+          )}
           <p className="text-sm text-text-tertiary mt-1">{invite.email}</p>
         </div>
       )}

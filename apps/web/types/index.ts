@@ -887,16 +887,43 @@ export interface TwoFactorReauthRequest {
   code: string;
 }
 
+/**
+ * What POST /auth/set-password returns (§199).
+ *
+ * Everything /auth/me's User carries, plus a replacement token pair: setting
+ * or changing a password bumps `token_version`, which ends every session the
+ * user holds including the one that made the call.
+ *
+ * It also closes a mismatch that predates §199. `login-form.tsx` has always
+ * typed this response as `AuthTokens` and called `setTokens(res.access_token,
+ * res.refresh_token)` on it, while the endpoint returned only a user — so it
+ * wrote the literal string "undefined" over the tokens the magic-code step
+ * had set moments earlier. Those fields now genuinely exist.
+ */
+export interface SetPasswordResponse extends User {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+}
+
 export interface TwoFactorDisableResponse {
   /** Always false after the call. Returned rather than implied so a client
    *  updates from the response instead of assuming the write landed. */
   two_factor_enabled: boolean;
+  /** §199 — a replacement pair for the session that made this call.
+   *
+   *  Disabling 2FA bumps the user's `token_version`, which ends every
+   *  session they hold, including this one. Adopt these or the next request
+   *  this tab makes is a 401. */
+  tokens: AuthTokens | null;
 }
 
 export interface TwoFactorBackupCodesResponse {
   /** A fresh set, shown once. Replaces the previous set entirely — the old
    *  codes stop working the moment this returns. */
   backup_codes: string[];
+  /** §199 — see TwoFactorDisableResponse.tokens; identical reasoning. */
+  tokens: AuthTokens | null;
 }
 
 export interface TwoFactorConfirmResponse {
@@ -904,9 +931,11 @@ export interface TwoFactorConfirmResponse {
    *  so a screen that skips past them has destroyed them. */
   backup_codes: string[];
   method: TwoFactorMethod;
-  /** Non-null only when this completed a forced first login; an
-   *  already-signed-in user enrolling from settings keeps the tokens they
-   *  already hold. */
+  /** §199 — now populated on BOTH branches, not only a forced first login.
+   *  Confirming enrolment bumps `token_version`, so an already-signed-in
+   *  user's existing tokens are stale as of this response and these are the
+   *  replacements. Still typed nullable: a client that adopts them only when
+   *  present keeps working against an older API. */
   tokens: AuthTokens | null;
 }
 
@@ -1013,6 +1042,12 @@ export interface LutExportResponse {
 
 // ─── Email / SMTP settings (superadmin-only) ─────────────────────────────────
 
+/** How the SMTP connection is encrypted (§199). Three modes, because there
+ *  are three real arrangements — the boolean this supplements could only
+ *  express two, and read `false` as implicit TLS rather than as "no TLS",
+ *  which made a plaintext relay unreachable. */
+export type SmtpSecurity = 'starttls' | 'implicit_tls' | 'none'
+
 /** Mirrors EmailSettingsResponse in apps/api/schemas/email_settings.py.
  *  Note there are no password fields — secrets are reported only as
  *  `*_set` booleans and never sent to the client. */
@@ -1028,6 +1063,12 @@ export interface EmailSettingsResponse {
   smtp_user: string | null
   smtp_password_set: boolean
   smtp_use_tls: boolean | null
+  /** §199 — the STORED mode, or null when it has never been set explicitly. */
+  smtp_security: SmtpSecurity | null
+  /** And what would actually be used right now, after the env fallback and
+   *  the smtp_use_tls derivation. An empty stored value must not be read as
+   *  "no encryption" when the real answer is "STARTTLS, by default". */
+  effective_smtp_security: SmtpSecurity | null
   /** What's actually in effect once DB-over-env precedence is applied. */
   effective_provider: string | null
   effective_from_address: string | null
@@ -1047,6 +1088,7 @@ export interface EmailSettingsUpdate {
   smtp_user?: string | null
   smtp_password?: string
   smtp_use_tls?: boolean | null
+  smtp_security?: SmtpSecurity | null
   smtp_password_clear?: boolean
   aws_mail_secret_access_key_clear?: boolean
 }

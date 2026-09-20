@@ -40,6 +40,10 @@ def _user(*, two_factor_enabled=False, password_hash="$2b$12$fake", email="u@exa
         else None
     )
     u.backup_codes_hashed = None
+    # §199 — explicit for the same reason as the 2FA fields: every
+    # MagicMock attribute is truthy, and a mock one here lands inside a
+    # JWT payload, which cannot serialise it.
+    u.token_version = 0
     # §194 — explicit for the same reason as the fields above: validated
     # against Literal["totp", "email"] on the way out, so a MagicMock
     # attribute would fail serialisation.
@@ -253,7 +257,10 @@ class TestTheBranchIsActuallyShared:
             code = "\n".join(
                 l for l in body.split("\n") if not l.strip().startswith("#")
             )
-            assert "_login_outcome(db, user)" in code, fn.__name__
+            # Prefix match, not the exact call: §199 gave _login_outcome a
+            # keyword-only `via`, and verify_magic_code passes it. What this
+            # asserts is unchanged — both paths delegate to the one helper.
+            assert "_login_outcome(db, user" in code, fn.__name__
 
     def test_neither_builds_the_branch_itself(self):
         """The check above would still pass if one of them ALSO had its own

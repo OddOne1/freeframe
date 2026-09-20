@@ -24,6 +24,14 @@ class EmailSettingsResponse(BaseModel):
     smtp_user: Optional[str] = None
     smtp_password_set: bool = False
     smtp_use_tls: Optional[bool] = None
+    #: §199 — what is STORED ("starttls"/"implicit_tls"/"none", or null when
+    #: the mode has never been set explicitly).
+    smtp_security: Optional[str] = None
+    #: And what would actually be used right now, after the env fallback and
+    #: the smtp_use_tls derivation. Reported separately for the same reason
+    #: `effective_smtp_host` is: an empty box must not look like "no
+    #: encryption" when the answer is really "STARTTLS, by default".
+    effective_smtp_security: Optional[str] = None
 
     # What the service would actually use right now, after DB-over-env
     # precedence is applied. Lets the form show "currently smtp via
@@ -57,6 +65,10 @@ class EmailSettingsUpdate(BaseModel):
     smtp_user: Optional[str] = None
     smtp_password: Optional[str] = None
     smtp_use_tls: Optional[bool] = None
+    #: §199 — "starttls" | "implicit_tls" | "none". Validated in the router
+    #: rather than as a Literal here so an unknown value is a 400 naming the
+    #: three modes, not a schema error naming a type.
+    smtp_security: Optional[str] = None
 
     # Explicit opt-in to drop a stored secret and fall back to the env var.
     smtp_password_clear: bool = False

@@ -10,7 +10,7 @@ from ..schemas.auth import (
     RegisterRequest, LoginRequest, TokenResponse,
     RefreshRequest, UserResponse, InviteRequest,
     SendMagicCodeRequest, SendMagicCodeResponse,
-    VerifyMagicCodeRequest, SetPasswordRequest,
+    VerifyMagicCodeRequest, SetPasswordRequest, SetPasswordResponse,
     AcceptInviteRequest, InviteInfoResponse,
     LoginResponse, TwoFactorRequiredResponse, TwoFactorVerifyRequest,
     TwoFactorSetupRequest, TwoFactorSetupResponse,
@@ -22,7 +22,9 @@ from ..schemas.auth import (
 from ..services.auth_service import (
     hash_password, verify_password,
     create_access_token, create_refresh_token, decode_token,
-    create_2fa_pending_token, decode_2fa_pending_token,
+    create_2fa_pending_token, decode_2fa_pending_token, pending_token_via,
+    VIA_PASSWORD, VIA_MAGIC_CODE,
+    bump_token_version, token_version_of,
     get_user_by_email, get_user_by_id, split_full_name,
 )
 from ..services.redis_service import (
@@ -197,20 +199,44 @@ def verify_magic_code(body: VerifyMagicCodeRequest, db: Session = Depends(get_db
     # TokenResponse, which _login_outcome only produces once the second
     # factor is settled — so a caller stopped at the 2FA gate is never told
     # to go and create a password. See test_needs_password_is_deferred.
-    return _login_outcome(db, user)
+    #
+    # §199 — via=VIA_MAGIC_CODE: this login proved control of the MAILBOX,
+    # not knowledge of a password, and what may serve as the second factor
+    # depends on that distinction. See _login_outcome.
+    return _login_outcome(db, user, via=VIA_MAGIC_CODE)
 
 
-@router.post("/set-password", response_model=UserResponse)
+@router.post("/set-password", response_model=SetPasswordResponse)
 def set_password(
     body: SetPasswordRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Set password for authenticated user (after magic code verification)."""
+    """Set password for authenticated user (after magic code verification).
+
+    §199 — a password change ends every other session this user holds. That
+    is the single most expected thing about changing a password and it did
+    not happen before: a stolen laptop with a live session survived it, and
+    kept renewing itself for the whole refresh window.
+
+    The caller's OWN session is the one exception, and it is handled by
+    returning a fresh pair rather than by carving out an exception in the
+    bump — the device you are typing on should not be signed out by the act
+    of securing the account. See SetPasswordResponse for why the fields go
+    here rather than into a wrapper.
+    """
     current_user.password_hash = hash_password(body.password)
+    bump_token_version(current_user)
     db.commit()
     db.refresh(current_user)
-    return current_user
+    # Minted AFTER the commit and refresh, so they carry the version that is
+    # actually on the row — not the one this request read on the way in.
+    tokens = _issue_tokens(current_user)
+    return SetPasswordResponse(
+        **UserResponse.model_validate(current_user).model_dump(),
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+    )
 
 
 @router.get("/invite/{token}", response_model=InviteInfoResponse)
@@ -230,6 +256,15 @@ def get_invite_info(token: str, db: Session = Depends(get_db)):
     return InviteInfoResponse(
         email=user.email,
         name=user.name,
+        # §199 — the response model has always carried this field and the
+        # endpoint never filled it, so `components/auth/invite-accept.tsx`
+        # rendered an empty line where the instance name belongs: "You've
+        # been invited to" followed by nothing.
+        #
+        # The same source /auth/2fa/setup already uses for the authenticator
+        # issuer, so a self-hosted install branded as something else says the
+        # same thing in both places rather than "FreeFrame" in one of them.
+        org_name=instance_org_name(db),
     )
 
 
@@ -253,13 +288,15 @@ def accept_invite(body: AcceptInviteRequest, db: Session = Depends(get_db)):
     user.status = UserStatus.active
     user.invite_token = None
     user.invite_token_expires_at = None
+    # §199 — this sets a password for the first time, and "a password was set
+    # or changed" is the simpler rule to state and to verify than one with a
+    # carve-out. There is no prior session to invalidate here (the account
+    # was pending_invite until this line), so in practice this is
+    # consistency rather than necessity.
+    bump_token_version(user)
     db.commit()
-    
-    return TokenResponse(
-        access_token=create_access_token(str(user.id)),
-        refresh_token=create_refresh_token(str(user.id)),
-        needs_password=False,
-    )
+
+    return _issue_tokens(user)
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -339,14 +376,21 @@ def _user_from_pending(db: Session, pending_token: str) -> User:
 
 
 def _issue_tokens(user: User) -> TokenResponse:
+    """A fresh pair stamped with this user's CURRENT token_version (§199).
+
+    Read at mint time rather than passed in, so a caller that has just
+    bumped the version cannot forget to hand over the new one — which would
+    issue a pair that is already stale.
+    """
+    version = user.token_version or 0
     return TokenResponse(
-        access_token=create_access_token(str(user.id)),
-        refresh_token=create_refresh_token(str(user.id)),
+        access_token=create_access_token(str(user.id), version),
+        refresh_token=create_refresh_token(str(user.id), version),
         needs_password=user.password_hash is None,
     )
 
 
-def _login_outcome(db: Session, user: User) -> LoginResponse:
+def _login_outcome(db: Session, user: User, *, via: str = VIA_PASSWORD) -> LoginResponse:
     """What a successful primary-credential check leads to (§193).
 
     ONE implementation, called by BOTH login paths. The password check in
@@ -370,6 +414,11 @@ def _login_outcome(db: Session, user: User) -> LoginResponse:
     An enrolled user is asked even when the instance-wide setting is off:
     turning the requirement off must not silently downgrade someone who
     chose 2FA for themselves.
+
+    §199 — `via` says WHICH primary credential got here, and it is not
+    decoration: it rides into the pending token so every later step of this
+    login can tell a password from a magic code. See VIA_PASSWORD in
+    services/auth_service.py for why that difference matters.
     """
     if user.two_factor_enabled:
         method: TwoFactorMethod = user.two_factor_method or "totp"
@@ -387,10 +436,22 @@ def _login_outcome(db: Session, user: User) -> LoginResponse:
         # Idempotent per TTL window (see _send_2fa_email_code), so repeated
         # hits on the gate neither spam the inbox nor invalidate a code the
         # person is already reading.
-        sent = _send_2fa_email_code(user) if method == "email" else False
+        #
+        # §199 — NOT sent when the primary credential was itself a magic
+        # code: that code came out of the same inbox, so mailing a second
+        # one there proves nothing new and turns two factors into one
+        # channel. Such a user completes with their authenticator or a
+        # backup code — which is exactly what backup codes are for — or
+        # signs in with their password instead.
+        email_factor_allowed = via != VIA_MAGIC_CODE
+        sent = (
+            _send_2fa_email_code(user)
+            if method == "email" and email_factor_allowed
+            else False
+        )
         return TwoFactorRequiredResponse(
             setup_required=False,
-            pending_token=create_2fa_pending_token(str(user.id)),
+            pending_token=create_2fa_pending_token(str(user.id), via=via),
             method=method,
             email_code_sent=sent,
         )
@@ -402,7 +463,7 @@ def _login_outcome(db: Session, user: User) -> LoginResponse:
         # enrolment screen exists for.
         return TwoFactorRequiredResponse(
             setup_required=True,
-            pending_token=create_2fa_pending_token(str(user.id)),
+            pending_token=create_2fa_pending_token(str(user.id), via=via),
         )
 
     return _issue_tokens(user)
@@ -439,7 +500,9 @@ def _send_2fa_email_code(user: User, *, force: bool = False) -> bool:
     return True
 
 
-def _second_factor_matches(db: Session, user: User, code: str) -> bool:
+def _second_factor_matches(
+    db: Session, user: User, code: str, *, allow_email_factor: bool = True
+) -> bool:
     """Whether `code` satisfies the second factor, by ANY of its three forms.
 
     Tried in order — authenticator, emailed fallback, backup code — because
@@ -449,14 +512,25 @@ def _second_factor_matches(db: Session, user: User, code: str) -> bool:
     A spent backup code is persisted here rather than by the caller: it is
     single-use, and a path that verified without consuming would turn a
     recovery code into a permanent password.
+
+    §199 — `allow_email_factor=False` drops the emailed form for a login
+    whose PRIMARY credential was itself a magic code. Refusing to send a
+    code on that path is most of the fix, but not all of it: an emailed 2FA
+    code from a recent password login stays live for its whole TTL window,
+    and without this an attacker holding only the mailbox could sign in with
+    a magic code and redeem that still-valid code as the second factor.
+    Default True, so the authenticated re-auth callers (§192's disable and
+    regenerate, §194b's replacement gate) are untouched — they have a
+    session, not a pending token, and no primary credential in question.
     """
     secret = totp_service.decrypt_secret(user.totp_secret_encrypted)
     if totp_service.verify_totp_code(secret, code):
         return True
 
-    ok, _ = verify_2fa_email_code(user.email, code.strip())
-    if ok:
-        return True
+    if allow_email_factor:
+        ok, _ = verify_2fa_email_code(user.email, code.strip())
+        if ok:
+            return True
 
     matched, remaining = totp_service.consume_backup_code(user.backup_codes_hashed, code)
     if matched:
@@ -483,7 +557,14 @@ def verify_two_factor_login(body: TwoFactorVerifyRequest, db: Session = Depends(
         # anyone who never enrolled.
         raise HTTPException(status_code=401, detail="Invalid code")
 
-    if not _second_factor_matches(db, user, body.code):
+    # §199 — an emailed code cannot complete a login that started with a
+    # magic code; see _second_factor_matches. TOTP and backup codes are
+    # unaffected on that path, and a password login is unaffected entirely.
+    email_factor_allowed = pending_token_via(body.pending_token) != VIA_MAGIC_CODE
+
+    if not _second_factor_matches(
+        db, user, body.code, allow_email_factor=email_factor_allowed
+    ):
         # One message for every failure: which factor was wrong is not the
         # caller's business, and saying so would confirm whether a fallback
         # code had been requested.
@@ -542,6 +623,28 @@ def setup_two_factor(
         user = _user_from_pending(db, body.pending_token)
 
     method: TwoFactorMethod = body.method if body else "totp"
+
+    # §199 — the same rule as /2fa/send-email-fallback, applied one step
+    # earlier. A user being forced into enrolment mid-login who got here WITH
+    # A MAGIC CODE must not enrol email as their second factor: they would
+    # finish the very next step by reading a confirmation code out of the
+    # mailbox that was already their first factor, and the account would be
+    # protected by one channel from then on. `current_user is None` is what
+    # identifies the mid-login case — a signed-in user choosing email in
+    # settings is a different situation and is left alone.
+    if (
+        method == "email"
+        and current_user is None
+        and pending_token_via(body.pending_token) == VIA_MAGIC_CODE
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "You signed in with an emailed code, so email cannot also be "
+                "your second factor. Set up an authenticator app, or sign in "
+                "with your password to choose email."
+            ),
+        )
 
     if user.two_factor_enabled:
         # §194b — replacing a live second factor is the same class of action
@@ -670,6 +773,11 @@ def confirm_two_factor_setup(
     user.backup_codes_hashed = totp_service.hash_backup_codes(codes)
     user.two_factor_enabled = True
     user.two_factor_method = method
+    # §199 — one bump covers both things this function does: a first
+    # enrolment and a method change through re-enrolment. Either one changes
+    # what a second factor means for this account from here on, so sessions
+    # opened under the old arrangement should not survive it.
+    bump_token_version(user)
     db.commit()
     # After the commit, not before: a staged setup dropped ahead of a write
     # that then failed would leave the user with nothing to confirm and no
@@ -680,9 +788,13 @@ def confirm_two_factor_setup(
     return TwoFactorConfirmResponse(
         backup_codes=codes,
         method=method,
-        # Only when this completed a forced login. An already-signed-in user
-        # holds working tokens already; re-issuing would be churn.
-        tokens=_issue_tokens(user) if forced_first_login else None,
+        # §199 — now populated for BOTH branches, not only the forced login.
+        # The old comment ("an already-signed-in user holds working tokens
+        # already") stopped being true the moment the bump above landed:
+        # that user's tokens were minted under the previous version and are
+        # stale as of this commit. They get a matching pair here for the same
+        # reason the forced-login branch always did.
+        tokens=_issue_tokens(user),
     )
 
 
@@ -721,6 +833,30 @@ def send_two_factor_email_fallback(
     user = current_user
     if user is None:
         user = _user_from_pending(db, body.pending_token)
+
+        # §199 — the mid-login case is the one that can collapse two factors
+        # into one. A caller who reached the gate WITH A MAGIC CODE has
+        # already proved control of this mailbox; mailing them the second
+        # factor there proves nothing further, and whoever can read the inbox
+        # then holds both halves of the login.
+        #
+        # Refused explicitly rather than silently dropped, unlike the
+        # not-enrolled case below: the caller holds a valid pending token for
+        # this very account, so there is nothing left to enumerate, and a
+        # cheerful 200 would leave a legitimate user watching an inbox that
+        # will never fill. They complete with their authenticator or a backup
+        # code, or sign in with their password instead — both are named in
+        # the message, because a dead end the user cannot get out of is worse
+        # than the risk it avoids.
+        if pending_token_via(body.pending_token) == VIA_MAGIC_CODE:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "You signed in with an emailed code, so a second emailed "
+                    "code would not be a second factor. Use your authenticator "
+                    "app or a backup code, or sign in with your password."
+                ),
+            )
 
     if user.two_factor_enabled:
         # force=True: reaching this endpoint IS the user saying the code they
@@ -771,8 +907,13 @@ def disable_two_factor(
     # disabled account would make a later re-enrolment look like it had
     # already picked one.
     current_user.two_factor_method = None
+    # §199 — removing the protection is exactly the moment other sessions
+    # should stop being trusted, not a moment to leave them running.
+    bump_token_version(current_user)
     db.commit()
-    return TwoFactorDisableResponse(two_factor_enabled=False)
+    return TwoFactorDisableResponse(
+        two_factor_enabled=False, tokens=_issue_tokens(current_user)
+    )
 
 
 @router.post("/2fa/regenerate-backup-codes", response_model=TwoFactorBackupCodesResponse)
@@ -799,8 +940,14 @@ def regenerate_backup_codes(
     codes = totp_service.generate_backup_codes()
     # Overwritten, never appended: the previous set stops working here.
     current_user.backup_codes_hashed = totp_service.hash_backup_codes(codes)
+    # §199 — the reason to regenerate is that the old set may have been seen
+    # by someone else, which is equally a reason not to trust whatever
+    # sessions exist under it.
+    bump_token_version(current_user)
     db.commit()
-    return TwoFactorBackupCodesResponse(backup_codes=codes)
+    return TwoFactorBackupCodesResponse(
+        backup_codes=codes, tokens=_issue_tokens(current_user)
+    )
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -811,11 +958,16 @@ def refresh_token(body: RefreshRequest, db: Session = Depends(get_db)):
     user = get_user_by_id(db, uuid.UUID(payload["sub"]))
     if not user or user.status == UserStatus.deactivated:
         raise HTTPException(status_code=401, detail="User not found")
-    return TokenResponse(
-        access_token=create_access_token(str(user.id)),
-        refresh_token=create_refresh_token(str(user.id)),
-        needs_password=user.password_hash is None,
-    )
+    # §199 — a flat rejection, and deliberately NOTHING else. The temptation
+    # here is to re-run _login_outcome so the caller gets whatever gate is
+    # current; that would be a second copy of the 2FA branch living inside
+    # refresh, which is precisely the duplication §193 was written to remove
+    # and §196/§198 then had to remove again on the client. The bump is what
+    # ends the session; re-establishing one is /auth/login's job, and it
+    # stays the only place that decides what a login requires.
+    if token_version_of(payload) != (user.token_version or 0):
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    return _issue_tokens(user)
 
 
 @router.get("/me", response_model=UserResponse)

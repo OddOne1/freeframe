@@ -23,7 +23,7 @@ from ..schemas.email_settings import (
     TestEmailResponse,
 )
 from ..services.secrets_service import encrypt_secret
-from ..services.email_config import resolve_mail_config
+from ..services.email_config import resolve_mail_config, SMTP_SECURITY_MODES
 from .users import require_admin
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,7 @@ PLAIN_FIELDS = (
     "smtp_port",
     "smtp_user",
     "smtp_use_tls",
+    "smtp_security",
 )
 
 
@@ -77,6 +78,8 @@ def _to_response(row: EmailSettings) -> EmailSettingsResponse:
         smtp_user=row.smtp_user,
         smtp_password_set=bool(row.smtp_password_encrypted),
         smtp_use_tls=row.smtp_use_tls,
+        smtp_security=row.smtp_security,
+        effective_smtp_security=effective.smtp_security,
         effective_provider=effective.provider,
         effective_from_address=effective.from_address,
         effective_smtp_host=effective.smtp_host,
@@ -112,6 +115,16 @@ def update_email_settings(
 
     if body.mail_provider is not None and body.mail_provider not in ("ses", "smtp"):
         raise HTTPException(status_code=400, detail="mail_provider must be 'ses' or 'smtp'")
+
+    # §199 — validated AFTER the write loop above, same as mail_provider
+    # right above it, so the two behave identically. An empty string has
+    # already become None there, which is the legitimate "clear this
+    # override" case and must not be rejected here.
+    if row.smtp_security is not None and row.smtp_security not in SMTP_SECURITY_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail="smtp_security must be one of: " + ", ".join(SMTP_SECURITY_MODES),
+        )
 
     # Secrets: only overwrite on a real non-empty value, or clear on the
     # explicit flag. A form that re-submits an empty password box must not

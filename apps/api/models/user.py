@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional
-from sqlalchemy import String, Enum, DateTime, JSON, BigInteger, Boolean, func
+from sqlalchemy import String, Enum, DateTime, JSON, BigInteger, Boolean, Integer, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 try:
@@ -95,6 +95,30 @@ class User(Base):
     #: on ShareLink: a short fixed-size list read and rewritten as a whole,
     #: never queried into.
     backup_codes_hashed: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+
+    # ── Session invalidation (§199) ─────────────────────────────────────────
+    #
+    #: Bumped whenever something changes what an ALREADY-SIGNED-IN session is
+    #: entitled to: 2FA enabled, disabled, reset by an admin, backup codes
+    #: regenerated, a password set or changed. Every access and refresh token
+    #: carries the value it was minted under as a `tv` claim, and both
+    #: get_current_user and /auth/refresh reject a token whose `tv` no longer
+    #: matches this column.
+    #:
+    #: Deactivation is NOT in that list and deliberately so — it was already
+    #: handled, because both of those places re-read `status` on every call.
+    #: What was missing is everything short of deactivation: turning 2FA off
+    #: and on again, or changing a password, left every open session alive
+    #: and renewing itself for the whole refresh window. A stolen laptop
+    #: survived both.
+    #:
+    #: A token with NO `tv` claim counts as 0, which is what makes this
+    #: deployable without logging anybody out: every session alive at
+    #: migration time is implicitly version 0, and so is every row.
+    token_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

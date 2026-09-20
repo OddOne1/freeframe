@@ -76,6 +76,12 @@ def _make_user(
     # enrolment.
     u.require_2fa = False
     u.invite_token = None
+    # §199 — explicit for the same reason as the 2FA fields above: every
+    # MagicMock attribute is a truthy object, and get_current_user now
+    # compares a token's `tv` claim against this. Left unset, no mock user
+    # could ever authenticate.
+    u.token_version = 0
+    u.deleted_at = None
     return u
 
 
@@ -163,7 +169,7 @@ def auth_headers(client, mock_db, test_user):
     """
     from apps.api.services.auth_service import create_access_token, create_refresh_token
     # Directly generate a valid token for the test user
-    token = create_access_token(str(test_user.id))
+    token = create_access_token(str(test_user.id), test_user.token_version)
 
     # Make get_current_user resolve to test_user
     from apps.api.middleware.auth import get_current_user

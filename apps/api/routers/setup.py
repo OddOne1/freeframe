@@ -123,9 +123,13 @@ def create_superadmin(body: CreateSuperAdminRequest, db: Session = Depends(get_d
     db.commit()
     db.refresh(user)
     
-    # Generate tokens
-    access_token = create_access_token(str(user.id))
-    refresh_token = create_refresh_token(str(user.id))
+    # Generate tokens. §199 — a brand-new row, so its token_version is
+    # whatever the column default gave it (0). Read from the refreshed row
+    # rather than hardcoded, so this keeps agreeing with the model if that
+    # default ever changes.
+    version = user.token_version or 0
+    access_token = create_access_token(str(user.id), version)
+    refresh_token = create_refresh_token(str(user.id), version)
     
     return SetupCompleteResponse(
         message="Superadmin created successfully. You can now create organizations.",

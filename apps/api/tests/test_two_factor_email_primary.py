@@ -47,6 +47,10 @@ def _user(*, enabled=False, method=None, secret=None, backup=None):
     u.two_factor_method = method
     u.totp_secret_encrypted = totp_service.encrypt_secret(secret) if secret else None
     u.backup_codes_hashed = backup
+    # §199 — explicit for the same reason as the 2FA fields: every
+    # MagicMock attribute is truthy, and a mock one here lands inside a
+    # JWT payload, which cannot serialise it.
+    u.token_version = 0
     return u
 
 

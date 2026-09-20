@@ -53,6 +53,10 @@ def _enrolled(*, method="totp", secret=None, codes=None):
         totp_service.encrypt_secret(u._secret) if u._secret else None
     )
     u.backup_codes_hashed = totp_service.hash_backup_codes(codes) if codes else None
+    # §199 — explicit for the same reason as the 2FA fields: every
+    # MagicMock attribute is truthy, and a mock one here lands inside a
+    # JWT payload, which cannot serialise it.
+    u.token_version = 0
     return u
 
 
@@ -67,6 +71,8 @@ def _unenrolled():
     u.two_factor_method = None
     u.totp_secret_encrypted = None
     u.backup_codes_hashed = None
+    # §199 — same reason as _enrolled() above.
+    u.token_version = 0
     return u
 
 

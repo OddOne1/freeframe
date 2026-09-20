@@ -201,6 +201,15 @@ class TwoFactorDisableResponse(BaseModel):
     #: client can update its own state from the response instead of
     #: assuming the write landed.
     two_factor_enabled: bool = False
+    #: §199 — a replacement pair for the session that made this call.
+    #:
+    #: Disabling 2FA bumps `token_version`, which ends every session this
+    #: user holds — INCLUDING the one that just did it, whose token was
+    #: minted under the old version. Without these, "turn my 2FA off" would
+    #: silently log the user out one request later, which is worse than the
+    #: behaviour this change exists to fix, not better. The caller adopts
+    #: them exactly as it adopts a login's.
+    tokens: Optional[TokenResponse] = None
 
 
 class TwoFactorBackupCodesResponse(BaseModel):
@@ -213,6 +222,9 @@ class TwoFactorBackupCodesResponse(BaseModel):
     """
 
     backup_codes: list[str]
+    #: §199 — see TwoFactorDisableResponse.tokens; identical reasoning.
+    #: Regenerating backup codes bumps `token_version` too.
+    tokens: Optional[TokenResponse] = None
 
 
 class TwoFactorEmailFallbackResponse(BaseModel):
@@ -264,6 +276,32 @@ class UserResponse(BaseModel):
         believed.
         """
         return False if v is None else v
+
+
+class SetPasswordResponse(UserResponse):
+    """§199 — everything UserResponse carried, plus a replacement token pair.
+
+    Setting or changing a password bumps `token_version`, which ends every
+    session the user holds — including the one that made this call. So the
+    response has to hand back a working pair or "change my password" would
+    log the user out of the device they changed it on.
+
+    It also closes a mismatch that predates this change:
+    `components/auth/login-form.tsx`'s set-password step has always typed
+    this response as `AuthTokens` and called `setTokens(res.access_token,
+    res.refresh_token)` on it, while the endpoint returned a bare
+    UserResponse — so it stored the literal string "undefined" over the
+    tokens the magic-code step had just set moments earlier. The fields it
+    was already reading now genuinely exist.
+
+    A subclass rather than a wrapper object: every existing caller keeps
+    reading the same user fields off the top level, and the two new ones sit
+    exactly where that client already looked for them.
+    """
+
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
 
 
 class ContactUserResponse(BaseModel):

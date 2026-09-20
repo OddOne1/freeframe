@@ -56,6 +56,10 @@ def _enrolled(secret=None, codes=None, email="u@example.com"):
     u.two_factor_enabled = True
     u.totp_secret_encrypted = totp_service.encrypt_secret(secret)
     u.backup_codes_hashed = totp_service.hash_backup_codes(codes) if codes else None
+    # §199 — explicit for the same reason as the 2FA fields: every
+    # MagicMock attribute is truthy, and a mock one here lands inside a
+    # JWT payload, which cannot serialise it.
+    u.token_version = 0
     # §194 — an enrolled user always has one, and disable has to clear it
     # along with the secret and the codes.
     u.two_factor_method = "totp"

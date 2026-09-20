@@ -387,6 +387,30 @@ function TimezoneSection() {
 // -- that one is public (it serves login-page branding) and must never carry
 // mail credentials. See apps/api/routers/email_settings.py.
 
+type SmtpSecurity = "starttls" | "implicit_tls" | "none";
+
+/** The three real arrangements, named the way an admin would recognise them
+ *  rather than the way the column spells them (§199). The port each one
+ *  usually goes with is in the hint, because that is the thing people
+ *  actually get wrong. */
+const SMTP_SECURITY_OPTIONS: { value: SmtpSecurity; label: string; hint: string }[] = [
+  {
+    value: "starttls",
+    label: "STARTTLS",
+    hint: "Connects in the clear, then upgrades to TLS. Usually port 587. Correct for Microsoft 365, Gmail and most hosted relays.",
+  },
+  {
+    value: "implicit_tls",
+    label: "SSL/TLS (implicit)",
+    hint: "Encrypted from the first byte. Usually port 465.",
+  },
+  {
+    value: "none",
+    label: "None",
+    hint: "No encryption at all. Only for a relay on a network you trust — credentials and message bodies travel in the clear.",
+  },
+];
+
 function EmailSettingsSection() {
   const { settings, isLoading, update, sendTest } = useEmailSettings();
 
@@ -396,7 +420,11 @@ function EmailSettingsSection() {
   const [smtpHost, setSmtpHost] = React.useState("");
   const [smtpPort, setSmtpPort] = React.useState("");
   const [smtpUser, setSmtpUser] = React.useState("");
-  const [smtpUseTls, setSmtpUseTls] = React.useState(true);
+  // §199 — the checkbox this replaces could only say two things, and read
+  // "off" as implicit TLS rather than as no encryption, so a plaintext relay
+  // was unreachable. `smtpUseTls` is still sent alongside it so an older API
+  // (or a .env-only install) keeps behaving the same.
+  const [smtpSecurity, setSmtpSecurity] = React.useState<SmtpSecurity>("starttls");
   const [awsKeyId, setAwsKeyId] = React.useState("");
   const [awsRegion, setAwsRegion] = React.useState("");
 
@@ -423,7 +451,12 @@ function EmailSettingsSection() {
     setSmtpHost(settings.smtp_host ?? "");
     setSmtpPort(settings.smtp_port ? String(settings.smtp_port) : "");
     setSmtpUser(settings.smtp_user ?? "");
-    setSmtpUseTls(settings.smtp_use_tls ?? true);
+    // The EFFECTIVE mode, not the stored one: a never-configured install has
+    // no stored value, and showing an empty/"none" selector there would say
+    // "unencrypted" about a connection that is really STARTTLS by default.
+    setSmtpSecurity(
+      (settings.smtp_security ?? settings.effective_smtp_security ?? "starttls") as SmtpSecurity,
+    );
     setAwsKeyId(settings.aws_mail_access_key_id ?? "");
     setAwsRegion(settings.aws_mail_region ?? "");
     // Secret boxes intentionally not repopulated.
@@ -441,7 +474,10 @@ function EmailSettingsSection() {
         smtp_host: smtpHost,
         smtp_port: smtpPort.trim() ? parseInt(smtpPort, 10) : null,
         smtp_user: smtpUser,
-        smtp_use_tls: smtpUseTls,
+        smtp_security: smtpSecurity,
+        // Kept in sync so the legacy boolean never contradicts the mode —
+        // it is what .env.prod holds and what an older API would read.
+        smtp_use_tls: smtpSecurity === "starttls",
         aws_mail_access_key_id: awsKeyId,
         aws_mail_region: awsRegion,
         // Only sent when non-empty -- an untouched box leaves the stored
@@ -558,10 +594,26 @@ function EmailSettingsSection() {
               autoComplete="new-password"
             />
           </div>
-          <label className="col-span-2 flex items-center gap-2 text-xs text-text-secondary">
-            <input type="checkbox" checked={smtpUseTls} onChange={(e) => setSmtpUseTls(e.target.checked)} />
-            Use STARTTLS
-          </label>
+          <div className="col-span-2 space-y-1.5">
+            <label className="text-xs font-medium text-text-tertiary" htmlFor="smtp-security">
+              Encryption
+            </label>
+            <select
+              id="smtp-security"
+              className={inputClass}
+              value={smtpSecurity}
+              onChange={(e) => setSmtpSecurity(e.target.value as SmtpSecurity)}
+            >
+              {SMTP_SECURITY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-text-tertiary">
+              {SMTP_SECURITY_OPTIONS.find((o) => o.value === smtpSecurity)?.hint}
+            </p>
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3">

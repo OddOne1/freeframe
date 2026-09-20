@@ -82,5 +82,9 @@ class Settings(BaseSettings):
     smtp_user: str | None = None
     smtp_password: str | None = None
     smtp_use_tls: bool = True
+    # §199 — "starttls" | "implicit_tls" | "none". None (unset) means "derive
+    # it from smtp_use_tls", which is what keeps every existing .env.prod
+    # working untouched. See services/email_config.smtp_security_from.
+    smtp_security: str | None = None
 
 settings = Settings()

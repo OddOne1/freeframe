@@ -71,6 +71,10 @@ def _user(*, email="u@example.com", password_hash="$2b$12$fake", enrolled=False)
     u.two_factor_method = "totp" if enrolled else None
     u.totp_secret_encrypted = None
     u.backup_codes_hashed = None
+    # §199 — explicit for the same reason as the 2FA fields: every
+    # MagicMock attribute is truthy, and a mock one here lands inside a
+    # JWT payload, which cannot serialise it.
+    u.token_version = 0
     return u
 
 

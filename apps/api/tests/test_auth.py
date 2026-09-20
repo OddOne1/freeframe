@@ -38,6 +38,10 @@ def _mock_user(
     u.two_factor_enabled = False
     u.totp_secret_encrypted = None
     u.backup_codes_hashed = None
+    # §199 — explicit for the same reason as the 2FA fields: every
+    # MagicMock attribute is truthy, and a mock one here lands inside a
+    # JWT payload, which cannot serialise it.
+    u.token_version = 0
     # §194 — explicit for the same reason as the fields above: a MagicMock
     # attribute is a truthy object, and this one is now validated against
     # Literal["totp", "email"], so leaving it unset fails serialisation.
@@ -151,7 +155,7 @@ def test_refresh_token(client, mock_db):
     from apps.api.services.auth_service import create_refresh_token
 
     user = _mock_user("ref@example.com")
-    refresh = create_refresh_token(str(user.id))
+    refresh = create_refresh_token(str(user.id), 0)
     mock_db.first.return_value = user
 
     resp = client.post("/auth/refresh", json={"refresh_token": refresh})

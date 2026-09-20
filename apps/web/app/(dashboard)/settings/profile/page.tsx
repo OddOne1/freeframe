@@ -12,7 +12,12 @@ import { AvatarCropper } from '@/components/shared/avatar-cropper'
 import { setTokens } from '@/lib/auth'
 import { CodeInput, EMPTY_CODE } from '@/components/auth/code-input'
 import { TwoFactorSettings } from '@/components/auth/two-factor-settings'
-import type { LoginResponse, VerifyCodeResponse, TwoFactorMethod } from '@/types'
+import type {
+  LoginResponse,
+  SetPasswordResponse,
+  VerifyCodeResponse,
+  TwoFactorMethod,
+} from '@/types'
 
 export default function ProfilePage() {
   const { user, fetchUser, logout } = useAuthStore()
@@ -138,7 +143,18 @@ async function handleAvatarCropped(blob: Blob) {
    *  for a user with it. */
   async function finishPasswordChange(tokens: VerifyCodeResponse) {
     setTokens(tokens.access_token, tokens.refresh_token)
-    await api.post('/auth/set-password', { password: newPassword })
+    const res = await api.post<SetPasswordResponse>('/auth/set-password', {
+      password: newPassword,
+    })
+    // §199 — setting a password bumps token_version, which ends every
+    // session this user holds INCLUDING this tab's. The pair the response
+    // carries is the replacement; without adopting it, the next request from
+    // this page would 401 and the user would be signed out by the act of
+    // changing their own password. Guarded rather than unpacked blind — the
+    // §196 rule about not storing `undefined` over working tokens.
+    if (res?.access_token && res?.refresh_token) {
+      setTokens(res.access_token, res.refresh_token)
+    }
     setPwCodeDialogOpen(false)
     setPw2faDialogOpen(false)
     setPwCode(EMPTY_CODE)

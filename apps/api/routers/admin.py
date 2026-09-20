@@ -18,6 +18,7 @@ from ..schemas.auth import (
     PurgeUserPreviewResponse, PurgeUserOwnedProject, PurgeUserOwnerCandidate, PurgeUserRequest,
 )
 from ..schemas.project import ProjectUpdate, AdminProjectResponse, TransferOwnershipRequest
+from ..services.auth_service import bump_token_version
 from .hls_proxy import proxy_url_for
 from .projects import apply_poster_urls
 
@@ -168,6 +169,12 @@ def admin_disable_two_factor(
     user.totp_secret_encrypted = None
     user.backup_codes_hashed = None
     user.two_factor_method = None  # §194 — cleared with the rest.
+    # §199 — the TARGET's sessions, not the acting admin's. An admin reset
+    # happens because the user has lost every factor, which is exactly the
+    # situation where somebody else may be holding a live session on that
+    # account. Leaving those running would make the reset a formality. The
+    # admin's own token_version is untouched, so their session is unaffected.
+    bump_token_version(user)
 
     db.add(
         ActivityLog(

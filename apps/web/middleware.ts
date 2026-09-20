@@ -20,8 +20,19 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next()
   }
 
-  // Check if setup is needed — redirect to /setup if no superadmin exists
-  // Uses a cookie cache to avoid calling the API on every request
+  // Is this instance set up at all? Redirect to /setup if no superadmin
+  // exists. Cached in a cookie so the API is not asked on every request.
+  //
+  // §199 — a flag, not an early `return NextResponse.next()`. That early
+  // return was an AUTH BYPASS: on any request WITHOUT the cookie — every
+  // first request from a new browser, after a cookie clear, or after its
+  // 24h expiry — this branch answered `next()` and the token check below
+  // never ran at all. The API still refused the data, so nothing leaked,
+  // but a gate that lets people through on their first knock is not a gate.
+  // The cookie is now set on the response the auth check produces, so
+  // "remember that setup is done" and "is this request allowed" stay two
+  // separate decisions.
+  let markSetupDone = false
   const setupDone = request.cookies.get('ff_setup_done')?.value
   if (!setupDone) {
     try {
@@ -33,13 +44,11 @@ export async function middleware(request: NextRequest) {
         if (data.needs_setup) {
           return NextResponse.redirect(new URL('/setup', request.url))
         }
-        // Setup is done — set cookie so we don't check again
-        const response = NextResponse.next()
-        response.cookies.set('ff_setup_done', '1', { path: '/', maxAge: 60 * 60 * 24 }) // 24 hours
-        return response
+        markSetupDone = true
       }
     } catch {
-      // API unreachable — let the request through, the page will show errors
+      // API unreachable — fall through. The auth check below still applies,
+      // and the page surfaces the error rather than this pretending to know.
     }
   }
 
@@ -53,7 +62,12 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl)
   }
 
-  return NextResponse.next()
+  const response = NextResponse.next()
+  if (markSetupDone) {
+    // Setup is done — remember it so the API is not asked again
+    response.cookies.set('ff_setup_done', '1', { path: '/', maxAge: 60 * 60 * 24 }) // 24 hours
+  }
+  return response
 }
 
 export const config = {
