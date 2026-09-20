@@ -54,4 +54,24 @@ class SiteSettings(Base):
     require_2fa: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    #: When magic-code sign-in stops working for accounts that have no
+    #: password at all (§200).
+    #:
+    #: A SETTING rather than a date in the code, because the thing it
+    #: expresses is "thirty days after this instance deployed the change",
+    #: and that is a different day on every install. The migration fills it
+    #: with `now() + 30 days` on the instance it runs on; a self-hosted
+    #: operator who needs longer moves it, without a code change or a
+    #: redeploy.
+    #:
+    #: NULL means the window never closes. That is the right reading for a
+    #: fresh install whose site_settings row is created by the setup flow
+    #: rather than by the migration — locking a brand-new instance's first
+    #: users out of a route they have not had a chance to leave yet would be
+    #: a cutoff with nothing behind it.
+    #:
+    #: Read fresh per request, like `require_2fa` and `timezone` above.
+    password_required_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())

@@ -66,6 +66,23 @@ export interface User {
    *  older cached /auth/me response still validates. */
   two_factor_enabled?: boolean;
   two_factor_method?: TwoFactorMethod | null;
+  /** §200 — the onboarding gate, as /auth/me reports it.
+   *
+   *  Both are DERIVED server-side from the stored data, never from anything
+   *  this app remembers, which is why the gate can be trusted: it disappears
+   *  the moment the data is real and comes back if the data is cleared.
+   *  Rendering the gate from these is presentation only — every protected
+   *  route returns 403 `account_setup_required` on its own, so a client that
+   *  ignored them would simply be a client that cannot load anything.
+   *
+   *  Optional so an older cached /auth/me response still validates. Absent is
+   *  read as "not gated" at the call sites, matching the server's own
+   *  behaviour for a row that predates the columns. */
+  must_set_password?: boolean;
+  backup_email_state?: BackupEmailState;
+  /** The address itself, so the gate and settings can show what is on file.
+   *  Only ever returned to the account's own session. */
+  backup_email?: string | null;
 }
 
 export interface Team {
@@ -937,6 +954,64 @@ export interface TwoFactorConfirmResponse {
    *  replacements. Still typed nullable: a client that adopts them only when
    *  present keeps working against an older API. */
   tokens: AuthTokens | null;
+}
+
+// ─── Account security gate (§200) ─────────────────────────────────────────────
+
+/** Where this account stands on having a usable password-reset channel.
+ *
+ *  "missing"  — no backup address at all.
+ *  "pending"  — an address is stored but unproved. Still gated: a reset sent
+ *               to an address that may not exist is worse than none, because
+ *               it looks like a recovery path.
+ *  "verified" — a code sent to it came back. The only state in which anything
+ *               is ever mailed there. */
+export type BackupEmailState = 'missing' | 'pending' | 'verified';
+
+/** The detail string every protected route returns while the gate is up.
+ *
+ *  A stable token, not a sentence — `lib/api.ts` surfaces `detail` verbatim,
+ *  and comparing against prose is a translation bug waiting to happen. */
+export const ACCOUNT_SETUP_REQUIRED = 'account_setup_required';
+
+export interface BackupEmailResponse {
+  backup_email: string;
+  state: BackupEmailState;
+  /** True when this call actually sent a code. */
+  code_sent: boolean;
+  /** The backup address is on the same mail domain as the login address.
+   *  Accepted, but worth saying out loud — one admin with domain-wide access
+   *  can read both mailboxes, which is the thing the split exists to prevent.
+   *  The wording lives in the UI; the server only reports the fact. */
+  same_domain: boolean;
+}
+
+/** What GET /auth/password-policy serves. The NUMBERS live on the server;
+ *  `lib/password-policy.ts` holds a fallback copy only for the moment before
+ *  this arrives. */
+export interface PasswordPolicy {
+  min_length: number;
+  min_strength_score: number;
+  requires_upper: boolean;
+  requires_lower: boolean;
+  requires_digit: boolean;
+  requires_special: boolean;
+}
+
+/** The live meter's verdict. Advisory — see lib/password-policy.ts. */
+export interface PasswordStrength {
+  /** zxcvbn 0-4. */
+  score: number;
+  label: 'weak' | 'medium' | 'strong';
+  /** zxcvbn's own concrete finding, e.g. "This is similar to a commonly used
+   *  password". Empty when it has nothing specific to say. */
+  reason: string;
+  /** Everything the BROWSER can check passes. Not "valid": the common-password
+   *  blocklist and the personal-token rule exist only server-side, so a true
+   *  here still leaves a submission that can be refused. */
+  meetsPolicy: boolean;
+  /** Which character classes are still missing, in the server's own wording. */
+  missing: string[];
 }
 
 // ─── Site Settings ────────────────────────────────────────────────────────────

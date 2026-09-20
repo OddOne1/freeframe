@@ -1,0 +1,19 @@
+{% extends "email/base.html" %}
+{% block content %}
+<h2>{{ subject }}</h2>
+<p>
+  This is a security notice for the {{ org_name }} account
+  <strong>{{ account_email }}</strong>. {{ body_text }}
+</p>
+<p style="color:#DC2626;">
+  If this was not you, act now: whoever did it may still have access.
+</p>
+{% if contact_url %}
+<p><a href="{{ contact_url }}">Contact your System-Admin</a></p>
+{% endif %}
+<p class="muted">
+  You are receiving this at both your sign-in address and your password-reset
+  address, so that losing control of one of them does not also mean losing the
+  warning.
+</p>
+{% endblock %}

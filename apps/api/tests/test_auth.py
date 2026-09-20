@@ -80,7 +80,12 @@ def test_register_success(client, mock_db):
     with patch(_HASH_PATCH, return_value=_FAKE_HASH):
         resp = client.post(
             "/auth/register",
-            json={"email": "newuser@example.com", "name": "New User", "password": "securepassword"},
+            # §200 — "securepassword" no longer is one: twelve characters,
+            # but no upper case, no digit, no special character, and squarely
+            # in the common-password blocklist. Updated rather than exempted,
+            # because a registration test that could not pass the policy
+            # would be testing a route nobody can actually use.
+            json={"email": "newuser@example.com", "name": "New User", "password": "Wq7#vLm2$kPz"},
         )
 
     assert resp.status_code == 201

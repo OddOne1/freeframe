@@ -1,0 +1,15 @@
+{% extends "email/base.html" %}
+{% block content %}
+<h2>Confirm this address for password resets</h2>
+<p>
+  Someone added this address as the password-reset address for the
+  {{ org_name }} account <strong>{{ account_email }}</strong>. Enter the code
+  below on that screen to confirm it.
+</p>
+<div class="code">{{ code }}</div>
+<p class="muted">This code expires in {{ expiry_minutes }} minutes.</p>
+<p class="muted">
+  Nothing has changed yet. If you were not expecting this, you can ignore this
+  email — without the code, this address will not be used for anything.
+</p>
+{% endblock %}

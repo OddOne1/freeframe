@@ -32,6 +32,12 @@ from apps.api.models.user import User, UserGlobalRole, UserStatus
 from apps.api.services import totp_service
 from apps.api.services.auth_service import create_2fa_pending_token
 
+#: §200 — "a-real-password-1" has no upper-case letter, so the policy now
+#: refuses it. The recovery walk this file proves is unaffected; only the
+#: password it sets along the way had to become one the policy accepts.
+_POLICY_OK_PASSWORD = "Rv9%nDj4^wLe"
+
+
 _REQUIRE_2FA = "apps.api.routers.auth.require_2fa_enabled"
 _STORE_CODE = "apps.api.routers.auth.store_magic_code"
 #: §197 — password-reset codes live in their own Redis pool, so the reset
@@ -301,7 +307,7 @@ class TestAPasswordlessUserCanStillGetBackIn:
         # 4. Now they can set the password they never had.
         resp = client.post(
             "/auth/set-password",
-            json={"password": "a-real-password-1"},
+            json={"password": _POLICY_OK_PASSWORD},
             headers={"Authorization": f"Bearer {tokens['access_token']}"},
         )
         assert resp.status_code == 200
@@ -311,7 +317,7 @@ class TestAPasswordlessUserCanStillGetBackIn:
         with patch(_REQUIRE_2FA, return_value=True):
             login = client.post(
                 "/auth/login",
-                json={"email": user.email, "password": "a-real-password-1"},
+                json={"email": user.email, "password": _POLICY_OK_PASSWORD},
             ).json()
         assert login["requires_2fa"] is True
         assert login["setup_required"] is False

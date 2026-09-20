@@ -119,6 +119,42 @@ class User(Base):
         Integer, nullable=False, default=0, server_default="0"
     )
 
+    # ── Account security gate (§200) ────────────────────────────────────────
+    #
+    #: A SECOND address, used for exactly one thing: password resets. Nullable
+    #: because every row predates it — that is what the onboarding gate exists
+    #: to fill in.
+    #:
+    #: The whole point is channel separation. Before this, one mailbox was the
+    #: entire account: request a reset, set a new password, and then read the
+    #: 2FA code out of the same inbox. Two factors, one channel. Reset codes
+    #: now go ONLY here and 2FA codes go ONLY to `email`, with no fallback in
+    #: either direction — a fallback would re-merge exactly what this splits.
+    backup_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    #: When the address above was proved reachable, by a code sent to it.
+    #: NULL while an address is stored but unconfirmed, which is the "pending"
+    #: state the gate shows a code box for. An unverified address is never
+    #: used for anything — a reset to an address nobody has proved is a
+    #: mailbox is worse than no reset path at all.
+    backup_email_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: A superadmin's (or the shell script's) escape hatch from the gate.
+    #:
+    #: The gate is computed from stored data and never from a "seen" flag, so
+    #: it cannot simply be dismissed — which is right, and is also how a user
+    #: whose backup address is undeliverable would be locked out of the whole
+    #: app with no way to ask for help. This column is the deliberate,
+    #: server-side, audit-logged exception: set, and `gate_outstanding` reads
+    #: False for this user until they complete setup for real.
+    #:
+    #: Consulted ONLY while something is outstanding (see gate_outstanding),
+    #: so it can never mask a requirement that comes back later — it is a
+    #: waiver of the block, not of the requirement.
+    account_gate_waived_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -135,9 +171,94 @@ class User(Base):
             return f"{self.first_name} {self.last_name}"
         return self.last_name
 
+    # ── The onboarding gate, derived (§200) ─────────────────────────────────
+    #
+    # Properties rather than columns, deliberately. Both answers are already
+    # implied by the data; storing them as well would create a second truth
+    # that can disagree with the first, and the disagreement would be
+    # invisible — a user who HAS a password still being told to set one, or
+    # worse, a gate that stays satisfied after the data behind it is gone.
+    #
+    # `UserResponse.model_config["from_attributes"]` picks these up exactly
+    # like real columns, so /auth/me reports them with no extra plumbing.
+
+    @property
+    def must_set_password(self) -> bool:
+        """This account has no password at all."""
+        return self.password_hash is None
+
+    @property
+    def backup_email_state(self) -> str:
+        """"missing" | "pending" | "verified" — see `backup_email`."""
+        if not self.backup_email:
+            return "missing"
+        return "verified" if self.backup_email_verified_at else "pending"
+
+    @property
+    def account_setup_required(self) -> bool:
+        """Whether either half of the gate is still outstanding.
+
+        Deliberately ignores `account_gate_waived_at`: this is the question
+        "is this account's security setup finished", which a waiver does not
+        change. Whether the app should BLOCK is a different question — see
+        gate_outstanding — and keeping the two apart is what stops a waiver
+        from ever reading as "setup is done".
+        """
+        return self.must_set_password or self.backup_email_state != "verified"
+
+
+def gate_outstanding(user: User) -> bool:
+    """Whether this user should be blocked out of the app (§200).
+
+    The one place that combines the requirement with its waiver, so no
+    caller has to remember both halves. A function rather than a third
+    property, because the middleware, /auth/me and the tests all ask this
+    same question and a property would invite one of them to ask only
+    `account_setup_required` instead and quietly ignore the escape hatch.
+    """
+    if not user.account_setup_required:
+        return False
+    return user.account_gate_waived_at is None
+
 class GuestUser(Base):
     __tablename__ = "guest_users"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # ── Account security gate (§200) ────────────────────────────────────────
+    #
+    #: A SECOND address, used for exactly one thing: password resets. Nullable
+    #: because every row predates it — that is what the onboarding gate exists
+    #: to fill in.
+    #:
+    #: The whole point is channel separation. Before this, one mailbox was the
+    #: entire account: request a reset, set a new password, and then read the
+    #: 2FA code out of the same inbox. Two factors, one channel. Reset codes
+    #: now go ONLY here and 2FA codes go ONLY to `email`, with no fallback in
+    #: either direction — a fallback would re-merge exactly what this splits.
+    backup_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    #: When the address above was proved reachable, by a code sent to it.
+    #: NULL while an address is stored but unconfirmed, which is the "pending"
+    #: state the gate shows a code box for. An unverified address is never
+    #: used for anything — a reset to an address nobody has proved is a
+    #: mailbox is worse than no reset path at all.
+    backup_email_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: A superadmin's (or the shell script's) escape hatch from the gate.
+    #:
+    #: The gate is computed from stored data and never from a "seen" flag, so
+    #: it cannot simply be dismissed — which is right, and is also how a user
+    #: whose backup address is undeliverable would be locked out of the whole
+    #: app with no way to ask for help. This column is the deliberate,
+    #: server-side, audit-logged exception: set, and `gate_outstanding` reads
+    #: False for this user until they complete setup for real.
+    #:
+    #: Consulted ONLY while something is outstanding (see gate_outstanding),
+    #: so it can never mask a requirement that comes back later — it is a
+    #: waiver of the block, not of the requirement.
+    account_gate_waived_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

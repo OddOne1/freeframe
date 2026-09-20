@@ -133,6 +133,88 @@ def verify_password_reset_code(email: str, code: str) -> tuple[bool, str]:
     return True, ""
 
 
+# ── Backup-email verification codes (§200) ───────────────────────────────
+#
+# A FOURTH pool, and for the same reason as the third: these codes prove a
+# different thing from the other three, and sharing a slot with any of them
+# would let one overwrite or be redeemed for another.
+#
+# What this one proves is narrow and worth stating: that the address the user
+# just typed is a mailbox they can read. It is not a login credential and it
+# is not a second factor — redeeming it grants nothing except "this address
+# is confirmed". That is why it can afford a longer window than the other
+# three: fifteen minutes rather than ten, because a backup address is often a
+# personal account on a phone the person has to go and find, and an expired
+# code here costs a resend rather than a locked-out session.
+#
+# Keyed by the CANDIDATE ADDRESS, not by user id: two users may not share a
+# backup address today, but the thing being proved is a property of the
+# mailbox, and a key that survives the user changing their mind about which
+# address to use would let a code minted for one address confirm another.
+BACKUP_EMAIL_CODE_PREFIX = "backup_email_code:"
+BACKUP_EMAIL_ATTEMPTS_PREFIX = "backup_email_attempts:"
+BACKUP_EMAIL_CODE_EXPIRY_SECONDS = 900  # 15 minutes
+MAX_BACKUP_EMAIL_ATTEMPTS = 5
+
+
+def generate_backup_email_code() -> str:
+    """A 6-digit backup-address verification code."""
+    return str(secrets.randbelow(900000) + 100000)
+
+
+def store_backup_email_code(email: str, code: str) -> None:
+    r = get_redis()
+    r.setex(
+        f"{BACKUP_EMAIL_CODE_PREFIX}{email.lower()}",
+        BACKUP_EMAIL_CODE_EXPIRY_SECONDS,
+        code,
+    )
+    r.delete(f"{BACKUP_EMAIL_ATTEMPTS_PREFIX}{email.lower()}")
+
+
+def verify_backup_email_code(email: str, code: str) -> tuple[bool, str]:
+    """Verify a backup-address code. Returns (success, error_message).
+
+    Single use: consumed on success, exactly like its three twins. A code
+    that could be replayed would let one intercepted email confirm the same
+    address again after the user had changed it away.
+    """
+    r = get_redis()
+    key = f"{BACKUP_EMAIL_CODE_PREFIX}{email.lower()}"
+    attempts_key = f"{BACKUP_EMAIL_ATTEMPTS_PREFIX}{email.lower()}"
+
+    attempts = r.get(attempts_key)
+    if attempts and int(attempts) >= MAX_BACKUP_EMAIL_ATTEMPTS:
+        return False, "Too many attempts. Request a new code."
+
+    stored_code = r.get(key)
+    if not stored_code:
+        return False, "Code expired or not found"
+
+    if stored_code != code:
+        r.incr(attempts_key)
+        r.expire(attempts_key, BACKUP_EMAIL_CODE_EXPIRY_SECONDS)
+        return False, "Invalid code"
+
+    r.delete(key)
+    r.delete(attempts_key)
+    return True, ""
+
+
+def clear_backup_email_code(email: str) -> None:
+    """Drop an outstanding code for an address the user has moved away from.
+
+    Called when a pending backup address is replaced: leaving the old code
+    live would mean an email already sent to the abandoned address could
+    still be presented, and the verify endpoint checks the address currently
+    on the row — so the two would have to agree by luck rather than by
+    construction.
+    """
+    r = get_redis()
+    r.delete(f"{BACKUP_EMAIL_CODE_PREFIX}{email.lower()}")
+    r.delete(f"{BACKUP_EMAIL_ATTEMPTS_PREFIX}{email.lower()}")
+
+
 # ── 2FA email fallback (§191) ────────────────────────────────────────────
 #
 # Deliberately its OWN key prefix, not the magic-code one above. A person

@@ -12,10 +12,13 @@ import { AvatarCropper } from '@/components/shared/avatar-cropper'
 import { setTokens } from '@/lib/auth'
 import { CodeInput, EMPTY_CODE } from '@/components/auth/code-input'
 import { TwoFactorSettings } from '@/components/auth/two-factor-settings'
+import { PasswordField } from '@/components/auth/password-field'
+import { BackupEmailForm } from '@/components/auth/backup-email-form'
+import { Mail } from 'lucide-react'
 import type {
   LoginResponse,
   SetPasswordResponse,
-  VerifyCodeResponse,
+  PasswordStrength,
   TwoFactorMethod,
 } from '@/types'
 
@@ -30,6 +33,8 @@ export default function ProfilePage() {
 
   const [newPassword, setNewPassword] = React.useState('')
   const [confirmPassword, setConfirmPassword] = React.useState('')
+  const [passwordStrength, setPasswordStrength] =
+    React.useState<PasswordStrength | null>(null)
   const [isSavingPassword, setIsSavingPassword] = React.useState(false)
   const [passwordError, setPasswordError] = React.useState('')
   const [passwordSuccess, setPasswordSuccess] = React.useState(false)
@@ -39,8 +44,17 @@ export default function ProfilePage() {
   const [isVerifyingCode, setIsVerifyingCode] = React.useState(false)
   // §197 — a 2FA-enrolled user's emailed reset code does not, on its own,
   // produce a session (§193 gates it), so the password change has a second
-  // step for them. The pending token is the whole of what carries across it.
-  const [pwPendingToken, setPwPendingToken] = React.useState('')
+  // step for them.
+  //
+  // §200 — the pending token this used to carry is gone. The second factor is
+  // now presented to /auth/set-password, which this page can reach with the
+  // session it already has, so nothing has to survive the hop. What replaces
+  // it is this notice, because an email-primary user needs to be TOLD a code
+  // has been sent — the automatic send that happens at login deliberately
+  // does not happen on this path (§199: the primary credential here was a
+  // magic code, so mailing the second factor to the same inbox would prove
+  // nothing).
+  const [pw2faNotice, setPw2faNotice] = React.useState('')
   const [pw2faMethod, setPw2faMethod] = React.useState<TwoFactorMethod | null>(null)
   const [pw2faDialogOpen, setPw2faDialogOpen] = React.useState(false)
   const [pw2faCode, setPw2faCode] = React.useState<string[]>(EMPTY_CODE)
@@ -118,10 +132,11 @@ async function handleAvatarCropped(blob: Blob) {
   async function handlePasswordSave(e: React.FormEvent) {
     e.preventDefault()
     setPasswordError('')
-    if (newPassword.length < 8) {
-      setPasswordError('Password must be at least 8 characters')
-      return
-    }
+    // §200 — the old `length < 8` check is gone, not relaxed. It was the only
+    // password rule this app had and it was enforced in the browser only;
+    // PasswordField now shows the real rules live, and the server enforces
+    // them. Keeping a second, weaker copy here would just be a number that
+    // disagrees with both.
     if (newPassword !== confirmPassword) {
       setPasswordError('Passwords do not match')
       return
@@ -139,12 +154,23 @@ async function handleAvatarCropped(blob: Blob) {
   }
 
   /** Sets the password and clears the form. Shared by both routes into it —
-   *  straight through for a user without 2FA, and after the second factor
-   *  for a user with it. */
-  async function finishPasswordChange(tokens: VerifyCodeResponse) {
-    setTokens(tokens.access_token, tokens.refresh_token)
+   *  straight through for a user without 2FA, and with the second factor for
+   *  a user who has one.
+   *
+   *  §200 — `reauthCode` is the CHANGE-gate proof. Changing a password that
+   *  already exists now needs the current second factor, for the same reason
+   *  §192 gave for disabling 2FA: a stolen session must not be able to take
+   *  the account.
+   *
+   *  That is also why the enrolled path no longer calls
+   *  /auth/2fa/verify-login first. It used to spend the 2FA code converting
+   *  a pending token into a session this page ALREADY HAD, and the code was
+   *  consumed there — leaving nothing to present here. One code, spent once,
+   *  by the endpoint that actually needs it. */
+  async function finishPasswordChange(reauthCode?: string) {
     const res = await api.post<SetPasswordResponse>('/auth/set-password', {
       password: newPassword,
+      ...(reauthCode ? { reauth_code: reauthCode } : {}),
     })
     // §199 — setting a password bumps token_version, which ends every
     // session this user holds INCLUDING this tab's. The pair the response
@@ -159,7 +185,7 @@ async function handleAvatarCropped(blob: Blob) {
     setPw2faDialogOpen(false)
     setPwCode(EMPTY_CODE)
     setPw2faCode(EMPTY_CODE)
-    setPwPendingToken('')
+    setPw2faNotice('')
     setNewPassword('')
     setConfirmPassword('')
     setPasswordSuccess(true)
@@ -191,10 +217,11 @@ async function handleAvatarCropped(blob: Blob) {
       })
 
       if (res.requires_2fa) {
-        // Correct, not a failure: /auth/verify-magic-code hands back a real
-        // session, so an enrolled user still has to clear the second factor
-        // before one is issued. Nothing is stored until they do.
-        setPwPendingToken(res.pending_token)
+        // Correct, not a failure: an enrolled user still has a second factor
+        // to clear. The code goes to /auth/set-password (§200), not to
+        // /auth/2fa/verify-login — this page already holds a session, and
+        // spending the code to mint a second one would leave nothing to
+        // prove the change with.
         setPw2faMethod(res.method)
         setPwCode(EMPTY_CODE)
         setPw2faCode(EMPTY_CODE)
@@ -203,10 +230,31 @@ async function handleAvatarCropped(blob: Blob) {
         return
       }
 
-      await finishPasswordChange(res)
+      await finishPasswordChange()
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Invalid or expired code'
       setCodeError(message)
+    } finally {
+      setIsVerifyingCode(false)
+    }
+  }
+
+  /** Mail this user a one-time code, for the email-primary case.
+   *
+   *  §192's authenticated branch of /auth/2fa/send-email-fallback is what
+   *  makes this possible without a pending token: it accepts a SESSION, which
+   *  is exactly what this page has. Without it an email-primary user would
+   *  reach a code box with no way to obtain a code — the automatic send only
+   *  happens at login, and §199 deliberately suppresses even that one when
+   *  the primary credential was itself an emailed code. */
+  async function sendSecondFactorEmail() {
+    setCodeError('')
+    setIsVerifyingCode(true)
+    try {
+      await api.post('/auth/2fa/send-email-fallback', {})
+      setPw2faNotice(`We sent a code to ${user?.email ?? 'your sign-in address'}.`)
+    } catch (err: unknown) {
+      setCodeError(err instanceof Error ? err.message : 'Could not send a code')
     } finally {
       setIsVerifyingCode(false)
     }
@@ -221,11 +269,7 @@ async function handleAvatarCropped(blob: Blob) {
     }
     setIsVerifyingCode(true)
     try {
-      const res = await api.post<VerifyCodeResponse>('/auth/2fa/verify-login', {
-        pending_token: pwPendingToken,
-        code: entered,
-      })
-      await finishPasswordChange(res)
+      await finishPasswordChange(entered)
     } catch (err: unknown) {
       setCodeError(err instanceof Error ? err.message : 'Invalid code')
       setPw2faCode(EMPTY_CODE)
@@ -332,18 +376,56 @@ async function handleAvatarCropped(blob: Blob) {
         </h2>
 
         <form onSubmit={handlePasswordSave} className="space-y-4">
-          <div className="space-y-1.5">
-            <label htmlFor="newPassword" className="text-xs font-medium text-text-secondary">New Password</label>
-            <Input id="newPassword" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Min 8 characters" />
-          </div>
+          <PasswordField
+            id="newPassword"
+            label="New Password"
+            value={newPassword}
+            onChange={(v) => { setNewPassword(v); setPasswordError('') }}
+            userInputs={[
+              user?.email ?? '',
+              user?.name ?? '',
+              user?.backup_email ?? '',
+            ]}
+            onStrengthChange={setPasswordStrength}
+          />
           <div className="space-y-1.5">
             <label htmlFor="confirmPassword" className="text-xs font-medium text-text-secondary">Confirm New Password</label>
             <Input id="confirmPassword" type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="Repeat new password" />
           </div>
           {passwordError && <p className="text-xs text-status-error">{passwordError}</p>}
           {passwordSuccess && <p className="text-xs text-status-success">Password changed successfully.</p>}
-          <Button type="submit" variant="secondary" size="sm" loading={isSavingPassword}>Save Password</Button>
+          <Button
+            type="submit"
+            variant="secondary"
+            size="sm"
+            loading={isSavingPassword}
+            // What the browser can see. The server still decides — the
+            // blocklist and the "must not contain your own name" rule only
+            // exist there, so `passwordError` above renders a real refusal
+            // rather than a case this button prevents.
+            disabled={!passwordStrength?.meetsPolicy || !confirmPassword}
+          >
+            Save Password
+          </Button>
         </form>
+      </section>
+
+      {/* §200 — where password resets are delivered. Placed between the
+          password section and 2FA because that is the order it matters in:
+          it is the recovery channel for the thing directly above, and the
+          reason the thing directly below is a real second factor rather than
+          a second use of the same mailbox. */}
+      <section className="space-y-4">
+        <h2 className="flex items-center gap-2 border-b border-border pb-2 text-sm font-semibold text-text-primary">
+          <Mail className="h-4 w-4 text-text-tertiary" />
+          Password Reset Address
+        </h2>
+        <p className="text-xs leading-relaxed text-text-tertiary">
+          Password reset codes are sent here and nowhere else. Sign-in codes
+          go to {user?.email ?? 'your sign-in address'}. Keeping the two apart
+          is what stops one compromised mailbox from being the whole account.
+        </p>
+        {user && <BackupEmailForm user={user} onChanged={fetchUser} />}
       </section>
 
       <TwoFactorSettings />
@@ -402,9 +484,10 @@ async function handleAvatarCropped(blob: Blob) {
           <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary shadow-xl p-6">
             <Dialog.Title className="text-sm font-semibold text-text-primary">One more step</Dialog.Title>
             <Dialog.Description className="mt-1.5 text-sm text-text-tertiary leading-relaxed">
-              {pw2faMethod === 'email'
-                ? 'Enter the sign-in code we emailed you.'
-                : 'Enter the 6-digit code from your authenticator app.'}
+              {pw2faNotice ||
+                (pw2faMethod === 'email'
+                  ? 'Send yourself a code to confirm this change.'
+                  : 'Enter the 6-digit code from your authenticator app.')}
               {' '}A backup code works too.
             </Dialog.Description>
             <div className="mt-4 space-y-2">
@@ -418,6 +501,19 @@ async function handleAvatarCropped(blob: Blob) {
               {codeError && <p className="text-xs text-status-error">{codeError}</p>}
             </div>
             <div className="flex items-center justify-end gap-2 mt-5">
+              {/* Offered to everyone, not only email-primary users: §191's
+                  emailed fallback exists precisely for the TOTP user whose
+                  authenticator is not to hand, and hiding it behind the
+                  method would withhold it in the one situation it is for. */}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={sendSecondFactorEmail}
+                disabled={isVerifyingCode}
+                className="mr-auto"
+              >
+                Email me a code
+              </Button>
               <Button variant="secondary" size="sm" onClick={() => setPw2faDialogOpen(false)} disabled={isVerifyingCode}>Cancel</Button>
               <Button variant="primary" size="sm" onClick={() => handleConfirmSecondFactor()} loading={isVerifyingCode}>Confirm</Button>
             </div>

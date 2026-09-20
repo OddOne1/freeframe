@@ -38,6 +38,14 @@ from apps.api.services.auth_service import (
     decode_token,
 )
 
+
+#: §200 — every path that sets a password now runs the policy, and
+#: "hunter2hunter2" fails it (no upper case, no special character). What these
+#: tests are about is `token_version`, not password strength, so the value is
+#: simply updated to one the policy accepts.
+_POLICY_OK_PASSWORD = "Hx6$bKm3@qTw"
+
+
 _VERIFY_EMAIL_CODE = "apps.api.routers.auth.verify_2fa_email_code"
 
 
@@ -414,7 +422,7 @@ class TestSettingAPasswordEndsOtherSessions:
         user = as_user(_user(version=0))
         before = _snapshot(user)
 
-        resp = client.post("/auth/set-password", json={"password": "hunter2hunter2"})
+        resp = client.post("/auth/set-password", json={"password": _POLICY_OK_PASSWORD})
 
         assert resp.status_code == 200
         assert user.token_version == 1
@@ -437,7 +445,7 @@ class TestSettingAPasswordEndsOtherSessions:
         mock_db.first.return_value = user
 
         resp = client.post(
-            "/auth/accept-invite", json={"token": "tok", "password": "hunter2hunter2"}
+            "/auth/accept-invite", json={"token": "tok", "password": _POLICY_OK_PASSWORD}
         )
 
         assert resp.status_code == 200
@@ -494,7 +502,7 @@ class TestALoginStillWorksEndToEnd:
              patch("apps.api.routers.auth.require_2fa_enabled", return_value=False):
             resp = client.post(
                 "/auth/login",
-                json={"email": user.email, "password": "hunter2hunter2"},
+                json={"email": user.email, "password": _POLICY_OK_PASSWORD},
             )
 
         assert decode_token(resp.json()["access_token"])["tv"] == 5

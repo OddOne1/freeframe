@@ -103,6 +103,128 @@ def send_magic_code_email(self, to_email: str, code: str, expiry_minutes: int = 
         self.retry(exc=exc)
 
 
+#: §200 — what each security notice actually says, keyed by the action.
+#:
+#: A dict here rather than the sentence being passed in by the caller: these
+#: are user-facing copy, and copy that travels through a Celery argument ends
+#: up written slightly differently at each of the four call sites. The caller
+#: names the ACTION; this file owns the wording.
+#:
+#: An unknown key falls back to a deliberately vague sentence rather than
+#: raising — a notice that arrives saying less is far better than a security
+#: notice that does not arrive because someone added a fifth action and
+#: forgot this dict.
+SECURITY_NOTICE_BODIES = {
+    "password_changed": (
+        "The password on this account was changed. Every other signed-in "
+        "device was signed out."
+    ),
+    "backup_email_verified": (
+        "A password-reset address was confirmed for this account. Password "
+        "reset codes will be sent there from now on, and nowhere else."
+    ),
+    "two_factor_disabled": (
+        "Two-factor authentication was turned off on this account. Signing in "
+        "now needs only the password."
+    ),
+    "backup_codes_regenerated": (
+        "A new set of two-factor backup codes was generated for this account. "
+        "The previous set stopped working."
+    ),
+}
+
+
+@shared_task(bind=True, queue="email_high", max_retries=3, default_retry_delay=30)
+def send_backup_email_code_email(
+    self,
+    to_email: str,
+    code: str,
+    expiry_minutes: int,
+    account_email: str,
+    org_name: str = "FreeFrame",
+):
+    """Confirm a candidate password-reset address (§200).
+
+    Its own task and its own template rather than a fifth `purpose` on
+    send_magic_code_email, because it is the one code in this system that is
+    not a credential: it grants no session, satisfies no second factor, and
+    proves only that somebody can read this mailbox. The email says so —
+    "nothing has changed yet" — which is the honest thing to tell someone
+    who may be receiving it unexpectedly, and is the opposite of what the
+    reset and login templates say.
+
+    `account_email` is named in the body on purpose: this is sent to an
+    address that may have no other relationship to FreeFrame, and a bare
+    "here is your code" would be indistinguishable from phishing.
+    """
+    try:
+        subject = f"Confirm this address for {org_name} password resets: {code}"
+        html_body = render_template(
+            "email/backup_email_code.html",
+            subject=subject,
+            code=code,
+            expiry_minutes=expiry_minutes,
+            account_email=account_email,
+            org_name=org_name,
+        )
+        text_body = (
+            f"Someone added this address as the password-reset address for the "
+            f"{org_name} account {account_email}. Your confirmation code is: {code}. "
+            f"It expires in {expiry_minutes} minutes. Nothing has changed yet — "
+            f"if you were not expecting this, ignore this email."
+        )
+        success = _send_email(to_email, subject, html_body, text_body)
+        if not success:
+            raise Exception("Email sending failed")
+        return {"status": "sent", "to": to_email}
+    except Exception as exc:
+        self.retry(exc=exc)
+
+
+@shared_task(bind=True, queue="email_high", max_retries=3, default_retry_delay=30)
+def send_security_notice_email(
+    self,
+    to_email: str,
+    action: str,
+    subject: str,
+    account_email: str,
+    contact_url: Optional[str] = None,
+    org_name: str = "FreeFrame",
+):
+    """Tell one address that something security-relevant changed (§200).
+
+    Called once per recipient rather than taking a list, so one undeliverable
+    address cannot suppress the notice to the other — which is the entire
+    reason both are written to. Celery retries per task, and a retry storm
+    against a dead backup address must not also re-send to the good one.
+    """
+    try:
+        html_body = render_template(
+            "email/security_notice.html",
+            subject=subject,
+            body_text=SECURITY_NOTICE_BODIES.get(
+                action, "A security setting on this account was changed."
+            ),
+            account_email=account_email,
+            contact_url=contact_url or "",
+            org_name=org_name,
+        )
+        text_body = (
+            f"{subject}. This is a security notice for the {org_name} account "
+            f"{account_email}. "
+            + SECURITY_NOTICE_BODIES.get(
+                action, "A security setting on this account was changed."
+            )
+            + " If this was not you, contact your administrator right away."
+        )
+        success = _send_email(to_email, subject, html_body, text_body)
+        if not success:
+            raise Exception("Email sending failed")
+        return {"status": "sent", "to": to_email, "action": action}
+    except Exception as exc:
+        self.retry(exc=exc)
+
+
 @shared_task(bind=True, queue="email_high", max_retries=3, default_retry_delay=60)
 def send_invite_email(
     self,

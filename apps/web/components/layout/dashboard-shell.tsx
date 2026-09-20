@@ -9,6 +9,10 @@ import { Header } from "@/components/layout/header";
 import { CommandPalette } from "@/components/layout/command-palette";
 import { UploadsPanel } from "@/components/layout/uploads-panel";
 import { UploadSSEBridge } from "@/components/layout/upload-sse-bridge";
+import {
+  AccountSetupGate,
+  accountSetupOutstanding,
+} from "@/components/auth/account-setup-gate";
 import { cn } from "@/lib/utils";
 
 /**
@@ -26,8 +30,15 @@ export function DashboardShell({
   const pathname = usePathname();
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(true);
   const [commandOpen, setCommandOpen] = React.useState(false);
-  const { fetchUser } = useAuthStore();
+  const { fetchUser, user } = useAuthStore();
   const { fetchHistory } = useUploadStore();
+
+  // §200 — read from /auth/me, which computes it server-side from the stored
+  // data. This is presentation: middleware/account_gate.py already answers
+  // 403 to every protected route while it is true, so the purpose here is to
+  // show the person WHY nothing loads and give them the two forms, rather
+  // than to enforce anything.
+  const gated = accountSetupOutstanding(user);
 
   // Hide header on asset viewer pages — the viewer has its own top bar
   const isAssetViewer = /\/projects\/[^/]+\/assets\/[^/]+/.test(pathname);
@@ -48,6 +59,19 @@ export function DashboardShell({
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
+
+  if (gated && user) {
+    // Rendered INSTEAD of the whole shell, not inside it. The sidebar and
+    // header are navigation into an app that answers 403 to everything, and
+    // the uploads panel would keep polling endpoints it cannot reach —
+    // showing them would be an interface that does not work rather than an
+    // explanation of why.
+    return (
+      <div className="h-screen overflow-hidden bg-bg-primary">
+        <AccountSetupGate user={user} />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen overflow-hidden bg-bg-primary">

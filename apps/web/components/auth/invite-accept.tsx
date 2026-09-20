@@ -7,7 +7,8 @@ import { setTokens } from '@/lib/auth'
 import { useAuthStore } from '@/stores/auth-store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import type { AuthTokens, OrgRole } from '@/types'
+import { PasswordField } from '@/components/auth/password-field'
+import type { AuthTokens, OrgRole, PasswordStrength } from '@/types'
 
 /**
  * What GET /auth/invite/{token} actually returns.
@@ -44,11 +45,14 @@ interface FormErrors {
 function validate(name: string, password: string, confirmPassword: string): FormErrors {
   const errors: FormErrors = {}
   if (!name.trim()) errors.name = 'Name is required'
-  if (!password) {
-    errors.password = 'Password is required'
-  } else if (password.length < 8) {
-    errors.password = 'Password must be at least 8 characters'
-  }
+  // §200 — the `length < 8` rule is gone. It was a browser-only check that
+  // the server never shared, and /auth/accept-invite now runs the real
+  // policy: twelve characters, all four character classes, not in the
+  // common-password blocklist, not containing the invitee's own name or
+  // address, and a strength score. PasswordField shows all of that live and
+  // gates the submit button; whatever gets past it comes back as a server
+  // error, which is rendered in `errors.general`.
+  if (!password) errors.password = 'Password is required'
   if (password !== confirmPassword) errors.confirmPassword = 'Passwords do not match'
   return errors
 }
@@ -63,6 +67,7 @@ export function InviteAccept({ token }: InviteAcceptProps) {
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [errors, setErrors] = useState<FormErrors>({})
+  const [strength, setStrength] = useState<PasswordStrength | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
@@ -178,13 +183,14 @@ export function InviteAccept({ token }: InviteAcceptProps) {
           error={errors.name}
         />
 
-        <Input
+        <PasswordField
           label="Password"
-          type="password"
-          placeholder="Min. 8 characters"
-          autoComplete="new-password"
           value={password}
-          onChange={(e) => { setPassword(e.target.value); setErrors((p) => ({ ...p, password: undefined })) }}
+          onChange={(v) => { setPassword(v); setErrors((p) => ({ ...p, password: undefined })) }}
+          // Both are things the server will reject the password for
+          // containing, and both are known here before any session exists.
+          userInputs={[name, invite?.email ?? '', invite?.org_name ?? '']}
+          onStrengthChange={setStrength}
           error={errors.password}
         />
 
@@ -198,7 +204,13 @@ export function InviteAccept({ token }: InviteAcceptProps) {
           error={errors.confirmPassword}
         />
 
-        <Button type="submit" size="lg" loading={submitting} className="mt-2 w-full">
+        <Button
+          type="submit"
+          size="lg"
+          loading={submitting}
+          className="mt-2 w-full"
+          disabled={!strength?.meetsPolicy || !confirmPassword}
+        >
           Create account &amp; join
         </Button>
       </form>

@@ -89,3 +89,19 @@ tzdata==2024.2
 # The secret's encryption at rest uses `cryptography`, already pinned above.
 pyotp==2.9.0
 qrcode[pil]==7.4.2
+
+# §200 — the password strength score. Pure Python, no data downloads at
+# runtime: the frequency dictionaries ship inside the package, which is the
+# whole reason it is a dependency rather than a service call on the path of
+# every password change.
+#
+# The browser runs @zxcvbn-ts/core for the live meter — a different
+# implementation of the same algorithm, so the two can differ by a point at
+# the boundary. That is deliberate and safe: the meter is advisory and
+# services/password_policy.py is what decides.
+#
+# The common-password BLOCKLIST is NOT this package's dictionary. It is a
+# separate committed data file (apps/api/data/common_passwords.txt) so that
+# rule can give its own specific message and can be audited without reading
+# a dependency's internals.
+zxcvbn==4.4.28

@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { CodeInput, EMPTY_CODE } from '@/components/auth/code-input'
 import { BackupCodes } from '@/components/auth/backup-codes'
+import { PasswordField } from '@/components/auth/password-field'
 import type {
   VerifyCodeResponse,
   AuthTokens,
@@ -18,6 +19,7 @@ import type {
   TwoFactorMethod,
   TwoFactorSetupResponse,
   TwoFactorConfirmResponse,
+  PasswordStrength,
 } from '@/types'
 
 /**
@@ -67,6 +69,10 @@ export function LoginForm() {
   const [setupSecret, setSetupSecret] = useState('')
   const [setupQr, setSetupQr] = useState('')
   const [backupCodes, setBackupCodes] = useState<string[] | null>(null)
+  // §200 — the live meter's verdict, so the submit button reflects the real
+  // rules rather than a length check that no longer matches any of them.
+  const [passwordStrength, setPasswordStrength] =
+    useState<PasswordStrength | null>(null)
   const [enrolledTokens, setEnrolledTokens] = useState<AuthTokens | null>(null)
 
   /**
@@ -204,10 +210,12 @@ export function LoginForm() {
       setPasswordError('Password is required')
       return
     }
-    if (password.length < 8) {
-      setPasswordError('Password must be at least 8 characters')
-      return
-    }
+    // §200 — the `length < 8` rule is gone, not relaxed. It was the only
+    // password rule this app had, it lived in the browser only, and it is
+    // now four rules plus a strength score enforced by the server.
+    // PasswordField shows them live; the submit button below is disabled
+    // until they pass, and `generalError` renders the server's refusal for
+    // the two rules the browser cannot check.
     if (password !== confirmPassword) {
       setPasswordError('Passwords do not match')
       return
@@ -684,13 +692,15 @@ export function LoginForm() {
             </div>
           )}
 
-          <Input
+          <PasswordField
             label="Password"
-            type="password"
-            placeholder="Min. 8 characters"
-            autoComplete="new-password"
             value={password}
-            onChange={(e) => { setPassword(e.target.value); setPasswordError('') }}
+            onChange={(v) => { setPassword(v); setPasswordError('') }}
+            // The address is all this screen knows about the person — there
+            // is no session yet — and it is the token most likely to end up
+            // inside the password.
+            userInputs={[email]}
+            onStrengthChange={setPasswordStrength}
             error={passwordError}
           />
 
@@ -703,7 +713,13 @@ export function LoginForm() {
             onChange={(e) => setConfirmPassword(e.target.value)}
           />
 
-          <Button type="submit" size="lg" loading={loading} className="mt-2 w-full">
+          <Button
+            type="submit"
+            size="lg"
+            loading={loading}
+            className="mt-2 w-full"
+            disabled={!passwordStrength?.meetsPolicy || !confirmPassword}
+          >
             Set password &amp; continue
           </Button>
         </form>

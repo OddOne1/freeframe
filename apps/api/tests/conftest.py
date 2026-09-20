@@ -81,6 +81,20 @@ def _make_user(
     # compares a token's `tv` claim against this. Left unset, no mock user
     # could ever authenticate.
     u.token_version = 0
+    # §200 — explicit for the same reason as every field above it: on a real
+    # User these three are a column and two derived properties, and on a
+    # MagicMock they are truthy objects. Left unset, `backup_email_state`
+    # fails UserResponse's Literal and every /auth/me in the suite 500s.
+    #
+    # The default is a user who has FINISHED setup, so the gate never blocks
+    # a test of something unrelated. The gate's own tests set these
+    # deliberately — see test_account_setup_gate.py.
+    u.backup_email = "backup@example.org"
+    u.backup_email_verified_at = datetime.now(timezone.utc)
+    u.account_gate_waived_at = None
+    u.must_set_password = False
+    u.backup_email_state = "verified"
+    u.account_setup_required = False
     u.deleted_at = None
     return u
 

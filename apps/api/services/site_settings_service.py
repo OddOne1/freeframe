@@ -7,6 +7,7 @@ question about configuration. Both are deliberately uncached, matching what
 bind on the next request, not after a restart.
 """
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -44,3 +45,33 @@ def instance_org_name(db: Session) -> str:
     if not isinstance(name, str) or not name.strip():
         return "FreeFrame"
     return name.strip()
+
+
+def password_required_after(db: Session) -> Optional[datetime]:
+    """When passwordless magic-code sign-in closes on this instance (§200).
+
+    None means never — see the column's own comment for why that is the
+    honest answer for a row this migration did not create.
+    """
+    row = _settings(db)
+    value = getattr(row, "password_required_after", None) if row else None
+    return value if isinstance(value, datetime) else None
+
+
+def passwordless_window_closed(db: Session) -> bool:
+    """Whether the migration window has passed on this instance.
+
+    The comparison is made timezone-aware on both sides. The column is
+    `DateTime(timezone=True)` so Postgres hands back an aware value, but a
+    test fixture or a hand-edited row can produce a naive one, and comparing
+    an aware `now()` with a naive stored value raises TypeError — which would
+    turn every passwordless login into a 500 rather than into the refusal or
+    the pass it should be. A naive value is read as UTC, which is what the
+    column stores anyway.
+    """
+    cutoff = password_required_after(db)
+    if cutoff is None:
+        return False
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) >= cutoff

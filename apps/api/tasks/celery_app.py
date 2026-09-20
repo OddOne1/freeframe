@@ -78,6 +78,11 @@ celery_app.conf.update(
         "apps.api.tasks.lut_tasks.*": {"queue": "transcoding"},
         "apps.api.tasks.email_tasks.send_magic_code_email": {"queue": "email_high"},
         "apps.api.tasks.email_tasks.send_invite_email": {"queue": "email_high"},
+        # §200 — both immediate and both security-relevant: a backup-address
+        # code somebody is waiting on, and a notice that an account was
+        # changed. email_low is for things that can arrive in a minute.
+        "apps.api.tasks.email_tasks.send_backup_email_code_email": {"queue": "email_high"},
+        "apps.api.tasks.email_tasks.send_security_notice_email": {"queue": "email_high"},
         "apps.api.tasks.email_tasks.send_mention_email": {"queue": "email_low"},
         "apps.api.tasks.email_tasks.send_comment_email": {"queue": "email_low"},
         "apps.api.tasks.email_tasks.send_assignment_email": {"queue": "email_low"},

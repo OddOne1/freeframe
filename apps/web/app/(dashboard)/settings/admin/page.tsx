@@ -17,6 +17,8 @@ import {
   Mail,
   Send,
   Clock,
+  ShieldAlert,
+  UserCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -1192,6 +1194,78 @@ function UserGroupBlock({
 // already manages their own projects on /projects, and superadmins get the
 // full "All Projects" table there instead. This page is Users-only.
 
+//: §200 — the escape hatches for a stuck account both need somebody else.
+//:
+//: A superadmin can clear another user's account-setup gate, and reset their
+//: 2FA, from the user list below. Neither works on the LAST superadmin if
+//: they are the one who is stuck: there is nobody left to press the button,
+//: and the only way back is `apps/api/scripts/clear_account_gate.py` over
+//: SSH — which this instance's operator may not have to hand, and which does
+//: not exist at all for the 2FA case (admin_disable_two_factor deliberately
+//: refuses self-use).
+//:
+//: So this says it once, where the person who can fix it is already standing.
+//: Dismissible, and remembered per browser rather than per account, because
+//: it is advice rather than state: a second superadmin either exists or does
+//: not, and the banner reappears on its own if one is ever removed.
+const SINGLE_SUPERADMIN_DISMISSED_KEY = "ff_single_superadmin_dismissed";
+
+function SingleSuperadminBanner({ superadminCount }: { superadminCount: number }) {
+  const [dismissed, setDismissed] = React.useState(true);
+
+  React.useEffect(() => {
+    // Read in an effect, not in the initial state: localStorage does not
+    // exist during the server render, and reading it there is a hydration
+    // mismatch. Defaulting to dismissed means the banner fades in rather
+    // than flashing away.
+    try {
+      setDismissed(
+        window.localStorage.getItem(SINGLE_SUPERADMIN_DISMISSED_KEY) === "1",
+      );
+    } catch {
+      setDismissed(false);
+    }
+  }, []);
+
+  if (superadminCount !== 1 || dismissed) return null;
+
+  return (
+    <div className="flex items-start gap-3 rounded-lg border border-status-warning/40 bg-status-warning/10 p-4">
+      <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium text-text-primary">
+          This instance has only one administrator
+        </p>
+        <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+          Administrators are what unblock a locked-out account — clearing
+          someone&apos;s account-setup requirement, or resetting their
+          two-factor authentication. Neither of those works on yourself, so
+          with one administrator there is no in-app way back if it is your own
+          account that gets stuck. Make a second person an administrator
+          below.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => {
+          setDismissed(true);
+          try {
+            window.localStorage.setItem(SINGLE_SUPERADMIN_DISMISSED_KEY, "1");
+          } catch {
+            // A browser refusing storage should not keep the banner from
+            // closing for this session.
+          }
+        }}
+        className="shrink-0 text-text-tertiary transition-colors hover:text-text-secondary"
+        aria-label="Dismiss"
+      >
+        <X className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+
 export default function AdminPage() {
   const { user, isSuperAdmin } = useAuthStore();
   const router = useRouter();
@@ -1237,6 +1311,29 @@ export default function AdminPage() {
     navigator.clipboard.writeText(link);
     setCopiedId(u.id);
     setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const handleClearAccountGate = async (u: AdminUser) => {
+    // Confirmed first: this waives a security requirement for a named
+    // person, and it is one click away from the Deactivate button.
+    if (
+      !window.confirm(
+        `Let ${u.email} back into the app without finishing account setup?\n\n` +
+          `They will still be asked to set a password and confirm a ` +
+          `password-reset address in Settings → Profile. This is recorded in ` +
+          `the activity log.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await api.patch(`/admin/users/${u.id}/clear-account-gate`);
+      mutate("/admin/users");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to clear the account gate";
+      alert(message);
+    }
   };
 
   const handleToggleAdmin = async (
@@ -1353,6 +1450,27 @@ export default function AdminPage() {
               )}
             </Button>
           )}
+          {/* §200 — shown only for a user who is ACTUALLY gated, so it is
+              not a standing button that waives a requirement nobody has.
+              `must_set_password` and `backup_email_state` come from the same
+              derived fields the server gates on, so this appears and
+              disappears with the real state rather than with a flag. */}
+          {(u.must_set_password ||
+            (u.backup_email_state ?? "missing") !== "verified") && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleClearAccountGate(u)}
+              className="gap-1"
+              title={
+                u.must_set_password
+                  ? "No password set, and no confirmed password-reset address"
+                  : `Password-reset address: ${u.backup_email_state}`
+              }
+            >
+              <UserCheck className="h-3.5 w-3.5" /> Clear Setup Block
+            </Button>
+          )}
           {u.id !== user?.id && (
             <Button
               variant="ghost"
@@ -1415,6 +1533,18 @@ export default function AdminPage() {
           </p>
         </div>
       </div>
+
+      {/* Counted off the UNFILTERED list, not `admins` — that one is
+          narrowed by the search box, and a banner that appeared when
+          somebody typed a name would be telling the truth about the wrong
+          question. */}
+      <SingleSuperadminBanner
+        superadminCount={
+          (usersResp ?? []).filter(
+            (u) => u.role === "superadmin" && u.status !== "deactivated",
+          ).length
+        }
+      />
 
       <PlatformStorageSection />
       <TimezoneSection />

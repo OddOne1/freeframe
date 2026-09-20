@@ -7,6 +7,7 @@ from .routers import auth, users, projects, upload, events, assets, me, comments
 from .services.s3_service import ensure_bucket_exists
 from .middleware.global_rate_limit import GlobalRateLimitMiddleware
 from .middleware.setup_guard import SetupGuardMiddleware
+from .middleware.account_gate import AccountGateMiddleware
 from .middleware.no_cache_errors import NoCacheErrorsMiddleware
 
 @asynccontextmanager
@@ -40,6 +41,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(GlobalRateLimitMiddleware)
+# §200 — added BEFORE SetupGuardMiddleware, which by Starlette's
+# front-insertion rule makes it the INNER of the two. That order is the
+# intended one: an instance with no superadmin at all should answer "not set
+# up yet", not "your account setup is incomplete", and the outer guard
+# short-circuits before this one ever looks at a token.
+app.add_middleware(AccountGateMiddleware)
 app.add_middleware(SetupGuardMiddleware)
 # §128 — added LAST on purpose. Starlette's add_middleware inserts at the
 # front of the stack, so the last one added is the OUTERMOST: this therefore

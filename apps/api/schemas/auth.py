@@ -232,6 +232,79 @@ class TwoFactorEmailFallbackResponse(BaseModel):
     #: whether a code was really sent.
     message: str = "If that account needs a code, one has been sent."
 
+# ── Account security gate (§200) ────────────────────────────────────────────
+
+#: Where this account stands on having a usable password-reset channel.
+#:
+#: "missing"  — no backup address at all. The gate asks for one.
+#: "pending"  — an address is stored but nobody has proved it is reachable.
+#:              Still gated: a reset sent to an address that may not exist is
+#:              worse than no reset path, because it looks like one.
+#: "verified" — a code sent to it came back. This is the only state in which
+#:              anything is ever mailed there.
+BackupEmailState = Literal["missing", "pending", "verified"]
+
+
+class BackupEmailRequest(BaseModel):
+    """Propose a backup address (or replace the one on file)."""
+
+    backup_email: EmailStr
+    #: §200 — proof the caller still holds the current second factor, required
+    #: only when this REPLACES an already-verified address. Changing where
+    #: password resets are delivered is the single most valuable thing a
+    #: stolen session could do to this account: point resets at a mailbox the
+    #: attacker owns, then reset. Same three accepted forms as
+    #: TwoFactorReauthRequest.
+    #:
+    #: Not required for the FIRST address, and that is not a gap. There is
+    #: nothing to steal yet — the account has no reset channel to redirect —
+    #: and a user who is not enrolled in 2FA could never produce a code, so
+    #: requiring one would make the gate unsatisfiable for exactly the people
+    #: it is trying to onboard.
+    reauth_code: Optional[str] = None
+
+
+class BackupEmailResponse(BaseModel):
+    """What the gate screen needs after proposing or resending."""
+
+    backup_email: str
+    state: BackupEmailState
+    #: True when a verification code was mailed by this call. False when one
+    #: was already outstanding and re-sending would only invalidate the code
+    #: the person is currently reading.
+    code_sent: bool = False
+    #: §200 — the address is on the SAME DOMAIN as the login address.
+    #:
+    #: Accepted, not refused: plenty of legitimate setups are two real
+    #: mailboxes in one company, and refusing them would push people towards
+    #: an address they check less often. But it is worth saying out loud,
+    #: because the whole point is that the login mailbox must not be able to
+    #: read the reset mail, and one admin with domain-wide access defeats
+    #: that. A flag rather than a sentence, so the wording lives in the UI
+    #: with the rest of the copy.
+    same_domain: bool = False
+
+
+class BackupEmailVerifyRequest(BaseModel):
+    code: str
+
+
+class PasswordPolicyResponse(BaseModel):
+    """The rules, so the screen can state them before the first attempt.
+
+    Served from services/password_policy.describe_policy() rather than
+    written out again in TypeScript — a screen that promises different rules
+    from the ones enforced is how a user ends up typing five passwords.
+    """
+
+    min_length: int
+    min_strength_score: int
+    requires_upper: bool
+    requires_lower: bool
+    requires_digit: bool
+    requires_special: bool
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str
 
@@ -257,6 +330,24 @@ class UserResponse(BaseModel):
     #: nothing writes them from this schema.
     two_factor_enabled: bool = False
     two_factor_method: Optional[TwoFactorMethod] = None
+    #: §200 — the onboarding gate, computed server-side from the stored data
+    #: and reported here.
+    #:
+    #: DERIVED on the model (User.must_set_password / User.backup_email_state)
+    #: rather than stored, which is the whole reason the gate can be trusted:
+    #: it disappears the moment the data is real and comes back if the data is
+    #: cleared, and no "I have seen this screen" flag in a browser can turn it
+    #: off. A client that wants to know whether to render the gate asks here;
+    #: a client that lies about the answer still gets 403s from every
+    #: protected route, because the middleware asks the same question of the
+    #: same data.
+    must_set_password: bool = False
+    backup_email_state: BackupEmailState = "missing"
+    #: The address itself, so the gate and the settings screen can show what
+    #: is on file without a second endpoint. Safe to return to the account's
+    #: own session — it is the user's own address — and it is NOT returned by
+    #: ContactUserResponse, which is the world-readable shape.
+    backup_email: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -276,6 +367,38 @@ class UserResponse(BaseModel):
         believed.
         """
         return False if v is None else v
+
+    @field_validator("must_set_password", mode="before")
+    @classmethod
+    def _unknown_means_not_gated(cls, v):
+        """Anything that is not a real bool reads as "no password needed".
+
+        Same shape as the validator above and for the same reason — this
+        suite is built on MagicMock users, where every unset attribute is a
+        truthy object — but the safe default is the opposite one. A fixture
+        that forgets this field should not conjure a gate that blocks a test
+        of something unrelated; the gate's own tests set it explicitly.
+
+        On a real User this is a property computed from `password_hash`, so
+        it is always a genuine bool and this validator never fires.
+        """
+        return v if isinstance(v, bool) else False
+
+    @field_validator("backup_email_state", mode="before")
+    @classmethod
+    def _unknown_state_is_missing(cls, v):
+        """Only the three real states survive; anything else reads "missing".
+
+        Deliberately NOT permissive in the other direction: an unrecognised
+        value must not be able to read as "verified", which is the one state
+        that unblocks the gate and authorises mail to be sent somewhere.
+        """
+        return v if v in ("missing", "pending", "verified") else "missing"
+
+    @field_validator("backup_email", mode="before")
+    @classmethod
+    def _only_a_real_address(cls, v):
+        return v if isinstance(v, str) else None
 
 
 class SetPasswordResponse(UserResponse):
@@ -360,6 +483,22 @@ class VerifyMagicCodeRequest(BaseModel):
 
 class SetPasswordRequest(BaseModel):
     password: str
+    #: §200 — proof the caller still holds the current second factor.
+    #:
+    #: Required only when the account ALREADY has a password, i.e. this is a
+    #: change rather than a first set. A first set has nothing to protect (the
+    #: account has no password to be stolen with) and happens inside the
+    #: onboarding gate, where demanding a factor the user may not have would
+    #: be a dead end.
+    #:
+    #: For a change, an access token alone must not be enough, for the same
+    #: reason §192 gave for disabling 2FA: a stolen session should not be able
+    #: to take the account. Checked through the existing
+    #: `_second_factor_matches`, so an authenticator code, an emailed 2FA code
+    #: and a backup code all work — and so a user with no second factor
+    #: enrolled is not asked for one, because there is nothing they could
+    #: possibly present.
+    reauth_code: Optional[str] = None
 
 # Invite flow
 class AcceptInviteRequest(BaseModel):

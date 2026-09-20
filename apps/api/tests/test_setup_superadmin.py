@@ -20,6 +20,14 @@ import pytest
 
 from apps.api.models.user import UserGlobalRole, UserStatus
 
+#: §200 — the fresh-install setup route now enforces the password policy, and
+#: "correct horse battery" (what this file used before) fails it on three of
+#: the four class rules. Replaced rather than exempted: the very first account
+#: on an instance is a superadmin, so a test that set one up with a password
+#: the real route would refuse was testing a path nobody can walk.
+_POLICY_OK_PASSWORD = "Tf4#qRn8!vZw"
+
+
 
 @pytest.fixture
 def empty_system(mock_db):
@@ -39,7 +47,7 @@ def test_creates_a_superadmin_from_first_and_last_name(client, empty_system):
         "email": "founder@example.com",
         "first_name": "Ada",
         "last_name": "Lovelace",
-        "password": "correct horse battery",
+        "password": _POLICY_OK_PASSWORD,
     })
 
     assert resp.status_code == 201, resp.text
@@ -57,7 +65,7 @@ def test_first_name_is_optional(client, empty_system):
     resp = client.post("/setup/create-superadmin", json={
         "email": "founder@example.com",
         "last_name": "Lovelace",
-        "password": "correct horse battery",
+        "password": _POLICY_OK_PASSWORD,
     })
 
     assert resp.status_code == 201, resp.text
@@ -73,7 +81,7 @@ def test_blank_first_name_is_stored_as_null_not_empty_string(client, empty_syste
         "email": "founder@example.com",
         "first_name": "   ",
         "last_name": "Lovelace",
-        "password": "correct horse battery",
+        "password": _POLICY_OK_PASSWORD,
     })
 
     assert resp.status_code == 201, resp.text
@@ -88,7 +96,7 @@ def test_rejects_a_blank_last_name(client, empty_system, last_name):
     resp = client.post("/setup/create-superadmin", json={
         "email": "founder@example.com",
         "last_name": last_name,
-        "password": "correct horse battery",
+        "password": _POLICY_OK_PASSWORD,
     })
 
     assert resp.status_code == 400, resp.text
@@ -99,7 +107,7 @@ def test_rejects_a_blank_last_name(client, empty_system, last_name):
 def test_last_name_is_required_not_defaulted(client, empty_system):
     resp = client.post("/setup/create-superadmin", json={
         "email": "founder@example.com",
-        "password": "correct horse battery",
+        "password": _POLICY_OK_PASSWORD,
     })
 
     assert resp.status_code == 422, resp.text
@@ -112,7 +120,7 @@ def test_the_old_single_name_field_is_no_longer_accepted_silently(client, empty_
     resp = client.post("/setup/create-superadmin", json={
         "email": "founder@example.com",
         "name": "Ada Lovelace",
-        "password": "correct horse battery",
+        "password": _POLICY_OK_PASSWORD,
     })
 
     assert resp.status_code == 422, resp.text

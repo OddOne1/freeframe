@@ -305,6 +305,94 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml logs --tail 100 a
 
 ---
 
+## Account security
+
+Every account needs two things before it can use the app: a password, and a
+**separate** address for password resets. Both are checked server-side on
+every request, so a user who has neither sees a blocking setup screen instead
+of the dashboard.
+
+### Why the two addresses
+
+Reset codes go **only** to the backup address; two-factor sign-in codes go
+**only** to the login address, and neither falls back to the other. That
+separation is the whole point: while one mailbox could both receive the
+sign-in code and reset the password, that mailbox *was* the account, and the
+second factor added nothing.
+
+A backup address on the same domain as the login address is accepted, but the
+setup screen warns about it — one administrator with domain-wide access can
+read both mailboxes, which defeats the split.
+
+### Passwords
+
+Enforced by `apps/api/services/password_policy.py`, on every path that sets a
+password (setup, invite, reset, change):
+
+- at least 12 characters;
+- at least one upper-case letter, one lower-case letter, one digit and one
+  special character — **at every length, including long passphrases**;
+- not in `apps/api/data/common_passwords.txt` (the ~10k most common);
+- must not contain the local part of either address, the user's name, or the
+  instance name;
+- a zxcvbn strength score of at least 3 of 4, so `Sommer2026!` is refused
+  although it satisfies all four character classes.
+
+There is no forced rotation and no expiry, deliberately: both push people
+towards `Sommer2026!` and then `Herbst2026!`, which the strength rule is there
+to catch.
+
+### The passwordless cut-off
+
+Accounts that never had a password can still sign in with a magic code, and
+are sent to the setup screen when they do. That route closes on the date in
+`site_settings.password_required_after`, which the migration sets to **30 days
+after it runs on this instance**. To move it:
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml exec postgres \
+  psql -U freeframe freeframe \
+  -c "UPDATE site_settings SET password_required_after = now() + interval '60 days';"
+```
+
+`NULL` means the route never closes.
+
+### Unblocking a locked-out account
+
+A gate on an undeliverable address is a lockout, so there are two ways out.
+
+**From the app**, a superadmin uses **Clear Setup Block** on the user's row in
+Settings → Admin. It waives the block, not the requirement: the user is still
+asked to finish in Settings → Profile, and confirming a backup address clears
+the waiver again. It is recorded in the activity log.
+
+**From the shell**, for the case where the stuck account *is* the last
+superadmin and there is nobody to press that button:
+
+```bash
+# Dry run — reports what is outstanding and changes nothing
+docker compose --env-file .env.prod -f docker-compose.prod.yml exec api \
+  python -m apps.api.scripts.clear_account_gate someone@example.com
+
+# Apply it
+docker compose --env-file .env.prod -f docker-compose.prod.yml exec api \
+  python -m apps.api.scripts.clear_account_gate someone@example.com --write
+```
+
+The script never sets a password and never invents a backup address — both
+would put a credential chosen by whoever holds a shell into the database,
+which is exactly the authority this design keeps out of one person's hands.
+
+### Keep two superadmins
+
+Both escape hatches above need *somebody else*: the admin one refuses to act
+on your own 2FA, and with a single superadmin there is no in-app way back if
+that account is the one that gets stuck. Settings → Admin shows a dismissible
+banner while only one exists. Making a second person an administrator is the
+fix; the shell script is the fallback, and it needs SSH access to this host.
+
+---
+
 ## Backups
 
 ### Database Backup
