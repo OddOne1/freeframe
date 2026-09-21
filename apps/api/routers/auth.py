@@ -34,6 +34,8 @@ from ..services.redis_service import (
     MAGIC_CODE_EXPIRY_SECONDS,
     generate_2fa_email_code, store_2fa_email_code, verify_2fa_email_code,
     has_live_2fa_email_code, TWOFA_EMAIL_CODE_EXPIRY_SECONDS,
+    store_2fa_setup_code, verify_2fa_setup_code, has_live_2fa_setup_code,
+    clear_2fa_setup_code, TWOFA_SETUP_CODE_EXPIRY_SECONDS,
     store_pending_2fa_setup, read_pending_2fa_setup, clear_pending_2fa_setup,
     generate_password_reset_code, store_password_reset_code,
     verify_password_reset_code,
@@ -758,16 +760,36 @@ def _send_2fa_email_code(
     endpoint passes force=True, because there the user is telling us the
     code did not arrive.
     """
-    if not force and has_live_2fa_email_code(user.email):
+    # §204 — the enrolment code lives in its OWN pool, and this is the only
+    # place that decides which. One branch rather than two functions: the
+    # idempotency rule, the `force` rule and the send are identical, and a
+    # second copy of them is how one would quietly stop honouring `force`.
+    #
+    # The separation is what makes §203's sentence — "this code cannot be
+    # used to sign in" — actually true. `_second_factor_matches` reads the
+    # challenge pool and only that pool, so it can no longer see a setup
+    # code at all. It is deliberately NOT changed; see its docstring.
+    #
+    # Per-pool windows also fix the two symptoms that made this visible: a
+    # live challenge code no longer suppresses an enrolment send, and an
+    # enrolment code no longer suppresses a challenge.
+    is_setup = purpose == "two_factor_setup"
+    has_live = has_live_2fa_setup_code if is_setup else has_live_2fa_email_code
+    store = store_2fa_setup_code if is_setup else store_2fa_email_code
+    expiry_seconds = (
+        TWOFA_SETUP_CODE_EXPIRY_SECONDS if is_setup else TWOFA_EMAIL_CODE_EXPIRY_SECONDS
+    )
+
+    if not force and has_live(user.email):
         return False
 
     code = generate_2fa_email_code()
-    store_2fa_email_code(user.email, code)
+    store(user.email, code)
     send_task_safe(
         send_magic_code_email,
         user.email,
         code,
-        TWOFA_EMAIL_CODE_EXPIRY_SECONDS // 60,
+        expiry_seconds // 60,
         purpose,
     )
     return True
@@ -1022,7 +1044,13 @@ def confirm_two_factor_setup(
         # nothing about whether mail actually reaches this address, which is
         # the single thing this step exists to check — the same rule the
         # TOTP branch applies to its own factor.
-        ok, _ = verify_2fa_email_code(user.email, body.code.strip())
+        #
+        # §204 — the ENROLMENT pool, and only that one. The mirror of the
+        # rule §204 exists for: a setup code cannot complete a login, and a
+        # login-challenge code cannot complete an enrolment. Reading both
+        # here would leave half the separation in place, which is the same
+        # as none.
+        ok, _ = verify_2fa_setup_code(user.email, body.code.strip())
         if not ok:
             raise HTTPException(status_code=401, detail="Invalid code")
         # An authenticator paired during some earlier, abandoned setup must
@@ -1061,6 +1089,15 @@ def confirm_two_factor_setup(
     # way to finish. A stale one costs nothing — it expires on its own, and
     # a later setup replaces it.
     clear_pending_2fa_setup(str(user.id))
+    # §204 — and any outstanding ENROLMENT code, for either method. The
+    # email branch consumed its own on the way in; a TOTP confirm can land
+    # while a code from an earlier, abandoned email attempt is still live,
+    # and a code whose enrolment is already finished should not sit in the
+    # pool waiting for a screen that has moved on.
+    #
+    # The CHALLENGE pool is deliberately untouched here: a code the user is
+    # mid-login with is not this endpoint's to spend.
+    clear_2fa_setup_code(user.email)
 
     return TwoFactorConfirmResponse(
         backup_codes=codes,

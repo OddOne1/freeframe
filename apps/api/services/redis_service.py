@@ -263,6 +263,120 @@ def has_live_2fa_email_code(email: str) -> bool:
     return bool(get_redis().get(f"{TWOFA_EMAIL_CODE_PREFIX}{email.lower()}"))
 
 
+# ── 2FA ENROLMENT codes (§204) ───────────────────────────────────────────
+#
+# A FIFTH pool, and the reason is a sentence §203 put in an email:
+#
+#     "Enter this code in Settings → Profile to turn on two-factor
+#      authentication. This code cannot be used to sign in."
+#
+# That was false. §203 gave the enrolment mail its own wording but left every
+# emailed 2FA code in the one bucket above, so `_second_factor_matches` —
+# which redeems from that bucket for any password login — happily accepted an
+# enrolment code as a second factor for its whole ten-minute life.
+#
+# The severity is low and worth stating as low: the code is mailed to the
+# LOGIN address, so anyone who can redeem it already reads the mailbox a
+# challenge code would arrive in. It is not a new way in. What it is, is a
+# security mail making an absolute claim the system does not keep — which is
+# its own kind of defect, and the reason to separate the pools rather than
+# soften the sentence.
+#
+# Two user-visible symptoms fall out of the same root cause, and §203's copy
+# split is what made them visible: a live login-challenge code suppressed the
+# enrolment send (the idempotency window is per key), so the enrolment screen
+# said "a code was already sent" and the user opened a mail reading "Enter
+# this code to finish signing in" — right code, wrong instructions, wrong
+# screen. And the reverse, for the rest of the window.
+#
+# Same shape as its four siblings, copied rather than parameterised for the
+# reason stated above them: one pool's TTL or attempt ceiling must never move
+# because somebody tuned another's.
+#
+# NOTE the neighbour below: `TWOFA_SETUP_PREFIX` / `TWOFA_SETUP_EXPIRY_SECONDS`
+# are the ENROLMENT STAGING keys (§194b) — the candidate secret and method,
+# keyed by user id. These are the enrolment CODE keys, keyed by email. The
+# names are one word apart and they hold completely different things.
+TWOFA_SETUP_CODE_PREFIX = "2fa_setup_code:"
+TWOFA_SETUP_ATTEMPTS_PREFIX = "2fa_setup_attempts:"
+TWOFA_SETUP_CODE_EXPIRY_SECONDS = 600  # 10 minutes, unchanged from §191
+MAX_TWOFA_SETUP_ATTEMPTS = 5
+
+
+def store_2fa_setup_code(email: str, code: str) -> None:
+    """Store an ENROLMENT code. Deliberately a different key from the
+    challenge pool, which is the whole of §204.
+
+    No `generate_2fa_setup_code` twin: the four generators above already
+    return the same six random digits, and what §204 separates is where a
+    code LIVES, not how it is produced. `generate_2fa_email_code` serves
+    both — a fifth identical `secrets.randbelow` would be noise, and
+    nothing about it could be tuned per pool the way the TTL and attempt
+    ceiling above genuinely can.
+    """
+    r = get_redis()
+    r.setex(
+        f"{TWOFA_SETUP_CODE_PREFIX}{email.lower()}",
+        TWOFA_SETUP_CODE_EXPIRY_SECONDS,
+        code,
+    )
+    r.delete(f"{TWOFA_SETUP_ATTEMPTS_PREFIX}{email.lower()}")
+
+
+def has_live_2fa_setup_code(email: str) -> bool:
+    """Whether an unexpired ENROLMENT code is outstanding.
+
+    Its own window, so starting an enrolment is never suppressed by a login
+    challenge code that happens to be in flight — the second of the two
+    symptoms §204 exists to fix.
+    """
+    return bool(get_redis().get(f"{TWOFA_SETUP_CODE_PREFIX}{email.lower()}"))
+
+
+def verify_2fa_setup_code(email: str, code: str) -> tuple[bool, str]:
+    """Verify an ENROLMENT code. Returns (success, error_message).
+
+    Consumed on success, like all four of its siblings. Its own attempts
+    bucket too: burning the enrolment allowance must not lock somebody out
+    of signing in, and burning the sign-in allowance must not stop them
+    finishing an enrolment.
+    """
+    r = get_redis()
+    key = f"{TWOFA_SETUP_CODE_PREFIX}{email.lower()}"
+    attempts_key = f"{TWOFA_SETUP_ATTEMPTS_PREFIX}{email.lower()}"
+
+    attempts = r.get(attempts_key)
+    if attempts and int(attempts) >= MAX_TWOFA_SETUP_ATTEMPTS:
+        return False, "Too many attempts. Request a new code."
+
+    stored_code = r.get(key)
+    if not stored_code:
+        return False, "Code expired or not found"
+
+    if stored_code != code:
+        r.incr(attempts_key)
+        r.expire(attempts_key, TWOFA_SETUP_CODE_EXPIRY_SECONDS)
+        return False, "Invalid code"
+
+    r.delete(key)
+    r.delete(attempts_key)
+    return True, ""
+
+
+def clear_2fa_setup_code(email: str) -> None:
+    """Drop any outstanding enrolment code.
+
+    Called once enrolment is confirmed, by EITHER method. The email branch
+    has already consumed its own code by then, but a TOTP confirm can land
+    while a code from an earlier, abandoned email attempt is still live —
+    and a code whose enrolment is finished should not sit there waiting to
+    be entered into a screen that has moved on.
+    """
+    r = get_redis()
+    r.delete(f"{TWOFA_SETUP_CODE_PREFIX}{email.lower()}")
+    r.delete(f"{TWOFA_SETUP_ATTEMPTS_PREFIX}{email.lower()}")
+
+
 # ── 2FA enrolment staging (§194b) ────────────────────────────────────────
 #
 # A setup that has not been confirmed must not touch the user row. Writing

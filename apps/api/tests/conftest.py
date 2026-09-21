@@ -160,9 +160,16 @@ def staged_2fa_setup():
     def _clear(user_id):
         store.pop(str(user_id), None)
 
+    # §204 — `clear_2fa_setup_code` is stubbed alongside the three staging
+    # functions, for the same reason they are: confirm-setup now also drops
+    # any outstanding ENROLMENT code, and an unstubbed call reaches a Redis
+    # that is not there and 500s a confirm that had already committed.
+    # Belongs here rather than in each test, exactly like
+    # `clear_pending_2fa_setup` one line above it.
     with patch("apps.api.routers.auth.store_pending_2fa_setup", side_effect=_store), \
          patch("apps.api.routers.auth.read_pending_2fa_setup", side_effect=_read), \
-         patch("apps.api.routers.auth.clear_pending_2fa_setup", side_effect=_clear):
+         patch("apps.api.routers.auth.clear_pending_2fa_setup", side_effect=_clear), \
+         patch("apps.api.routers.auth.clear_2fa_setup_code"):
         yield store
 
 

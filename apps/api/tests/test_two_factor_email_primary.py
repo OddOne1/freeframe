@@ -34,6 +34,13 @@ _HAS_LIVE_CODE = "apps.api.routers.auth.has_live_2fa_email_code"
 _STORE_CODE = "apps.api.routers.auth.store_2fa_email_code"
 _SEND_TASK = "apps.api.routers.auth.send_task_safe"
 _VERIFY_EMAIL_CODE = "apps.api.routers.auth.verify_2fa_email_code"
+#: §204 — ENROLMENT codes live in their own pool, so `/auth/2fa/setup` and
+#: `/auth/2fa/confirm-setup` touch these three, not the challenge pool above.
+#: Patching the wrong pair leaves the real functions reaching a Redis that is
+#: not there; patching only one leaves half the separation unexercised.
+_HAS_LIVE_SETUP_CODE = "apps.api.routers.auth.has_live_2fa_setup_code"
+_STORE_SETUP_CODE = "apps.api.routers.auth.store_2fa_setup_code"
+_VERIFY_SETUP_CODE = "apps.api.routers.auth.verify_2fa_setup_code"
 
 
 def _user(*, enabled=False, method=None, secret=None, backup=None):
@@ -68,9 +75,11 @@ def _login(client, mock_db, user, *, live_code=False):
 
 
 def _setup(client, mock_db, user, body):
+    """§204 — an email enrolment writes to the SETUP pool, so that is the one
+    stubbed and the one `store` reports on."""
     mock_db.first.return_value = user
-    with patch(_HAS_LIVE_CODE, return_value=False), \
-         patch(_STORE_CODE) as store, \
+    with patch(_HAS_LIVE_SETUP_CODE, return_value=False), \
+         patch(_STORE_SETUP_CODE) as store, \
          patch(_SEND_TASK) as send:
         resp = client.post("/auth/2fa/setup", json=body)
     return resp, store, send
@@ -91,7 +100,9 @@ def _stage(store, user, method, secret=None):
 
 def _confirm(client, mock_db, user, code, *, email_code_ok=False):
     mock_db.first.return_value = user
-    with patch(_VERIFY_EMAIL_CODE, return_value=(email_code_ok, "")):
+    # §204 — confirm-setup verifies against the SETUP pool only, which is
+    # exactly what stops a login-challenge code from completing an enrolment.
+    with patch(_VERIFY_SETUP_CODE, return_value=(email_code_ok, "")):
         return client.post(
             "/auth/2fa/confirm-setup",
             json={"code": code, "pending_token": create_2fa_pending_token(str(user.id))},

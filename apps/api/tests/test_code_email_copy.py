@@ -35,6 +35,11 @@ _SEND_TASK = "apps.api.routers.auth.send_task_safe"
 _REQUIRE_2FA = "apps.api.routers.auth.require_2fa_enabled"
 _LIVE_CODE = "apps.api.routers.auth.has_live_2fa_email_code"
 _STORE_CODE = "apps.api.routers.auth.store_2fa_email_code"
+#: §204 — enrolment codes live in their OWN pool now, so the enrolment path
+#: touches these instead of the two above. Patching the wrong pair leaves the
+#: real functions reaching a Redis that is not there.
+_LIVE_SETUP_CODE = "apps.api.routers.auth.has_live_2fa_setup_code"
+_STORE_SETUP_CODE = "apps.api.routers.auth.store_2fa_setup_code"
 
 CODE = "525169"
 
@@ -240,8 +245,8 @@ class TestTheCallSitesChooseTheRightPurpose:
         # leaves the endpoint seeing no session and answering 401.
         app.dependency_overrides[get_optional_user] = lambda: user
         try:
-            with patch(_SEND_TASK) as send, patch(_LIVE_CODE, return_value=False), \
-                 patch(_STORE_CODE):
+            with patch(_SEND_TASK) as send, patch(_LIVE_SETUP_CODE, return_value=False), \
+                 patch(_STORE_SETUP_CODE):
                 resp = client.post("/auth/2fa/setup", json={"method": "email"})
         finally:
             app.dependency_overrides.pop(get_optional_user, None)
@@ -328,7 +333,7 @@ class TestTheFlowsStillDeliverAWorkingCode:
     `_second_factor_matches`, untouched here.
     """
 
-    def test_enrolment_stores_a_code_in_the_2fa_pool(
+    def test_enrolment_stores_a_code_in_the_setup_pool(
         self, client, mock_db, staged_2fa_setup
     ):
         user = _user()
@@ -341,8 +346,8 @@ class TestTheFlowsStillDeliverAWorkingCode:
         # leaves the endpoint seeing no session and answering 401.
         app.dependency_overrides[get_optional_user] = lambda: user
         try:
-            with patch(_SEND_TASK), patch(_LIVE_CODE, return_value=False), \
-                 patch(_STORE_CODE) as store:
+            with patch(_SEND_TASK), patch(_LIVE_SETUP_CODE, return_value=False), \
+                 patch(_STORE_SETUP_CODE) as store:
                 resp = client.post("/auth/2fa/setup", json={"method": "email"})
         finally:
             app.dependency_overrides.pop(get_optional_user, None)
