@@ -35,7 +35,7 @@ from ..services.redis_service import (
     generate_2fa_email_code, store_2fa_email_code, verify_2fa_email_code,
     has_live_2fa_email_code, TWOFA_EMAIL_CODE_EXPIRY_SECONDS,
     store_2fa_setup_code, verify_2fa_setup_code, has_live_2fa_setup_code,
-    clear_2fa_setup_code, TWOFA_SETUP_CODE_EXPIRY_SECONDS,
+    clear_2fa_setup_code, TWOFA_ENROL_CODE_EXPIRY_SECONDS,
     store_pending_2fa_setup, read_pending_2fa_setup, clear_pending_2fa_setup,
     generate_password_reset_code, store_password_reset_code,
     verify_password_reset_code,
@@ -777,7 +777,7 @@ def _send_2fa_email_code(
     has_live = has_live_2fa_setup_code if is_setup else has_live_2fa_email_code
     store = store_2fa_setup_code if is_setup else store_2fa_email_code
     expiry_seconds = (
-        TWOFA_SETUP_CODE_EXPIRY_SECONDS if is_setup else TWOFA_EMAIL_CODE_EXPIRY_SECONDS
+        TWOFA_ENROL_CODE_EXPIRY_SECONDS if is_setup else TWOFA_EMAIL_CODE_EXPIRY_SECONDS
     )
 
     if not force and has_live(user.email):

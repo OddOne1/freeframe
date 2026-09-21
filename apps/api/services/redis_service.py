@@ -293,14 +293,17 @@ def has_live_2fa_email_code(email: str) -> bool:
 # reason stated above them: one pool's TTL or attempt ceiling must never move
 # because somebody tuned another's.
 #
-# NOTE the neighbour below: `TWOFA_SETUP_PREFIX` / `TWOFA_SETUP_EXPIRY_SECONDS`
-# are the ENROLMENT STAGING keys (§194b) — the candidate secret and method,
-# keyed by user id. These are the enrolment CODE keys, keyed by email. The
-# names are one word apart and they hold completely different things.
-TWOFA_SETUP_CODE_PREFIX = "2fa_setup_code:"
-TWOFA_SETUP_ATTEMPTS_PREFIX = "2fa_setup_attempts:"
-TWOFA_SETUP_CODE_EXPIRY_SECONDS = 600  # 10 minutes, unchanged from §191
-MAX_TWOFA_SETUP_ATTEMPTS = 5
+# THE IDENTIFIERS SAY "ENROL"; THE KEY STRINGS SAY "setup". That is
+# deliberate and is the one thing worth knowing here. The constants were
+# renamed so they cannot be misread as §194b's `TWOFA_SETUP_PREFIX` (the
+# staged secret, keyed by user id), but the strings are what Redis actually
+# holds — renaming those would orphan every code in flight at the moment of
+# a deploy, for no gain beyond tidiness. So grep Redis for `2fa_setup_code:`,
+# not for `enrol`.
+TWOFA_ENROL_CODE_PREFIX = "2fa_setup_code:"
+TWOFA_ENROL_ATTEMPTS_PREFIX = "2fa_setup_attempts:"
+TWOFA_ENROL_CODE_EXPIRY_SECONDS = 600  # 10 minutes, unchanged from §191
+MAX_TWOFA_ENROL_ATTEMPTS = 5
 
 
 def store_2fa_setup_code(email: str, code: str) -> None:
@@ -316,11 +319,11 @@ def store_2fa_setup_code(email: str, code: str) -> None:
     """
     r = get_redis()
     r.setex(
-        f"{TWOFA_SETUP_CODE_PREFIX}{email.lower()}",
-        TWOFA_SETUP_CODE_EXPIRY_SECONDS,
+        f"{TWOFA_ENROL_CODE_PREFIX}{email.lower()}",
+        TWOFA_ENROL_CODE_EXPIRY_SECONDS,
         code,
     )
-    r.delete(f"{TWOFA_SETUP_ATTEMPTS_PREFIX}{email.lower()}")
+    r.delete(f"{TWOFA_ENROL_ATTEMPTS_PREFIX}{email.lower()}")
 
 
 def has_live_2fa_setup_code(email: str) -> bool:
@@ -330,7 +333,7 @@ def has_live_2fa_setup_code(email: str) -> bool:
     challenge code that happens to be in flight — the second of the two
     symptoms §204 exists to fix.
     """
-    return bool(get_redis().get(f"{TWOFA_SETUP_CODE_PREFIX}{email.lower()}"))
+    return bool(get_redis().get(f"{TWOFA_ENROL_CODE_PREFIX}{email.lower()}"))
 
 
 def verify_2fa_setup_code(email: str, code: str) -> tuple[bool, str]:
@@ -342,11 +345,11 @@ def verify_2fa_setup_code(email: str, code: str) -> tuple[bool, str]:
     finishing an enrolment.
     """
     r = get_redis()
-    key = f"{TWOFA_SETUP_CODE_PREFIX}{email.lower()}"
-    attempts_key = f"{TWOFA_SETUP_ATTEMPTS_PREFIX}{email.lower()}"
+    key = f"{TWOFA_ENROL_CODE_PREFIX}{email.lower()}"
+    attempts_key = f"{TWOFA_ENROL_ATTEMPTS_PREFIX}{email.lower()}"
 
     attempts = r.get(attempts_key)
-    if attempts and int(attempts) >= MAX_TWOFA_SETUP_ATTEMPTS:
+    if attempts and int(attempts) >= MAX_TWOFA_ENROL_ATTEMPTS:
         return False, "Too many attempts. Request a new code."
 
     stored_code = r.get(key)
@@ -355,7 +358,7 @@ def verify_2fa_setup_code(email: str, code: str) -> tuple[bool, str]:
 
     if stored_code != code:
         r.incr(attempts_key)
-        r.expire(attempts_key, TWOFA_SETUP_CODE_EXPIRY_SECONDS)
+        r.expire(attempts_key, TWOFA_ENROL_CODE_EXPIRY_SECONDS)
         return False, "Invalid code"
 
     r.delete(key)
@@ -373,8 +376,8 @@ def clear_2fa_setup_code(email: str) -> None:
     be entered into a screen that has moved on.
     """
     r = get_redis()
-    r.delete(f"{TWOFA_SETUP_CODE_PREFIX}{email.lower()}")
-    r.delete(f"{TWOFA_SETUP_ATTEMPTS_PREFIX}{email.lower()}")
+    r.delete(f"{TWOFA_ENROL_CODE_PREFIX}{email.lower()}")
+    r.delete(f"{TWOFA_ENROL_ATTEMPTS_PREFIX}{email.lower()}")
 
 
 # ── 2FA enrolment staging (§194b) ────────────────────────────────────────

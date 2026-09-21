@@ -550,7 +550,7 @@ class TestTheRealPoolsDoNotShareBuckets:
         rs.store_2fa_setup_code(EMAIL, "111111")
         rs.store_2fa_email_code(EMAIL, "222222")
 
-        for _ in range(rs.MAX_TWOFA_SETUP_ATTEMPTS):
+        for _ in range(rs.MAX_TWOFA_ENROL_ATTEMPTS):
             assert rs.verify_2fa_setup_code(EMAIL, "000000")[0] is False
         assert rs.verify_2fa_setup_code(EMAIL, "111111") == (
             False,
@@ -629,14 +629,14 @@ class TestTheKeysThemselvesDiffer:
             rs.PASSWORD_RESET_CODE_PREFIX,
             rs.BACKUP_EMAIL_CODE_PREFIX,
             rs.TWOFA_EMAIL_CODE_PREFIX,
-            rs.TWOFA_SETUP_CODE_PREFIX,
+            rs.TWOFA_ENROL_CODE_PREFIX,
         ]
         attempt_prefixes = [
             rs.MAGIC_CODE_ATTEMPTS_PREFIX,
             rs.PASSWORD_RESET_ATTEMPTS_PREFIX,
             rs.BACKUP_EMAIL_ATTEMPTS_PREFIX,
             rs.TWOFA_EMAIL_ATTEMPTS_PREFIX,
-            rs.TWOFA_SETUP_ATTEMPTS_PREFIX,
+            rs.TWOFA_ENROL_ATTEMPTS_PREFIX,
         ]
 
         assert len(set(code_prefixes)) == len(code_prefixes)
@@ -644,11 +644,14 @@ class TestTheKeysThemselvesDiffer:
         assert not set(code_prefixes) & set(attempt_prefixes)
 
     def test_the_enrolment_code_key_is_not_the_staging_key(self):
-        """`TWOFA_SETUP_CODE_PREFIX` and `TWOFA_SETUP_PREFIX` are one word
-        apart and hold completely different things — the six-digit code
-        keyed by email, and the staged secret keyed by user id."""
+        """Two different things that both concern enrolment: the six-digit
+        code keyed by email, and §194b's staged secret keyed by user id.
+
+        The constants no longer invite the confusion — `TWOFA_ENROL_CODE_*`
+        against `TWOFA_SETUP_*` — but the KEY STRINGS still both contain
+        "setup", so this pins that they address different slots."""
         from apps.api.services import redis_service as rs
 
-        assert rs.TWOFA_SETUP_CODE_PREFIX != rs.TWOFA_SETUP_PREFIX
-        assert not rs.TWOFA_SETUP_CODE_PREFIX.startswith(rs.TWOFA_SETUP_PREFIX)
-        assert not rs.TWOFA_SETUP_PREFIX.startswith(rs.TWOFA_SETUP_CODE_PREFIX)
+        assert rs.TWOFA_ENROL_CODE_PREFIX != rs.TWOFA_SETUP_PREFIX
+        assert not rs.TWOFA_ENROL_CODE_PREFIX.startswith(rs.TWOFA_SETUP_PREFIX)
+        assert not rs.TWOFA_SETUP_PREFIX.startswith(rs.TWOFA_ENROL_CODE_PREFIX)
