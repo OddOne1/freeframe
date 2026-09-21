@@ -1,0 +1,21 @@
+{% extends "email/base.html" %}
+
+{# §203 — ONE template for every code mail that is not a login or a password
+   reset, driven entirely by MAIL_CODE_COPY in tasks/email_tasks.py.
+
+   Nothing here is hard-coded prose, and that is the whole point. The bug this
+   replaces was an HTML template that said "use this code to sign in" while the
+   plain-text alternative of the SAME message said something else — so which
+   instruction the reader got depended on their mail client. Heading, lead and
+   warning arrive as variables, and the text body is built from the same three
+   strings, so the two parts cannot disagree again. #}
+{% block content %}
+<h2>{{ heading }}</h2>
+{# The full stop lives here, not in the string: `magic_code.html` follows
+   the same sentence with a colon, and the tests compare the punctuation-free
+   sentence so both templates can present it their own way. #}
+<p>{{ lead }}.</p>
+<div class="code">{{ code }}</div>
+<p class="muted">This code expires in {{ expiry_minutes }} minutes.</p>
+<p class="muted">{{ warning }}</p>
+{% endblock %}

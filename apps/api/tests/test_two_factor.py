@@ -26,6 +26,10 @@ from apps.api.services.auth_service import (
 )
 
 _VERIFY_PATCH = "apps.api.routers.auth.verify_password"
+#: §203 — stubbed wherever a test only cares that a code WOULD be sent, not
+#: about the mail itself. The mail is the subject of
+#: tests/test_code_email_copy.py, which asserts on rendered output.
+_SEND_CODE = "apps.api.routers.auth._send_2fa_email_code"
 _REQUIRE_2FA_PATCH = "apps.api.routers.auth.require_2fa_enabled"
 
 
@@ -370,27 +374,40 @@ class TestEmailFallbackIsSeparateFromMagicCode:
         assert rs.TWOFA_EMAIL_CODE_PREFIX != rs.MAGIC_CODE_PREFIX
         assert rs.TWOFA_EMAIL_ATTEMPTS_PREFIX != rs.MAGIC_CODE_ATTEMPTS_PREFIX
 
-    def test_it_uses_a_different_rate_limit_bucket(self):
+    def test_it_uses_a_different_rate_limit_bucket(self, client, mock_db):
         """Buckets are keyed (ip, action), so a distinct action string is a
         distinct allowance. A 2FA-locked-out user hammering this must not
-        drain the passwordless-login allowance, or vice versa."""
-        import inspect
+        drain the passwordless-login allowance, or vice versa.
 
-        from apps.api.routers import auth as auth_router
+        §203 — was an `inspect.getsource` check for two decorator strings.
+        That proves the decorators are written down; it says nothing about
+        which bucket a REQUEST lands in, which is the thing that matters.
+        Converted because it was cheap: `check_rate_limit` is called with the
+        action as its second argument, so capturing it answers the real
+        question directly.
+        """
+        seen = []
 
-        src = inspect.getsource(auth_router)
-        assert 'rate_limit("send_2fa_email_fallback"' in src
-        assert 'rate_limit("send_magic_code"' in src
+        def _capture(ip, action, max_requests, window_seconds):
+            seen.append(action)
+            return True, 0
 
-    def test_the_email_says_something_different(self):
-        """'Here is your login code' and 'you could not reach your
-        authenticator' mean different things to the person reading them."""
-        import inspect
+        user = _user(two_factor_enabled=True, method="email")
+        mock_db.first.return_value = user
 
-        from apps.api.tasks import email_tasks
+        with patch("apps.api.middleware.rate_limit.check_rate_limit", side_effect=_capture), \
+             patch(_SEND_CODE):
+            client.post(
+                "/auth/2fa/send-email-fallback",
+                json={"pending_token": create_2fa_pending_token(str(user.id))},
+            )
+            client.post("/auth/send-magic-code", json={"email": user.email})
 
-        src = inspect.getsource(email_tasks.send_magic_code_email)
-        assert 'purpose == "two_factor"' in src
+        assert "send_2fa_email_fallback" in seen
+        assert "send_magic_code" in seen
+        # The point of the test: two DIFFERENT allowances, not two names that
+        # happen to appear in the file.
+        assert len(set(seen)) == len(seen)
 
 
 # ── completing a login ──────────────────────────────────────────────────────

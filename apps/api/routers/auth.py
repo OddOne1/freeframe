@@ -721,8 +721,29 @@ def _login_outcome(db: Session, user: User, *, via: str = VIA_PASSWORD) -> Login
     return _issue_tokens(user)
 
 
-def _send_2fa_email_code(user: User, *, force: bool = False) -> bool:
+def _send_2fa_email_code(
+    user: User, *, purpose: str = "two_factor_challenge", force: bool = False
+) -> bool:
     """Mail this user a one-time code. Returns whether one was sent (§194).
+
+    §203 — `purpose` names the SITUATION, not the mechanism. This one function
+    serves three of them, and they need different words:
+
+      _login_outcome            an email-primary user is finishing a sign-in
+      send_two_factor_email_fallback  they have lost their authenticator
+      setup_two_factor          they are switching two-factor ON, from
+                                Settings, already signed in
+
+    The first two are the same message to the reader ("finish signing in"), so
+    they share `two_factor_challenge`. The third is its opposite: nobody is
+    signing in, and the mail that told them to was not merely clumsy — its
+    warning ("if you did not try to sign in, someone has your password") is
+    false for enrolment, where the real danger is that somebody is ALREADY
+    signed in as them.
+
+    Same Redis pool, same TTL, same rate-limit buckets, same idempotency and
+    `force` semantics. Only the wording changes; see MAIL_CODE_COPY in
+    tasks/email_tasks.py.
 
     Extracted from the HTTP endpoint so login can call it directly — the
     endpoint carries a rate-limit dependency and a request object that a
@@ -747,7 +768,7 @@ def _send_2fa_email_code(user: User, *, force: bool = False) -> bool:
         user.email,
         code,
         TWOFA_EMAIL_CODE_EXPIRY_SECONDS // 60,
-        "two_factor",
+        purpose,
     )
     return True
 
@@ -934,7 +955,11 @@ def setup_two_factor(
         # can send. A code already in the inbox still works, so re-sending
         # would only invalidate the one the user is reading.
         return TwoFactorSetupResponse(
-            method="email", email_code_sent=_send_2fa_email_code(user)
+            method="email",
+            # §203 — the ENROLMENT wording. This is the call site Mathias hit:
+            # signed in, in Settings, turning the feature on, and told by the
+            # mail to sign in with the code.
+            email_code_sent=_send_2fa_email_code(user, purpose="two_factor_setup"),
         )
 
     secret = totp_service.generate_totp_secret()

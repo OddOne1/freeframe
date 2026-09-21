@@ -53,30 +53,127 @@ def _send_email(to_email: str, subject: str, html_body: str, text_body: Optional
 # HIGH PRIORITY EMAILS (email_high queue)
 # ============================================================================
 
+#: Every code mail's wording, in one place, per purpose (§203).
+#:
+#: The bug this exists to prevent: the `two_factor` branch gave itself its own
+#: plain-text body but rendered `magic_code.html`, the LOGIN template. So the
+#: HTML said "use this code to sign in to FreeFrame" while the text part of the
+#: same message said "two-factor verification code … if you did not try to sign
+#: in, someone has your password". Which one the reader saw depended on their
+#: mail client. Worse, both were wrong for the case Mathias actually hit —
+#: switching two-factor ON from Settings, already signed in, told to sign in.
+#:
+#: So heading, lead and warning are defined ONCE per purpose and used to build
+#: both parts. Modelled on SECURITY_NOTICE_BODIES below, including its rule
+#: about unknown keys: an unrecognised purpose falls back to neutral wording
+#: and still sends. A code the user is waiting for must never be lost to a
+#: KeyError over its label.
+#:
+#: `subject_includes_code` is per purpose on purpose. A code in the subject is
+#: convenient on a phone and is also readable on a lock screen and indexed by
+#: every mail server that logs subjects. Enrolment does not need it — the user
+#: is sitting in front of Settings with the app open — so that one omits it.
+#: The two sign-in subjects are left as they were; changing those is a
+#: separate decision.
+MAIL_CODE_COPY = {
+    "login": {
+        "subject": "Your FreeFrame login code",
+        "subject_includes_code": True,
+        "heading": "Your login code",
+        # No terminal punctuation: `magic_code.html` renders this followed by a
+        # colon and the text body follows it with a full stop. The sentence
+        # itself is the shared part, which is what the tests compare.
+        "lead": "Use this code to sign in to FreeFrame",
+        "warning": "If you didn't request this code, you can safely ignore this email.",
+    },
+    "two_factor_challenge": {
+        "subject": "Your FreeFrame verification code",
+        "subject_includes_code": True,
+        "heading": "Your verification code",
+        "lead": "Enter this code to finish signing in to FreeFrame",
+        "warning": (
+            "If you did not try to sign in, someone has your password — "
+            "change it and tell your admin."
+        ),
+    },
+    #: §191 called this purpose "two_factor". Kept as an alias rather than
+    #: dropped, because a Celery message queued moments before this deploy
+    #: still carries the old string, and an unrecognised purpose would give
+    #: that reader the neutral wording instead of the challenge warning.
+    "two_factor": {
+        "subject": "Your FreeFrame verification code",
+        "subject_includes_code": True,
+        "heading": "Your verification code",
+        "lead": "Enter this code to finish signing in to FreeFrame",
+        "warning": (
+            "If you did not try to sign in, someone has your password — "
+            "change it and tell your admin."
+        ),
+    },
+    "two_factor_setup": {
+        "subject": "Confirm two-factor authentication on FreeFrame",
+        "subject_includes_code": False,
+        "heading": "Confirm two-factor by email",
+        #: "This code cannot be used to sign in" is the load-bearing sentence.
+        #: Somebody who receives this unexpectedly needs to know immediately
+        #: that reading it grants nothing — the opposite of what the login
+        #: template told them.
+        "lead": (
+            "Enter this code in Settings → Profile to turn on two-factor "
+            "authentication. This code cannot be used to sign in"
+        ),
+        #: The inverse of the challenge warning, and the reason the two cannot
+        #: share copy: for enrolment nobody tried to sign in, so "someone has
+        #: your password" is simply false. The real danger is that someone is
+        #: ALREADY signed in.
+        "warning": (
+            "If you did not just turn on two-factor, someone is signed in as "
+            "you — change your password and tell your admin."
+        ),
+    },
+}
+
+#: What an unrecognised purpose gets. Deliberately says nothing about signing
+#: in either way: if the caller could not name the situation, this mail should
+#: not guess at one.
+NEUTRAL_CODE_COPY = {
+    "subject": "Your FreeFrame verification code",
+    "subject_includes_code": False,
+    "heading": "Your verification code",
+    "lead": "Enter this code in FreeFrame to continue",
+    "warning": "If you did not request this code, you can ignore this email.",
+}
+
+
+def code_mail_copy(purpose: str) -> dict:
+    """The wording for one code mail. Never raises; see MAIL_CODE_COPY."""
+    return MAIL_CODE_COPY.get(purpose, NEUTRAL_CODE_COPY)
+
+
+def _code_text_body(copy: dict, code: str, expiry_minutes: int) -> str:
+    """The plain-text alternative, built from the SAME strings as the HTML.
+
+    This function is the fix. Both parts of a multipart message now derive
+    from one `copy` dict, so a change to the wording changes both or neither —
+    there is no longer a way to edit one and leave the other saying the
+    opposite.
+    """
+    # "Code: 525169" on its own rather than appended to the lead with a colon.
+    # Two of the three leads end in a full sentence of their own ("This code
+    # cannot be used to sign in"), and gluing the digits onto that with a colon
+    # read as nonsense.
+    return (
+        f"{copy['heading']}. {copy['lead']}. Code: {code}. "
+        f"This code expires in {expiry_minutes} minutes. "
+        f"{copy['warning']}"
+    )
+
+
 @shared_task(bind=True, queue="email_high", max_retries=3, default_retry_delay=30)
 def send_magic_code_email(self, to_email: str, code: str, expiry_minutes: int = 10, purpose: str = "login", contact_url: Optional[str] = None):
     """Send magic code email - high priority, immediate delivery."""
     try:
-        if purpose == "two_factor":
-            # §191 — its own copy, deliberately. "Here is your login code"
-            # and "you could not reach your authenticator" are different
-            # messages to the person reading them: one is routine, the
-            # other means something went wrong and is worth acting on if
-            # they did not ask for it.
-            subject = f"Your FreeFrame verification code: {code}"
-            html_body = render_template(
-                "email/magic_code.html",
-                subject=subject,
-                code=code,
-                expiry_minutes=expiry_minutes,
-            )
-            text_body = (
-                f"Your FreeFrame two-factor verification code is: {code}. "
-                f"It expires in {expiry_minutes} minutes. "
-                f"If you did not try to sign in, someone has your password — "
-                f"change it and tell your admin."
-            )
-        elif purpose == "password_reset":
+        if purpose == "password_reset":
             subject = f"Password reset code: {code}"
             html_body = render_template(
                 "email/password_reset_code.html",
@@ -87,14 +184,34 @@ def send_magic_code_email(self, to_email: str, code: str, expiry_minutes: int = 
             )
             text_body = f"Someone requested a password reset on your FreeFrame account. Your code is: {code}. If this was not you, contact your admin. This code expires in {expiry_minutes} minutes."
         else:
-            subject = f"Your FreeFrame login code: {code}"
+            copy = code_mail_copy(purpose)
+            subject = (
+                f"{copy['subject']}: {code}"
+                if copy["subject_includes_code"]
+                else copy["subject"]
+            )
+            # `login` keeps rendering magic_code.html, unchanged, because it is
+            # the highest-volume mail this app sends and §203 is not the place
+            # to restyle it. Its wording lives in MAIL_CODE_COPY all the same,
+            # so the text body below is built from the same strings the
+            # template shows — and a test compares the two, which is what
+            # stops the template and the dict drifting apart the way the HTML
+            # and text used to.
+            template = (
+                "email/magic_code.html"
+                if purpose == "login"
+                else "email/verification_code.html"
+            )
             html_body = render_template(
-                "email/magic_code.html",
+                template,
                 subject=subject,
                 code=code,
                 expiry_minutes=expiry_minutes,
+                heading=copy["heading"],
+                lead=copy["lead"],
+                warning=copy["warning"],
             )
-            text_body = f"Your FreeFrame login code is: {code}. This code expires in {expiry_minutes} minutes."        
+            text_body = _code_text_body(copy, code, expiry_minutes)
         success = _send_email(to_email, subject, html_body, text_body)
         if not success:
             raise Exception("Email sending failed")
