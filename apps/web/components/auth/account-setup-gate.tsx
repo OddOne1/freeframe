@@ -31,6 +31,8 @@ import { useAuthStore } from '@/stores/auth-store'
 import { Button } from '@/components/ui/button'
 import { PasswordField } from '@/components/auth/password-field'
 import { BackupEmailForm } from '@/components/auth/backup-email-form'
+import { PasswordSubmitNote } from '@/components/auth/password-submit-note'
+import { passwordSubmitBlock, usePasswordPolicy } from '@/lib/password-policy'
 import type { PasswordStrength, SetPasswordResponse, User } from '@/types'
 
 /** Whether this user is still blocked, from what /auth/me reports.
@@ -70,8 +72,18 @@ export function AccountSetupGate({ user }: { user: User }) {
   const [strength, setStrength] = React.useState<PasswordStrength | null>(null)
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState('')
+  const policy = usePasswordPolicy()
 
   const needsPassword = !!user.must_set_password
+  // §202 — see lib/password-policy.passwordSubmitBlock. Shared with the three
+  // other password forms so a fix in one is a fix in all, which is precisely
+  // what four copies of `!strength?.meetsPolicy` did not give us.
+  const submitBlock = passwordSubmitBlock({
+    password,
+    confirmPassword: confirm,
+    strength,
+    policy,
+  })
 
   async function submitPassword(e: React.FormEvent) {
     e.preventDefault()
@@ -176,24 +188,24 @@ export function AccountSetupGate({ user }: { user: User }) {
                   id="gate-password-confirm"
                   type="password"
                   value={confirm}
-                  onChange={(e) => setConfirm(e.target.value)}
+                  onChange={(e) => { setConfirm(e.target.value); setError('') }}
                   disabled={busy}
                   autoComplete="new-password"
                   className="flex h-10 w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary transition-all duration-150 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
                 />
               </div>
               {error && <p className="text-xs text-status-error">{error}</p>}
+              {/* §202 — a blocked submit always says why. Never disabled by a
+                  score that is merely pending or unavailable: the server runs
+                  the real policy, including the two rules the browser cannot
+                  check at all. */}
+              <PasswordSubmitNote reason={submitBlock} />
               <Button
                 type="submit"
                 variant="primary"
                 size="sm"
                 loading={busy}
-                // Disabled on what the browser can see. The server still
-                // decides — a password this passes can come back refused by
-                // the blocklist or the personal-token rule, which is why the
-                // error above is rendered from the response rather than
-                // assumed away.
-                disabled={!strength?.meetsPolicy || !confirm}
+                disabled={!!submitBlock}
               >
                 Set password
               </Button>

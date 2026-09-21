@@ -14,6 +14,8 @@ import { CodeInput, EMPTY_CODE } from '@/components/auth/code-input'
 import { TwoFactorSettings } from '@/components/auth/two-factor-settings'
 import { PasswordField } from '@/components/auth/password-field'
 import { BackupEmailForm } from '@/components/auth/backup-email-form'
+import { PasswordSubmitNote } from '@/components/auth/password-submit-note'
+import { passwordSubmitBlock, usePasswordPolicy } from '@/lib/password-policy'
 import { Mail } from 'lucide-react'
 import type {
   LoginResponse,
@@ -35,6 +37,7 @@ export default function ProfilePage() {
   const [confirmPassword, setConfirmPassword] = React.useState('')
   const [passwordStrength, setPasswordStrength] =
     React.useState<PasswordStrength | null>(null)
+  const passwordPolicy = usePasswordPolicy()
   const [isSavingPassword, setIsSavingPassword] = React.useState(false)
   const [passwordError, setPasswordError] = React.useState('')
   const [passwordSuccess, setPasswordSuccess] = React.useState(false)
@@ -278,6 +281,14 @@ async function handleAvatarCropped(blob: Blob) {
     }
   }
 
+  // §202 — the same shared rule the other three password forms use.
+  const passwordBlock = passwordSubmitBlock({
+    password: newPassword,
+    confirmPassword,
+    strength: passwordStrength,
+    policy: passwordPolicy,
+  })
+
   return (
     <div className="p-6 max-w-xl space-y-8">
       <div className="flex items-center gap-3">
@@ -390,20 +401,36 @@ async function handleAvatarCropped(blob: Blob) {
           />
           <div className="space-y-1.5">
             <label htmlFor="confirmPassword" className="text-xs font-medium text-text-secondary">Confirm New Password</label>
-            <Input id="confirmPassword" type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="Repeat new password" />
+            <Input
+              id="confirmPassword"
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => { setConfirmPassword(e.target.value); setPasswordError('') }}
+              placeholder="Repeat new password"
+              // §202 — live, as soon as both fields differ, instead of only
+              // after a submit the user could not reach.
+              error={
+                confirmPassword && newPassword !== confirmPassword
+                  ? 'Passwords do not match'
+                  : undefined
+              }
+            />
           </div>
           {passwordError && <p className="text-xs text-status-error">{passwordError}</p>}
           {passwordSuccess && <p className="text-xs text-status-success">Password changed successfully.</p>}
+          {/* §202 — a blocked submit always says why, and a score that is
+              merely pending or unavailable never blocks. The server still
+              decides: the blocklist and the "must not contain your own name"
+              rule only exist there, so `passwordError` above renders a real
+              refusal rather than a case this button prevents. */}
+          <PasswordSubmitNote reason={passwordBlock} />
+
           <Button
             type="submit"
             variant="secondary"
             size="sm"
             loading={isSavingPassword}
-            // What the browser can see. The server still decides — the
-            // blocklist and the "must not contain your own name" rule only
-            // exist there, so `passwordError` above renders a real refusal
-            // rather than a case this button prevents.
-            disabled={!passwordStrength?.meetsPolicy || !confirmPassword}
+            disabled={!!passwordBlock}
           >
             Save Password
           </Button>

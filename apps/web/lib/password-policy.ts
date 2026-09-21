@@ -48,6 +48,53 @@ export const DEFAULT_PASSWORD_POLICY: PasswordPolicy = {
 }
 
 /**
+ * Read a dynamically imported module's real exports, whichever shape the
+ * bundler hands back (§202).
+ *
+ * This function exists because of a bug that reached production and was
+ * invisible to the whole test suite. The original code read
+ * `common.default.dictionary`, and `@zxcvbn-ts/language-*` has **no default
+ * export at all** — its ESM build ends in `export { adjacencyGraphs,
+ * dictionary }`. In a true ESM namespace `.default` is therefore `undefined`,
+ * and `.default.dictionary` throws a TypeError.
+ *
+ * It passed every test anyway. Vitest resolves these packages' CJS build and
+ * synthesises `default = module.exports`, which happens to carry `.dictionary`
+ * — so `common.default.dictionary` works in jsdom and only ever fails in the
+ * browser, where Next resolves the `module` field and gets the real namespace.
+ * A test environment that is kinder than production is worse than no test.
+ *
+ * So this picks by CONTENT rather than by shape: whichever of the namespace or
+ * its `.default` actually carries the keys being asked for. That is stable
+ * across both interops, and across the package growing a default export later.
+ */
+export function resolveModuleExports<T>(ns: unknown, ...expectedKeys: string[]): T {
+  const candidates = [ns, (ns as { default?: unknown })?.default]
+  for (const candidate of candidates) {
+    if (
+      candidate &&
+      typeof candidate === 'object' &&
+      expectedKeys.every((key) => key in (candidate as object))
+    ) {
+      return candidate as T
+    }
+  }
+  // Nothing carried them. Throwing names the module shape in the message
+  // instead of letting a TypeError surface three frames away as
+  // "cannot read properties of undefined".
+  throw new Error(
+    `zxcvbn module is missing ${expectedKeys.join(', ')}; got keys: ` +
+      `${ns && typeof ns === 'object' ? Object.keys(ns).join(', ') : typeof ns}`,
+  )
+}
+
+interface ZxcvbnLanguage {
+  dictionary: Record<string, (string | number)[]>
+  adjacencyGraphs?: Record<string, unknown>
+  translations?: unknown
+}
+
+/**
  * zxcvbn's dictionaries, loaded once and only when a password field is
  * actually rendered.
  *
@@ -59,25 +106,52 @@ export const DEFAULT_PASSWORD_POLICY: PasswordPolicy = {
  */
 let optionsPromise: Promise<void> | null = null
 
+/**
+ * Turn the two imported language modules into the options object zxcvbn wants.
+ *
+ * Exported and pure ONLY so it can be tested, and that is not a small point:
+ * the §202 bug lived in exactly these four lines, in code that could not be
+ * reached from a test because it sat inside a dynamic import. A test can now
+ * hand this the real ESM namespace — the one with no default export, the one
+ * the browser gets — and assert it produces a populated dictionary. Reverting
+ * to `commonNs.default.dictionary` fails that test instead of shipping.
+ */
+export function buildZxcvbnOptions(commonNs: unknown, enNs: unknown) {
+  const common = resolveModuleExports<ZxcvbnLanguage>(
+    commonNs,
+    'dictionary',
+    'adjacencyGraphs',
+  )
+  const en = resolveModuleExports<ZxcvbnLanguage>(enNs, 'dictionary', 'translations')
+  return {
+    dictionary: { ...common.dictionary, ...en.dictionary },
+    graphs: common.adjacencyGraphs as never,
+    translations: en.translations as never,
+  }
+}
+
 async function ensureZxcvbnOptions(): Promise<
   typeof import('@zxcvbn-ts/core')
 > {
   const core = await import('@zxcvbn-ts/core')
   if (!optionsPromise) {
     optionsPromise = (async () => {
-      const [common, en] = await Promise.all([
+      const [commonNs, enNs] = await Promise.all([
         import('@zxcvbn-ts/language-common'),
         import('@zxcvbn-ts/language-en'),
       ])
-      core.zxcvbnOptions.setOptions({
-        dictionary: {
-          ...common.default.dictionary,
-          ...en.default.dictionary,
-        },
-        graphs: common.default.adjacencyGraphs,
-        translations: en.default.translations,
-      })
+      core.zxcvbnOptions.setOptions(buildZxcvbnOptions(commonNs, enNs))
     })()
+    // §202 — a REJECTED promise must not be cached.
+    //
+    // Left as-is, one failure (a dropped chunk on a flaky connection, a
+    // transient 502 from the CDN) poisons the meter for the rest of the
+    // session: every later call awaits the same rejected promise and returns
+    // instantly without retrying. That is how a momentary network blip
+    // becomes a permanently dead password form.
+    optionsPromise.catch(() => {
+      optionsPromise = null
+    })
   }
   await optionsPromise
   return core
@@ -185,6 +259,89 @@ export async function scorePassword(
   }
 }
 
+/**
+ * Report a scoring failure once per session, loudly enough to be found.
+ *
+ * Once, because this runs on a debounce behind every keystroke and a
+ * per-attempt log would bury the first and only useful one under a hundred
+ * copies. Loudly, because the alternative is what §202 was: a `catch` that
+ * returned null, a submit button that never enabled, and no evidence at all
+ * in the console, the network tab or the server logs.
+ */
+let strengthFailureReported = false
+
+function reportStrengthFailure(err: unknown): void {
+  if (strengthFailureReported) return
+  strengthFailureReported = true
+  // eslint-disable-next-line no-console
+  console.error(
+    '[password-policy] strength scoring is unavailable; the meter will stay ' +
+      'blank and the server will enforce the policy on submit.',
+    err,
+  )
+}
+
+/**
+ * Why the submit button cannot be pressed yet — or `null` when it can (§202).
+ *
+ * ONE rule, shared by the four forms that set a password (invite acceptance,
+ * the §200 onboarding gate, the login screen's set-password step, and
+ * Settings → Profile). They had four copies of
+ * `disabled={!strength?.meetsPolicy || !confirm}`, which is how all four
+ * inherited the same silent failure at once.
+ *
+ * Two principles, and they are the actual fix rather than the interop patch:
+ *
+ * **A blocked submit always has a sentence.** The caller renders the returned
+ * string next to the button. There is no state in which the control is dead
+ * and the screen says nothing — that is the bug class §202 is about, not the
+ * particular TypeError that caused it this time.
+ *
+ * **An unknown score never blocks.** `strength` is null while the debounce is
+ * pending, while the 800KB dictionary is still downloading, and forever if
+ * that download fails. None of those are statements about the password. The
+ * server runs the real policy on every path that sets one — including the
+ * blocklist and the personal-token rule, which the browser cannot check at
+ * all — so letting an unscored password through costs a round trip and a
+ * rendered error, while blocking it costs the user their account.
+ *
+ * What DOES block is only what the browser can be certain of: the two fields
+ * disagreeing, and the length and character-class rules, which are computed
+ * synchronously and need no dictionary at all.
+ */
+export function passwordSubmitBlock(args: {
+  password: string
+  confirmPassword: string
+  strength: PasswordStrength | null
+  policy: PasswordPolicy
+}): string | null {
+  const { password, confirmPassword, strength, policy } = args
+
+  if (!password) return 'Enter a password.'
+
+  // Synchronous, dictionary-free, and therefore always available — this is
+  // the part that can safely block.
+  if (password.length < policy.min_length) {
+    return `Use at least ${policy.min_length} characters.`
+  }
+  const missing = missingClasses(password, policy)
+  if (missing.length > 0) {
+    return `Add ${missing.join(', ')}.`
+  }
+
+  if (!confirmPassword) return 'Confirm your password.'
+  if (password !== confirmPassword) return 'Passwords do not match.'
+
+  // Null means "not scored yet", never "bad". See the note above.
+  if (strength && strength.score < policy.min_strength_score) {
+    return strength.reason
+      ? `This password is too easy to guess. ${strength.reason}.`
+      : 'This password is too easy to guess.'
+  }
+
+  return null
+}
+
 /** The instance's rules, fetched once. Falls back to the constants above. */
 export function usePasswordPolicy(): PasswordPolicy {
   const { data } = useSWR<PasswordPolicy>(
@@ -235,9 +392,18 @@ export function usePasswordStrength(
           // rest, so this is a real ordering, not a theoretical one.
           if (!cancelled) setStrength(next)
         })
-        .catch(() => {
-          // A failed dictionary load must not break the form. The meter
-          // simply does not appear; the server still enforces everything.
+        .catch((err) => {
+          // A failed dictionary load must not break the form: the meter
+          // simply does not appear, and `passwordSubmitBlock` treats a null
+          // score as "unknown", which does NOT block submission — the server
+          // enforces the real policy either way.
+          //
+          // §202 — but it is no longer SILENT. This catch is what hid a
+          // TypeError for an entire deploy: every password form in the app
+          // had a permanently disabled submit button and nothing, anywhere,
+          // said why. One console line is the difference between "the button
+          // is broken" and a stack trace pointing at the cause.
+          reportStrengthFailure(err)
           if (!cancelled) setStrength(null)
         })
     }, 150)

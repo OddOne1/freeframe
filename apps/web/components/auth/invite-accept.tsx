@@ -8,6 +8,8 @@ import { useAuthStore } from '@/stores/auth-store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { PasswordField } from '@/components/auth/password-field'
+import { PasswordSubmitNote } from '@/components/auth/password-submit-note'
+import { passwordSubmitBlock, usePasswordPolicy } from '@/lib/password-policy'
 import type { AuthTokens, OrgRole, PasswordStrength } from '@/types'
 
 /**
@@ -69,6 +71,18 @@ export function InviteAccept({ token }: InviteAcceptProps) {
   const [errors, setErrors] = useState<FormErrors>({})
   const [strength, setStrength] = useState<PasswordStrength | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const policy = usePasswordPolicy()
+
+  // §202 — one shared rule, and it always produces a sentence when it blocks.
+  // The old condition was `!strength?.meetsPolicy || !confirmPassword`, which
+  // was silently permanently true on this page: `strength` stayed null because
+  // the dictionary loader threw, and nothing on screen said so.
+  const submitBlock = passwordSubmitBlock({
+    password,
+    confirmPassword,
+    strength,
+    policy,
+  })
 
   useEffect(() => {
     async function fetchInvite() {
@@ -201,15 +215,24 @@ export function InviteAccept({ token }: InviteAcceptProps) {
           autoComplete="new-password"
           value={confirmPassword}
           onChange={(e) => { setConfirmPassword(e.target.value); setErrors((p) => ({ ...p, confirmPassword: undefined })) }}
-          error={errors.confirmPassword}
+          // §202 — live, as soon as both fields have something and differ,
+          // rather than only after a submit that used to be unreachable.
+          error={
+            errors.confirmPassword ??
+            (confirmPassword && password !== confirmPassword
+              ? 'Passwords do not match'
+              : undefined)
+          }
         />
+
+        <PasswordSubmitNote reason={submitBlock} />
 
         <Button
           type="submit"
           size="lg"
           loading={submitting}
           className="mt-2 w-full"
-          disabled={!strength?.meetsPolicy || !confirmPassword}
+          disabled={!!submitBlock}
         >
           Create account &amp; join
         </Button>

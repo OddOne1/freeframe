@@ -11,6 +11,8 @@ import { Input } from '@/components/ui/input'
 import { CodeInput, EMPTY_CODE } from '@/components/auth/code-input'
 import { BackupCodes } from '@/components/auth/backup-codes'
 import { PasswordField } from '@/components/auth/password-field'
+import { PasswordSubmitNote } from '@/components/auth/password-submit-note'
+import { passwordSubmitBlock, usePasswordPolicy } from '@/lib/password-policy'
 import type {
   VerifyCodeResponse,
   AuthTokens,
@@ -73,6 +75,7 @@ export function LoginForm() {
   // rules rather than a length check that no longer matches any of them.
   const [passwordStrength, setPasswordStrength] =
     useState<PasswordStrength | null>(null)
+  const passwordPolicy = usePasswordPolicy()
   const [enrolledTokens, setEnrolledTokens] = useState<AuthTokens | null>(null)
 
   /**
@@ -675,6 +678,13 @@ export function LoginForm() {
     )
   }
 
+  const setPasswordBlock = passwordSubmitBlock({
+    password,
+    confirmPassword,
+    strength: passwordStrength,
+    policy: passwordPolicy,
+  })
+
   if (activeStep === 'password') {
     return (
       <div className="animate-slide-up">
@@ -710,15 +720,26 @@ export function LoginForm() {
             placeholder="Repeat password"
             autoComplete="new-password"
             value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
+            onChange={(e) => { setConfirmPassword(e.target.value); setPasswordError('') }}
+            // §202 — live, as soon as both fields differ.
+            error={
+              confirmPassword && password !== confirmPassword
+                ? 'Passwords do not match'
+                : undefined
+            }
           />
+
+          {/* §202 — shared with the other three password forms. Always says
+              why it is blocked, and a pending or unavailable score does not
+              block at all. */}
+          <PasswordSubmitNote reason={setPasswordBlock} />
 
           <Button
             type="submit"
             size="lg"
             loading={loading}
             className="mt-2 w-full"
-            disabled={!passwordStrength?.meetsPolicy || !confirmPassword}
+            disabled={!!setPasswordBlock}
           >
             Set password &amp; continue
           </Button>
