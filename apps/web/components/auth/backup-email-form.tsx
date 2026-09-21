@@ -169,7 +169,15 @@ export function BackupEmailForm({
             placeholder="you@somewhere-else.com"
             disabled={busy}
           />
-          <p className="text-2xs leading-relaxed text-text-tertiary">
+          {/* §201 — body size, not the smallest caption step.
+              This is the sentence that explains why the field exists at all,
+              and at 10px it was below comfortable reading size on a normal
+              display — so the one thing on the screen that answers "why am I
+              being asked this" was the hardest thing to read. `max-w-[68ch]`
+              caps the line length in the wider Profile card (max-w-xl), where
+              it would otherwise run past 70 characters; inside the gate the
+              card is narrower and the cap never binds. */}
+          <p className="max-w-[68ch] text-sm leading-relaxed text-text-secondary">
             This has to be a mailbox your sign-in address cannot read. Sign-in
             codes go to <strong>{user.email}</strong>; password resets will go
             here. Keeping them apart is what stops one compromised inbox from
@@ -195,8 +203,12 @@ export function BackupEmailForm({
 
       {sameDomain && (
         <div className="flex items-start gap-2 rounded-lg border border-status-warning/40 bg-status-warning/10 p-3">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" />
-          <p className="text-xs leading-relaxed text-text-secondary">
+          {/* §201 — this is the one that has to be noticed, so it reads at
+              body size like everything else rather than as a footnote under
+              the thing it is warning about. The warning token and the icon
+              were already here; the size was not. */}
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-status-warning" />
+          <p className="max-w-[68ch] text-sm leading-relaxed text-text-secondary">
             That address is on the same domain as your sign-in address. It will
             work, but anyone who administers that domain can read both
             mailboxes — which is the thing keeping the two apart is meant to
