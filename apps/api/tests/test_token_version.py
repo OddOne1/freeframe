@@ -70,6 +70,12 @@ def _user(*, version=0, enrolled=False, secret=None, codes=None):
     u.totp_secret_encrypted = totp_service.encrypt_secret(secret) if secret else None
     u.backup_codes_hashed = totp_service.hash_backup_codes(codes) if codes else None
     u.token_version = version
+    # §205 — NOT a User field. This suite's mock_db answers every `.first()`
+    # with this one object, so the site-settings lookup inside
+    # `two_factor_required_for` gets it too. Left unset it reads as a truthy
+    # MagicMock, the instance looks like it requires 2FA, and /auth/2fa/disable
+    # 403s. Same trap conftest documents for /auth/login.
+    u.require_2fa = False
     # `name` is MagicMock's OWN constructor kwarg, so plain assignment sets
     # the mock's repr rather than the attribute — which is why UserResponse
     # 500s on a mock user (test_auth.py::test_get_me, failing at HEAD for

@@ -56,6 +56,12 @@ def _enrolled(secret=None, codes=None, email="u@example.com"):
     u.two_factor_enabled = True
     u.totp_secret_encrypted = totp_service.encrypt_secret(secret)
     u.backup_codes_hashed = totp_service.hash_backup_codes(codes) if codes else None
+    # §205 — NOT a User field. This suite's mock_db answers every `.first()`
+    # with this one object, so the site-settings lookup inside
+    # `two_factor_required_for` gets it too. Left unset it reads as a truthy
+    # MagicMock, the instance looks like it requires 2FA, and every disable
+    # here 403s. Same trap conftest documents for /auth/login.
+    u.require_2fa = False
     # §199 — explicit for the same reason as the 2FA fields: every
     # MagicMock attribute is truthy, and a mock one here lands inside a
     # JWT payload, which cannot serialise it.

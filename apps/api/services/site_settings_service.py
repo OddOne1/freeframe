@@ -30,6 +30,23 @@ def require_2fa_enabled(db: Session) -> bool:
     return bool(row.require_2fa) if row else False
 
 
+def two_factor_required_for(db: Session, user) -> bool:
+    """Whether THIS user may not turn their own two-factor off (§205).
+
+    One call site for the whole policy, and `user` is taken even though
+    nothing reads it yet. That is deliberate: FilmBill's port extends this to
+    per-role requirements, and a signature that already carries the subject
+    makes that a one-line change here instead of a hunt through every caller.
+
+    Reading `require_2fa` inline at the endpoint would have been shorter and
+    is exactly what this avoids — the flag is consulted in three places
+    already (login, magic-code, the admin toggle) and each one means something
+    slightly different by it. This one means "may this person remove their own
+    second factor", which is a question about a user, not about a flag.
+    """
+    return require_2fa_enabled(db)
+
+
 def instance_org_name(db: Session) -> str:
     """What to call this instance in an authenticator app.
 

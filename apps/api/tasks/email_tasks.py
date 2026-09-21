@@ -110,6 +110,31 @@ MAIL_CODE_COPY = {
             "change it and tell your admin."
         ),
     },
+    #: §205 — confirming a CHANGE to two-factor settings: turning it off,
+    #: regenerating backup codes, or replacing the method. Its own purpose for
+    #: the same reason enrolment needed one — nobody is signing in, so the
+    #: challenge copy's "Enter this code to finish signing in" is wrong, and
+    #: its warning names the wrong danger.
+    "two_factor_reauth": {
+        "subject": "Confirm a change to your FreeFrame security settings",
+        #: No code in the subject, matching two_factor_setup: this user is
+        #: sitting in Settings with the app open, so the convenience buys
+        #: nothing and the code would be readable on a lock screen.
+        "subject_includes_code": False,
+        "heading": "Confirm a change to your security settings",
+        "lead": (
+            "Enter this code in FreeFrame to confirm a change to your "
+            "two-factor settings"
+        ),
+        #: The enrolment warning's sibling, and true for the same reason:
+        #: reaching this point requires an active session, so an unexpected
+        #: copy means somebody is already signed in as this person.
+        "warning": (
+            "If you did not just ask to change your two-factor settings, "
+            "someone is signed in as you — change your password and tell "
+            "your admin."
+        ),
+    },
     "two_factor_setup": {
         "subject": "Confirm two-factor authentication on FreeFrame",
         "subject_includes_code": False,

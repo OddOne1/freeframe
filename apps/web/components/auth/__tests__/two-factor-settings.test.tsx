@@ -134,8 +134,17 @@ describe('an account that is already enrolled', () => {
 
     // Nothing has been requested yet — the prompt comes first.
     expect(api.post).not.toHaveBeenCalled()
-    expect(await screen.findByText(/enter a code from your current second factor before/i))
-      .toBeInTheDocument()
+    // §205 — the description now names the user's ACTUAL factor rather than
+    // saying "your current second factor" to everyone. This fixture is a
+    // TOTP user, so it should mention the authenticator.
+    // §205 — the description now names the user's ACTUAL factor rather than
+    // saying "your current second factor" to everyone. This fixture is a
+    // TOTP user, so the dialog should point at the authenticator. Scoped to
+    // the dialog: "Authenticator app" is also the label of the method button
+    // behind it.
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent(/before setting up a new method/i)
+    expect(dialog).toHaveTextContent(/authenticator app/i)
 
     await typeCode(user, '424242')
 

@@ -50,6 +50,7 @@ from ..services.password_policy import (
 )
 from ..services.site_settings_service import (
     require_2fa_enabled, instance_org_name, passwordless_window_closed,
+    two_factor_required_for,
 )
 from ..tasks.email_tasks import (
     send_magic_code_email, send_invite_email, send_backup_email_code_email,
@@ -773,6 +774,14 @@ def _send_2fa_email_code(
     # Per-pool windows also fix the two symptoms that made this visible: a
     # live challenge code no longer suppresses an enrolment send, and an
     # enrolment code no longer suppresses a challenge.
+    # §205 — `two_factor_reauth` is NOT a setup purpose, and that is
+    # load-bearing rather than incidental. A re-auth code is redeemed by
+    # `_second_factor_matches`, which since §204 reads the CHALLENGE pool and
+    # cannot see the enrolment pool at all. Route it to the enrolment pool —
+    # which reads like the tidy thing to do, since it is about enrolment
+    # settings — and every re-auth silently stops working. Only
+    # `two_factor_setup` belongs in the enrolment pool, because only
+    # confirm-setup reads from there.
     is_setup = purpose == "two_factor_setup"
     has_live = has_live_2fa_setup_code if is_setup else has_live_2fa_email_code
     store = store_2fa_setup_code if is_setup else store_2fa_email_code
@@ -1183,6 +1192,55 @@ def send_two_factor_email_fallback(
     return TwoFactorEmailFallbackResponse()
 
 
+@router.post(
+    "/2fa/send-reauth-code",
+    response_model=TwoFactorEmailFallbackResponse,
+    # Its own bucket. This is reachable only with a session, and it is the
+    # one send whose recipient is fixed by the row rather than named by the
+    # caller — a different abuse profile from either of the two above, and a
+    # shared allowance would let one drain the other's.
+    dependencies=[Depends(rate_limit("send_2fa_reauth_code", 5, 600))],
+)
+def send_two_factor_reauth_code(
+    force: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Mail a code for confirming a CHANGE to two-factor settings (§205).
+
+    The gap this closes: `/auth/2fa/disable`, `/auth/2fa/regenerate-backup-codes`
+    and a replacement enrolment all verify through `_second_factor_matches`,
+    and NOTHING on any of those paths sent a code. A TOTP user opens their
+    authenticator; an email-factor user — the default arrangement after §200
+    — had no source for a code at all. Disable, regenerate and change-method
+    were dead for all of them.
+
+    Email-factor users only. A TOTP user has their authenticator and does not
+    need mail, and sending it anyway would train people to expect a code that
+    their own configuration says should not arrive.
+
+    **The CHALLENGE pool, not the enrolment pool** — see the comment in
+    `_send_2fa_email_code`. `_second_factor_matches` is what redeems this
+    code, and since §204 it cannot see the enrolment pool.
+
+    `force=False` by default, so merely opening a dialog does not invalidate
+    a code already sitting in the person's inbox (§194's rule). The "Send it
+    again" button passes force=true, because there the user is telling us the
+    first one did not arrive.
+
+    Answers the same deliberately uninformative shape as
+    /auth/2fa/send-email-fallback whether or not anything was sent: a caller
+    holding a session already knows this account exists, but keeping the two
+    responses identical means neither can drift into being an oracle for the
+    other.
+    """
+    if current_user.two_factor_enabled and current_user.two_factor_method == "email":
+        _send_2fa_email_code(
+            current_user, purpose="two_factor_reauth", force=force
+        )
+    return TwoFactorEmailFallbackResponse()
+
+
 @router.post("/2fa/disable", response_model=TwoFactorDisableResponse)
 def disable_two_factor(
     body: TwoFactorReauthRequest,
@@ -1201,6 +1259,33 @@ def disable_two_factor(
     copies of "what counts as a second factor" is how one of them quietly
     stops accepting backup codes.
     """
+    # §205 — the instance-wide requirement removes the off switch, and it is
+    # checked BEFORE the code, before the idempotent early return, and before
+    # anything is written. A correct code must not buy an exemption from a
+    # policy, and ordering it after the check would mean the answer to "may
+    # I" depended on whether the caller happened to hold a valid code.
+    #
+    # Without this the switch was decorative in the worst way: a user could
+    # turn 2FA off and would merely be force-enrolled at their NEXT login —
+    # leaving their current, live session running with no second factor for
+    # as long as they stayed signed in.
+    #
+    # Regenerating backup codes and changing method are deliberately NOT
+    # gated: neither removes the protection, and blocking them would strand
+    # people on a factor they have lost.
+    #
+    # The superadmin escape hatch (PATCH /admin/users/{id}/disable-2fa) is
+    # also not gated. It exists for the user who has lost every factor, which
+    # is precisely the situation a policy must not make unrecoverable.
+    if two_factor_required_for(db, current_user):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Two-factor authentication is required on this instance, so "
+                "it cannot be turned off."
+            ),
+        )
+
     if not current_user.two_factor_enabled:
         # Idempotent rather than an error: the end state the caller asked
         # for is already true, and a 400 here would make a double-click

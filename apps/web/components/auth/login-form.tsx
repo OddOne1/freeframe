@@ -9,6 +9,10 @@ import { useSiteSettings } from '@/hooks/use-site-settings'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { CodeInput, EMPTY_CODE } from '@/components/auth/code-input'
+import {
+  CodeOrBackupInput,
+  type CodeEntryMode,
+} from '@/components/auth/code-or-backup-input'
 import { BackupCodes } from '@/components/auth/backup-codes'
 import { PasswordField } from '@/components/auth/password-field'
 import { PasswordSubmitNote } from '@/components/auth/password-submit-note'
@@ -67,6 +71,12 @@ export function LoginForm() {
   const [twoFactorMethod, setTwoFactorMethod] = useState<TwoFactorMethod | null>(null)
   const [twoFactorEmail, setTwoFactorEmail] = useState('')
   const [twoFactorNotice, setTwoFactorNotice] = useState('')
+  /** §205 — the login challenge is one of only two places a backup code is
+   *  legitimate (the three re-auth dialogs are the other). It is also the
+   *  place it matters most: this is what somebody reaches for when their
+   *  authenticator is gone and the emailed code is not arriving. */
+  const [twoFactorMode, setTwoFactorMode] = useState<CodeEntryMode>('digits')
+  const [backupCode, setBackupCode] = useState('')
   const [setupStage, setSetupStage] = useState<SetupStage>('choose')
   const [setupSecret, setSetupSecret] = useState('')
   const [setupQr, setSetupQr] = useState('')
@@ -303,6 +313,17 @@ export function LoginForm() {
 
   async function handleTwoFactorSubmit(e: React.FormEvent) {
     e.preventDefault()
+    // §205 — whichever field is showing. A backup code is nine characters
+    // with the dash and eight without, so the six-digit minimum would have
+    // rejected every one of them before it ever reached the server.
+    if (twoFactorMode === 'backup') {
+      if (backupCode.trim().length < 8) {
+        setCodeError('Enter your full backup code')
+        return
+      }
+      await submitTwoFactorCode(backupCode)
+      return
+    }
     const codeStr = code.join('')
     if (codeStr.length < 6) {
       setCodeError('Enter the 6-digit code')
@@ -591,12 +612,24 @@ export function LoginForm() {
         </div>
 
         <form onSubmit={handleTwoFactorSubmit} className="flex flex-col gap-6">
-          <CodeInput
-            value={code}
-            onChange={(next) => { setCode(next); setCodeError('') }}
+          <CodeOrBackupInput
+            value={twoFactorMode === 'backup' ? backupCode : code.join('')}
+            onChange={(next) => {
+              if (twoFactorMode === 'backup') setBackupCode(next)
+              else setCode(Array.from({ length: 6 }, (_, i) => next[i] ?? ''))
+              setCodeError('')
+            }}
             onComplete={submitTwoFactorCode}
+            mode={twoFactorMode}
+            onModeChange={(next) => {
+              setTwoFactorMode(next)
+              setCode(EMPTY_CODE)
+              setBackupCode('')
+              setCodeError('')
+            }}
             invalid={!!codeError}
             autoFocus
+            allowBackupCode
           />
 
           {codeError && <p className="text-sm text-status-error -mt-3">{codeError}</p>}

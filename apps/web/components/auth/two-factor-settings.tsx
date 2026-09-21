@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { CodeInput, EMPTY_CODE } from '@/components/auth/code-input'
 import { BackupCodes } from '@/components/auth/backup-codes'
 import { CodeConfirmDialog } from '@/components/auth/code-confirm-dialog'
+import { useSiteSettings } from '@/hooks/use-site-settings'
 import type {
   AuthTokens,
   TwoFactorMethod,
@@ -55,8 +56,12 @@ function adoptTokens(tokens: AuthTokens | null | undefined) {
  */
 export function TwoFactorSettings() {
   const { user, fetchUser } = useAuthStore()
+  const { requireTwoFactor } = useSiteSettings()
   const enrolled = !!user?.two_factor_enabled
   const method = (user?.two_factor_method ?? null) as TwoFactorMethod | null
+  /** §205 — an email-factor user has no authenticator to open, so every
+   *  re-auth dialog has to mail them a code. A TOTP user gets none. */
+  const reauthNeedsMail = enrolled && method === 'email'
 
   const [stage, setStage] = React.useState<Stage>('idle')
   const [pendingMethod, setPendingMethod] = React.useState<TwoFactorMethod | null>(null)
@@ -73,6 +78,42 @@ export function TwoFactorSettings() {
    *  different for a fresh enrolment than for a replacement set. */
   const [backupReason, setBackupReason] = React.useState<'enrol' | 'regenerate'>('enrol')
   const [busy, setBusy] = React.useState(false)
+  /** §205 — what the re-auth dialog says about the mail it just sent. */
+  const [reauthNotice, setReauthNotice] = React.useState('')
+
+  /** POST /auth/2fa/send-reauth-code (§205).
+   *
+   *  `force` is false when a dialog opens — a code already in the inbox must
+   *  not be invalidated by merely looking at the screen (§194's rule) — and
+   *  true for "Send it again", where the user is saying the first one did
+   *  not arrive.
+   */
+  async function sendReauthCode(force: boolean) {
+    await api.post(`/auth/2fa/send-reauth-code?force=${force}`)
+    setReauthNotice(
+      force
+        ? `We sent another code to ${user?.email}`
+        : `We sent a 6-digit code to ${user?.email}`,
+    )
+  }
+
+  /** Open one of the three re-auth dialogs, mailing a code first when the
+   *  user's factor is email. The send is best-effort: a failed mail must not
+   *  stop the dialog opening, because a backup code is a perfectly good way
+   *  through it and §205 just made backup codes typeable. */
+  async function openReauth(which: 'enrol' | 'disable' | 'regenerate') {
+    setSuccess('')
+    setReauthNotice('')
+    setReauthFor(which)
+    if (!reauthNeedsMail) return
+    try {
+      await sendReauthCode(false)
+    } catch {
+      setReauthNotice(
+        'We could not send a code just now — you can use a backup code instead.',
+      )
+    }
+  }
 
   function reset() {
     setStage('idle')
@@ -115,7 +156,7 @@ export function TwoFactorSettings() {
       // method is chosen before the prompt so the dialog can fail and be
       // retried without losing the choice.
       setPendingMethod(m)
-      setReauthFor('enrol')
+      void openReauth('enrol')
       return
     }
     setBusy(true)
@@ -242,18 +283,36 @@ export function TwoFactorSettings() {
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() => { setSuccess(''); setReauthFor('regenerate') }}
+                  onClick={() => openReauth('regenerate')}
                 >
                   Regenerate backup codes
                 </Button>
+                {/* §205 — disabled WITH THE REASON NEXT TO IT while the
+                    instance requires two-factor. Hidden would have been
+                    fewer pixels and a support ticket: a control that
+                    vanishes leaves the user hunting for it, whereas a dead
+                    one that says why answers the question on the spot. The
+                    server refuses this with a 403 regardless — see
+                    disable_two_factor — so this is the explanation, not the
+                    enforcement. */}
                 <Button
                   variant="secondary"
                   size="sm"
                   className="text-status-error hover:text-status-error"
-                  onClick={() => { setSuccess(''); setReauthFor('disable') }}
+                  disabled={requireTwoFactor}
+                  onClick={() => openReauth('disable')}
                 >
                   Turn off
                 </Button>
+                {requireTwoFactor && (
+                  <p
+                    className="text-xs text-text-tertiary"
+                    data-testid="disable-blocked-reason"
+                  >
+                    Two-factor authentication is required on this instance, so
+                    it cannot be turned off.
+                  </p>
+                )}
               </>
             ) : (
               <Button
@@ -384,12 +443,24 @@ export function TwoFactorSettings() {
               : 'Confirm it\'s you'
         }
         description={
-          reauthFor === 'disable'
-            ? 'Enter a code from your current second factor. A backup code works too.'
-            : reauthFor === 'regenerate'
-              ? 'Enter a current code. Your existing backup codes stop working as soon as new ones are issued.'
-              : 'Enter a code from your current second factor before setting up a new one.'
+          // §205 — the description names the user's ACTUAL factor. One
+          // string for both methods is how an email-factor user was told to
+          // open an authenticator they never set up.
+          <>
+            {reauthNeedsMail
+              ? 'Enter the code we emailed you.'
+              : 'Enter the 6-digit code from your authenticator app.'}{' '}
+            {reauthFor === 'regenerate'
+              ? 'Your existing backup codes stop working as soon as new ones are issued.'
+              : reauthFor === 'enrol'
+                ? 'This confirms it is you before setting up a new method.'
+                : 'A backup code works too.'}
+          </>
         }
+        notice={reauthNotice || undefined}
+        // Absent for a TOTP user: there is no mail to resend, and offering it
+        // would promise something that never arrives.
+        onResend={reauthNeedsMail ? () => sendReauthCode(true) : undefined}
         confirmLabel={reauthFor === 'disable' ? 'Turn off' : 'Continue'}
         onConfirm={handleReauthConfirmed}
       />
