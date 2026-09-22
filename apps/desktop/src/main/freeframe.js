@@ -279,6 +279,33 @@ async function sendTwoFactorEmailFallback({ pendingToken } = {}) {
 }
 
 /**
+ * Mail a code for confirming a CHANGE to two-factor settings (§206).
+ *
+ * The desktop's disable / regenerate / change-method prompts asked for a
+ * code and sent nothing, so an email-factor user was asked for something
+ * that could never arrive — the same dead end §205 fixed on the web, still
+ * present here because that change never reached this app.
+ *
+ * Session-authenticated, so no pending token: this is a signed-in user
+ * changing their own settings, not a half-finished login. `force` is false
+ * when a prompt opens, so a code already in the inbox is not invalidated by
+ * opening a panel, and true for the resend.
+ *
+ * The server sends only to email-factor users and answers the same
+ * deliberately uninformative shape either way, so nothing here needs to
+ * know the method to call it safely — but the renderer checks anyway, so a
+ * TOTP user is not shown a "resend" for mail that is never sent.
+ */
+async function sendTwoFactorReauthCode({ force = false } = {}) {
+  try {
+    await apiRequest("POST", `/auth/2fa/send-reauth-code?force=${force ? "true" : "false"}`, {});
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+
+/**
  * Begin enrolment. Does NOT enable anything — confirm does.
  *
  * `reauthCode` is for the session-authenticated case where the user is
@@ -657,6 +684,7 @@ module.exports = {
   adoptSession,
   verifyTwoFactorLogin,
   sendTwoFactorEmailFallback,
+  sendTwoFactorReauthCode,
   setupTwoFactor,
   confirmTwoFactorSetup,
   disableTwoFactor,

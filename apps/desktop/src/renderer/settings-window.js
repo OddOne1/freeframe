@@ -269,14 +269,31 @@ function showAccountPanel(id) {
 }
 
 /**
- * Ask for a code. Resolves with the digits, or null if the user backs out.
+ * Ask for a code. Resolves with what the user typed, or null if they back out.
  *
  * `qr`/`secret` are for the authenticator setup screen, which is the same
  * question with a picture above it rather than a different screen.
  * `extraLabel`/`onExtra` back the "resend" action an email-primary
  * challenge needs.
+ *
+ * §206 — `allowBackupCode` reveals a second field for the `XXXX-XXXX`
+ * recovery codes. Until now this panel stripped every non-digit and refused
+ * anything under six, while four of its callers told the user in so many
+ * words that "a backup code works too" and `showBackupCodes` had just asked
+ * them to keep ten of those safe. The app issued credentials it could not
+ * accept, and the login challenge — the lockout path — was one of them.
+ *
+ * Still resolves with ONE string either way. A second resolve shape would
+ * make every call site branch on which field produced the value, for no
+ * gain: the server's `normalize_backup_code` already forgives case, spaces
+ * and the dash, so the raw string is what it wants in both cases.
+ *
+ * Off by default, because two screens must NOT offer it: enrolment-confirm,
+ * where `confirm_two_factor_setup` refuses a backup code by design (it
+ * exists to prove the NEW factor works), and anywhere else a backup code is
+ * not a valid answer. The web draws the same line in §205.
  */
-function promptForCode({ title, description, confirmLabel = "Confirm", qr = null, secret = null, error = "", extraLabel = null, onExtra = null }) {
+function promptForCode({ title, description, confirmLabel = "Confirm", qr = null, secret = null, error = "", extraLabel = null, onExtra = null, allowBackupCode = false }) {
   return new Promise((resolve) => {
     $("tfa-prompt-title").textContent = title;
     $("tfa-prompt-desc").textContent = description || "";
@@ -297,17 +314,53 @@ function promptForCode({ title, description, confirmLabel = "Confirm", qr = null
     extra.hidden = !extraLabel;
     if (extraLabel) extra.textContent = extraLabel;
 
+    // §206 — always reopen on the digits field. A panel that remembered the
+    // last attempt's mode would put somebody who once used a backup code in
+    // front of the wrong input every time afterwards.
+    const codeField = $("tfa-prompt-code-field");
+    const backupField = $("tfa-prompt-backup-field");
+    const backupToggle = $("tfa-prompt-backup-toggle");
+    let usingBackup = false;
+    $("tfa-prompt-backup").value = "";
+    const applyMode = () => {
+      codeField.hidden = usingBackup;
+      backupField.hidden = !usingBackup;
+      backupToggle.hidden = !allowBackupCode;
+      backupToggle.textContent = usingBackup
+        ? "Enter a 6-digit code instead"
+        : "Use a backup code instead";
+      (usingBackup ? $("tfa-prompt-backup") : $("tfa-prompt-code")).focus();
+    };
+
     showAccountPanel("tfa-prompt");
-    $("tfa-prompt-code").focus();
+    applyMode();
 
     const done = (value) => {
       $("tfa-prompt-confirm").removeEventListener("click", onConfirm);
       $("tfa-prompt-cancel").removeEventListener("click", onCancel);
       $("tfa-prompt-code").removeEventListener("keydown", onKey);
+      $("tfa-prompt-backup").removeEventListener("keydown", onKey);
+      backupToggle.removeEventListener("click", onToggleBackup);
       extra.removeEventListener("click", onExtraClick);
       resolve(value);
     };
     const onConfirm = () => {
+      if (usingBackup) {
+        // Sent RAW. The server normalises, and doing it here as well would
+        // mean two implementations of "what counts as the same code" — the
+        // shape §205 refused on the web for the same reason.
+        const backup = $("tfa-prompt-backup").value.trim();
+        // Eight characters without the dash, nine with. The digits rule
+        // (< 6) would have let four characters of a backup code through to
+        // the server and spent an attempt on it.
+        if (backup.length < 8) {
+          err.textContent = "Enter your full backup code";
+          err.classList.add("show");
+          return;
+        }
+        done(backup);
+        return;
+      }
       const code = $("tfa-prompt-code").value.replace(/\D/g, "");
       if (code.length < 6) {
         err.textContent = "Enter the 6-digit code";
@@ -318,6 +371,14 @@ function promptForCode({ title, description, confirmLabel = "Confirm", qr = null
     };
     const onCancel = () => done(null);
     const onKey = (e) => { if (e.key === "Enter") onConfirm(); };
+    const onToggleBackup = () => {
+      usingBackup = !usingBackup;
+      $("tfa-prompt-code").value = "";
+      $("tfa-prompt-backup").value = "";
+      err.textContent = "";
+      err.classList.remove("show");
+      applyMode();
+    };
     const onExtraClick = async () => {
       if (!onExtra) return;
       extra.disabled = true;
@@ -336,6 +397,8 @@ function promptForCode({ title, description, confirmLabel = "Confirm", qr = null
     $("tfa-prompt-confirm").addEventListener("click", onConfirm);
     $("tfa-prompt-cancel").addEventListener("click", onCancel);
     $("tfa-prompt-code").addEventListener("keydown", onKey);
+    $("tfa-prompt-backup").addEventListener("keydown", onKey);
+    backupToggle.addEventListener("click", onToggleBackup);
     extra.addEventListener("click", onExtraClick);
   });
 }
@@ -448,6 +511,9 @@ async function runTwoFactorChallenge(challenge) {
         : "Open your authenticator app and enter the 6-digit code. A backup code works too.",
       confirmLabel: "Verify",
       error,
+      // §206 — the lockout path. This screen has promised "a backup code
+      // works too" since §198 while the field threw the letters away.
+      allowBackupCode: true,
       extraLabel: byEmail ? "Resend code" : null,
       onExtra: byEmail
         ? () => window.freeframe.freeframeSendTwoFactorEmailFallback(challenge.pendingToken)
@@ -483,6 +549,28 @@ function renderAccount() {
     $("tfa-change").hidden = !on;
     $("tfa-regen").hidden = !on;
     $("tfa-disable").hidden = !on;
+
+    // §206 — the instance-wide requirement removes the off switch, and says
+    // so BEFORE the user types a code. §205 made `disable_two_factor` answer
+    // 403; without this the desktop would render that as a red line after a
+    // code had already been entered, which is the worst moment to learn it.
+    //
+    // DISABLED, not hidden: a control that vanishes leaves the user hunting
+    // for it, a dead one with a sentence beside it answers the question on
+    // the spot (CLAUDE.md). The web draws the same button the same way.
+    //
+    // Change method and regenerate stay enabled: neither removes the
+    // protection, and blocking them would strand somebody on a factor they
+    // have lost.
+    //
+    // `two_factor_required` comes from /auth/me (§206), which answers
+    // "does the policy apply to ME" rather than "does this instance have a
+    // policy" — the two coincide today and stop coinciding when the rule
+    // grows a per-role form. The server's 403 remains the rule; this is the
+    // courtesy.
+    const blocked = Boolean(ffStatus.user?.two_factor_required);
+    $("tfa-disable").disabled = on && blocked;
+    $("tfa-disable-blocked").hidden = !(on && blocked);
 
     $("account-who").textContent =
       ffStatus.user?.name || ffStatus.user?.email || "Signed in";
@@ -557,6 +645,54 @@ $("ff-logout").addEventListener("click", async () => {
 // harmless and is the most destructive — §194b makes the server refuse it
 // without proof, and this is the place a UI forgets to collect it.
 
+/**
+ * Whether the signed-in user's second factor is email (§206).
+ *
+ * Read from the live status rather than remembered, because "change method"
+ * can make it stale inside one session.
+ */
+function reauthNeedsMail() {
+  return Boolean(
+    ffStatus && ffStatus.user &&
+    ffStatus.user.two_factor_enabled &&
+    ffStatus.user.two_factor_method === "email",
+  );
+}
+
+/**
+ * Ask for a current code before a change to the 2FA settings (§206).
+ *
+ * One opener for disable / regenerate / change-method, so the three cannot
+ * drift on whether they mail a code, whether they accept a backup code, or
+ * what they tell the user to look for — which is exactly how the web ended
+ * up with three dialogs saying "open your authenticator" to people who had
+ * never set one up.
+ *
+ * The send is best-effort: a failed mail must not block the panel, because a
+ * backup code is a perfectly good way through it and §206 just made those
+ * typeable.
+ */
+async function promptForReauthCode({ title, description, confirmLabel }) {
+  const byEmail = reauthNeedsMail();
+  let notice = description;
+  if (byEmail) {
+    const sent = await window.freeframe.freeframeSendTwoFactorReauthCode(false);
+    notice = sent && sent.ok === false
+      ? "We could not send a code just now — you can use a backup code instead."
+      : "Enter the code we emailed you. A backup code works too.";
+  }
+  return promptForCode({
+    title,
+    description: notice,
+    confirmLabel,
+    allowBackupCode: true,
+    extraLabel: byEmail ? "Send it again" : null,
+    onExtra: byEmail
+      ? () => window.freeframe.freeframeSendTwoFactorReauthCode(true)
+      : null,
+  });
+}
+
 $("tfa-enable").addEventListener("click", async () => {
   setTwoFactorError("");
   const done = await runTwoFactorEnrolment({});
@@ -567,9 +703,12 @@ $("tfa-enable").addEventListener("click", async () => {
 
 $("tfa-change").addEventListener("click", async () => {
   setTwoFactorError("");
-  const reauth = await promptForCode({
+  const reauth = await promptForReauthCode({
     title: "Confirm it's you",
-    description: "Enter a code from your current second factor before setting up a new one. A backup code works too.",
+    // §206 — the TOTP wording. An email user gets the mailed-code sentence
+    // from promptForReauthCode instead; one string for both is how somebody
+    // was told to open an authenticator they never set up.
+    description: "Open your authenticator app and enter the 6-digit code before setting up a new one. A backup code works too.",
     confirmLabel: "Continue",
   });
   if (!reauth) { showAccountPanel(null); return; }
@@ -580,9 +719,9 @@ $("tfa-change").addEventListener("click", async () => {
 
 $("tfa-regen").addEventListener("click", async () => {
   setTwoFactorError("");
-  const code = await promptForCode({
+  const code = await promptForReauthCode({
     title: "Replace your backup codes",
-    description: "Enter a current code. Your existing backup codes stop working as soon as new ones are issued.",
+    description: "Open your authenticator app and enter the 6-digit code. Your existing backup codes stop working as soon as new ones are issued.",
     confirmLabel: "Replace",
   });
   if (!code) { showAccountPanel(null); return; }
@@ -598,9 +737,9 @@ $("tfa-regen").addEventListener("click", async () => {
 
 $("tfa-disable").addEventListener("click", async () => {
   setTwoFactorError("");
-  const code = await promptForCode({
+  const code = await promptForReauthCode({
     title: "Turn off two-factor authentication",
-    description: "Enter a code from your current second factor. A backup code works too.",
+    description: "Open your authenticator app and enter the 6-digit code. A backup code works too.",
     confirmLabel: "Turn off",
   });
   if (!code) { showAccountPanel(null); return; }

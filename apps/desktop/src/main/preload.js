@@ -189,6 +189,11 @@ contextBridge.exposeInMainWorld("freeframe", {
     ipcRenderer.invoke("freeframe:2fa-verify-login", { pendingToken, code }),
   freeframeSendTwoFactorEmailFallback: (pendingToken) =>
     ipcRenderer.invoke("freeframe:2fa-send-email-fallback", { pendingToken }),
+  // §206 — the re-auth code, for a signed-in user changing their 2FA
+  // settings. Distinct from the fallback above, which is mid-login and
+  // carries a pending token.
+  freeframeSendTwoFactorReauthCode: (force) =>
+    ipcRenderer.invoke("freeframe:2fa-send-reauth-code", { force }),
   freeframeTwoFactorSetup: (pendingToken, method, reauthCode) =>
     ipcRenderer.invoke("freeframe:2fa-setup", { pendingToken, method, reauthCode }),
   freeframeConfirmTwoFactorSetup: (pendingToken, code) =>

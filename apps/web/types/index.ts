@@ -66,6 +66,10 @@ export interface User {
    *  older cached /auth/me response still validates. */
   two_factor_enabled?: boolean;
   two_factor_method?: TwoFactorMethod | null;
+  /** §206 — whether the instance's policy forbids THIS user turning their own
+   *  two-factor off. Filled by /auth/me only; `false` everywhere else, which
+   *  is the safe default since the server's 403 is the actual rule. */
+  two_factor_required?: boolean;
   /** §200 — the onboarding gate, as /auth/me reports it.
    *
    *  Both are DERIVED server-side from the stored data, never from anything

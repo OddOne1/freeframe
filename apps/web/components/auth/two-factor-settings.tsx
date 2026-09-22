@@ -9,7 +9,6 @@ import { Button } from '@/components/ui/button'
 import { CodeInput, EMPTY_CODE } from '@/components/auth/code-input'
 import { BackupCodes } from '@/components/auth/backup-codes'
 import { CodeConfirmDialog } from '@/components/auth/code-confirm-dialog'
-import { useSiteSettings } from '@/hooks/use-site-settings'
 import type {
   AuthTokens,
   TwoFactorMethod,
@@ -56,7 +55,14 @@ function adoptTokens(tokens: AuthTokens | null | undefined) {
  */
 export function TwoFactorSettings() {
   const { user, fetchUser } = useAuthStore()
-  const { requireTwoFactor } = useSiteSettings()
+  // §206 — from /auth/me, not /site-settings' `require_2fa`. Those answer
+  // different questions: `require_2fa` is "does this instance require it"
+  // (what the login screen needs), this is "does the policy apply to ME"
+  // (what this button needs). They coincide today and stop coinciding the
+  // moment `two_factor_required_for` grows its per-role form. Reading the
+  // same field the desktop reads is also what stops the two platforms
+  // disagreeing about whether the button works.
+  const requireTwoFactor = !!user?.two_factor_required
   const enrolled = !!user?.two_factor_enabled
   const method = (user?.two_factor_method ?? null) as TwoFactorMethod | null
   /** §205 — an email-factor user has no authenticator to open, so every

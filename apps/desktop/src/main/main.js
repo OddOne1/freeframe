@@ -821,6 +821,14 @@ ipcMain.handle("freeframe:2fa-send-email-fallback", async (_e, { pendingToken } 
   }
 });
 
+ipcMain.handle("freeframe:2fa-send-reauth-code", async (_e, { force } = {}) => {
+  try {
+    return await freeframe.sendTwoFactorReauthCode({ force });
+  } catch (err) {
+    return { ok: false, error: String(err.message || err) };
+  }
+});
+
 ipcMain.handle("freeframe:2fa-setup", async (_e, { pendingToken, method, reauthCode } = {}) => {
   try {
     return await freeframe.setupTwoFactor({ pendingToken, method, reauthCode });

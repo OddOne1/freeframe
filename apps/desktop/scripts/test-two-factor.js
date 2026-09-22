@@ -331,6 +331,38 @@ const ME = { email: "u@example.com", two_factor_enabled: true, two_factor_method
     check(calls[0].auth === "Bearer live-access", "uses the session instead");
   }
 
+  console.log("\n12. sendTwoFactorReauthCode — the code §205 never sent (§206)");
+  {
+    // The gap: the desktop's disable / regenerate / change-method prompts
+    // asked for a code and called nothing, so an email-factor user waited
+    // for mail that was never sent. §205 fixed the same dead end on the web
+    // and that change never reached this app.
+    signedIn();
+    let calls = server({ "/auth/2fa/send-reauth-code?force=false": json({ message: "ok" }) });
+    const opened = await freeframe.sendTwoFactorReauthCode({});
+    check(opened.ok === true, "opening a prompt sends one");
+    check(calls[0].endpoint === "/auth/2fa/send-reauth-code?force=false",
+      "with force=false — a code already in the inbox is not invalidated",
+      calls[0].endpoint);
+    check(calls[0].auth === "Bearer live-access",
+      "authenticated with the session, no pending token", String(calls[0].auth));
+
+    calls = server({ "/auth/2fa/send-reauth-code?force=true": json({ message: "ok" }) });
+    const resent = await freeframe.sendTwoFactorReauthCode({ force: true });
+    check(resent.ok === true, "'Send it again' succeeds");
+    check(calls[0].endpoint === "/auth/2fa/send-reauth-code?force=true",
+      "with force=true — the user is saying the first did not arrive",
+      calls[0].endpoint);
+
+    // A rate limit must come back as a reportable error, not a throw: the
+    // renderer keeps the panel open on a failed send so a backup code can
+    // still be used.
+    server({});
+    const failed = await freeframe.sendTwoFactorReauthCode({});
+    check(failed.ok === false && typeof failed.error === "string",
+      "a server refusal is reported, not thrown", JSON.stringify(failed));
+  }
+
   global.fetch = realFetch;
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`\n${fail === 0 ? "ALL PASS" : fail + " FAILED"}`);

@@ -330,6 +330,24 @@ class UserResponse(BaseModel):
     #: nothing writes them from this schema.
     two_factor_enabled: bool = False
     two_factor_method: Optional[TwoFactorMethod] = None
+    #: §206 — whether the instance-wide policy forbids THIS user from turning
+    #: their own two-factor off.
+    #:
+    #: Filled by /auth/me explicitly, not derived by `from_attributes`: it is
+    #: a question about the instance's settings as they apply to a user, and
+    #: the User row knows nothing about them. Every other endpoint returning
+    #: this schema leaves it at False, which is the safe default — a client
+    #: that reads it there sees "not blocked" and the server's 403 is still
+    #: the rule.
+    #:
+    #: On /auth/me rather than read off /site-settings' `require_2fa`, which
+    #: is what the web used between §205 and §206. Those answer different
+    #: questions: `require_2fa` is "does this instance require it" (what the
+    #: login screen needs), this is "does the policy apply to me" (what a
+    #: Turn-off button needs). They coincide today and stop coinciding the
+    #: moment `two_factor_required_for` grows the per-role rule its signature
+    #: is already shaped for.
+    two_factor_required: bool = False
     #: §200 — the onboarding gate, computed server-side from the stored data
     #: and reported here.
     #:

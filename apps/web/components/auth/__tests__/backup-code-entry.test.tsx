@@ -47,9 +47,17 @@ vi.mock('@/stores/auth-store', () => ({
   ),
 }))
 
+// §206 — the 2FA-off policy now rides on /auth/me as `two_factor_required`,
+// so it is set on the user fixture rather than read from site settings.
 let requireTwoFactor = false
+
+// LoginForm still reads /site-settings, and correctly: `require_2fa` there
+// answers "does this instance require 2FA", which is what decides whether the
+// magic-code screen is offered at all. Different question from the one above,
+// and deliberately left alone by §206 — without this mock the form never
+// leaves its loading state and renders nothing.
 vi.mock('@/hooks/use-site-settings', () => ({
-  useSiteSettings: () => ({ requireTwoFactor, isLoading: false }),
+  useSiteSettings: () => ({ requireTwoFactor: false, isLoading: false }),
 }))
 
 import { api } from '@/lib/api'
@@ -74,6 +82,12 @@ beforeEach(() => {
   currentUser = { ...ENROLLED_TOTP }
   requireTwoFactor = false
 })
+
+/** Re-assigns `currentUser` with the current policy flag folded in, so the
+ *  two never drift apart in a test. */
+function setUser(base: Record<string, unknown>) {
+  currentUser = { ...base, two_factor_required: requireTwoFactor }
+}
 
 const backupField = () => screen.getByLabelText('Backup code')
 const toggle = () => screen.getByRole('button', { name: /use a backup code instead/i })
@@ -344,6 +358,7 @@ describe('a TOTP user re-authenticating', () => {
 describe('when the instance requires two-factor', () => {
   beforeEach(() => {
     requireTwoFactor = true
+    setUser(ENROLLED_TOTP)
   })
 
   it('disables the Turn off button AND says why', async () => {

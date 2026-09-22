@@ -1566,8 +1566,26 @@ def refresh_token(body: RefreshRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/me", response_model=UserResponse)
-def get_me(current_user: User = Depends(get_current_user)):
-    return current_user
+def get_me(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The caller's own user, plus what the instance's policy means for them.
+
+    §206 — `two_factor_required` is set here rather than left to
+    `from_attributes`, because the User row cannot answer it: it is a
+    question about site settings as they apply to this person. Both clients
+    read it to decide whether the "Turn off two-factor" control is usable,
+    so they cannot disagree about the answer — which they did between §205
+    and §206, when the web read `/site-settings`' `require_2fa` and the
+    desktop read nothing at all.
+
+    The server's 403 in `disable_two_factor` remains the rule; this is the
+    courtesy that stops a user typing a code before being told no.
+    """
+    resp = UserResponse.model_validate(current_user)
+    resp.two_factor_required = two_factor_required_for(db, current_user)
+    return resp
 
 
 @router.patch("/me/preferences", response_model=UserResponse)

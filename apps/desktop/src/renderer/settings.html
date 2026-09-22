@@ -400,6 +400,14 @@
           <button id="tfa-regen" hidden>Regenerate backup codes</button>
           <button id="tfa-disable" class="danger" hidden>Turn off</button>
         </div>
+        <!-- §206 — a disabled control always states its reason (CLAUDE.md).
+             Hiding the Turn-off button instead would be fewer pixels and a
+             support ticket; the web renders the same sentence beside the same
+             button. -->
+        <div class="setting-sub" id="tfa-disable-blocked" hidden>
+          Two-factor authentication is required on this instance, so it cannot
+          be turned off.
+        </div>
         <div class="login-error" id="tfa-error" role="alert"></div>
       </div>
 
@@ -432,11 +440,27 @@
              style="width:160px;height:160px;background:#fff;padding:8px;border-radius:6px;margin:10px 0"
              hidden />
         <div class="setting-sub" id="tfa-prompt-secret" hidden></div>
-        <div class="login-field" style="margin-top:8px">
+        <div class="login-field" id="tfa-prompt-code-field" style="margin-top:8px">
           <label for="tfa-prompt-code">6-digit code</label>
           <input id="tfa-prompt-code" type="text" inputmode="numeric" maxlength="6"
                  autocomplete="one-time-code" spellcheck="false" placeholder="000000" />
         </div>
+        <!-- §206 — a SECOND field, not a wider first one. Six digits and a
+             nine-character dashed backup code want different inputs: maxlength
+             and inputmode="numeric" are right for one and wrong for the other,
+             and widening the existing field would have meant losing both. The
+             web made the same call in §205 (CodeOrBackupInput wraps CodeInput
+             rather than replacing it). -->
+        <div class="login-field" id="tfa-prompt-backup-field" style="margin-top:8px" hidden>
+          <label for="tfa-prompt-backup">Backup code</label>
+          <input id="tfa-prompt-backup" type="text" autocomplete="one-time-code"
+                 autocapitalize="off" autocorrect="off" spellcheck="false"
+                 placeholder="A7K2-9QXM" />
+          <div class="setting-sub">Upper or lower case, with or without the dash.</div>
+        </div>
+        <button id="tfa-prompt-backup-toggle" hidden
+                style="background:none;border:0;padding:0;margin-top:6px;
+                       color:var(--accent);cursor:pointer;font-size:12px;text-align:left"></button>
         <div class="login-error" id="tfa-prompt-error" role="alert"></div>
         <div style="display:flex;gap:6px;align-items:center">
           <button id="tfa-prompt-confirm" class="primary">Confirm</button>
