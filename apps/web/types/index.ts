@@ -1040,6 +1040,20 @@ export interface SiteSettingsResponse {
   // anonymous/non-superadmin requests (GET /site-settings is otherwise
   // public, backing the login page's branding).
   total_storage_used_bytes?: number | null;
+  /** §207 — how many signed-in users the PATCH that returned this response
+   *  just signed out by turning `require_2fa` on. Absent on every GET and on
+   *  every write that did not perform the off -> on flip, because no other
+   *  write ends a session. It is the row count of the single UPDATE that did
+   *  the bumping, so it is the authoritative figure — the number shown in
+   *  the confirmation beforehand is a preview (see
+   *  RequireTwoFactorImpactResponse). */
+  two_factor_signed_out_count?: number | null;
+}
+
+/** §207 — the dry-run count behind the "turn the requirement on?"
+ *  confirmation. GET /site-settings/require-2fa-impact, superadmin-only. */
+export interface RequireTwoFactorImpactResponse {
+  affected_users: number;
 }
 
 // ─── Transcription ────────────────────────────────────────────────────────────

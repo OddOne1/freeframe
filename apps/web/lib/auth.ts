@@ -22,6 +22,43 @@ export function setTokens(access: string, refresh: string): void {
   document.cookie = `${REFRESH_TOKEN_KEY}=${refresh}; path=/; max-age=${60 * 60 * 24 * 7}; SameSite=Lax`
 }
 
+/** §207 — a one-shot message for the login screen to show after a logout
+ *  this app performed deliberately.
+ *
+ *  sessionStorage rather than component state or a query parameter, because
+ *  of how `clearTokens` below gets to the login screen: a full
+ *  `window.location.href` assignment, which throws away every bit of React
+ *  state and would overwrite a path this caller had set itself. Per-tab
+ *  storage survives exactly that navigation and nothing wider — the message
+ *  belongs to this tab's logout, not to another tab that happens to be open.
+ *
+ *  Read with `takeSignOutNotice`, which clears it: a reason that outlived the
+ *  logout it described would greet the user again on their next ordinary
+ *  visit to /login.
+ */
+const SIGN_OUT_NOTICE_KEY = 'ff_sign_out_notice'
+
+export function setSignOutNotice(message: string): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.sessionStorage.setItem(SIGN_OUT_NOTICE_KEY, message)
+  } catch {
+    // Private mode, or storage disabled. The logout itself still has to
+    // happen — losing the explanation is the acceptable half to lose.
+  }
+}
+
+export function takeSignOutNotice(): string | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const value = window.sessionStorage.getItem(SIGN_OUT_NOTICE_KEY)
+    if (value) window.sessionStorage.removeItem(SIGN_OUT_NOTICE_KEY)
+    return value
+  } catch {
+    return null
+  }
+}
+
 export function clearTokens(): void {
   if (typeof window === 'undefined') return
   localStorage.removeItem(ACCESS_TOKEN_KEY)

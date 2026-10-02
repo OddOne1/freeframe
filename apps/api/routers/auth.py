@@ -16,6 +16,7 @@ from ..schemas.auth import (
     TwoFactorSetupRequest, TwoFactorSetupResponse,
     TwoFactorConfirmRequest, TwoFactorConfirmResponse,
     TwoFactorEmailFallbackResponse,
+    TwoFactorEndEnrolmentSessionResponse,
     TwoFactorReauthRequest, TwoFactorDisableResponse, TwoFactorBackupCodesResponse,
     TwoFactorMethod,
     BackupEmailRequest, BackupEmailResponse, BackupEmailVerifyRequest,
@@ -1362,6 +1363,46 @@ def regenerate_backup_codes(
     return TwoFactorBackupCodesResponse(
         backup_codes=codes, tokens=_issue_tokens(current_user)
     )
+
+
+@router.post(
+    "/2fa/end-enrolment-session",
+    response_model=TwoFactorEndEnrolmentSessionResponse,
+)
+def end_enrolment_session(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """§207 — end the session confirm-setup handed back, now that the user
+    has seen and acknowledged their backup codes.
+
+    Why this exists at all, since confirm-setup already bumps:
+
+    confirm_two_factor_setup bumps `token_version` and then hands THIS
+    browser a replacement pair, on purpose — the backup codes are shown
+    exactly once, and a client that was logged out the instant it received
+    them could not render the screen that displays them. So forced enrolment
+    necessarily ends with one live single-session token belonging to a user
+    who has just been told the instance requires two factors and has never
+    once presented the second one. Closing that is the last piece of §207:
+    the user finishes enrolment, reads their codes, says they have saved
+    them, and then signs in properly with the factor they just set up.
+
+    One more bump does it. The pair confirm-setup issued was minted under the
+    previous version, so after this they are stale like everything else, and
+    get_current_user refuses them on the next request (§199). No endpoint
+    hands the caller anything to replace them with — see
+    TwoFactorEndEnrolmentSessionResponse.
+
+    Not gated on re-auth, and not on 2FA being enabled either. A caller
+    holding a valid access token asking for that token to stop working can
+    always be granted: the worst a stolen session can achieve here is
+    logging itself out. Every other session this user holds is already gone
+    — confirm-setup ended those.
+    """
+    bump_token_version(current_user)
+    db.commit()
+    return TwoFactorEndEnrolmentSessionResponse()
 
 
 # ── Backup address, and the onboarding gate's own endpoints (§200) ──────────

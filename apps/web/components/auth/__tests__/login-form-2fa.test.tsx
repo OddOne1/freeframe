@@ -34,14 +34,23 @@ vi.mock('next/navigation', () => ({
 }))
 
 const setTokens = vi.fn()
+/** §207 — `setSignOutNotice`/`takeSignOutNotice` joined this module when
+ *  forced enrolment started ending in a sign-out. Both are listed here
+ *  because a mocked module replaces the real one WHOLESALE: an export left
+ *  out arrives as undefined and the component throws on calling it. */
+const setSignOutNotice = vi.fn()
+let pendingSignOutNotice: string | null = null
 vi.mock('@/lib/auth', () => ({
   setTokens: (...args: unknown[]) => setTokens(...args),
   getAccessToken: () => null,
+  setSignOutNotice: (...args: unknown[]) => setSignOutNotice(...args),
+  takeSignOutNotice: () => pendingSignOutNotice,
 }))
 
 const fetchUser = vi.fn()
+const logout = vi.fn()
 vi.mock('@/stores/auth-store', () => ({
-  useAuthStore: { getState: () => ({ fetchUser }) },
+  useAuthStore: { getState: () => ({ fetchUser, logout }) },
 }))
 
 /** `require_2fa` is read through useSiteSettings, which is SWR over
@@ -331,7 +340,7 @@ describe('the 2fa-setup step', () => {
     )
   })
 
-  it('shows the backup codes and will not continue until they are acknowledged', async () => {
+  it('shows the backup codes, and signs the user out once they are acknowledged', async () => {
     const user = userEvent.setup()
     vi.mocked(api.post)
       .mockResolvedValueOnce(SETUP_CHALLENGE)
@@ -353,10 +362,27 @@ describe('the 2fa-setup step', () => {
     expect(setTokens).not.toHaveBeenCalled()
     expect(replace).not.toHaveBeenCalled()
 
-    await user.click(screen.getByRole('button', { name: /i've saved these codes/i }))
+    // §207 — this screen used to be gated by the button alone. It is now
+    // gated by a tick-box as well, because dismissing it signs the user out
+    // rather than taking them into the app.
+    const dismiss = screen.getByRole('button', { name: /continue and sign in again/i })
+    expect(dismiss).toBeDisabled()
+    await user.click(screen.getByRole('checkbox'))
+    expect(dismiss).toBeEnabled()
 
-    await waitFor(() => expect(setTokens).toHaveBeenCalledWith('access-1', 'refresh-1'))
-    expect(replace).toHaveBeenCalledWith('/projects')
+    await user.click(dismiss)
+
+    // §207 — the old assertions here were `setTokens('access-1', …)` and
+    // `replace('/projects')`. Both were the bug: forced enrolment ended in a
+    // live session for a user who had never presented their new second
+    // factor. The pair is now adopted only long enough to tell the server
+    // this session is over.
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith('/auth/2fa/end-enrolment-session', {}),
+    )
+    expect(setTokens).toHaveBeenCalledWith('access-1', 'refresh-1')
+    expect(logout).toHaveBeenCalled()
+    expect(replace).not.toHaveBeenCalledWith('/projects')
   })
 })
 

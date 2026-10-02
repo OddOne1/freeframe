@@ -227,6 +227,20 @@ class TwoFactorBackupCodesResponse(BaseModel):
     tokens: Optional[TokenResponse] = None
 
 
+class TwoFactorEndEnrolmentSessionResponse(BaseModel):
+    """§207 — acknowledgement that this session is over, server-side.
+
+    No tokens, deliberately, and that is the whole difference between this
+    and every other endpoint here that bumps `token_version`. Disable and
+    regenerate hand back a replacement pair because the user is staying
+    signed in. This one is called by a client that is about to send the user
+    to the login screen on purpose: issuing a fresh pair would be undoing
+    the thing that was asked for.
+    """
+
+    signed_out: bool = True
+
+
 class TwoFactorEmailFallbackResponse(BaseModel):
     #: Deliberately says nothing about whether the address exists or
     #: whether a code was really sent.

@@ -36,6 +36,12 @@ const setTokens = vi.fn()
 vi.mock('@/lib/auth', () => ({
   setTokens: (...a: unknown[]) => setTokens(...a),
   getAccessToken: () => null,
+  // §207 — LoginForm reads this on mount and writes it before the
+  // forced-enrolment sign-out. A mocked module replaces the real one
+  // wholesale, so an export left out here is `undefined` at the call site
+  // and the component throws before rendering anything.
+  takeSignOutNotice: () => null,
+  setSignOutNotice: vi.fn(),
 }))
 
 const fetchUser = vi.fn()

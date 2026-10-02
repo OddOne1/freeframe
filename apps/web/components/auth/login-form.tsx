@@ -1,9 +1,13 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { api, ApiError } from '@/lib/api'
-import { setTokens } from '@/lib/auth'
+import {
+  setTokens,
+  takeSignOutNotice,
+  setSignOutNotice as rememberSignOutNotice,
+} from '@/lib/auth'
 import { useAuthStore } from '@/stores/auth-store'
 import { useSiteSettings } from '@/hooks/use-site-settings'
 import { Button } from '@/components/ui/button'
@@ -87,6 +91,16 @@ export function LoginForm() {
     useState<PasswordStrength | null>(null)
   const passwordPolicy = usePasswordPolicy()
   const [enrolledTokens, setEnrolledTokens] = useState<AuthTokens | null>(null)
+  /** §207 — why the user is looking at a login screen, when this app is the
+   *  thing that sent them here. Read once on mount and cleared in the same
+   *  breath (see takeSignOutNotice), so it shows after the logout that set it
+   *  and never again. */
+  const [signOutNotice, setSignOutNotice] = useState('')
+
+  useEffect(() => {
+    const notice = takeSignOutNotice()
+    if (notice) setSignOutNotice(notice)
+  }, [])
 
   /**
    * Which screen to open on, before the user has navigated anywhere.
@@ -437,19 +451,50 @@ export function LoginForm() {
     await submitSetupCode(codeStr)
   }
 
-  /** Only after the user confirms they have the codes. */
+  /**
+   * Only after the user confirms they have the codes — and then they sign in
+   * again, rather than landing in the app (§207).
+   *
+   * This used to adopt the tokens confirm-setup handed back and redirect to
+   * /projects. That left forced enrolment ending in a live session for a user
+   * who had never once presented the second factor the instance had just
+   * started requiring: the tokens exist only so the codes screen can render,
+   * and riding them into the app made them a way to skip the very gate the
+   * enrolment was for. Worse, closing the tab at the codes screen left that
+   * session alive behind them.
+   *
+   * So the sequence here is deliberately the opposite of a login's:
+   *
+   *  1. Tell the server this session is finished
+   *     (/auth/2fa/end-enrolment-session bumps `token_version`, which makes
+   *     the pair confirm-setup issued stale server-side — see §199). Done
+   *     FIRST, while those tokens are still valid, because the endpoint needs
+   *     them to authenticate the call.
+   *  2. Drop the local copy and the store's user.
+   *  3. Leave a reason behind for the login screen, since clearTokens gets
+   *     there by a full page navigation that discards React state.
+   *
+   * Step 1 failing does not stop steps 2 and 3. A user who has acknowledged
+   * their codes must end up at the login screen either way; the alternative
+   * is trapping them on a screen whose codes are already spent. What is lost
+   * in that case is only the server-side half, and that session expires on
+   * its own.
+   */
   async function handleBackupCodesSaved() {
-    if (!enrolledTokens?.access_token) {
-      // confirm-setup returns tokens for a forced first login, so this is
-      // not expected here — but sending them to a dead end would be worse
-      // than asking them to sign in again with the factor they just set up.
-      setStep('classic')
-      setGeneralError('Two-factor authentication is set up. Please sign in.')
-      return
+    if (enrolledTokens?.access_token) {
+      // The one request this token is for. Adopted into storage first because
+      // api.post reads the access token from there, not from an argument.
+      setTokens(enrolledTokens.access_token, enrolledTokens.refresh_token)
+      try {
+        await api.post('/auth/2fa/end-enrolment-session', {})
+      } catch {
+        // See the note above: the redirect is not conditional on this.
+      }
     }
-    setTokens(enrolledTokens.access_token, enrolledTokens.refresh_token)
-    await useAuthStore.getState().fetchUser()
-    router.replace('/projects')
+    rememberSignOutNotice('Two-factor is now active. Sign in again to continue.')
+    // Clears localStorage, the auth cookies and the store, then navigates to
+    // /login — clearTokens does the navigation itself.
+    useAuthStore.getState().logout()
   }
 
   // ─── Render ──────────────────────────────────────────────────────────────
@@ -468,7 +513,16 @@ export function LoginForm() {
       // the only thing standing between a user and having destroyed them.
       return (
         <div className="animate-slide-up">
-          <BackupCodes codes={backupCodes ?? []} onAcknowledge={handleBackupCodesSaved} />
+          <BackupCodes
+            codes={backupCodes ?? []}
+            onAcknowledge={handleBackupCodesSaved}
+            // §207 — this dismissal signs the user out, so it asks first.
+            // The settings page's own enrolment passes neither prop and is
+            // unchanged.
+            requireExplicitAcknowledgement
+            acknowledgeHint="Two-factor is now active on your account. When you continue, you will be signed out and can sign in with your new second factor."
+            acknowledgeLabel="Continue and sign in again"
+          />
         </div>
       )
     }
@@ -661,6 +715,15 @@ export function LoginForm() {
           <h1 className="text-xl font-semibold text-text-primary mb-1">Sign in with password</h1>
           <p className="text-sm text-text-secondary">Enter your email and password to continue.</p>
         </div>
+
+        {/* §207 — not an error: the app signed this user out on purpose and
+            says so. Rendered above the error slot so a subsequent failed
+            attempt stacks under it rather than replacing it. */}
+        {signOutNotice && (
+          <div className="mb-4 rounded-md border border-status-success/30 bg-status-success/10 px-3 py-2.5 text-sm text-text-primary">
+            {signOutNotice}
+          </div>
+        )}
 
         <form onSubmit={handleClassicLogin} className="flex flex-col gap-4">
           {(classicError || generalError) && (

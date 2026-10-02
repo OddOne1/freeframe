@@ -4,7 +4,7 @@ import useSWR from 'swr'
 import { api } from '@/lib/api'
 import { resolveApiMediaUrl } from '@/lib/utils'
 import type { ThemeColorTokens } from '@/lib/color-utils'
-import type { SiteSettingsResponse } from '@/types'
+import type { RequireTwoFactorImpactResponse, SiteSettingsResponse } from '@/types'
 
 /** Exported so the server-seeded SWR fallback keys on exactly this string
  *  (§178) — a mismatched literal there would silently seed nothing. */
@@ -104,11 +104,32 @@ export function useSiteSettings() {
    *  rather than refused. Turning it OFF does not un-enrol anyone who
    *  opted in themselves, which is why the login screen still has to
    *  handle a 2FA challenge with this set to false. */
-  async function updateRequireTwoFactor(enabled: boolean): Promise<void> {
+  async function updateRequireTwoFactor(enabled: boolean): Promise<number | null> {
     const updated = await api.patch<SiteSettingsResponse>(SITE_SETTINGS_KEY, {
       require_2fa: enabled,
     })
     await mutate(updated, false)
+    // §207 — the authoritative number, straight from the row count of the
+    // UPDATE that did the bumping. Returned rather than swallowed so the
+    // caller can report what actually happened instead of repeating the
+    // preview figure it showed beforehand, which may have been read a
+    // moment before somebody enrolled.
+    return updated.two_factor_signed_out_count ?? null
+  }
+
+  /** §207 — how many people turning the requirement on would sign out,
+   *  without turning it on. For the confirmation dialog, which has to show a
+   *  number before the admin decides.
+   *
+   *  Not cached through SWR on purpose: it is read at the moment the admin
+   *  reaches for the switch, and a stale answer is worse than a fresh
+   *  request. The server computes it from the same predicate the write uses,
+   *  so the two agree about who is in scope. */
+  async function previewRequireTwoFactorImpact(): Promise<number> {
+    const res = await api.get<RequireTwoFactorImpactResponse>(
+      '/site-settings/require-2fa-impact',
+    )
+    return res.affected_users
   }
 
   /** Platform-wide total storage cap (superadmin-only in practice --
@@ -170,6 +191,7 @@ export function useSiteSettings() {
     updateTotalStorageLimit,
     updateTimezone,
     updateRequireTwoFactor,
+    previewRequireTwoFactorImpact,
     resetAll,
   }
 }
