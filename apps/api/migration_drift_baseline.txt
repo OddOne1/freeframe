@@ -1,0 +1,24 @@
+# Known model/migration differences, frozen by §208. See
+# scripts/check_model_drift.py for why this file exists and how to
+# shrink it. Do not ADD to it to make a build pass.
+add_constraint projects(storage_slug)
+add_index asset_shares.ix_asset_shares_asset_id
+add_index share_links.ix_share_links_asset_id
+modify_nullable asset_views.last_seen_at
+modify_nullable votes.created_at
+modify_type site_settings.updated_at
+remove_index asset_versions.ix_asset_versions_status_updated_at
+remove_index contact_requests.ix_contact_requests_created
+remove_index contact_requests.ix_contact_requests_sender_id
+remove_index lut_groups.ix_lut_groups_is_platform
+remove_index org_members.ix_org_members_org_id
+remove_index org_members.ix_org_members_user_id
+remove_index project_members.uq_project_members_one_owner
+remove_index projects.uq_projects_storage_slug
+remove_index team_members.ix_team_members_team_id
+remove_index team_members.ix_team_members_user_id
+remove_table contact_requests
+remove_table org_members
+remove_table organizations
+remove_table team_members
+remove_table teams

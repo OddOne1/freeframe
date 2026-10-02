@@ -524,6 +524,7 @@ class TestShareGuestsAreUnaffected:
         )
         session.add_all([version, link])
         session.commit()
+        link._test_owner = owner  # for the authenticated route below
         return link
 
     def test_the_share_page_still_resolves_after_a_bump(self, client, db):
@@ -539,43 +540,163 @@ class TestShareGuestsAreUnaffected:
         after = client.get(f"/share/{link.token}")
         assert after.status_code == 200, after.text
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PRE-EXISTING §200 DEFECT, not §207. models/user.py's GuestUser "
-            "(:223) declares backup_email, backup_email_verified_at and "
-            "account_gate_waived_at, but alembic/versions/"
-            "add_account_security_gate.py adds those three columns to `users` "
-            "only — nothing anywhere adds them to `guest_users`. So the "
-            "GuestUser lookup inside guest_comment() raises "
-            "psycopg2.errors.UndefinedColumn and the POST 500s, on a migrated "
-            "database, with or without §207. Strict so that fixing the "
-            "migration turns this into an XPASS somebody has to look at, "
-            "rather than a line nobody reads again."
-        ),
-    )
     def test_a_guest_comment_still_posts_after_a_bump(self, client, db):
-        """The property §207 was asked to protect, written as it should be.
+        """The property §207 was asked to protect, asserted by posting.
 
-        Posting, not just loading: posting is what a reviewer would actually
-        lose. It fails today for a reason that has nothing to do with
-        `token_version` — see the xfail above — and the assertions are left
-        exactly as they would be once that is fixed.
+        Posting rather than only loading the page: posting is what a reviewer
+        would actually lose, and it is the only path that touches
+        `guest_users` — which is how §208's defect was found. This was a
+        strict xfail until §208 removed the three columns `GuestUser`
+        declared but no migration ever created; it passes for real now, on a
+        schema built by `alembic upgrade head` (see this module's docstring —
+        create_all would build the schema FROM the models and could never
+        have caught it).
         """
+        from apps.api.models.comment import Comment
+
         session, made = db
         admin = make_user(session, made, enrolled=True, superadmin=True)
         link = self._shared_asset(session, made)
 
-        def post_comment(text):
+        def post_comment(text, email):
             return client.post(
                 f"/share/{link.token}/comment",
                 json={
                     "body": text,
-                    "guest_email": f"{uuid.uuid4().hex[:8]}@guest207.test",
+                    "guest_email": email,
                     "guest_name": "Guest Reviewer",
                 },
             )
 
-        assert post_comment("before the flip").status_code == 201
+        first = post_comment("before the flip", "before@guest207.test")
+        assert first.status_code == 201, first.text
+
         assert set_require_2fa(client, token_for(admin), True).status_code == 200
-        assert post_comment("after the flip").status_code == 201
+
+        second = post_comment("after the flip", "after@guest207.test")
+        assert second.status_code == 201, second.text
+
+        # Persisted, not merely accepted: a 201 over a session that then
+        # rolled back would look identical from here.
+        bodies = {
+            c.body
+            for c in session.query(Comment).filter(
+                Comment.asset_id == link.asset_id
+            )
+        }
+        assert {"before the flip", "after the flip"} <= bodies
+
+        self._cleanup(session, link)
+
+    def test_reading_the_comments_back_works_too(self, client, db):
+        """The OTHER route that selects from `guest_users` (§208).
+
+        `GET /share/{token}/comments` resolves each comment's guest author
+        (routers/comments.py:122) — a second, independent query against the
+        same table, and the one a reviewer hits just by opening the page.
+        It would have 500'd for exactly the same reason, and nothing covered
+        it.
+        """
+        session, made = db
+        link = self._shared_asset(session, made)
+
+        posted = client.post(
+            f"/share/{link.token}/comment",
+            json={
+                "body": "visible to the next reader",
+                "guest_email": "reader@guest207.test",
+                "guest_name": "Guest Reviewer",
+            },
+        )
+        assert posted.status_code == 201, posted.text
+
+        listed = client.get(f"/share/{link.token}/comments")
+        assert listed.status_code == 200, listed.text
+        payload = listed.json()
+        rows = payload if isinstance(payload, list) else payload.get("comments", [])
+        assert any(r.get("body") == "visible to the next reader" for r in rows)
+
+        self._cleanup(session, link)
+
+    def test_the_IN_APP_comment_list_works_on_an_asset_with_a_guest_comment(
+        self, client, db
+    ):
+        """The worst of §208's blast radius, and the one nothing covered.
+
+        `_build_comment_response` (routers/comments.py:87) resolves a guest
+        author, and SEVEN endpoints share it — five of them authenticated,
+        in-app routes that have nothing to do with share links. So the defect
+        was never only "guests cannot comment": an editor opening any asset
+        that had even one guest comment got a 500 on
+        `GET /assets/{id}/comments`, the main comment list in the app.
+
+        Asserted through a real member's token, because that is the path a
+        paying user takes.
+        """
+        session, made = db
+        link = self._shared_asset(session, made)
+        owner = link._test_owner
+
+        posted = client.post(
+            f"/share/{link.token}/comment",
+            json={
+                "body": "left by a guest reviewer",
+                "guest_email": "inapp@guest207.test",
+                "guest_name": "Guest Reviewer",
+            },
+        )
+        assert posted.status_code == 201, posted.text
+
+        listed = client.get(
+            f"/assets/{link.asset_id}/comments", headers=auth(token_for(owner))
+        )
+        assert listed.status_code == 200, listed.text
+        rows = listed.json()
+        mine = [r for r in rows if r.get("body") == "left by a guest reviewer"]
+        assert mine, rows
+        # The guest is resolved, not merely tolerated — that resolution is the
+        # query that used to raise UndefinedColumn.
+        assert mine[0]["guest_author"]["name"] == "Guest Reviewer"
+
+        self._cleanup(session, link)
+
+    @staticmethod
+    def _cleanup(session, link):
+        from apps.api.models.asset import Asset, AssetVersion
+        from apps.api.models.comment import Comment
+        from apps.api.models.project import Project, ProjectMember
+        from apps.api.models.share import ShareLink, ShareLinkActivity
+        from apps.api.models.user import GuestUser
+
+        asset_id = link.asset_id
+        asset = session.query(Asset).filter(Asset.id == asset_id).first()
+        project_id = asset.project_id if asset else None
+
+        session.query(Comment).filter(Comment.asset_id == asset_id).delete(
+            synchronize_session=False
+        )
+        # Posting a guest comment writes a ShareLinkActivity row that
+        # FK-references the link, so the link cannot go first.
+        session.query(ShareLinkActivity).filter(
+            ShareLinkActivity.share_link_id == link.id
+        ).delete(synchronize_session=False)
+        session.query(ShareLink).filter(ShareLink.id == link.id).delete(
+            synchronize_session=False
+        )
+        session.query(AssetVersion).filter(
+            AssetVersion.asset_id == asset_id
+        ).delete(synchronize_session=False)
+        session.query(Asset).filter(Asset.id == asset_id).delete(
+            synchronize_session=False
+        )
+        if project_id:
+            session.query(ProjectMember).filter(
+                ProjectMember.project_id == project_id
+            ).delete(synchronize_session=False)
+            session.query(Project).filter(Project.id == project_id).delete(
+                synchronize_session=False
+            )
+        session.query(GuestUser).filter(
+            GuestUser.email.like("%@guest207.test")
+        ).delete(synchronize_session=False)
+        session.commit()

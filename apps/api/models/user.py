@@ -225,40 +225,27 @@ class GuestUser(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    # ── Account security gate (§200) ────────────────────────────────────────
+    # §208 — NO account-security-gate columns here, deliberately.
     #
-    #: A SECOND address, used for exactly one thing: password resets. Nullable
-    #: because every row predates it — that is what the onboarding gate exists
-    #: to fill in.
-    #:
-    #: The whole point is channel separation. Before this, one mailbox was the
-    #: entire account: request a reset, set a new password, and then read the
-    #: 2FA code out of the same inbox. Two factors, one channel. Reset codes
-    #: now go ONLY here and 2FA codes go ONLY to `email`, with no fallback in
-    #: either direction — a fallback would re-merge exactly what this splits.
-    backup_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    #: When the address above was proved reachable, by a code sent to it.
-    #: NULL while an address is stored but unconfirmed, which is the "pending"
-    #: state the gate shows a code box for. An unverified address is never
-    #: used for anything — a reset to an address nobody has proved is a
-    #: mailbox is worse than no reset path at all.
-    backup_email_verified_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    #: A superadmin's (or the shell script's) escape hatch from the gate.
-    #:
-    #: The gate is computed from stored data and never from a "seen" flag, so
-    #: it cannot simply be dismissed — which is right, and is also how a user
-    #: whose backup address is undeliverable would be locked out of the whole
-    #: app with no way to ask for help. This column is the deliberate,
-    #: server-side, audit-logged exception: set, and `gate_outstanding` reads
-    #: False for this user until they complete setup for real.
-    #:
-    #: Consulted ONLY while something is outstanding (see gate_outstanding),
-    #: so it can never mask a requirement that comes back later — it is a
-    #: waiver of the block, not of the requirement.
-    account_gate_waived_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    # `backup_email`, `backup_email_verified_at` and `account_gate_waived_at`
+    # were declared on this class too, as a byte-identical 2057-character
+    # copy of User's block (docstrings included — they talked about password
+    # resets and 2FA codes, neither of which a guest has). Nothing ever read
+    # or wrote them for a guest: §200's gate runs off `gate_outstanding`,
+    # which needs `account_setup_required`, which needs `must_set_password`
+    # and `backup_email_state` — none of which exist here, because a guest
+    # has no password, never signs in, and never passes the gate.
+    #
+    # They were never added to the `guest_users` TABLE either: §200's
+    # migration adds those three columns to `users` only. A declared column
+    # with no column behind it is not inert — SQLAlchemy names every mapped
+    # column in its SELECT, so the three queries in routers/comments.py that
+    # load a GuestUser raised `UndefinedColumn` and every guest comment on a
+    # share link answered 500 on a migrated database.
+    #
+    # Removed rather than migrated on purpose: adding real columns would
+    # have made the schema match a mistake. If a guest ever genuinely needs
+    # one of these, it needs its own migration AND its own reason, not this
+    # paste.
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
