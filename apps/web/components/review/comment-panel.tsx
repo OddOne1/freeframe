@@ -42,7 +42,7 @@ interface CommentPanelProps {
   onAddReaction: (commentId: string, emoji: string) => Promise<void>;
   onRemoveReaction: (commentId: string, emoji: string) => Promise<void>;
   onReply: (parentId: string) => void;
-  onSubmitReply?: (parentId: string, body: string) => Promise<void>;
+  onSubmitReply?: (parentId: string, body: string) => Promise<void | boolean>;
   /** Compare mode: route comment-timecode clicks to a pane-scoped transport instead of the global store. */
   onSeekToTimecode?: (time: number, pause?: boolean) => void;
   /** Compare mode: route annotation display to a pane-scoped overlay instead of the global store. */
@@ -237,11 +237,17 @@ function InlineReplyInput({
   onCancel,
 }: {
   parentId: string;
-  onSubmit: (parentId: string, body: string) => Promise<void>;
+  /** Resolving to `false` means "not sent, on purpose" — see handleSubmit. */
+  onSubmit: (parentId: string, body: string) => Promise<void | boolean>;
   onCancel: () => void;
 }) {
   const [body, setBody] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
+  /** §209 — a reply that fails says so, right here, next to the box. This
+   *  used to be a bare `catch {}` with the comment "error handled upstream";
+   *  nothing upstream handled it, so a failed reply looked exactly like a
+   *  sent one. */
+  const [error, setError] = React.useState("");
   const [emojiOpen, setEmojiOpen] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
   const emojiRef = React.useRef<HTMLDivElement>(null);
@@ -266,12 +272,22 @@ function InlineReplyInput({
     const trimmed = body.trim();
     if (!trimmed || submitting) return;
     setSubmitting(true);
+    setError("");
     try {
-      await onSubmit(parentId, trimmed);
+      const outcome = await onSubmit(parentId, trimmed);
+      // §209 — `false` means the reply was deliberately held back rather than
+      // sent: on a share link, a guest who has not given a name yet gets the
+      // identity prompt first. The draft has to survive that, so the box is
+      // left exactly as it is and closing it would lose what they typed.
+      if (outcome === false) return;
       setBody("");
       onCancel();
-    } catch {
-      // error handled upstream
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : "Your reply was not sent. Check your connection and try again.",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -338,12 +354,35 @@ function InlineReplyInput({
           <button
             onClick={handleSubmit}
             disabled={!body.trim() || submitting}
+            aria-label="Send reply"
+            // (17c) — a dead control states its reason. An icon-only button
+            // with nothing but 30% opacity to explain itself is the shape
+            // that made this screen feel broken rather than incomplete.
+            title={
+              submitting
+                ? "Sending…"
+                : !body.trim()
+                  ? "Write a reply first"
+                  : "Send reply"
+            }
             className="h-7 w-7 flex items-center justify-center rounded-full bg-accent text-accent-foreground hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <Send className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
+
+      {/* §209 — the whole point: a reply never fails silently again. */}
+      {error && (
+        <p role="alert" className="mt-2 text-[12px] text-status-error">
+          {error}
+        </p>
+      )}
+      {!error && !body.trim() && (
+        <p className="mt-2 text-[12px] text-text-tertiary">
+          Write a reply first.
+        </p>
+      )}
     </div>
   );
 }
@@ -363,7 +402,7 @@ interface CommentItemProps {
   onRemoveReaction: (commentId: string, emoji: string) => Promise<void>;
   onReply: (parentId: string) => void;
   onCancelReply: () => void;
-  onSubmitReply?: (parentId: string, body: string) => Promise<void>;
+  onSubmitReply?: (parentId: string, body: string) => Promise<void | boolean>;
   /** Compare mode: route comment-timecode clicks to a pane-scoped transport instead of the global store. */
   onSeekToTimecode?: (time: number, pause?: boolean) => void;
   /** Compare mode: route annotation display to a pane-scoped overlay instead of the global store. */

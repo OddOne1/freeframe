@@ -53,6 +53,9 @@ interface ShareValidateResponse {
   requires_auth?: boolean
   share_session?: string | null
   expired?: boolean
+  /** §209 — when this link stops working, or null for one that never does.
+   *  Used only to cap how long a guest's remembered name survives. */
+  expires_at?: string | null
   created_by_name?: string | null
   viewer_name?: string | null
   viewer_email?: string | null
@@ -830,6 +833,10 @@ export default function SharePage({
         showComments: boolean
         appearance: ShareLinkAppearance
         branding: any
+        /** §209 — the link's own expiry, so the browser can cap how long it
+         *  remembers a guest's name for this link at the sooner of 30 days
+         *  and this date. */
+        expiresAt: string | null
       }
 
   const [state, setState] = React.useState<PageState>({ stage: 'loading' })
@@ -887,6 +894,7 @@ export default function SharePage({
           description: data.description ?? null,
           createdByName: data.created_by_name ?? null,
           viewerName: data.viewer_name ?? null,
+          expiresAt: data.expires_at ?? null,
           permission: data.permission,
           downloadVariants: data.allowed_download_variants ?? [],
           fieldsVisibility: data.fields_visibility ?? 'disabled',
@@ -990,6 +998,7 @@ export default function SharePage({
         showComments={state.showComments}
         appearance={state.appearance}
         branding={state.branding}
+        linkExpiresAt={state.expiresAt}
       />
     )
   }

@@ -113,6 +113,17 @@ class ShareLinkValidateResponse(BaseModel):
     asset: Optional[dict] = None  # Full asset details for asset shares
     branding: Optional[dict] = None  # Project branding info
     share_session: Optional[str] = None  # Session token for password-protected links
+    #: §209 — when this link stops working, or None for one that never does.
+    #:
+    #: Exposed to the (anonymous) link holder on purpose: the browser caps how
+    #: long it remembers a guest's self-declared name for this link at 30 days
+    #: OR the link's own expiry, whichever is sooner, and it cannot apply the
+    #: second half without knowing the date. Benign to tell them — somebody
+    #: holding the link already has the access this governs, and the only new
+    #: fact is when it ends. Deliberately NOT the same question as §145's
+    #: (exposing org theme config anonymously), which is about data belonging
+    #: to the organisation rather than to the link in hand.
+    expires_at: Optional[datetime] = None
 
 
 class ShareLinkUpdate(BaseModel):

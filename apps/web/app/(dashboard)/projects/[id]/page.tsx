@@ -289,11 +289,33 @@ export default function ProjectDetailPage() {
   const selectedVersionId = selectedAsset?.latest_version?.id || null;
   const {
     comments,
+    createComment,
     resolveComment,
     deleteComment,
     addReaction,
     removeReaction,
   } = useComments(selectedAsset?.id || null, selectedVersionId);
+
+  /**
+   * §209 — this used to be `onSubmitReply={async () => {}}`.
+   *
+   * Not an oversight that crept in: it was a no-op from the commit that
+   * introduced this panel (4d37deb, 2026-03-20), so replying from the folder
+   * view has never once worked. The box opened, took the text, resolved
+   * successfully and posted nothing — no request, no console error, which is
+   * exactly why the report said "it fails silently".
+   *
+   * `createComment` already routes to /assets/{id}/comments/{parentId}/replies
+   * when given a parentId, so there is nothing to build here beyond handing
+   * it the parent. Errors are deliberately NOT caught: InlineReplyInput shows
+   * what it catches, and swallowing here would restore the silence.
+   */
+  const handleSubmitReply = React.useCallback(
+    async (parentId: string, body: string) => {
+      await createComment(body, undefined, undefined, undefined, parentId);
+    },
+    [createComment],
+  );
 
   const { data: project, isLoading: loadingProject, mutate: mutateProject } = useSWR<Project>(
     `/projects/${projectId}`,
@@ -1553,7 +1575,7 @@ export default function ProjectDetailPage() {
                         onAddReaction={addReaction}
                         onRemoveReaction={removeReaction}
                         onReply={() => {}}
-                        onSubmitReply={async () => {}}
+                        onSubmitReply={handleSubmitReply}
                       />
                     ) : (
                       <div className="flex-1 flex items-center justify-center p-6 text-center">

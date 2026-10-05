@@ -18,6 +18,11 @@ import {
   ArrowLeft,
 } from 'lucide-react'
 import { cn, resolveApiMediaUrl } from '@/lib/utils'
+import {
+  GuestIdentityBadge,
+  GuestIdentityPrompt,
+} from '@/components/share/guest-identity-prompt'
+import { useGuestIdentity } from '@/components/share/use-guest-identity'
 import { triggerBrowserDownload } from '@/lib/download'
 import { BatchDownloadDialog, type BatchDownloadApi } from '@/components/shared/batch-download-dialog'
 import { INDIVIDUAL_DOWNLOAD_LIMIT, type ZipScope } from '@/lib/bulk-download'
@@ -63,6 +68,9 @@ interface FolderShareViewerProps {
     custom_title?: string
     custom_footer?: string
   } | null
+  /** §209 — the share link's own expiry, threaded down so the browser can
+   *  cap a remembered guest identity at the sooner of 30 days and this. */
+  linkExpiresAt?: string | null
   onAssetClick?: (assetId: string) => void
 }
 
@@ -693,10 +701,11 @@ interface AssetViewerProps {
   downloadVariants: DownloadVariant[]
   fieldsVisibility: FieldsVisibility
   showComments?: boolean
+  linkExpiresAt?: string | null
   onBack: () => void
 }
 
-function AssetViewer({ token, shareSession, asset, permission, downloadVariants, fieldsVisibility, showComments, onBack }: AssetViewerProps) {
+function AssetViewer({ token, shareSession, asset, permission, downloadVariants, fieldsVisibility, showComments, linkExpiresAt, onBack }: AssetViewerProps) {
   // Use the same ReviewProvider as the project review page, but with shareToken
   // This gives us the same video player, image viewer, comment panel, etc.
   return (
@@ -710,6 +719,7 @@ function AssetViewer({ token, shareSession, asset, permission, downloadVariants,
         downloadVariants={downloadVariants}
         fieldsVisibility={fieldsVisibility}
         showComments={showComments}
+        linkExpiresAt={linkExpiresAt}
         onBack={onBack}
       />
     </div>
@@ -718,9 +728,9 @@ function AssetViewer({ token, shareSession, asset, permission, downloadVariants,
 
 /** Lazy-imported review components to avoid circular deps */
 function ShareReviewScreen({
-  token, shareSession, assetId, assetName, permission, downloadVariants, fieldsVisibility, showComments, onBack,
+  token, shareSession, assetId, assetName, permission, downloadVariants, fieldsVisibility, showComments, linkExpiresAt, onBack,
 }: {
-  token: string; shareSession?: string | null; assetId: string; assetName: string; permission: SharePermission; downloadVariants: DownloadVariant[]; fieldsVisibility: FieldsVisibility; showComments?: boolean; onBack: () => void
+  token: string; shareSession?: string | null; assetId: string; assetName: string; permission: SharePermission; downloadVariants: DownloadVariant[]; fieldsVisibility: FieldsVisibility; showComments?: boolean; linkExpiresAt?: string | null; onBack: () => void
 }) {
   const [ReviewProvider, setProvider] = React.useState<any>(null)
   const [VideoPlayer, setVideoPlayer] = React.useState<any>(null)
@@ -764,6 +774,7 @@ function ShareReviewScreen({
         downloadVariants={downloadVariants}
         fieldsVisibility={fieldsVisibility}
         showComments={showComments}
+        linkExpiresAt={linkExpiresAt}
         onBack={onBack}
         VideoPlayer={VideoPlayer}
         ImageViewer={ImageViewer}
@@ -776,7 +787,7 @@ function ShareReviewScreen({
 }
 
 function ShareReviewInner({
-  token, shareSession, assetName, permission, downloadVariants, fieldsVisibility, showComments, onBack,
+  token, shareSession, assetName, permission, downloadVariants, fieldsVisibility, showComments, linkExpiresAt, onBack,
   VideoPlayer, ImageViewer, AudioPlayer, CommentPanel, CommentInput,
 }: any) {
   // Import hooks from the review system
@@ -813,41 +824,73 @@ function ShareReviewInner({
   const canComment = permission === 'comment' || permission === 'approve'
   const versionReady = currentVersion?.processing_status === 'ready'
 
-  // Guest identity flow for non-authenticated users
-  const [guestIdentity, setGuestIdentity] = React.useState<{ name: string; email: string } | null>(null)
-  const [showGuestPrompt, setShowGuestPrompt] = React.useState(false)
-  const pendingCommentRef = React.useRef<{ body: string; timecodeStart?: number; timecodeEnd?: number; annotationData?: Record<string, unknown> } | null>(null)
-  React.useEffect(() => {
-    try {
-      const stored = localStorage.getItem('ff_guest_identity')
-      if (stored) setGuestIdentity(JSON.parse(stored))
-    } catch {}
-  }, [])
-  const isLoggedIn = typeof window !== 'undefined' && !!localStorage.getItem('ff_access_token')
+  // ─── Guest identity (§209) ──────────────────────────────────────────────
+  //
+  // ONE gate for both posting paths. Before §209 there were effectively two
+  // and a half: a new comment checked localStorage inline and prompted; a
+  // reply was wired to `onSubmitReply={async () => {}}` and posted nothing at
+  // all, silently, from the commit that introduced it. Routing both through
+  // `useGuestIdentity` is what makes "a reply asks for a name like a comment
+  // does" a property of the code rather than of two copies agreeing.
+  const isLoggedIn =
+    typeof window !== 'undefined' &&
+    (() => {
+      try {
+        return !!localStorage.getItem('ff_access_token')
+      } catch {
+        // Blocked site data reads as "not signed in", which routes through
+        // the guest prompt — the honest fallback, since we cannot know.
+        return false
+      }
+    })()
 
-  const submitComment = React.useCallback(async (body: string, timecodeStart?: number, timecodeEnd?: number, annotationData?: Record<string, unknown>) => {
-    const payload: Record<string, unknown> = { body }
-    if (currentVersion?.id) payload.version_id = currentVersion.id
-    if (timecodeStart != null) payload.timecode_start = timecodeStart
-    if (timecodeEnd != null) payload.timecode_end = timecodeEnd
-    if (annotationData) payload.annotation = { drawing_data: annotationData }
-    await addComment(payload)
-    refetchComments().catch(() => {})
-  }, [addComment, currentVersion, refetchComments])
+  const {
+    identity: guestIdentity,
+    prompting,
+    submitAsGuest,
+    saveIdentity,
+    cancelPrompt,
+    forgetIdentity,
+  } = useGuestIdentity({
+    shareToken: token,
+    linkExpiresAt,
+    isAuthenticated: isLoggedIn,
+  })
 
-  const handleGuestIdentitySave = React.useCallback(async (name: string, email: string) => {
-    const identity = { name, email }
-    setGuestIdentity(identity)
-    localStorage.setItem('ff_guest_identity', JSON.stringify(identity))
-    setShowGuestPrompt(false)
+  /** Post a top-level comment. Throws on failure — CommentInput surfaces it. */
+  const postComment = React.useCallback(
+    async (
+      body: string,
+      timecodeStart?: number,
+      timecodeEnd?: number,
+      annotationData?: Record<string, unknown>,
+    ) => {
+      const payload: Record<string, unknown> = { body }
+      if (currentVersion?.id) payload.version_id = currentVersion.id
+      if (timecodeStart != null) payload.timecode_start = timecodeStart
+      if (timecodeEnd != null) payload.timecode_end = timecodeEnd
+      if (annotationData) payload.annotation = { drawing_data: annotationData }
+      await addComment(payload)
+      // Awaited, not fire-and-forget: the reply/comment has to be visible
+      // when the composer closes, and a failed refetch should not look like
+      // a failed post either. `.catch` kept so a refetch hiccup cannot undo
+      // a comment that did land.
+      await refetchComments().catch(() => {})
+    },
+    [addComment, currentVersion, refetchComments],
+  )
 
-    // Auto-submit the pending comment
-    if (pendingCommentRef.current) {
-      const { body, timecodeStart, timecodeEnd, annotationData } = pendingCommentRef.current
-      pendingCommentRef.current = null
-      setTimeout(() => submitComment(body, timecodeStart, timecodeEnd, annotationData), 50)
-    }
-  }, [submitComment])
+  /** Post a reply. Same shape, plus the parent — and `parent_id` is the whole
+   *  difference, which is why this does not need its own identity check. */
+  const postReply = React.useCallback(
+    async (parentId: string, body: string) => {
+      const payload: Record<string, unknown> = { body, parent_id: parentId }
+      if (currentVersion?.id) payload.version_id = currentVersion.id
+      await addComment(payload)
+      await refetchComments().catch(() => {})
+    },
+    [addComment, currentVersion, refetchComments],
+  )
 
   if (isLoading || !asset) {
     return <div className="flex items-center justify-center h-screen bg-bg-primary"><Loader2 className="h-8 w-8 animate-spin text-text-tertiary" /></div>
@@ -958,24 +1001,37 @@ function ShareReviewInner({
                   onAddReaction={() => {}}
                   onRemoveReaction={() => {}}
                   onReply={() => {}}
-                  onSubmitReply={async () => {}}
+                  // §209 — was `async () => {}`. Replying on a share link
+                  // posted nothing, silently, from 5ccd764 onwards. It now
+                  // goes through the SAME identity gate a new comment does,
+                  // and returns the gate's verdict so the composer can tell
+                  // "sent" from "waiting for a name" (see InlineReplyInput).
+                  onSubmitReply={
+                    canComment
+                      ? async (parentId: string, body: string) =>
+                          submitAsGuest(() => postReply(parentId, body))
+                      : undefined
+                  }
                 />
                 {canComment && CommentInput && (
-                  <CommentInput
-                    assetId={asset.id}
-                    projectId=""
-                    assetType={asset.asset_type}
-                    onSubmit={async (body: string, timecodeStart?: number, timecodeEnd?: number, annotationData?: Record<string, unknown>) => {
-                      const hasAuth = !!localStorage.getItem('ff_access_token')
-                      const hasGuest = !!localStorage.getItem('ff_guest_identity')
-                      if (!hasAuth && !hasGuest) {
-                        pendingCommentRef.current = { body, timecodeStart, timecodeEnd, annotationData }
-                        setShowGuestPrompt(true)
-                        return
+                  <>
+                    {guestIdentity && (
+                      <GuestIdentityBadge
+                        identity={guestIdentity}
+                        onForget={forgetIdentity}
+                      />
+                    )}
+                    <CommentInput
+                      assetId={asset.id}
+                      projectId=""
+                      assetType={asset.asset_type}
+                      onSubmit={async (body: string, timecodeStart?: number, timecodeEnd?: number, annotationData?: Record<string, unknown>) =>
+                        submitAsGuest(() =>
+                          postComment(body, timecodeStart, timecodeEnd, annotationData),
+                        )
                       }
-                      await submitComment(body, timecodeStart, timecodeEnd, annotationData)
-                    }}
-                  />
+                    />
+                  </>
                 )}
               </>
             )}
@@ -983,58 +1039,10 @@ function ShareReviewInner({
         )}
       </div>
 
-      {/* Guest identity prompt */}
-      {showGuestPrompt && (
-        <GuestIdentityPrompt
-          onSave={handleGuestIdentitySave}
-          onCancel={() => { setShowGuestPrompt(false); pendingCommentRef.current = null }}
-        />
+      {/* §209 — one prompt, fronting whichever post is waiting on it. */}
+      {prompting && (
+        <GuestIdentityPrompt onSave={saveIdentity} onCancel={cancelPrompt} />
       )}
-    </div>
-  )
-}
-
-// ─── Guest Identity Prompt ───────────────────────────────────────────────────
-
-function GuestIdentityPrompt({ onSave, onCancel }: { onSave: (name: string, email: string) => void; onCancel: () => void }) {
-  const [name, setName] = React.useState('')
-  const [email, setEmail] = React.useState('')
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-sm rounded-xl border border-border bg-bg-secondary p-5 shadow-xl">
-        <h3 className="text-sm font-semibold text-text-primary mb-1">Leave a comment</h3>
-        <p className="text-xs text-text-tertiary mb-4">Enter your name and email to comment on this shared asset.</p>
-        <div className="space-y-3">
-          <input
-            type="text"
-            placeholder="Your name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full rounded-md border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent"
-            autoFocus
-          />
-          <input
-            type="email"
-            placeholder="Email address"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-md border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent"
-          />
-        </div>
-        <div className="flex items-center justify-end gap-2 mt-4">
-          <button onClick={onCancel} className="px-3 py-1.5 text-xs text-text-tertiary hover:text-text-primary transition-colors">
-            Cancel
-          </button>
-          <button
-            disabled={!name.trim() || !email.trim()}
-            onClick={() => onSave(name.trim(), email.trim())}
-            className="px-4 py-1.5 rounded-md bg-accent text-xs font-medium text-white hover:bg-accent/90 disabled:opacity-50 transition-colors"
-          >
-            Continue
-          </button>
-        </div>
-      </div>
     </div>
   )
 }
@@ -1056,6 +1064,7 @@ export function FolderShareViewer({
   showComments,
   appearance,
   branding,
+  linkExpiresAt,
   onAssetClick,
 }: FolderShareViewerProps) {
   const formatFileSize = useFormatBytesOrDash()
@@ -1404,6 +1413,7 @@ export function FolderShareViewer({
         downloadVariants={downloadVariants}
         fieldsVisibility={fieldsVisibility}
         showComments={showComments}
+        linkExpiresAt={linkExpiresAt}
         onBack={() => setViewingAsset(null)}
       />
     )

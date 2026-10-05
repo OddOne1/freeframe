@@ -10,6 +10,7 @@ import React, {
   useState,
 } from "react";
 import { api } from "@/lib/api";
+import { readGuestIdentity } from "@/lib/guest-identity";
 import { useReviewStore } from "@/stores/review-store";
 import type { AssetResponse, AssetVersion, Comment } from "@/types";
 
@@ -310,16 +311,20 @@ export function ReviewProvider({
           const t = localStorage.getItem("ff_access_token");
           if (t) headers["Authorization"] = `Bearer ${t}`;
         } catch {}
-        // Include guest identity if available (for non-authenticated users)
+        // Include guest identity if available (for non-authenticated users).
+        //
+        // §209 — read through the shared helper, and keyed per share token.
+        // This used to read one unscoped `ff_guest_identity`, so a name
+        // entered on one client's link travelled onto every other link the
+        // browser opened, and never expired. `readGuestIdentity` also
+        // applies the 30-day cap; the composer's gate is what decides
+        // whether to PROMPT, and this is only what the POST carries.
         const guestFields: Record<string, string> = {};
-        try {
-          const stored = localStorage.getItem("ff_guest_identity");
-          if (stored) {
-            const guest = JSON.parse(stored);
-            guestFields.guest_name = guest.name;
-            guestFields.guest_email = guest.email;
-          }
-        } catch {}
+        const guest = readGuestIdentity(shareToken);
+        if (guest) {
+          guestFields.guest_name = guest.name;
+          guestFields.guest_email = guest.email;
+        }
         const res = await fetch(`${API_URL}/share/${shareToken}/comment?_=1${shareSessionParam}`, {
           method: "POST",
           headers,

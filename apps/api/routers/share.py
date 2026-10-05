@@ -495,6 +495,9 @@ def validate_share_link_endpoint(
         asset=asset_data,
         branding=branding_data,
         share_session=session_id,
+        # §209 — the browser needs this to cap how long it remembers a
+        # guest's name for this link; see the field's own note.
+        expires_at=link.expires_at,
     )
 
 
