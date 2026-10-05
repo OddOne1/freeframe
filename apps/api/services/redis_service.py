@@ -562,3 +562,96 @@ def verify_share_session(token: str, session_id: str) -> bool:
     r = get_redis()
     key = f"{SHARE_SESSION_PREFIX}{token}:{session_id}"
     return r.exists(key) > 0
+
+
+# ── SSE connection tickets (§211) ───────────────────────────────────────────
+#
+# `EventSource` cannot send an Authorization header — that is a limitation of
+# the browser API, not an oversight — so the only way to authenticate a stream
+# is to put something in the URL. §209 found what was there: the user's full
+# access token, which then lands in Cloudflare's logs, Traefik's logs and the
+# browser's own history, and which that endpoint decoded by hand without
+# checking `tv`, so §207's session invalidation never reached the stream.
+#
+# A ticket replaces it. The difference that matters is not secrecy — a ticket
+# in a log is still a secret in a log — but BLAST RADIUS and LIFETIME: a
+# ticket is good for one stream, on one project, for 60 seconds, and is
+# destroyed the moment it is used. A leaked log line is then worth nothing.
+# The access token, by contrast, was good for every endpoint in the API for
+# its whole lifetime.
+EVENT_TICKET_PREFIX = "event_ticket:"
+EVENT_TICKET_TTL_SECONDS = 60
+
+
+def generate_event_ticket() -> str:
+    """An opaque single-use value. 32 bytes, URL-safe.
+
+    Opaque on purpose: it carries no user id, no project id and no expiry a
+    client could read or a log reader could learn anything from. Everything it
+    means is held server-side under the key below.
+    """
+    return secrets.token_urlsafe(32)
+
+
+def store_event_ticket(
+    ticket: str,
+    user_id: str,
+    project_id: str,
+    ttl_seconds: int = EVENT_TICKET_TTL_SECONDS,
+) -> None:
+    """Bind a ticket to exactly one user and one project.
+
+    Both halves are stored, and the stream checks both: a ticket issued for
+    project A must not open project B's stream even for the user it was issued
+    to, because the issuing endpoint is where the project permission check
+    happens. Without the project in the value, one legitimate ticket would be
+    a key to every project.
+    """
+    r = get_redis()
+    r.setex(
+        f"{EVENT_TICKET_PREFIX}{ticket}",
+        ttl_seconds,
+        json.dumps({"user_id": str(user_id), "project_id": str(project_id)}),
+    )
+
+
+def consume_event_ticket(ticket: str) -> Optional[dict]:
+    """Read and destroy a ticket in one step. Returns its binding, or None.
+
+    ATOMIC, and that is the whole point of the function existing rather than
+    a get-then-delete at the call site: two connections presenting the same
+    ticket at the same moment must not both be served. `GETDEL` (Redis 6.2+)
+    does it in one round trip; the Lua fallback is there because the version
+    is a deployment property this code should not assume — FreeFrame runs
+    redis:7, but a self-hosted install may not.
+
+    A None return covers unknown, expired and already-used alike, on purpose:
+    the caller refuses all three identically, and telling them apart would
+    leak whether a ticket had ever existed.
+    """
+    if not ticket:
+        return None
+    r = get_redis()
+    key = f"{EVENT_TICKET_PREFIX}{ticket}"
+    try:
+        raw = r.getdel(key)
+    except redis.ResponseError:
+        # Older server without GETDEL.
+        raw = r.eval(
+            "local v = redis.call('GET', KEYS[1]); "
+            "if v then redis.call('DEL', KEYS[1]) end; "
+            "return v",
+            1,
+            key,
+        )
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if not payload.get("user_id") or not payload.get("project_id"):
+        return None
+    return payload

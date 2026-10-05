@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { getAccessToken } from '@/lib/auth'
+import { api, ApiError } from '@/lib/api'
 
 // ─── Event payload types ──────────────────────────────────────────────────────
 
@@ -198,23 +198,67 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
   React.useEffect(() => {
     if (!enabled || !projectId) return
 
+    // Captured so the async `connect` below keeps the non-null narrowing the
+    // guard above established — TypeScript loses it across the closure.
+    const activeProjectId: string = projectId
+
     let es: EventSource | null = null
     let retryIndex = 0
     let retryTimer: ReturnType<typeof setTimeout> | null = null
     let destroyed = false
 
-    function connect() {
+    function scheduleReconnect() {
+      const delay = BACKOFF_STEPS[Math.min(retryIndex, BACKOFF_STEPS.length - 1)]
+      retryIndex++
+      retryTimer = setTimeout(() => {
+        void connect()
+      }, delay)
+    }
+
+    /**
+     * §211 — every connection starts by minting a ticket.
+     *
+     * The URL used to carry `?token=<access token>`, because `EventSource`
+     * cannot send an Authorization header. That put a full-API-scope bearer
+     * token into Cloudflare's logs, Traefik's logs and the browser's history,
+     * and the endpoint that read it never checked `tv`, so a session ended by
+     * §207 kept streaming. A ticket is good for one stream, on one project,
+     * for 60 seconds, and dies when it is used.
+     *
+     * A fresh one EVERY time, including on every reconnect — a ticket is
+     * single-use server-side, so a retry that reused it would 401 forever.
+     */
+    async function connect() {
       if (destroyed) return
 
-      const token = getAccessToken()
+      let ticket: string
+      try {
+        const res = await api.post<{ ticket: string }>(
+          `/events/ticket?project_id=${encodeURIComponent(activeProjectId)}`,
+        )
+        ticket = res.ticket
+      } catch (err) {
+        if (destroyed) return
+        setIsConnected(false)
+        // A 401 here means the session itself is gone, not that the network
+        // blipped: `api.post` has already tried a refresh and, on a real
+        // rejection, cleared the session and sent the browser to /login
+        // (§129). Retrying would be a loop against an endpoint that cannot
+        // start succeeding. Same for a 403 — not a member any more.
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          return
+        }
+        scheduleReconnect()
+        return
+      }
+      if (destroyed) return
+
       // Use window.location.origin as a base so deployments behind a reverse
       // proxy can set NEXT_PUBLIC_API_URL to a relative path like "/api"
       // without crashing the URL constructor.
       const base = typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
-      const url = new URL(`${API_URL}/events/${projectId}`, base)
-      if (token) {
-        url.searchParams.set('token', token)
-      }
+      const url = new URL(`${API_URL}/events/${activeProjectId}`, base)
+      url.searchParams.set('ticket', ticket)
 
       es = new EventSource(url.toString())
 
@@ -227,13 +271,15 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
       es.onerror = () => {
         if (destroyed) return
         setIsConnected(false)
+        // `close()` before anything else, and this is load-bearing under
+        // §211: EventSource reconnects by ITSELF on error, to the same URL —
+        // which now holds a ticket that has already been spent. Left to its
+        // own devices it would retry a guaranteed 401 forever, on its own
+        // schedule, ignoring the backoff below. Closing it hands the retry
+        // back to us, and `connect()` mints a new ticket.
         es?.close()
         es = null
-
-        // Exponential backoff reconnect
-        const delay = BACKOFF_STEPS[Math.min(retryIndex, BACKOFF_STEPS.length - 1)]
-        retryIndex++
-        retryTimer = setTimeout(connect, delay)
+        scheduleReconnect()
       }
 
       // ── transcode_progress ──
@@ -393,7 +439,7 @@ export function useSSE(projectId: string | null | undefined, options: UseSSEOpti
       })
     }
 
-    connect()
+    void connect()
 
     return () => {
       destroyed = true
