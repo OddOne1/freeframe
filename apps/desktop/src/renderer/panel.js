@@ -9,6 +9,32 @@
 // is loaded with a <script> tag in both documents and hangs one function
 // off window.
 (function () {
+  /**
+   * §212 — what an upload summary's heading should say.
+   *
+   * Pure, and extracted for one reason: with every file skipped,
+   * `filesCopied === totalFiles` is 0 === 0, which is true, and the heading
+   * read "Upload complete" for a job that uploaded nothing at all. That is
+   * the §6 rule ("never presented as uploaded") failing in the one place a
+   * person actually looks.
+   *
+   * Exported at the bottom of this IIFE when a module system is present, so
+   * scripts/test-upload-resilience.js can assert it directly rather than
+   * driving an Electron window.
+   */
+  function uploadHeadline({ cancelled, errorCount, filesCopied, totalFiles, skippedCount }) {
+    if (cancelled) return "Upload cancelled";
+    if (errorCount > 0 || filesCopied !== totalFiles) return "Upload finished with problems";
+    if (filesCopied === 0) {
+      return skippedCount > 0
+        ? `Nothing was uploaded — ${skippedCount} file${skippedCount === 1 ? "" : "s"} skipped`
+        : "Nothing to upload";
+    }
+    return skippedCount > 0
+      ? `Upload complete — ${skippedCount} file${skippedCount === 1 ? "" : "s"} skipped`
+      : "Upload complete";
+  }
+
   // §190 — the byte maths that stood here is gone. It divided by 1024 and
   // labelled the result "MB", and was one of FOUR independent copies of
   // that same bug (a second one inline in index.html, two more in
@@ -93,6 +119,12 @@
     const isUpload = Boolean(s.uploadOnly);
     const uploadOk = isUpload && !s.cancelled && s.errors.length === 0 && s.filesCopied === s.totalFiles;
     const good = isUpload ? uploadOk : s.allVerified;
+    // §212 — files FreeFrame has no type for (a camera sidecar). Not
+    // failures, and not uploads either: they must appear in the heading and
+    // in their own list, because the verdict beneath says "keep the source"
+    // and someone reading "Upload complete" needs to know what it excludes.
+    const skippedList = Array.isArray(s.skipped) ? s.skipped : [];
+    const skippedCount = skippedList.length;
 
     box.appendChild(el("div", { class: "head" }, [
       el("h3", {
@@ -100,7 +132,13 @@
         // from FreeFrame and compared. See the verdict text below.
         class: good ? "ok" : "bad",
         text: isUpload
-          ? (uploadOk ? "Upload complete" : "Upload finished with problems")
+          ? uploadHeadline({
+              cancelled: Boolean(s.cancelled),
+              errorCount: s.errors.length,
+              filesCopied: s.filesCopied,
+              totalFiles: s.totalFiles,
+              skippedCount,
+            })
           : (good ? "Copy verified" : "Copy finished with problems"),
       }),
     ]));
@@ -180,6 +218,28 @@
       box.appendChild(fl);
     }
 
+    // §212 — files with no FreeFrame type (a camera sidecar like .mxfindex).
+    // Its own block, in the same neutral style as §23c's filtered-out list
+    // above, and deliberately NOT in `problems` below: the real job reported
+    // one of these as an ERROR, which made a 975-file upload that worked look
+    // like it had failed.
+    if (skippedCount) {
+      box.appendChild(el("div", {
+        class: "verdict warn",
+        style: "margin-top:8px",
+        text: `${skippedCount} file${skippedCount === 1 ? " was" : "s were"} skipped because FreeFrame has no type `
+          + `for ${skippedCount === 1 ? "it" : "them"} — ${skippedCount === 1 ? "it is" : "they are"} NOT in the project.`,
+      }));
+      const kl = el("ul");
+      for (const k of skippedList.slice(0, 8)) {
+        kl.appendChild(el("li", { text: `${k.file} — ${k.reason}` }));
+      }
+      if (skippedCount > 8) {
+        kl.appendChild(el("li", { text: `…and ${skippedCount - 8} more` }));
+      }
+      box.appendChild(kl);
+    }
+
     const problems = [...s.mismatches, ...s.errors];
     if (problems.length) {
       const ul = el("ul");
@@ -205,6 +265,9 @@
       text: isUpload
         ? (uploadOk
             ? "Uploaded — not yet independently verified against FreeFrame. Checksum verification for this destination type isn't built yet, so keep the source until you've confirmed the files yourself."
+              + (skippedCount
+                  ? ` ${skippedCount} file${skippedCount === 1 ? " was" : "s were"} skipped and ${skippedCount === 1 ? "is" : "are"} NOT in the project — see Skipped below.`
+                  : "")
             : "Upload did not finish — some files were not sent. Keep the source.")
         : (good
             ? "Every file was re-read from each destination and matched the source. Safe to wipe the card."
@@ -283,6 +346,11 @@
       // §95 — why a resume was refused, said in the row rather than left
       // as a button that appears to do nothing.
       if (j.statusNote) bits.push(j.statusNote);
+      // §212 — a part being retried, in the same meta line and only while
+      // running. Without it a seven-minute backoff is indistinguishable from
+      // a hung app, which is what 38 minutes of the real incident looked
+      // like. Cleared by the next successful byte tick (see main.js).
+      if (j.status === "running" && p.retryNote) bits.push(p.retryNote);
       // A paused job has not finished, so it has no duration to report —
       // subtracting from a null finishedAt would print the epoch.
       if (j.status !== "queued" && j.status !== "running" && j.status !== "paused") {
@@ -385,5 +453,10 @@
     }
   }
 
-  window.JobPanel = { renderJobs, fmtBytes };
+  // Guarded so this file can also be required by scripts/ under plain node,
+  // where there is no window. The renderer path is unchanged.
+  if (typeof window !== "undefined") window.JobPanel = { renderJobs, fmtBytes };
+  // Pure helpers, for scripts/ to require. No-op in the renderer, which has
+  // no module system (see the header).
+  if (typeof module !== "undefined" && module.exports) module.exports = { uploadHeadline };
 })();

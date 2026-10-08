@@ -176,6 +176,21 @@ function buildJobLog(job) {
         : "NOT every file verified — do not wipe the card. See notVerified below.",
       fileCount: files.length,
       renamedCount: files.filter((f) => f.renamed).length,
+      // §212 — files deliberately NOT uploaded because FreeFrame has no type
+      // for them (a camera sidecar like .mxfindex). Named here, in the file
+      // someone opens to decide whether a card can be wiped, because these
+      // files are NOT in the project: anyone treating this log as proof the
+      // card is backed up has to be able to see what it does not cover.
+      //
+      // Note `safeToWipeCard` is already false for every upload — an upload
+      // has `nodes: []`, so the verdict above never claims otherwise. This
+      // block says which files additionally are not even on the server.
+      skippedCount: ((job.summary && job.summary.skipped) || []).length,
+      skipped: ((job.summary && job.summary.skipped) || []).map((x) => ({
+        file: x.file,
+        reason: x.reason,
+        uploaded: false,
+      })),
       // §86 — its own labelled line, never folded into the live numbers.
       // "42/42 verified" means nothing unless you can tell which pass and
       // which algorithm produced it.
@@ -1148,9 +1163,32 @@ ipcMain.handle("freeframe:discard-interrupted-upload", async (_e, { jobId } = {}
 });
 
 ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, projectId, folderId, concurrencyMode, resumeJobId } = {}) => {
-  const pickedFiles = Array.isArray(sourceFiles) ? sourceFiles.filter((p) => typeof p === "string" && p) : [];
+  let pickedFiles = Array.isArray(sourceFiles) ? sourceFiles.filter((p) => typeof p === "string" && p) : [];
   if ((typeof sourcePath !== "string" && !pickedFiles.length) || !projectId) {
     throw new Error("Source and project are required");
+  }
+
+  // §212 — a sourcePath that is a FILE, not a directory.
+  //
+  // The renderer collapses a single-file selection into `setSource(files[0])`
+  // (index.html ~L1710), so `sourcePath` becomes the file's own path. The
+  // upload path then ran `listFilesRecursive` on it and died in 127 ms with
+  // `ENOTDIR: not a directory, scandir '<the file>'`.
+  //
+  // Fixed HERE rather than in the renderer so every caller is covered at
+  // once: drag-and-drop, the native picker, and a journal resume of an older
+  // job that stored a file path. `copy-engine.js` has had the same guard for
+  // local copies all along (~L625); this is the upload side of it.
+  if (!pickedFiles.length && typeof sourcePath === "string") {
+    let st;
+    try {
+      st = await fsp.stat(sourcePath);
+    } catch (err) {
+      // A path that does not exist must say so plainly rather than surface
+      // as a scandir errno later.
+      throw new Error(`Cannot read "${sourcePath}": ${String(err && err.message || err)}`);
+    }
+    if (!st.isDirectory()) pickedFiles = [sourcePath];
   }
 
   // §97A — resuming means starting the SAME job again with the previous
@@ -1207,8 +1245,13 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
   const waitIfPaused = () => (paused ? new Promise((res) => { resumeWaiters.push(res); }) : Promise.resolve());
   self._pause = () => { paused = true; };
   self._resume = () => { paused = false; wake(); };
+  // §212 — one controller for the whole job, handed to whichever file is
+  // uploading. Cancel aborts the in-flight part PUTs instead of waiting for
+  // the current file to finish, which on a 100 GB file meant hours.
+  const cancelSignal = new AbortController();
   self._cancel = () => {
     cancelled = true;
+    cancelSignal.abort();
     // Cancel always wins. A paused upload is parked in waitIfPaused; the
     // flag alone would never be read and the job would sit forever.
     paused = false;
@@ -1236,15 +1279,45 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
       for (const r of rel) fullPath.set(r, path.join(sourcePath, r));
     }
 
+    // §212 — a file with no recognised type is SKIPPED, not failed.
+    //
+    // The real job reported `Unrecognised file type ".mxfindex"` as an ERROR.
+    // That file is a camera sidecar sitting next to a real clip; it is not
+    // something the user did wrong and not something FreeFrame can store, so
+    // counting it as a failure made a successful 975-file upload look broken.
+    //
+    // Decided BEFORE sizing so skipped bytes are outside totalBytes and
+    // totalFiles: a progress bar that includes files nobody will ever upload
+    // cannot reach 100%, which is its own false signal.
+    //
+    // The rule is "no recognised type", never a hardcoded list of sidecar
+    // extensions — a list would be wrong the first time a camera invents a
+    // new one, and mimeForFilename already owns this question.
+    const skipped = [];
+    const uploadable = [];
+    for (const r of rel) {
+      if (!freeframe.mimeForFilename(path.basename(r))) {
+        skipped.push({
+          file: r,
+          reason: `Unrecognised file type "${path.extname(r) || r}" — not something FreeFrame can store`,
+        });
+      } else {
+        uploadable.push(r);
+      }
+    }
+
     let totalBytes = 0;
     const sizes = new Map();
-    for (const r of rel) {
+    for (const r of uploadable) {
       const st = await fsp.stat(fullPath.get(r));
       sizes.set(r, st.size);
       totalBytes += st.size;
     }
 
-    send({ phase: "start", totalFiles: rel.length, totalBytes, legCount: 1, nodes: [] });
+    send({
+      phase: "start", totalFiles: uploadable.length, totalBytes, legCount: 1, nodes: [],
+      skippedFiles: skipped.length,
+    });
 
     // §97A — the journal, now covering uploads too. Same file, same
     // crash-survival guarantee already trusted for local copies; it simply
@@ -1298,15 +1371,19 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
     const journaledOk = new Set();
     let doneBytes = 0;
 
-    for (const r of rel) {
-      // §98 — between files only, exactly as runLeg does. One file is one
-      // multipart upload run by several concurrent part workers; stopping
-      // inside that would leave an incomplete S3 upload to reconcile,
-      // which is a different and much harder problem than this.
+    for (const r of uploadable) {
+      // §212 — cancel now takes effect INSIDE a file, not only between them.
       //
-      // BEFORE the cancel check, same ordering as §95: a job cancelled
-      // while paused wakes here and exits on the very next line, instead
-      // of falling through and uploading one more whole file.
+      // The §98 comment that used to sit here said stopping mid-file "would
+      // leave an incomplete S3 upload to reconcile". That is no longer true:
+      // uploadFile takes an AbortSignal, aborts the in-flight PUTs and calls
+      // /upload/abort on the way out. Waiting was the worse option anyway —
+      // a 100 GB file meant hours between pressing Cancel and the job ending.
+      //
+      // This check stays because it is still the cheapest place to stop, and
+      // BEFORE it comes the pause wait, same ordering as §95: a job cancelled
+      // while paused wakes here and exits on the very next line, instead of
+      // falling through and uploading one more whole file.
       await waitIfPaused();
       if (cancelled) break;
       // §97A — confirmed present on the server by the check above, so this
@@ -1345,11 +1422,32 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
           filePath: fullPath.get(r),
           assetName: path.basename(r),
           folderId: folderId || null,
+          signal: cancelSignal.signal,
           onProgress: ({ uploaded: u }) => {
             const overall = doneBytes + u;
             send({
               phase: "bytes", file: r, copiedBytes: overall, totalBytes,
               percent: totalBytes > 0 ? Math.min(100, (overall / totalBytes) * 100) : 100,
+              // Cleared explicitly: JobQueue.updateProgress MERGES each tick
+              // into the previous one, so a retry note would otherwise stay
+              // on the row for the rest of the job — a part that recovered
+              // on attempt 3 would read as still retrying an hour later.
+              retryNote: null,
+            });
+          },
+          // §212 — a retrying part is reported on the EXISTING progress
+          // channel rather than through new UI. The panel already renders
+          // `message` on a row, so "Part 1103 retrying (3/12)…" needs no new
+          // component — and without it a seven-minute backoff is
+          // indistinguishable from a hung app.
+          onRetry: ({ part, attempt, of, reason }) => {
+            send({
+              phase: "retry", file: r, part, attempt, of,
+              copiedBytes: doneBytes, totalBytes,
+              // `retryNote` rather than a new UI concept: the row already
+              // renders `statusNote` the same way for §95's refused-resume
+              // reason, so this is one more string in the existing meta line.
+              retryNote: `part ${part} retrying ${attempt}/${of} (${reason})`,
             });
           },
         });
@@ -1368,6 +1466,22 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
         journaledOk.add(r);
         send({ phase: "file-done", file: r, ok: true, copiedBytes: doneBytes, totalBytes });
       } catch (err) {
+        // §212 — a cancel is not a failure.
+        //
+        // Cancel now aborts the in-flight part PUTs, so the file currently
+        // uploading throws "Upload cancelled". Recording that as an error
+        // made every cancel report "1 file failed" and wrote an ok:false
+        // journal row — which a later resume reads as "this file is broken"
+        // rather than "this file was never finished". The summary already
+        // carries `cancelled: true`; that is where a cancel belongs.
+        //
+        // `cancelled` is checked as well as the error, so an abort from
+        // anywhere else (a real AbortError from the network stack) is still
+        // reported as the failure it is.
+        if (cancelled && freeframe.isCancellationError(err)) {
+          send({ phase: "file-done", file: r, ok: false, cancelled: true });
+          break;
+        }
         errors.push({ file: r, error: String(err.message || err) });
         journal.appendFileResult(self.id, {
           file: r, ok: false, bytes: sizes.get(r) || 0,
@@ -1465,10 +1579,14 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
       nodes: [],
       destPaths: [`FreeFrame project ${projectId}`],
       cancelled,
-      totalFiles: rel.length,
+      // §212 — the UPLOADABLE set, not every file walked. Skipped sidecars
+      // are reported separately below; counting them here would make the
+      // verdict (`filesCopied === totalFiles`) permanently false on any card
+      // that carries one, and would stop the progress bar short of 100%.
+      totalFiles: uploadable.length,
       filesCopied: uploaded.length,
       fileCopiesVerified: uploaded.length,
-      totalFileCopies: rel.length,
+      totalFileCopies: uploadable.length,
       totalBytes,
       copiedBytes: doneBytes,
       legCount: 1,
@@ -1487,6 +1605,11 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
       // exists to avoid.
       resumeVerification,
       resumedSkips: resumedSkips.length ? resumedSkips : undefined,
+      // §212 — files deliberately not uploaded because FreeFrame has no type
+      // for them. NOT errors, and NOT presented as uploaded: a skipped file
+      // is not in the project, so the panel and the log both say so and the
+      // "safe to wipe" question is never answered yes on their behalf.
+      skipped: skipped.length ? skipped : undefined,
       durationMs: Date.now() - startedAt,
       files: [],
     };
