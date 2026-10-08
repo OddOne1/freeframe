@@ -808,6 +808,9 @@ async function loadSettings() {
   // algorithm above: this window has no Cancel, so a deferred save would
   // only invite closing it and losing the change.
   $("settings-day-boundary").value = s.dayBoundary || "00:00";
+  // §213 — only an explicit false is off, matching settings.js's
+  // normalisation: an absent field means never configured, which is on.
+  $("settings-auto-resume").checked = s.autoResumeUploads !== false;
 }
 
 (async () => {
@@ -863,6 +866,8 @@ window.freeframe.onSettingsChanged((s) => {
     ? s.finalizedChecksumAlgo
     : null;
   finalizedTiming = s.finalizedTiming || "off";
+  const autoResume = $("settings-auto-resume");
+  if (autoResume) autoResume.checked = s.autoResumeUploads !== false;
   renderAlgoList();
   renderHideList();
 });
@@ -875,4 +880,10 @@ $("settings-day-boundary").addEventListener("change", async () => {
   // Echoed back from main rather than trusted: an unparseable value falls
   // back to the default there, and the field must show what was stored.
   el.value = saved.dayBoundary;
+});
+
+$("settings-auto-resume").addEventListener("change", async () => {
+  const el = $("settings-auto-resume");
+  const saved = await window.freeframe.setSettings({ autoResumeUploads: el.checked });
+  el.checked = saved.autoResumeUploads !== false;
 });

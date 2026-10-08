@@ -320,7 +320,16 @@
           class: "job-status",
           text: j.cancelling && (j.status === "running" || j.status === "paused")
             ? "Cancelling…"
-            : STATUS_LABEL[j.status] || j.status,
+            // §213 — a DISTINCT state for an upload that is waiting rather
+            // than transferring. It used to read "Running" while the
+            // backoff sat pinned at its 60s cap, which is the one moment a
+            // user most needs to know the difference: the job is fine and
+            // the network is not. The reason itself is in the meta line.
+            : (j.status === "running" && p.waitingFor === "auth")
+              ? "Sign in to continue"
+              : (j.status === "running" && p.waitingFor === "connection")
+                ? "Waiting for connection"
+                : STATUS_LABEL[j.status] || j.status,
         }),
       ]);
 
@@ -351,6 +360,9 @@
       // a hung app, which is what 38 minutes of the real incident looked
       // like. Cleared by the next successful byte tick (see main.js).
       if (j.status === "running" && p.retryNote) bits.push(p.retryNote);
+      // §213 — said once, at the top of a resumed job, so an upload that
+      // starts at 18% is visibly continuing rather than visibly wrong.
+      if (p.resumeNote) bits.push(p.resumeNote);
       // A paused job has not finished, so it has no duration to report —
       // subtracting from a null finishedAt would print the epoch.
       if (j.status !== "queued" && j.status !== "running" && j.status !== "paused") {

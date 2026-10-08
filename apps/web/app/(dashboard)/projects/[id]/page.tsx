@@ -682,7 +682,10 @@ export default function ProjectDetailPage() {
       const folderId = keepStructure
         ? await ensureFolderPath(entry.path, folderCache)
         : currentFolderId;
-      startUpload(entry.file, projectId, name, project?.name, folderId);
+      // §213 — `entry.handle` is a re-openable reference, where the
+      // browser gave one. It is what lets an interrupted upload resume
+      // with one permission click instead of a file picker.
+      startUpload(entry.file, projectId, name, project?.name, folderId, entry.handle);
     }
     if (keepStructure && media.some((d) => d.path.length > 0)) mutateSubfolders();
 

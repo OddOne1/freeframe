@@ -43,6 +43,14 @@
       font-size: 11px; color: var(--text-tertiary); margin: 2px 0 6px;
       line-height: 1.5; word-break: break-word;
     }
+    /* §213 — a plain checkbox row. The window has no other checkbox to
+       borrow a style from; this matches .setting-label's weight and the
+       12px scale everything else in here uses. */
+    .setting-check {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 12px; color: var(--text-primary); cursor: pointer;
+    }
+    .setting-check input { margin: 0; }
     #settings-day-boundary {
       height: 28px; border-radius: 6px; padding: 0 8px;
       background: var(--bg-secondary); border: 1px solid var(--border);
@@ -269,6 +277,25 @@
           calendar days.
         </div>
         <input id="settings-day-boundary" type="time" step="60" />
+      </div>
+
+      <div class="setting">
+        <div class="setting-label">Resume interrupted uploads automatically</div>
+        <div class="setting-sub">
+          An upload stopped by a crash, a quit, a sleep or a dropped
+          connection continues by itself shortly after the app starts, once
+          you are signed in — sending only the parts the server does not
+          already have. Turn this off to be asked each time instead.
+        </div>
+        <div class="setting-sub">
+          Either way, a job you had PAUSED comes back paused, and an upload
+          whose source file has changed is never resumed into the old
+          session — it starts fresh and says so.
+        </div>
+        <label class="setting-check">
+          <input id="settings-auto-resume" type="checkbox" />
+          <span>Resume automatically</span>
+        </label>
       </div>
 
       <div class="setting">

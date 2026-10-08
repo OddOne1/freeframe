@@ -22,7 +22,8 @@ from ..services.permissions import require_project_role, require_asset_access, c
 from ..services.s3_service import build_download_filename, get_s3_client
 from ..config import settings
 from .hls_proxy import create_hls_token, proxy_url_for
-from ..schemas.upload import InitiateUploadRequest, InitiateUploadResponse, ALLOWED_MIME_TYPES, MAX_FILE_SIZE_BYTES, mime_to_asset_type
+from ..schemas.upload import InitiateUploadRequest, InitiateUploadResponse, ALLOWED_MIME_TYPES, mime_to_asset_type
+from ..services.upload_policy import plan_parts, UploadTooLarge
 from ..services.s3_service import create_multipart_upload
 from .folders import _get_descendant_ids as _get_descendant_folder_ids
 from ..services.storage_prefix import lock_storage_prefix, prefix_for_project
@@ -626,8 +627,17 @@ def initiate_new_version(
 
     if body.mime_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(status_code=400, detail="Unsupported file type")
-    if body.file_size_bytes > MAX_FILE_SIZE_BYTES:
-        raise HTTPException(status_code=400, detail="File exceeds 10GB limit")
+
+    # §213 — ONE part-size policy, shared with POST /upload/initiate rather
+    # than copied. This endpoint's own check used to refuse above 2000 GB
+    # while its message said "10GB limit" — two different wrong numbers in
+    # five lines, which is what a second copy of a policy buys.
+    #
+    # Before `db.add(version)` below, so a refusal leaves no version row.
+    try:
+        plan = plan_parts(body.file_size_bytes)
+    except UploadTooLarge as e:
+        raise HTTPException(status_code=413, detail=e.detail)
 
     last_version = db.query(AssetVersion).filter(
         AssetVersion.asset_id == asset_id,
@@ -671,6 +681,8 @@ def initiate_new_version(
         s3_key=s3_key,
         asset_id=asset_id,
         version_id=version.id,
+        part_size=plan.part_size,
+        total_parts=plan.total_parts,
     )
 
 @router.patch("/assets/{asset_id}/transcription", response_model=TranscriptionToggleResponse)

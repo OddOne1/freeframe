@@ -511,7 +511,11 @@ function makeQueue() {
     const psrc = fs.readFileSync(
       path.join(__dirname, "..", "src", "renderer", "panel.js"), "utf8");
     const i = psrc.indexOf('class: "job-status"');
-    const block = psrc.slice(i, i + 400);
+    // 1200 rather than 400: §213 added two more branches to this
+    // expression (an upload waiting for a connection, and one waiting for
+    // a sign-in), which pushed the STATUS_LABEL fallback past 400 chars
+    // and made the next check fail against code that was still correct.
+    const block = psrc.slice(i, i + 1200);
     check(/j\.cancelling/.test(block) && /"Cancelling\u2026"/.test(block),
       "panel.js labels a cancelling row \"Cancelling\u2026\"");
     check(/STATUS_LABEL\[j\.status\]/.test(block),
@@ -533,10 +537,17 @@ function makeQueue() {
     const msrc = fs.readFileSync(path.join(__dirname, "..", "src", "main", "main.js"), "utf8");
     const i = msrc.indexOf("  async function runUpload(self) {");
     const head = msrc.slice(i, msrc.indexOf("const startedAt = Date.now();", i));
-    check(/self\._pause = \(\) => \{ paused = true; \};/.test(head),
+    // §213 made both of these multi-line: pause is now PERSISTED to the
+    // journal as well as held in memory, so a job paused and then quit
+    // comes back paused. The assertion is still "runUpload sets them and
+    // they move the flag", which was the §98 gap.
+    check(/self\._pause = \(\) => \{[\s\S]{0,200}paused = true;/.test(head),
       "runUpload now sets _pause — the whole gap was that it never did");
-    check(/self\._resume = \(\) => \{ paused = false; wake\(\); \};/.test(head),
+    check(/self\._resume = \(\) => \{[\s\S]{0,240}paused = false;[\s\S]{0,200}wake\(\);/.test(head),
       "…and _resume");
+    check(/journal\.setPaused\(LOG_DIR\(\), self\.id, true\)/.test(head)
+      && /journal\.setPaused\(LOG_DIR\(\), self\.id, false\)/.test(head),
+      "§213 — …and both write it to the journal, so a paused job relaunches paused");
     check(/cancelled = true;[\s\S]*paused = false;[\s\S]*wake\(\);/.test(head),
       "…and _cancel clears the pause and wakes the loop, so cancel still wins");
 

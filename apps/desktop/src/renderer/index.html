@@ -11,6 +11,9 @@
   <link rel="stylesheet" href="panel.css" />
   <link rel="stylesheet" href="forms.css" />
   <script src="byte-units.js"></script>
+  <!-- §213 — which interrupted jobs resume by themselves. Pure, and also
+       required by scripts/test-upload-resume.js. -->
+  <script src="resume-policy.js"></script>
   <script src="icons.js"></script>
   <script src="panel.js" defer></script>
   <style>
@@ -3621,6 +3624,31 @@
      */
     let resumeOffered = new Set();      // jobIds already put to the user
     let resumePromptOpen = false;
+    // §213 — mirrors settings.js's DEFAULTS.autoResumeUploads. Held here
+    // too so the sweep below does not have to await Settings to decide,
+    // and so a fresh install and a saved-then-cleared setting land in the
+    // same place (same reasoning as the picker fallback §58 notes).
+    let autoResumeUploads = true;
+    let resumeSweepTimer = null;
+
+    /**
+     * §213 — "shortly after launch", and again whenever a sign-in lands.
+     *
+     * Deferred rather than run inline for two reasons that are both real:
+     * `refreshAccount()` is still in flight when the init steps run, so an
+     * inline sweep would decide "not signed in" for everybody; and an
+     * automatic resume that starts transferring before the window has
+     * finished painting has nowhere to show itself.
+     *
+     * `resumeOffered` makes re-entry harmless, so the account callback can
+     * call this freely.
+     */
+    function scheduleResumeSweep(trigger, delayMs = 1500) {
+      clearTimeout(resumeSweepTimer);
+      resumeSweepTimer = setTimeout(() => {
+        maybeOfferResume(trigger).catch(() => {});
+      }, delayMs);
+    }
 
     function sameFileSet(a, b) {
       if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
@@ -3648,19 +3676,27 @@
       try {
         docs = (await window.freeframe.interruptedUploads()) || [];
       } catch { return; }   // never let this break the thing that called it
-      const candidates = docs
-        .filter((d) => d && d.jobId && !resumeOffered.has(d.jobId))
-        // §105A — the actual fix for "it keeps coming back". `resumeOffered`
-        // is in-memory and forgets at every launch, which is why parking
-        // needed a flag on the journal itself. These are still listed in
-        // the notification bell; they just stop seizing the window.
-        .filter((d) => d.hiddenFromPrompt !== true)
-        .filter((d) => (trigger === "launch" ? true : journalMatchesSource(d)))
-        .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")));
-      if (!candidates.length) return;
-      await offerResume(candidates[0]);
+
+      // §213 — the decision itself lives in resume-policy.js, so it can be
+      // asserted under plain node. What stays here is doing it.
+      const { auto, prompt } = window.ResumePolicy.planResumeSweep({
+        docs,
+        trigger,
+        autoResume: autoResumeUploads,
+        loggedIn: Boolean(ffStatus && ffStatus.loggedIn),
+        // §105A — in-memory and forgotten at every launch, which is why
+        // parking needed a flag on the journal itself.
+        alreadyOffered: resumeOffered,
+        matchesSource: journalMatchesSource,
+      });
+
+      for (const doc of auto) {
+        resumeOffered.add(doc.jobId);
+        await runResume(doc, { startPaused: doc.startPaused === true });
+      }
       // One at a time: if more remain, the next selection or launch asks
       // again rather than stacking dialogs.
+      if (prompt) await offerResume(prompt);
     }
 
     /**
@@ -3776,7 +3812,7 @@
      * is started" would drift on the first change to either, and this app
      * has paid for that shape repeatedly (§30, §32, §61).
      */
-    async function runResume(doc) {
+    async function runResume(doc, { startPaused = false } = {}) {
       const isCopy = doc.kind === "copy";
       try {
         if (isCopy) {
@@ -3814,6 +3850,9 @@
             doc.sourceFiles || null,
             concurrencyMode,
             doc.jobId,
+            // §213 — only ever true for an automatic sweep. A Resume click
+            // means run it, so the explicit paths pass nothing.
+            startPaused === true,
           );
         }
       } catch (err) {
@@ -4746,6 +4785,13 @@
           render();
         } else {
           await loadProjects();
+          // §213 — the sweep at launch skips automatic resume when nobody
+          // is signed in yet, which on a cold start is most of the time:
+          // the session is loaded and the refresh token exchanged
+          // asynchronously. This is the other half of that — a sign-in
+          // landing is exactly when an interrupted upload becomes
+          // resumable. `resumeOffered` makes a second sweep harmless.
+          scheduleResumeSweep("launch");
         }
       });
     });
@@ -4767,6 +4813,10 @@
           if (wanted && algorithms.some((a) => a.id === wanted)) algorithm = wanted;
           hiddenVolumeNames = (saved && saved.hiddenVolumeNames) || [];
           hiddenProjectIds = (saved && saved.hiddenProjectIds) || [];
+          // §213 — only an explicit false turns it off, matching
+          // settings.js's own normalisation. An absent field means "never
+          // configured", which is the default, not off.
+          autoResumeUploads = !(saved && saved.autoResumeUploads === false);
           render();
         } catch { /* no settings yet — the built-in default stands */ }
       }).catch(() => {});
@@ -4778,6 +4828,7 @@
         if (wanted && algorithms.some((a) => a.id === wanted)) algorithm = wanted;
         hiddenVolumeNames = (saved && saved.hiddenVolumeNames) || [];
         hiddenProjectIds = (saved && saved.hiddenProjectIds) || [];
+        autoResumeUploads = !(saved && saved.autoResumeUploads === false);
         render();
       });
     });
@@ -5171,7 +5222,7 @@
     // renderer concern and a push would need main to know the window had
     // finished building its DOM. Last in the init sequence, and in its own
     // initStep, so a failure here cannot take the rest of startup with it.
-    initStep("interrupted uploads", () => { maybeOfferResume("launch").catch(() => {}); });
+    initStep("interrupted uploads", () => { scheduleResumeSweep("launch"); });
   </script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 import logging
 import os
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import uuid
@@ -13,8 +13,9 @@ from ..models.project import Project
 from ..services.s3_service import (
     create_multipart_upload, presign_upload_part,
     complete_multipart_upload, abort_multipart_upload,
-    head_object_size,
+    head_object_size, list_multipart_parts, NoSuchUploadError,
 )
+from ..services.upload_policy import plan_parts, UploadTooLarge
 from ..services.permissions import get_project_member, require_project_role
 from ..models.project import ProjectRole
 from .site_settings import _get_or_create_settings
@@ -23,7 +24,8 @@ from ..schemas.upload import (
     InitiateUploadRequest, InitiateUploadResponse,
     PresignPartRequest, PresignPartResponse,
     CompleteUploadRequest, CompleteUploadResponse, AbortUploadRequest,
-    ALLOWED_MIME_TYPES, MAX_FILE_SIZE_BYTES, mime_to_asset_type,
+    UploadedPartsResponse,
+    ALLOWED_MIME_TYPES, mime_to_asset_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,8 +100,22 @@ def initiate_upload(
     # Validate mime type
     if body.mime_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {body.mime_type}")
-    if body.file_size_bytes > MAX_FILE_SIZE_BYTES:
-        raise HTTPException(status_code=400, detail="File exceeds 2000GB limit")
+
+    # §213 — the part plan, decided here and sent to the client.
+    #
+    # FIRST, before the project lookup and before `lock_storage_prefix`
+    # writes anything: a file that cannot be split into 10,000 parts must
+    # leave no asset row, no version row and no multipart upload behind.
+    # The old check here compared against a hand-written 2000 GB and then
+    # let the client discover the real limit at part 10,001.
+    #
+    # 413 rather than 400: this is "your payload is too large for this
+    # route", which is the status both clients can branch on without
+    # reading the message.
+    try:
+        plan = plan_parts(body.file_size_bytes)
+    except UploadTooLarge as e:
+        raise HTTPException(status_code=413, detail=e.detail)
 
     # Verify project access (editor or above)
     project = db.query(Project).filter(Project.id == body.project_id, Project.deleted_at.is_(None)).first()
@@ -228,6 +244,8 @@ def initiate_upload(
         s3_key=s3_key,
         asset_id=asset.id,
         version_id=version.id,
+        part_size=plan.part_size,
+        total_parts=plan.total_parts,
     )
 
 
@@ -250,6 +268,62 @@ def presign_part(
 
     url = presign_upload_part(body.s3_key, body.upload_id, body.part_number)
     return PresignPartResponse(presigned_url=url, part_number=body.part_number)
+
+
+def _authorize_upload_key(db: Session, s3_key: str, current_user: User) -> MediaFile:
+    """The authorisation presign-part does, as one function (§213).
+
+    `GET /upload/parts` must be exactly as hard to call as
+    `/presign-part`: it reveals how much of a file someone else has
+    uploaded, and a second, hand-written copy of this check is how one of
+    the two ends up weaker than the other. Same lookups, same 404/403,
+    same order.
+    """
+    media_file = db.query(MediaFile).filter(MediaFile.s3_key_raw == s3_key).first()
+    if not media_file:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    version = db.query(AssetVersion).filter(AssetVersion.id == media_file.version_id).first()
+    if not version or version.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized for this upload")
+    return media_file
+
+
+@router.get("/parts", response_model=UploadedPartsResponse)
+def list_uploaded_parts(
+    s3_key: str = Query(...),
+    upload_id: str = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """What has already arrived, so a resumed upload sends only the rest (§213).
+
+    THE SERVER'S LIST IS THE SOURCE OF TRUTH, deliberately — not a
+    client-side record of which parts it believes it sent. A client's own
+    log can only ever be a claim about a request it made; this is the
+    store's answer about bytes it holds, including parts that landed from
+    a process that then died before it could write anything down.
+
+    A guessed `upload_id` lists nothing: the authorisation above is on the
+    s3_key's own MediaFile and its version's creator, so an upload_id that
+    does not belong to that key simply is not found at the store and comes
+    back as a gone session rather than as somebody else's parts.
+    """
+    _authorize_upload_key(db, s3_key, current_user)
+    try:
+        parts = list_multipart_parts(s3_key, upload_id)
+    except NoSuchUploadError:
+        # A STABLE, MACHINE-READABLE CODE. Both clients branch on this to
+        # start a fresh upload rather than failing, and branching on
+        # prose ("NoSuchUpload" appearing in a message) is how that breaks
+        # the first time the wording changes.
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "no_such_upload",
+                "message": "That upload session no longer exists. Start a new upload for this file.",
+            },
+        )
+    return UploadedPartsResponse(parts=parts)
 
 
 @router.post("/complete", response_model=CompleteUploadResponse)

@@ -33,6 +33,23 @@ class Settings(BaseSettings):
     s3_secret_key: str = "minioadmin"
     s3_region: str = "us-east-1"
     s3_public_endpoint: str | None = None  # External URL for presigned URLs (e.g. http://localhost:9000 when S3_ENDPOINT is http://minio:9000)
+
+    # §213 — the per-part ceiling, and the ONLY value that decides the
+    # maximum uploadable file size (10,000 parts x this).
+    #
+    # 90 MiB because part PUTs currently go to S3_PUBLIC_ENDPOINT through
+    # Cloudflare's free tier, which returns HTTP 413 for a 150 MB body
+    # (measured). AIStor itself allows 5 TiB per part. Once §214 moves
+    # uploads off that route, raising THIS ONE VALUE is the whole change —
+    # see services/upload_policy.py.
+    upload_max_part_bytes: int = 90 * 1024 * 1024
+
+    # Optional operator-chosen LOWER bound on file size. Unset means "as
+    # large as the part arithmetic allows". It can only reduce the ceiling,
+    # never raise it above what 10,000 parts can cover — the pre-§213
+    # MAX_FILE_SIZE_BYTES = 2000 GiB was exactly that kind of promise, and
+    # the client died at part 10,001 keeping it.
+    upload_max_file_bytes: int | None = None
     jwt_secret: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15

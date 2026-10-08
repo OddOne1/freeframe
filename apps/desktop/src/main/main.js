@@ -1129,6 +1129,14 @@ ipcMain.handle("freeframe:interrupted-uploads", async () => {
     // §105A — parked by the user. The blocking modal must skip these; the
     // notification bell exists precisely to list them.
     hiddenFromPrompt: d.hiddenFromPrompt === true,
+    // §213 — the user had PAUSED this job when the app stopped. Automatic
+    // resume must not start it running: that would undo a deliberate stop
+    // without anyone asking. It is still offered, and still resumable.
+    paused: d.paused === true,
+    // §213 — files that were mid-upload, as opposed to files that had
+    // finished. A journal with one of these can continue PART-wise, which
+    // is the difference between re-sending 17 GiB and re-sending 80.
+    partialFiles: Object.keys((d.sessions && typeof d.sessions === "object") ? d.sessions : {}),
   }));
 });
 
@@ -1162,7 +1170,7 @@ ipcMain.handle("freeframe:discard-interrupted-upload", async (_e, { jobId } = {}
   return { ok: await journal.discardJournal(LOG_DIR(), jobId) };
 });
 
-ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, projectId, folderId, concurrencyMode, resumeJobId } = {}) => {
+ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, projectId, folderId, concurrencyMode, resumeJobId, startPaused } = {}) => {
   let pickedFiles = Array.isArray(sourceFiles) ? sourceFiles.filter((p) => typeof p === "string" && p) : [];
   if ((typeof sourcePath !== "string" && !pickedFiles.length) || !projectId) {
     throw new Error("Source and project are required");
@@ -1239,12 +1247,50 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
   // status alone, never on kind. It simply did nothing, because
   // JobQueue.pause() returns false when _pause is missing and says so to
   // nobody.
-  let paused = false;
+  //
+  // §213 — the pause flag now does two further things.
+  //
+  // It is PERSISTED to the journal, so a job paused and then quit comes
+  // back paused rather than silently continuing something somebody
+  // deliberately stopped. And it is handed to `uploadFile`, which checks
+  // it before claiming each next PART — before §213 it was only read
+  // between FILES, so pressing Pause during a 100 GB file did nothing at
+  // all for however many hours that file had left.
+  let paused = startPaused === true;
   let resumeWaiters = [];
   const wake = () => { const w = resumeWaiters; resumeWaiters = []; for (const r of w) r(); };
   const waitIfPaused = () => (paused ? new Promise((res) => { resumeWaiters.push(res); }) : Promise.resolve());
-  self._pause = () => { paused = true; };
-  self._resume = () => { paused = false; wake(); };
+  self._pause = () => {
+    paused = true;
+    journal.setPaused(LOG_DIR(), self.id, true).catch(() => {});
+  };
+  self._resume = () => {
+    paused = false;
+    journal.setPaused(LOG_DIR(), self.id, false).catch(() => {});
+    wake();
+  };
+
+  /**
+   * §213 — an expired login parks the upload instead of failing it.
+   *
+   * `apiRequest` already refreshes once per call; this is the case where
+   * that refresh ITSELF fails — the tunnel is down, or the refresh token
+   * was rejected and the session cleared. The file is still on disk and
+   * its parts are still in the bucket, so the only wrong move is to throw
+   * the upload away. Retried every 5s rather than event-driven because a
+   * sign-in can happen in a different window, and polling a function call
+   * is cheaper than a second notification path between them.
+   */
+  async function waitForSignIn() {
+    for (;;) {
+      if (cancelled) throw new Error("Upload cancelled");
+      try {
+        if (await freeframe.refreshAccessToken()) return;
+      } catch { /* unreachable server — same answer: wait */ }
+      send({ phase: "auth-wait", file: null });
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
   // §212 — one controller for the whole job, handed to whichever file is
   // uploading. Cancel aborts the in-flight part PUTs instead of waiting for
   // the current file to finish, which on a 100 GB file meant hours.
@@ -1255,6 +1301,7 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
     // Cancel always wins. A paused upload is parked in waitIfPaused; the
     // flag alone would never be read and the job would sit forever.
     paused = false;
+    journal.setPaused(LOG_DIR(), self.id, false).catch(() => {});
     wake();
   };
   const send = (p) => {
@@ -1317,6 +1364,13 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
     send({
       phase: "start", totalFiles: uploadable.length, totalBytes, legCount: 1, nodes: [],
       skippedFiles: skipped.length,
+      // §213 — visible on the row for the whole job. A resumed upload that
+      // starts at 18% and says nothing about why looks like a broken one.
+      resumeNote: resumeFrom
+        ? (startPaused === true
+            ? "resumed (paused — press Resume to continue)"
+            : "resuming an interrupted upload")
+        : null,
     });
 
     // §97A — the journal, now covering uploads too. Same file, same
@@ -1416,6 +1470,12 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
         continue;
       }
       send({ phase: "file-start", file: r, bytes: sizes.get(r) });
+      // §213 — the MULTIPART SESSION a previous run left for this exact
+      // file, if any. §97A could only skip whole files that had finished;
+      // a 97 GiB file interrupted at 80% started again from zero. This is
+      // what makes "only the missing parts" possible, and it is read from
+      // the journal being resumed, never re-derived.
+      const priorSession = resumeFrom ? journal.uploadSessionFor(resumeFrom, r) : null;
       try {
         const res = await freeframe.uploadFile({
           projectId,
@@ -1423,6 +1483,13 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
           assetName: path.basename(r),
           folderId: folderId || null,
           signal: cancelSignal.signal,
+          resumeSession: priorSession,
+          // Checked before each next PART is claimed, not between files.
+          waitIfPaused,
+          waitForAuth: waitForSignIn,
+          // Journalled BEFORE the first part goes out — a session written
+          // afterwards describes work a crash has already lost.
+          onSession: (session) => journal.recordUploadSession(self.id, r, session),
           onProgress: ({ uploaded: u }) => {
             const overall = doneBytes + u;
             send({
@@ -1440,19 +1507,46 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
           // `message` on a row, so "Part 1103 retrying (3/12)…" needs no new
           // component — and without it a seven-minute backoff is
           // indistinguishable from a hung app.
-          onRetry: ({ part, attempt, of, reason }) => {
+          // §213 — there is no denominator any more. "retrying 12/12" was
+          // a promise to stop, and stopping is exactly what §213 removes.
+          // What the row says instead distinguishes a hiccup (attempt 2,
+          // back in a second) from a connection that is actually down
+          // (backoff pinned at the 60s cap, waiting), and names the last
+          // reason either way.
+          onRetry: ({ part, attempt, reason, waitingFor, nextAttemptAt, delayMs }) => {
+            const where = part == null ? "completing the upload" : `part ${part}`;
+            const retryNote = waitingFor === "auth"
+              ? `${where}: signed out — waiting for sign-in (${reason})`
+              : waitingFor === "connection"
+                ? `waiting for connection — ${where} retrying in ${Math.round((delayMs || 0) / 1000)}s`
+                  + ` (attempt ${attempt}; ${reason})`
+                : `${where} retrying (attempt ${attempt}; ${reason})`;
             send({
-              phase: "retry", file: r, part, attempt, of,
+              phase: "retry", file: r, part, attempt, of: null,
+              waitingFor: waitingFor || null,
+              nextAttemptAt: nextAttemptAt || null,
               copiedBytes: doneBytes, totalBytes,
               // `retryNote` rather than a new UI concept: the row already
               // renders `statusNote` the same way for §95's refused-resume
               // reason, so this is one more string in the existing meta line.
-              retryNote: `part ${part} retrying ${attempt}/${of} (${reason})`,
+              retryNote,
             });
           },
         });
         uploaded.push(res);
         doneBytes += sizes.get(r) || 0;
+        // The file is complete, so its session is not something to resume.
+        // Left behind, it would have a later resume list parts for an
+        // upload the server has already finished.
+        journal.clearUploadSession(self.id, r).catch(() => {});
+        if (res && res.resumed) {
+          send({
+            phase: "file-resumed", file: r,
+            partsAlreadyPresent: res.partsAlreadyPresent,
+            totalParts: res.totalParts,
+            resumedBytes: res.resumedBytes,
+          });
+        }
         // §97A — recorded per file, so a crash after this point leaves
         // proof this one is already on the server. Not awaited, matching
         // the copy path: an upload must not wait on a log write.

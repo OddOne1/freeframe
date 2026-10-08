@@ -87,29 +87,52 @@ async function rawRequest(method, endpoint, { body, token, headers = {} } = {}) 
   return res;
 }
 
-async function readError(res) {
+/**
+ * The message AND, when the server sent one, a machine-readable code.
+ *
+ * §213 added structured error details — `{"code": "no_such_upload",
+ * "message": "..."}` — because the uploader has to BRANCH on one of
+ * them: a gone multipart session means "start a fresh upload", which is
+ * a completely different action from "retry". Matching on prose is how
+ * that breaks the first time someone improves the wording.
+ *
+ * One function reading the body, because a response body can only be
+ * read once: `readError` below is the message-only view of this.
+ */
+async function readErrorParts(res) {
+  const fallback = { message: `${res.status} ${res.statusText}`, code: null };
   try {
     const data = await res.json();
     const detail = data.detail ?? data.message;
-    if (typeof detail === "string") return detail;
+    if (typeof detail === "string") return { message: detail, code: null };
     // FastAPI returns 422 validation errors as an ARRAY of
     // { loc, msg, type } objects. Passing that straight through rendered
     // "[object Object]" to the user — useless, and it hides exactly the
     // message that says which field is wrong.
     if (Array.isArray(detail)) {
-      return detail
+      const joined = detail
         .map((d) => {
           const field = Array.isArray(d.loc) ? d.loc.filter((x) => x !== "body").join(".") : "";
           return field ? `${field}: ${d.msg}` : d.msg;
         })
         .filter(Boolean)
-        .join("; ") || `${res.status} ${res.statusText}`;
+        .join("; ");
+      return { message: joined || fallback.message, code: null };
     }
-    if (detail && typeof detail === "object") return JSON.stringify(detail);
-    return `${res.status} ${res.statusText}`;
+    if (detail && typeof detail === "object") {
+      return {
+        message: String(detail.message || detail.detail || JSON.stringify(detail)),
+        code: typeof detail.code === "string" ? detail.code : null,
+      };
+    }
+    return fallback;
   } catch {
-    return `${res.status} ${res.statusText}`;
+    return fallback;
   }
+}
+
+async function readError(res) {
+  return (await readErrorParts(res)).message;
 }
 
 /** Exchange the refresh token for a new access token. */
@@ -160,12 +183,16 @@ async function apiRequest(method, endpoint, body) {
   }
 
   if (!res.ok) {
-    const err = new Error(await readError(res));
+    const { message, code } = await readErrorParts(res);
+    const err = new Error(message);
     // §212 — the status, so a caller can tell a permanent refusal from
     // weather. `putPartWithRetry` uses it to stop retrying a presign that
-    // comes back 403/404: twelve attempts at being refused is just twelve
-    // refusals, and the backoff hides the real message for seven minutes.
+    // comes back 403: being refused twice is just being refused.
     err.status = res.status;
+    // §213 — and the code, where the server sent one. `no_such_upload` is
+    // the one the uploader acts on: it starts a fresh upload rather than
+    // failing the file.
+    err.code = code;
     throw err;
   }
   if (res.status === 204) return null;
@@ -596,27 +623,51 @@ function mimeForFilename(fileName) {
 // Mirrors apps/web/stores/upload-store.ts's flow rather than inventing a
 // second one: initiate -> presign each part -> PUT it -> complete with the
 // collected {PartNumber, ETag} list.
+//
+// §213 — the part size is now the SERVER'S (`part_size` on the initiate
+// response, from services/upload_policy.py). This constant is the
+// fallback for an api that predates §213: api and desktop ship
+// separately, so for a while a new build talks to an old server, and a
+// client that invented its own size again would reintroduce exactly the
+// ceiling §213 removed.
 const PART_SIZE = 16 * 1024 * 1024;
 const CONCURRENT_PARTS = 3;
 
-// S3's hard limit. 10,000 x 16 MiB = 156.25 GiB, which is why §212 refuses a
-// bigger file up front instead of uploading 156 GiB of it and then failing on
-// part 10,001 — the shape of the real incident, five times over.
+// How much part data may sit in RAM at once.
+//
+// Each worker holds one whole part in a Buffer, and that is not laziness:
+// a presigned PUT needs a known Content-Length, and a Node stream body
+// would be sent chunked, which S3 refuses for a presigned part. So with
+// the server free to choose a 512 MiB part once §214 moves uploads off
+// Cloudflare, a fixed three workers would mean 1.5 GiB resident for one
+// file. Concurrency is derived from a budget instead: three workers at
+// today's 16-90 MiB parts, one at 512 MiB.
+const PART_BUFFER_BUDGET_BYTES = 512 * 1024 * 1024;
+
+// S3's own hard limit on parts per upload. The ceiling it implies is now
+// the SERVER's to enforce (it refuses an impossible size with 413 before
+// creating anything); this is the client-side sanity check that a
+// server's answer is actually usable.
 const MAX_PARTS = 10000;
 
-// §212 — retry policy for a single part.
+// §212/§213 — retry policy for a single part.
 //
 // Part PUTs go to S3_PUBLIC_ENDPOINT, which is behind Cloudflare, so a
 // transient 502 over a multi-hour upload is not an anomaly: it is the
-// expected weather. The uploader had no answer to one, and a 392 GiB job died
-// at part 1,103 after 38 minutes — five times, at parts 160, 285, 883, 1,101
-// and 3,477.
+// expected weather. §212 gave that 12 attempts (~7 minutes) and then
+// ABORTED the whole multipart upload — which, on the real 392 GiB job
+// that prompted all of this, still meant losing hours of transfer to one
+// bad minute.
 //
-// 12 attempts of exponential backoff from 1s, doubling, capped at 60s, with
-// full jitter, tolerates roughly seven minutes of sustained unavailability per
-// part. Jitter is full rather than partial because three concurrent workers
-// hitting the same outage would otherwise retry in lockstep forever.
-const RETRY_ATTEMPTS = 12;
+// §213 removes the budget. The schedule is unchanged while it matters —
+// 1s doubling to a 60s cap, full jitter — and then it simply CONTINUES at
+// the cap, indefinitely, with the job showing a distinct "waiting for
+// connection" state instead of a countdown to giving up. The only things
+// that may end an upload are the user pressing Cancel, the server saying
+// the session is gone, and the source file having changed.
+//
+// Jitter is full rather than partial because concurrent workers riding
+// out the same outage must not retry in lockstep.
 const RETRY_BASE_MS = 1000;
 const RETRY_CAP_MS = 60000;
 
@@ -629,12 +680,31 @@ const PART_TIMEOUT_BYTES_PER_SEC = 200 * 1024;
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Is this attempt worth repeating?
+ * §213 — this multipart upload does not exist any more.
  *
- * Split out and exported so the policy is one list rather than a condition
- * spread through the worker loop. `null` status means fetch itself threw —
- * network down, connection reset, DNS, or our own per-attempt timeout.
+ * Its own type because the ACTION is specific and must not be reached by
+ * accident: start a fresh upload for this file. Everything else — a 502,
+ * a reset connection, a 429, an expired login — waits.
  */
+class UploadSessionGone extends Error {
+  constructor(message) {
+    super(message || "That upload session no longer exists");
+    this.name = "UploadSessionGone";
+  }
+}
+
+/**
+ * How many parts may be in flight for a given part size.
+ *
+ * Exported so the test harness asserts the budget rather than re-deriving
+ * it, and so the number in the §213 report ("worst case N x part_size")
+ * comes from the code rather than from arithmetic in a comment.
+ */
+function workerCountFor(partSize, totalParts) {
+  const byBudget = Math.max(1, Math.floor(PART_BUFFER_BUDGET_BYTES / Math.max(1, partSize)));
+  return Math.max(1, Math.min(CONCURRENT_PARTS, byBudget, totalParts));
+}
+
 /**
  * §212 — was this error the user pressing Cancel?
  *
@@ -650,12 +720,61 @@ function isCancellationError(err) {
   return /upload cancelled|the operation was aborted/i.test(String(err.message || err));
 }
 
+/**
+ * Is this attempt worth repeating?
+ *
+ * Split out and exported so the policy is one list rather than a condition
+ * spread through the worker loop. `null` status means fetch itself threw —
+ * network down, connection reset, DNS, or our own per-attempt timeout.
+ *
+ * §213 — 401 is NOT in here. An expired login that cannot refresh is not
+ * weather and not a refusal either: the upload parks until the user signs
+ * in, which is handled explicitly in `putPartWithRetry`.
+ */
 function isRetryablePartFailure(status) {
   if (status === null) return true;          // threw: network, reset, timeout
   if (status === 408 || status === 425) return true;
   if (status === 429) return true;           // throttled, not refused
   if (status >= 500) return true;            // 502/503/504 and friends
   return false;                              // every other 4xx is an answer
+}
+
+/**
+ * §213 — which parts the store already holds for an upload.
+ *
+ * The SERVER's list, never a client-side record of what we think we sent:
+ * a crash can lose the note without losing the bytes, and the expensive
+ * mistake is re-sending 5,000 parts that are already there.
+ */
+async function listUploadParts(s3Key, uploadId) {
+  const q = `/upload/parts?s3_key=${encodeURIComponent(s3Key)}`
+    + `&upload_id=${encodeURIComponent(uploadId)}`;
+  try {
+    const res = await apiRequest("GET", q);
+    return Array.isArray(res && res.parts) ? res.parts : [];
+  } catch (err) {
+    if (err && (err.code === "no_such_upload" || err.status === 404)) {
+      throw new UploadSessionGone(err.message);
+    }
+    throw err;
+  }
+}
+
+/**
+ * §213 — does this recorded session still describe the file on disk?
+ *
+ * Size AND mtime. Resuming into a session whose source has been replaced
+ * would splice two different files together into one object and complete
+ * it as if it were whole — the one failure mode worse than re-uploading.
+ */
+function uploadSessionMatchesSource(session, stat) {
+  if (!session || typeof session !== "object") return false;
+  if (!session.s3Key || !session.uploadId) return false;
+  if (Number(session.size) !== Number(stat.size)) return false;
+  if (session.mtimeMs != null && Math.round(Number(session.mtimeMs)) !== Math.round(stat.mtimeMs)) {
+    return false;
+  }
+  return true;
 }
 
 async function uploadFile({
@@ -668,14 +787,34 @@ async function uploadFile({
   // looks exactly like a frozen upload otherwise, which is what 38 minutes of
   // the real incident felt like from the panel.
   onRetry = () => {},
+  // §213 — called with the multipart session as soon as it exists and
+  // BEFORE the first part is sent, so a crash one second later still
+  // leaves something to resume from. The caller journals it.
+  onSession = () => {},
+  // §213 — a session recorded by a previous, interrupted run. Used only
+  // if it still matches the file on disk.
+  resumeSession = null,
   // Cancel. Threaded from runUpload's _cancel so an in-flight PUT is aborted
   // rather than waited out — a 100 GB file used to mean hours.
   signal = null,
-  // Injected only by tests, so a 12-attempt budget runs in milliseconds
-  // instead of seven minutes. Production passes nothing.
+  // §213 — pause, at PART granularity. Awaited before a worker claims its
+  // next part: parts already in flight finish (aborting them would throw
+  // away bytes that are nearly there), nothing new starts, and the S3
+  // session is kept so Resume continues from the next unclaimed part.
+  waitIfPaused = null,
+  // §213 — an expired login that `apiRequest` could not refresh. Awaited
+  // instead of failing the upload: the file is still on disk and the parts
+  // are still in the bucket, so the only correct response to "signed out"
+  // is to wait for a sign-in.
+  waitForAuth = null,
+  // Injected only by tests, so a backoff schedule runs in milliseconds
+  // instead of minutes. Production passes nothing.
   retry: retryOpts = {},
 } = {}) {
-  const attempts = retryOpts.attempts ?? RETRY_ATTEMPTS;
+  // §213 — `attempts` has NO production default any more (it is Infinity:
+  // a transient failure never ends an upload). It stays injectable because
+  // a test asserting what happens around the boundary needs a boundary.
+  const attempts = retryOpts.attempts ?? Infinity;
   const baseMs = retryOpts.baseMs ?? RETRY_BASE_MS;
   const capMs = retryOpts.capMs ?? RETRY_CAP_MS;
   const sleep = retryOpts.sleep ?? defaultSleep;
@@ -699,220 +838,444 @@ async function uploadFile({
     );
   }
 
-  const totalParts = Math.max(1, Math.ceil(stat.size / PART_SIZE));
-
-  // §212 — refused BEFORE /upload/initiate, so no multipart upload is created
-  // that nothing will ever finish. Without this, a 200 GiB file uploads
-  // 156 GiB over several hours and then dies on part 10,001 with an S3 error
-  // about part counts.
-  if (totalParts > MAX_PARTS) {
-    const gib = (n) => (n / 1024 / 1024 / 1024).toFixed(1);
-    throw new Error(
-      `This file is ${gib(stat.size)} GiB; the desktop uploader currently `
-      + `supports up to ${gib(MAX_PARTS * PART_SIZE)} GiB per file. (§213 lifts this.)`
-    );
+  // §213 — a session whose source has CHANGED is not resumed. The stale
+  // one is aborted rather than left: we know for certain it can never be
+  // completed, so it is pure orphaned storage. (A session we might still
+  // resume is never aborted — that is the whole point of §213.)
+  let resume = null;
+  let freshReason = null;
+  if (resumeSession && resumeSession.s3Key && resumeSession.uploadId) {
+    if (uploadSessionMatchesSource(resumeSession, stat)) {
+      resume = resumeSession;
+    } else {
+      freshReason = "the source file changed since it was last uploaded";
+      try {
+        await apiRequest("POST", "/upload/abort", {
+          s3_key: resumeSession.s3Key,
+          upload_id: resumeSession.uploadId,
+          version_id: resumeSession.versionId,
+        });
+      } catch {
+        /* best effort — an un-abortable stale session is §215's problem */
+      }
+    }
   }
 
-  const init = await apiRequest("POST", "/upload/initiate", {
-    project_id: projectId,
-    asset_name: assetName || fileName,
-    original_filename: fileName,
-    file_size_bytes: stat.size,
-    mime_type: mimeType,
-    folder_id: folderId,
-  });
-
-  const { s3_key, upload_id, asset_id, version_id } = init;
-  const parts = new Array(totalParts);
-  let uploaded = 0;
-  let completed = false;
-
-  /**
-   * §212 — the one place that gives up on a multipart upload.
-   *
-   * Five failed attempts left 92.3 GiB of orphaned parts in the bucket,
-   * invisible to the app and billed for. Anything that ends this function
-   * without a successful /upload/complete comes through here.
-   *
-   * ONE function on purpose: §213 changes what a terminal failure should do
-   * (keep the upload resumable rather than abort it), and that must be a
-   * one-line change here rather than a hunt through three call sites.
-   *
-   * Best-effort by contract. A failing abort must never replace the error
-   * that caused it — that would turn "part 1103 got a 502" into "abort
-   * returned 500", which hides the actual problem.
-   */
-  async function disposeUpload(reason) {
+  // Two rounds at most: the second exists for the one case that genuinely
+  // needs a different session — the server says this upload is gone.
+  for (let round = 0; ; round++) {
     try {
-      await apiRequest("POST", "/upload/abort", {
-        s3_key, upload_id, version_id,
-      });
+      return await runSession(resume, freshReason);
     } catch (err) {
-      console.error(
-        `[upload] abort after ${reason} failed for ${fileName}: ${String(err && err.message || err)}`
+      if (err instanceof UploadSessionGone && round === 0) {
+        resume = null;
+        freshReason = "the previous upload session no longer existed on the server";
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  async function runSession(resumeFrom, reasonForFresh) {
+    let s3_key;
+    let upload_id;
+    let asset_id;
+    let version_id;
+    let partSize;
+    let existing = new Map();   // partNumber -> ETag, already in the store
+
+    if (resumeFrom) {
+      s3_key = resumeFrom.s3Key;
+      upload_id = resumeFrom.uploadId;
+      asset_id = resumeFrom.assetId;
+      version_id = resumeFrom.versionId;
+      // The part size the ORIGINAL run used, not a freshly planned one.
+      // The server's answer can legitimately change between runs (§214
+      // raises the cap), and re-planning would renumber every remaining
+      // part against bytes already stored under the old numbering.
+      partSize = Number(resumeFrom.partSize) || PART_SIZE;
+    } else {
+      const init = await apiRequest("POST", "/upload/initiate", {
+        project_id: projectId,
+        asset_name: assetName || fileName,
+        original_filename: fileName,
+        file_size_bytes: stat.size,
+        mime_type: mimeType,
+        folder_id: folderId,
+      });
+      s3_key = init.s3_key;
+      upload_id = init.upload_id;
+      asset_id = init.asset_id;
+      version_id = init.version_id;
+      // The server's choice; our constant only if it is too old to have one.
+      partSize = Number(init.part_size) > 0 ? Number(init.part_size) : PART_SIZE;
+    }
+
+    const totalParts = Math.max(1, Math.ceil(stat.size / partSize));
+
+    // The client-side sanity check on the server's answer. The server
+    // refuses an impossible size with 413 before creating anything, so
+    // reaching here means the two disagree — which is worth saying out
+    // loud rather than discovering at part 10,001 after several hours.
+    if (totalParts > MAX_PARTS) {
+      const gib = (n) => (n / 1024 / 1024 / 1024).toFixed(1);
+      if (!resumeFrom) await disposeUpload("impossible part count", { s3_key, upload_id, version_id });
+      throw new Error(
+        `This file is ${gib(stat.size)} GiB, which needs ${totalParts} parts at the `
+        + `${(partSize / 1024 / 1024).toFixed(0)} MiB part size the server chose — more than the `
+        + `${MAX_PARTS} S3 allows. The server should have refused this; please report it.`
       );
     }
-  }
 
-  /**
-   * One part, with the whole retry policy around it.
-   *
-   * Re-presigns on EVERY attempt. A presigned URL carries its own expiry and
-   * signature; reusing one across a seven-minute backoff is how a retry that
-   * should have worked returns 403 instead.
-   *
-   * The buffer is read once by the caller and reused across attempts — a
-   * retry must not re-read the disk.
-   */
-  async function putPartWithRetry(partNumber, buf) {
-    let lastError = null;
+    const session = {
+      s3Key: s3_key,
+      uploadId: upload_id,
+      assetId: asset_id,
+      versionId: version_id,
+      partSize,
+      totalParts,
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+    };
+    // BEFORE the first part. A crash between initiate and part 1 otherwise
+    // leaves a multipart upload nothing can ever find again.
+    try { await onSession(session); } catch { /* journalling must not fail an upload */ }
 
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-      if (signal && signal.aborted) throw new Error("Upload cancelled");
-
-      let status = null;
-      let detail = "";
-      // An empty ETag arrives on an HTTP 200, so the status alone says
-      // "don't retry" — `isRetryablePartFailure(200)` is false, correctly, for
-      // every other purpose. This flag is how that one case overrides it.
-      let forceRetry = false;
-      try {
-        const { presigned_url } = await apiRequest("POST", "/upload/presign-part", {
-          s3_key, upload_id, part_number: partNumber,
-        });
-
-        // Per-attempt deadline, plus the caller's cancel. Two signals, so a
-        // cancel aborts immediately rather than waiting out the timeout.
-        const timeoutMs = Math.max(
-          PART_TIMEOUT_FLOOR_MS,
-          (buf.length / PART_TIMEOUT_BYTES_PER_SEC) * 1000
-        );
-        const ac = new AbortController();
-        const onOuterAbort = () => ac.abort();
-        if (signal) signal.addEventListener("abort", onOuterAbort, { once: true });
-        const timer = setTimeout(() => ac.abort(), timeoutMs);
-
-        let put;
-        try {
-          put = await fetch(presigned_url, { method: "PUT", body: buf, signal: ac.signal });
-        } finally {
-          clearTimeout(timer);
-          if (signal) signal.removeEventListener("abort", onOuterAbort);
-        }
-
-        if (signal && signal.aborted) throw new Error("Upload cancelled");
-
-        if (put.ok) {
-          const etag = put.headers.get("ETag") || "";
-          if (etag) return etag;
-          // An empty ETag is a failed attempt, not a success. It used to be
-          // stored as "" and only surfaced hours later as a rejected
-          // /upload/complete — by which point the whole file had been sent.
-          status = put.status;
-          detail = "no ETag in the response";
-          forceRetry = true;
-        } else {
-          status = put.status;
-          detail = `${put.status} ${put.statusText}`;
-        }
-      } catch (err) {
-        // Our own cancel is not a retryable condition.
-        if (signal && signal.aborted) throw new Error("Upload cancelled");
-        // A presign (or any API call above) that came back with a permanent
-        // 4xx is an answer, not a blip — carry its status through so the
-        // policy below fails fast instead of backing off twelve times.
-        status = typeof err?.status === "number" ? err.status : null;
-        detail = String(err && err.message || err);
+    if (resumeFrom) {
+      // The store's own answer about what it holds.
+      const listed = await listUploadParts(s3_key, upload_id);
+      for (const p of listed) {
+        const n = Number(p.PartNumber);
+        if (!(n >= 1 && n <= totalParts)) continue;      // from a different plan
+        const expected = n < totalParts
+          ? partSize
+          : stat.size - (totalParts - 1) * partSize;
+        // §213 — A PART IS NEVER TRUSTED ON ITS NUMBER ALONE. A short part
+        // is a partial write, and completing an upload around one produces
+        // a corrupt object that passes every other check we have.
+        if (Number(p.Size) !== expected) continue;
+        if (!p.ETag) continue;
+        existing.set(n, p.ETag);
       }
-
-      lastError = new Error(`Part ${partNumber} failed: ${detail}`);
-
-      if (!forceRetry && !isRetryablePartFailure(status)) {
-        // A 400/401/403/404 that survived a fresh presign is an answer, not
-        // weather. Failing fast beats twelve attempts at being refused.
-        throw lastError;
-      }
-      if (attempt === attempts) break;
-
-      // Full jitter — a uniform pick from [0, window) rather than
-      // window/2 + jitter: three workers riding out the same outage must not
-      // synchronise, and partial jitter keeps them loosely in step.
-      const window = Math.min(capMs, baseMs * 2 ** (attempt - 1));
-      const delay = Math.floor(random() * window);
-      onRetry({ part: partNumber, attempt, of: attempts, delayMs: delay, reason: detail });
-      await sleep(delay);
     }
 
-    throw lastError || new Error(`Part ${partNumber} failed`);
-  }
+    const parts = new Array(totalParts);
+    for (const [n, etag] of existing) parts[n - 1] = { PartNumber: n, ETag: etag };
 
-  const fh = await fsp.open(filePath, "r");
-  let firstError = null;
-  try {
-    let next = 1;
-    // §212 — the shared stop flag. `Promise.all` rejected on the first
-    // failure while the other two workers carried on against a file handle
-    // `finally` was about to close: a read-after-close, and more parts
-    // uploaded for a file already doomed.
-    let failed = false;
+    // Progress starts at the bytes already present, not at 0%. A resumed
+    // 97 GiB upload that reports 0% is indistinguishable from one that
+    // threw everything away.
+    let uploaded = [...existing.keys()].reduce((sum, n) => sum + (
+      n < totalParts ? partSize : stat.size - (totalParts - 1) * partSize
+    ), 0);
+    const resumedBytes = uploaded;
 
-    const worker = async () => {
-      for (;;) {
-        if (failed) return;
-        if (signal && signal.aborted) return;
-        const partNumber = next++;
-        if (partNumber > totalParts) return;
+    /**
+     * §212/§213 — the one place that gives up on a multipart upload.
+     *
+     * §212 created it because five failed attempts left 92.3 GiB of
+     * orphaned parts in the bucket, invisible to the app and billed for.
+     * §213 narrows WHO may call it to the only three cases where the
+     * session is provably worthless:
+     *
+     *   - the user pressed Cancel
+     *   - the source file changed, so this session can never be completed
+     *   - the server and client disagree about the part plan
+     *
+     * A transient failure no longer aborts. That is the §213 contract, and
+     * its cost is explicit: an upload interrupted and never resumed leaves
+     * its parts in the bucket until something reaps them (§215).
+     *
+     * Best-effort by contract. A failing abort must never replace the error
+     * that caused it — that would turn "part 1103 got a 502" into "abort
+     * returned 500", which hides the actual problem.
+     */
+    async function disposeUpload(reason, target) {
+      const t = target || { s3_key, upload_id, version_id };
+      try {
+        await apiRequest("POST", "/upload/abort", {
+          s3_key: t.s3_key, upload_id: t.upload_id, version_id: t.version_id,
+        });
+      } catch (err) {
+        console.error(
+          `[upload] abort after ${reason} failed for ${fileName}: ${String(err && err.message || err)}`
+        );
+      }
+    }
 
-        const offset = (partNumber - 1) * PART_SIZE;
-        const length = Math.min(PART_SIZE, stat.size - offset);
-        const buf = Buffer.alloc(length);
-        await fh.read(buf, 0, length, offset);
+    /**
+     * One part, with the whole retry policy around it.
+     *
+     * Re-presigns on EVERY attempt. A presigned URL carries its own expiry and
+     * signature; reusing one across a long backoff is how a retry that
+     * should have worked returns 403 instead.
+     *
+     * The buffer is read once by the caller and reused across attempts — a
+     * retry must not re-read the disk.
+     */
+    async function putPartWithRetry(partNumber, buf) {
+      let lastError = null;
 
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        if (signal && signal.aborted) throw new Error("Upload cancelled");
+
+        let status = null;
+        let code = null;
+        let detail = "";
+        // An empty ETag arrives on an HTTP 200, so the status alone says
+        // "don't retry" — `isRetryablePartFailure(200)` is false, correctly, for
+        // every other purpose. This flag is how that one case overrides it.
+        let forceRetry = false;
         try {
-          const etag = await putPartWithRetry(partNumber, buf);
-          parts[partNumber - 1] = { PartNumber: partNumber, ETag: etag };
+          const { presigned_url } = await apiRequest("POST", "/upload/presign-part", {
+            s3_key, upload_id, part_number: partNumber,
+          });
+
+          // Per-attempt deadline, plus the caller's cancel. Two signals, so a
+          // cancel aborts immediately rather than waiting out the timeout.
+          // Scales with the part size, so a 512 MiB part is not judged
+          // against a 16 MiB part's patience.
+          const timeoutMs = Math.max(
+            PART_TIMEOUT_FLOOR_MS,
+            (buf.length / PART_TIMEOUT_BYTES_PER_SEC) * 1000
+          );
+          const ac = new AbortController();
+          const onOuterAbort = () => ac.abort();
+          if (signal) signal.addEventListener("abort", onOuterAbort, { once: true });
+          const timer = setTimeout(() => ac.abort(), timeoutMs);
+
+          let put;
+          try {
+            put = await fetch(presigned_url, { method: "PUT", body: buf, signal: ac.signal });
+          } finally {
+            clearTimeout(timer);
+            if (signal) signal.removeEventListener("abort", onOuterAbort);
+          }
+
+          if (signal && signal.aborted) throw new Error("Upload cancelled");
+
+          if (put.ok) {
+            const etag = put.headers.get("ETag") || "";
+            if (etag) return etag;
+            // An empty ETag is a failed attempt, not a success. It used to be
+            // stored as "" and only surfaced hours later as a rejected
+            // /upload/complete — by which point the whole file had been sent.
+            status = put.status;
+            detail = "no ETag in the response";
+            forceRetry = true;
+          } else {
+            status = put.status;
+            detail = `${put.status} ${put.statusText}`;
+          }
         } catch (err) {
-          failed = true;
-          if (!firstError) firstError = err;
-          return;
+          // Our own cancel is not a retryable condition.
+          if (signal && signal.aborted) throw new Error("Upload cancelled");
+          // A presign (or any API call above) that came back with a permanent
+          // 4xx is an answer, not a blip — carry its status through so the
+          // policy below fails fast instead of backing off forever.
+          status = typeof err?.status === "number" ? err.status : null;
+          code = typeof err?.code === "string" ? err.code : null;
+          detail = String(err && err.message || err);
         }
 
-        uploaded += length;
-        onProgress({ uploaded, total: stat.size, part: partNumber, totalParts });
+        // §213 — the session itself is gone. Nothing here can be retried
+        // and there is nothing to abort; the file needs a NEW upload, which
+        // `uploadFile`'s outer loop starts.
+        if (status === 404 || code === "no_such_upload") {
+          throw new UploadSessionGone(detail);
+        }
+
+        // §213 — signed out, and `apiRequest` could not refresh. The bytes
+        // are on disk and the parts are in the bucket; the only wrong move
+        // is to throw the upload away. Park, then try again — and do NOT
+        // count this as a retry attempt, because the wait is not a backoff.
+        if (status === 401) {
+          onRetry({
+            part: partNumber, attempt, of: null, delayMs: null,
+            reason: detail, waitingFor: "auth",
+          });
+          if (waitForAuth) {
+            await waitForAuth();
+          } else {
+            await sleep(Math.min(capMs, baseMs * 8));
+          }
+          attempt -= 1;   // the sign-in wait is not an attempt
+          continue;
+        }
+
+        lastError = new Error(`Part ${partNumber} failed: ${detail}`);
+
+        if (!forceRetry && !isRetryablePartFailure(status)) {
+          // A 400/403 that survived a fresh presign is an answer, not
+          // weather. Failing fast beats retrying a refusal forever.
+          throw lastError;
+        }
+        if (attempt >= attempts) break;
+
+        // Full jitter — a uniform pick from [0, window) rather than
+        // window/2 + jitter: workers riding out the same outage must not
+        // synchronise, and partial jitter keeps them loosely in step.
+        //
+        // The window doubles to the cap and then STAYS there. §213's change
+        // is that the loop does not end when it gets there.
+        const window = Math.min(capMs, baseMs * 2 ** (attempt - 1));
+        const delay = Math.floor(random() * window);
+        onRetry({
+          part: partNumber,
+          attempt,
+          // null, not a denominator: there is no budget to count towards
+          // any more, and "retrying 12/12" was a promise to stop.
+          of: null,
+          delayMs: delay,
+          reason: detail,
+          // The distinct state the panel renders. Once the window is at the
+          // cap this is a connection problem, not a hiccup, and saying so
+          // is the difference between "it is working on it" and "it is
+          // stuck".
+          waitingFor: window >= capMs ? "connection" : null,
+          nextAttemptAt: Date.now() + delay,
+        });
+        await sleep(delay);
       }
+
+      throw lastError || new Error(`Part ${partNumber} failed`);
+    }
+
+    /**
+     * /upload/complete, with the same never-give-up policy as a part.
+     *
+     * A 502 on the way into complete used to abort the upload — throwing
+     * away every byte over the one request that happened to be unlucky.
+     */
+    async function completeWithRetry() {
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        if (signal && signal.aborted) throw new Error("Upload cancelled");
+        try {
+          await apiRequest("POST", "/upload/complete", {
+            s3_key, upload_id, asset_id, version_id, parts,
+          });
+          return;
+        } catch (err) {
+          const status = typeof err?.status === "number" ? err.status : null;
+          const code = typeof err?.code === "string" ? err.code : null;
+          if (status === 404 || code === "no_such_upload") throw new UploadSessionGone(String(err.message || err));
+          if (status === 401) {
+            if (waitForAuth) await waitForAuth(); else await sleep(Math.min(capMs, baseMs * 8));
+            attempt -= 1;
+            continue;
+          }
+          if (!isRetryablePartFailure(status)) throw err;
+          if (attempt >= attempts) throw err;
+          const window = Math.min(capMs, baseMs * 2 ** (attempt - 1));
+          const delay = Math.floor(random() * window);
+          onRetry({
+            part: null, attempt, of: null, delayMs: delay,
+            reason: `completing the upload: ${String(err.message || err)}`,
+            waitingFor: window >= capMs ? "connection" : null,
+            nextAttemptAt: Date.now() + delay,
+          });
+          await sleep(delay);
+        }
+      }
+      throw new Error("Could not complete the upload");
+    }
+
+    const missing = [];
+    for (let n = 1; n <= totalParts; n++) if (!existing.has(n)) missing.push(n);
+
+    if (missing.length) {
+      const fh = await fsp.open(filePath, "r");
+      let firstError = null;
+      try {
+        let nextIndex = 0;
+        // §212 — the shared stop flag. `Promise.all` rejected on the first
+        // failure while the other workers carried on against a file handle
+        // `finally` was about to close: a read-after-close, and more parts
+        // uploaded for a file already doomed.
+        let failed = false;
+
+        const worker = async () => {
+          for (;;) {
+            if (failed) return;
+            if (signal && signal.aborted) return;
+            // §213 — PAUSE, checked before CLAIMING. A part already claimed
+            // runs to completion; nothing new is started while paused; the
+            // session is untouched, so Resume continues from here.
+            if (waitIfPaused) await waitIfPaused();
+            if (failed) return;
+            if (signal && signal.aborted) return;
+
+            const idx = nextIndex++;
+            if (idx >= missing.length) return;
+            const partNumber = missing[idx];
+
+            const offset = (partNumber - 1) * partSize;
+            const length = Math.min(partSize, stat.size - offset);
+            const buf = Buffer.alloc(length);
+            await fh.read(buf, 0, length, offset);
+
+            try {
+              const etag = await putPartWithRetry(partNumber, buf);
+              parts[partNumber - 1] = { PartNumber: partNumber, ETag: etag };
+            } catch (err) {
+              failed = true;
+              if (!firstError) firstError = err;
+              return;
+            }
+
+            uploaded += length;
+            onProgress({
+              uploaded, total: stat.size, part: partNumber, totalParts,
+              resumedBytes,
+            });
+          }
+        };
+
+        // allSettled, not all: every worker must be finished before the handle
+        // closes. The first real error is rethrown below, after the handle is
+        // safely shut.
+        await Promise.allSettled(
+          Array.from({ length: workerCountFor(partSize, missing.length) }, worker)
+        );
+      } finally {
+        await fh.close();
+      }
+
+      if (signal && signal.aborted) {
+        // Cancel is one of the three things that may END an upload, so the
+        // session is aborted and the bucket space freed.
+        await disposeUpload("cancel");
+        throw new Error("Upload cancelled");
+      }
+      if (firstError) {
+        // §213 — NO ABORT. The parts that did land stay, and the session
+        // stays resumable. This is the single change the whole task turns
+        // on: a failure here used to cost everything already transferred.
+        throw firstError;
+      }
+    } else if (signal && signal.aborted) {
+      await disposeUpload("cancel");
+      throw new Error("Upload cancelled");
+    }
+
+    await completeWithRetry();
+
+    return {
+      assetId: asset_id,
+      versionId: version_id,
+      bytes: stat.size,
+      fileName,
+      // §213 — what the caller reports and journals. A resumed file that
+      // says nothing about having been resumed is how a 3-of-975 run looks
+      // like a broken one.
+      resumed: Boolean(resumeFrom),
+      partSize,
+      totalParts,
+      partsAlreadyPresent: existing.size,
+      resumedBytes,
+      freshBecause: reasonForFresh || null,
     };
-
-    // allSettled, not all: every worker must be finished before the handle
-    // closes. The first real error is rethrown below, after the handle is
-    // safely shut.
-    await Promise.allSettled(
-      Array.from({ length: Math.min(CONCURRENT_PARTS, totalParts) }, worker)
-    );
-  } finally {
-    await fh.close();
   }
-
-  if (signal && signal.aborted) {
-    await disposeUpload("cancel");
-    throw new Error("Upload cancelled");
-  }
-  if (firstError) {
-    await disposeUpload("part failure");
-    throw firstError;
-  }
-
-  try {
-    await apiRequest("POST", "/upload/complete", {
-      s3_key, upload_id, asset_id, version_id, parts,
-    });
-    completed = true;
-  } finally {
-    // /complete itself can fail — a rejected part list, a 502 on the way in.
-    // That leaves the same orphan a part failure does.
-    if (!completed) await disposeUpload("complete failure");
-  }
-
-  return { assetId: asset_id, versionId: version_id, bytes: stat.size, fileName };
 }
 
 /**
@@ -956,14 +1319,23 @@ module.exports = {
   listAssets,
   openAssetStream,
   uploadFile,
+  listUploadParts,
   checkExistingAssets,
   mimeForFilename,
   // §212 — exported for scripts/test-upload-resilience.js, which asserts the
   // policy as a table rather than inferring it from retry counts.
   isRetryablePartFailure,
   isCancellationError,
+  // §213 — exported for the same reason: the resume harness has to be able
+  // to recognise a gone session and to assert the concurrency budget
+  // rather than re-deriving either.
+  UploadSessionGone,
+  uploadSessionMatchesSource,
+  workerCountFor,
   MAX_PARTS,
   PART_SIZE,
+  PART_BUFFER_BUDGET_BYTES,
+  CONCURRENT_PARTS,
   // Test seam: lets the harness drive the client without real credentials.
   __setState: (patch) => Object.assign(state, patch),
   __getState: () => ({ ...state }),

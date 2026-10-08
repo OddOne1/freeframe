@@ -1105,8 +1105,14 @@ async function main() {
       // passing against a renderer that never calls any of it.
       const rsrc = fssync.readFileSync(
         path.join(__dirname, "..", "src", "renderer", "index.html"), "utf8");
-      check(/initStep\("interrupted uploads", \(\) => \{ maybeOfferResume\("launch"\)/.test(rsrc),
+      // §213 — the launch trigger is now DEFERRED (scheduleResumeSweep),
+      // because `refreshAccount()` is still in flight when the init steps
+      // run and automatic resume needs to know whether anyone is signed
+      // in. Same trigger, same "launch", one timer in between.
+      check(/initStep\("interrupted uploads", \(\) => \{ scheduleResumeSweep\("launch"\)/.test(rsrc),
         "trigger 1: the renderer asks once at launch");
+      check(/function scheduleResumeSweep\([\s\S]{0,400}maybeOfferResume\(trigger\)/.test(rsrc),
+        "…and that sweep is what calls maybeOfferResume, so the trigger is real");
       check((rsrc.match(/maybeOfferResume\("source"\)/g) || []).length === 2,
         "trigger 2: on a new source AND on a new file set — the sentinel path means "
         + "setSource's own check cannot see a re-picked file set change",
@@ -1576,8 +1582,13 @@ async function main() {
       // §105A moved the resume ACTION out of the modal into runResume, so
       // the bell and the modal share one implementation. The branch is
       // asserted where it now lives rather than where it used to.
-      const rr = rsrc2.slice(rsrc2.indexOf("async function runResume(doc)"),
-                             rsrc2.indexOf("async function offerResume(doc)"));
+      // §213 gave runResume a second parameter (startPaused, for an
+      // automatic sweep), so this matches the name rather than the whole
+      // signature — indexOf returning -1 made the slice empty and the two
+      // checks below fail against code that was still correct.
+      const rrStart = rsrc2.indexOf("async function runResume(doc");
+      const rr = rsrc2.slice(rrStart, rsrc2.indexOf("async function offerResume(doc)"));
+      check(rrStart > 0, "runResume is still the one place a resume starts");
       check(rr.length > 0 && /if \(isCopy\) \{/.test(rr) && /freeframeUpload\(/.test(rr),
         "…while an upload still takes the upload path it always did");
       check(rr.indexOf("startCopy(") < rr.indexOf("freeframeUpload("),

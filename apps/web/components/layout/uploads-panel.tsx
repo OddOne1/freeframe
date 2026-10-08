@@ -15,10 +15,13 @@ import {
   Cog,
   Pause,
   Play,
+  Upload,
+  Trash2,
 } from 'lucide-react'
 import { cn, formatRelativeTime, formatSpeed, formatEta } from '@/lib/utils'
 import { useFormatBytes } from '@/hooks/use-byte-units'
 import { useUploadStore, type UploadFile, type UploadStatus } from '@/stores/upload-store'
+import { fileFromHandle, type UploadSession } from '@/lib/upload-sessions'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -224,10 +227,109 @@ function UploadItem({ upload }: { upload: UploadFile }) {
   )
 }
 
+/**
+ * §213 — an upload this browser can still finish.
+ *
+ * A browser cannot reopen a file by itself after the tab closed, so this
+ * row exists to ask for the same file back. Where the File System Access
+ * API is available (Chromium) the handle was stored and this is one
+ * permission click; everywhere else it is a file picker. Both paths end in
+ * the same `resumeInterrupted`, which refuses a file that is not the same
+ * one rather than uploading it into the wrong session.
+ */
+function InterruptedItem({ session }: { session: UploadSession }) {
+  const { resumeInterrupted, discardInterrupted } = useUploadStore()
+  const formatBytes = useFormatBytes()
+  const [error, setError] = React.useState<string | null>(null)
+  const [busy, setBusy] = React.useState(false)
+  const inputRef = React.useRef<HTMLInputElement>(null)
+
+  const start = React.useCallback(
+    async (file: File) => {
+      setError(null)
+      setBusy(true)
+      try {
+        await resumeInterrupted(session.uploadId, file)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not resume that upload.')
+      } finally {
+        setBusy(false)
+      }
+    },
+    [resumeInterrupted, session.uploadId],
+  )
+
+  const onResume = React.useCallback(async () => {
+    // The stored handle first, when there is one and permission is still
+    // (or can still be) granted. It falls back to the picker for every
+    // "no", which is the path Safari and Firefox always take.
+    const fromHandle = await fileFromHandle(session)
+    if (fromHandle) {
+      void start(fromHandle)
+      return
+    }
+    inputRef.current?.click()
+  }, [session, start])
+
+  const done = session.uploadedBytes
+  const pct = session.fileSize > 0 ? Math.min(99, Math.round((done / session.fileSize) * 100)) : 0
+
+  return (
+    <div className="px-4 py-3 border-b border-border/50">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 text-text-tertiary">{getFileIcon(session.fileType)}</div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-medium text-text-primary truncate" title={session.fileName}>
+            {session.fileName}
+          </p>
+          <p className="text-[11px] text-text-tertiary mt-0.5">
+            {formatBytes(done)} of {formatBytes(session.fileSize)} uploaded ({pct}%)
+          </p>
+          <p className="text-[11px] text-text-tertiary mt-1">
+            Select the same file to continue — only the missing parts are sent.
+          </p>
+          {error && <p className="text-[11px] text-error mt-1">{error}</p>}
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              onClick={onResume}
+              disabled={busy}
+              className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded bg-white/10 text-text-primary hover:bg-white/15 disabled:opacity-50 transition-colors"
+            >
+              <Upload className="h-3 w-3" />
+              Resume
+            </button>
+            <button
+              onClick={() => void discardInterrupted(session.uploadId)}
+              disabled={busy}
+              title="Discard this unfinished upload. The parts already uploaded are deleted."
+              className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded text-text-tertiary hover:text-text-secondary hover:bg-bg-hover disabled:opacity-50 transition-colors"
+            >
+              <Trash2 className="h-3 w-3" />
+              Discard
+            </button>
+          </div>
+          <input
+            ref={inputRef}
+            type="file"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              // Cleared so choosing the same file twice (after a mismatch
+              // message, say) still fires a change event.
+              e.target.value = ''
+              if (file) void start(file)
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Panel ────────────────────────────────────────────────────────────────────
 
 export function UploadsPanel() {
-  const { files, panelOpen, setPanelOpen, clearCompleted, fetchHistory, fetchMoreHistory, fetchProcessing, historyHasMore, historyLoading } = useUploadStore()
+  const { files, panelOpen, setPanelOpen, clearCompleted, fetchHistory, fetchMoreHistory, fetchProcessing, historyHasMore, historyLoading, interrupted, loadInterrupted } = useUploadStore()
   const [filter, setFilter] = React.useState<FilterTab>('all')
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const sentinelRef = React.useRef<HTMLDivElement>(null)
@@ -246,6 +348,16 @@ export function UploadsPanel() {
       fetchProcessing()
     }
   }, [panelOpen, fetchHistory, fetchProcessing])
+
+  // §213 — on ANY page load, not just when the panel opens.
+  //
+  // An interrupted upload is the one thing in here the user has to act on
+  // for anything to happen: a browser cannot reopen the file by itself. If
+  // it only appeared once the panel was open, the normal case — reload the
+  // page, carry on working — would never show it at all.
+  React.useEffect(() => {
+    void loadInterrupted()
+  }, [loadInterrupted])
 
   // Infinite scroll — IntersectionObserver on sentinel
   React.useEffect(() => {
@@ -354,7 +466,25 @@ export function UploadsPanel() {
 
         {/* Content */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto">
-          {filtered.length === 0 && !historyLoading ? (
+          {/* §213 — above the list and above the empty state, because this
+              is the only section that needs the user to do something, and
+              an unfinished 97 GiB upload is not a footnote. */}
+          {interrupted.length > 0 && (
+            <div className="border-b border-border bg-warning/5">
+              <div className="px-4 pt-3 pb-1">
+                <span className="text-[10px] font-medium text-warning uppercase tracking-wider">
+                  {interrupted.length === 1
+                    ? '1 unfinished upload'
+                    : `${interrupted.length} unfinished uploads`}
+                </span>
+              </div>
+              {interrupted.map((session) => (
+                <InterruptedItem key={session.uploadId} session={session} />
+              ))}
+            </div>
+          )}
+
+          {filtered.length === 0 && !historyLoading && interrupted.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center px-6">
               <div className="h-12 w-12 rounded-full bg-bg-tertiary flex items-center justify-center mb-3">
                 <FileIcon className="h-6 w-6 text-text-tertiary" />

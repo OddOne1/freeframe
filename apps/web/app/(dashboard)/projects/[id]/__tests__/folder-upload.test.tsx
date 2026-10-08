@@ -75,7 +75,10 @@ describe('§49 — structure', () => {
   })
 
   it('threads the resolved folder into startUpload', () => {
-    expect(PAGE).toMatch(/startUpload\(entry\.file, projectId, name, project\?\.name, folderId\)/)
+    // §213 added a sixth argument (the re-openable file handle, where the
+    // browser gives one), so this matches the folderId position rather
+    // than the whole call being the end of the line.
+    expect(PAGE).toMatch(/startUpload\(entry\.file, projectId, name, project\?\.name, folderId[,)]/)
     // The standing "startUpload does not yet accept folderId" comment was
     // stale — it already did — and is gone.
     expect(PAGE).not.toMatch(/startUpload does not yet accept folderId/)

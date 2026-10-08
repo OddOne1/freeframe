@@ -50,6 +50,15 @@ const DEFAULTS = Object.freeze({
   // 00:00 means no shift, i.e. plain calendar days, which is what someone
   // who never opens this setting gets.
   dayBoundary: "00:00",
+  // §213 — an interrupted upload continues by itself shortly after launch,
+  // once the user is signed in.
+  //
+  // ON by default, and that is the product decision, not a guess: "auto
+  // resume is a MUST for every user". With it off, behaviour is exactly
+  // what §87/§97A/§105 built — the prompt, which is still there and still
+  // the thing a user sees when a resume needs a decision (a changed source,
+  // a parked job).
+  autoResumeUploads: true,
 });
 
 /** "HH:MM", 24-hour, or the default. A malformed value here would shift
@@ -123,6 +132,11 @@ function normalize(raw) {
     const fin = raw.finalizedChecksumAlgo;
     if (typeof fin === "string" && fin.trim()) out.finalizedChecksumAlgo = fin.trim();
     out.dayBoundary = normalizeDayBoundary(raw.dayBoundary);
+    // Only an explicit `false` turns it off. An absent field means "never
+    // configured", which must land on the default rather than on off —
+    // the shape that silently disabled the finalized checksum pass for
+    // everyone who had enabled it (§103's own note above).
+    if (raw.autoResumeUploads === false) out.autoResumeUploads = false;
     out.hiddenVolumeNames = normalizeIdList(raw.hiddenVolumeNames);
     out.hiddenProjectIds = normalizeIdList(raw.hiddenProjectIds);
   }

@@ -1,8 +1,28 @@
 import { create, type StateCreator } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { api } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
+import {
+  deleteSession,
+  fileMatchesSession,
+  listSessions,
+  saveSession,
+  canStoreFileHandles,
+  type UploadSession,
+} from '@/lib/upload-sessions'
 import type { AssetResponse } from '@/types'
 
+/**
+ * §213 — a FALLBACK, not the part size.
+ *
+ * The server decides how a file is split (`part_size` on the initiate
+ * response, from apps/api/services/upload_policy.py) because the ceiling
+ * depends on it: 10 MiB parts cap a single file at 10,000 x 10 MiB =
+ * 97.66 GiB, and a 100 GB file needs more parts than S3 allows. This
+ * constant now only covers one case — a rolling deploy where a rebuilt web
+ * container is talking to an api that predates §213 and sends no
+ * `part_size` at all. Keeping the old value there is correct: it is what
+ * that server expects, just with the old ceiling.
+ */
 const CHUNK_SIZE = 10 * 1024 * 1024 // 10 MB
 const HISTORY_PAGE_SIZE = 20
 // Backoff schedule for transient part failures (dropped wifi, locked screen,
@@ -69,13 +89,17 @@ interface InitiateResponse {
   s3_key: string
   asset_id: string
   version_id: string
+  // §213 — optional, so an older api still parses. See CHUNK_SIZE.
+  part_size?: number | null
+  total_parts?: number | null
 }
 
-interface VersionInitiateResponse {
-  upload_id: string
-  s3_key: string
-  asset_id: string
-  version_id: string
+interface VersionInitiateResponse extends InitiateResponse {}
+
+interface UploadedPart {
+  PartNumber: number
+  ETag: string
+  Size: number
 }
 
 // AbortControllers for cancellation
@@ -93,6 +117,62 @@ const manualPauseWaiters: Record<string, (() => void) | undefined> = {}
 const bytesUploadedMap: Record<string, number> = {}
 const speedSamples: Record<string, Array<{ t: number; bytes: number }>> = {}
 const speedIntervals: Record<string, ReturnType<typeof setInterval>> = {}
+
+/**
+ * §213 — the browser says it is offline.
+ *
+ * Module-level for the same reason `manualPauseFlags` is: it has to
+ * outlive any single React render, and every in-flight part shares it.
+ *
+ * `navigator.onLine` is only a hint — it is true on a network that cannot
+ * reach anything — so this is NOT the primary mechanism. The retry loop is
+ * already indefinite; this just stops it burning attempts against a
+ * connection the browser knows is down, and gives the row an honest
+ * reason. A false negative costs nothing: the retry carries on.
+ */
+const offlineWaiters: Array<() => void> = []
+let connectivityWired = false
+
+function wireConnectivity(): void {
+  if (connectivityWired || typeof window === 'undefined') return
+  connectivityWired = true
+  window.addEventListener('online', () => {
+    const waiting = offlineWaiters.splice(0, offlineWaiters.length)
+    for (const w of waiting) w()
+  })
+}
+
+function isOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false
+}
+
+/** Resolves as soon as the browser reports a connection again. */
+function waitWhileOffline(signal: AbortSignal): Promise<void> {
+  if (!isOffline()) return Promise.resolve()
+  wireConnectivity()
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('Upload cancelled', 'AbortError'))
+      return
+    }
+    const done = () => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }
+    const onAbort = () => {
+      const i = offlineWaiters.indexOf(done)
+      if (i >= 0) offlineWaiters.splice(i, 1)
+      reject(new DOMException('Upload cancelled', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    offlineWaiters.push(done)
+  })
+}
+
+/** §213 — does this error mean the multipart session itself is gone? */
+function isGoneSession(err: unknown): boolean {
+  return err instanceof ApiError && (err.code === 'no_such_upload' || err.status === 404)
+}
 
 function retryDelay(attempt: number): number {
   return RETRY_DELAYS_MS[Math.min(attempt - 1, RETRY_DELAYS_MS.length - 1)]
@@ -206,12 +286,24 @@ async function uploadPartWithRetry(
       if (controller.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
         throw err
       }
+      // §213 — the session is gone. Nothing here can be retried: the file
+      // needs a NEW upload, which is the caller's decision, not this
+      // loop's. Rethrown unchanged so it can make it.
+      if (isGoneSession(err)) throw err
       attempt++
       updateFile(id, {
         status: 'paused',
         pauseReason: 'retrying',
-        error: `Part ${partNumber} interrupted — retrying (attempt ${attempt})…`,
+        // §213 — names the reason rather than just counting. An attempt
+        // number alone cannot tell "this one part hiccupped" from "you
+        // have no network", which is the thing a user needs to know.
+        error: isOffline()
+          ? `Offline — part ${partNumber} will continue when the connection is back`
+          : `Part ${partNumber} interrupted — retrying (attempt ${attempt})…`,
       })
+      // Waits only while the browser reports no connection; otherwise it
+      // resolves at once and the ordinary backoff applies.
+      await waitWhileOffline(controller.signal)
       await abortableSleep(retryDelay(attempt), controller.signal)
       await checkAndWaitManualPause(id, controller, updateFile)
       updateFile(id, { status: 'uploading', pauseReason: undefined, error: undefined })
@@ -359,8 +451,21 @@ async function runChunkedUpload(params: {
   controller: AbortController
   updateFile: (fileId: string, patch: Partial<UploadFile>) => void
   initiate: () => Promise<InitiateResponse | VersionInitiateResponse>
+  /** §213 — what a previous, interrupted run got to. See `resumeUpload`
+   *  on the store: the file has already been matched against it. */
+  resumeFrom?: UploadSession | null
+  /** §213 — remembered so a resume can go back to the same project and,
+   *  for a version upload, the same asset. */
+  describe?: {
+    projectId: string
+    folderId: string | null
+    versionOf: string | null
+    assetName: string
+    handle?: FileSystemFileHandle
+  }
 }): Promise<void> {
-  const { id, file, controller, updateFile, initiate } = params
+  const { id, file, controller, updateFile, initiate, describe } = params
+  let resumeFrom = params.resumeFrom ?? null
 
   let upload_id: string | undefined
   let s3_key: string | undefined
@@ -371,28 +476,122 @@ async function runChunkedUpload(params: {
   try {
     updateFile(id, { status: 'uploading' })
 
-    const initRes = await initiate()
-    upload_id = initRes.upload_id
-    s3_key = initRes.s3_key
-    version_id = initRes.version_id
-    asset_id = initRes.asset_id
+    // §213 — parts the server already holds, when this is a resume.
+    //
+    // THE SERVER'S LIST, never a note this app kept about requests it
+    // made: a tab that closed mid-upload loses the note without losing the
+    // bytes, and re-sending 5,000 parts that are already there is exactly
+    // the cost resume exists to avoid.
+    const existing = new Map<number, string>()
+    let partSize = CHUNK_SIZE
+
+    if (resumeFrom) {
+      try {
+        const listed = await api.get<{ parts: UploadedPart[] }>(
+          `/upload/parts?s3_key=${encodeURIComponent(resumeFrom.s3Key)}` +
+            `&upload_id=${encodeURIComponent(resumeFrom.uploadId)}`,
+        )
+        upload_id = resumeFrom.uploadId
+        s3_key = resumeFrom.s3Key
+        asset_id = resumeFrom.assetId
+        version_id = resumeFrom.versionId
+        // The part size the ORIGINAL run used, not a freshly planned one:
+        // the server's answer can legitimately change between runs, and
+        // re-planning would renumber every remaining part against bytes
+        // already stored under the old numbering.
+        partSize = resumeFrom.partSize > 0 ? resumeFrom.partSize : CHUNK_SIZE
+        const total = Math.max(1, Math.ceil(file.size / partSize))
+        for (const part of listed?.parts ?? []) {
+          const n = Number(part.PartNumber)
+          if (!(n >= 1 && n <= total)) continue
+          const expected = n < total ? partSize : file.size - (total - 1) * partSize
+          // A PART IS NEVER TRUSTED ON ITS NUMBER ALONE. A short part is a
+          // partial write, and completing an upload around one produces a
+          // corrupt object that passes every other check there is.
+          if (Number(part.Size) !== expected) continue
+          if (!part.ETag) continue
+          existing.set(n, part.ETag)
+        }
+      } catch (err) {
+        if (!isGoneSession(err)) throw err
+        // The session is gone, so this is an ordinary first upload of this
+        // file. Not a failure: the bytes are right here.
+        await deleteSession(resumeFrom.uploadId)
+        resumeFrom = null
+      }
+    }
+
+    if (!upload_id) {
+      const initRes = await initiate()
+      upload_id = initRes.upload_id
+      s3_key = initRes.s3_key
+      version_id = initRes.version_id
+      asset_id = initRes.asset_id
+      // §213 — the server's choice. CHUNK_SIZE only if it is too old to
+      // have one.
+      partSize = Number(initRes.part_size) > 0 ? Number(initRes.part_size) : CHUNK_SIZE
+    }
 
     updateFile(id, { uploadId: upload_id, assetId: asset_id, versionId: version_id })
 
-    const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+    const totalChunks = Math.max(1, Math.ceil(file.size / partSize))
     const parts: Array<{ PartNumber: number; ETag: string }> = new Array(totalChunks)
+    for (const [n, etag] of Array.from(existing.entries())) {
+      parts[n - 1] = { PartNumber: n, ETag: etag }
+    }
 
-    bytesUploadedMap[id] = 0
+    // Written BEFORE the first part goes out. A tab closed one second
+    // later otherwise leaves a multipart upload nothing can ever find
+    // again — and on the web, "find again" is the only way back to it.
+    if (describe) {
+      const alreadyBytes = Array.from(existing.keys()).reduce(
+        (sum, n) => sum + (n < totalChunks ? partSize : file.size - (totalChunks - 1) * partSize),
+        0,
+      )
+      void saveSession({
+        uploadId: upload_id,
+        s3Key: s3_key!,
+        assetId: asset_id!,
+        versionId: version_id!,
+        partSize,
+        projectId: describe.projectId,
+        folderId: describe.folderId,
+        versionOf: describe.versionOf,
+        assetName: describe.assetName,
+        fileName: file.name,
+        fileSize: file.size,
+        lastModified: file.lastModified,
+        fileType: file.type,
+        handle: describe.handle,
+        createdAt: resumeFrom?.createdAt ?? Date.now(),
+        uploadedBytes: alreadyBytes,
+      }).catch(() => {})
+    }
+
+    // Progress starts at the bytes already present, not at 0%: a resumed
+    // 97 GiB upload that reports 0% is indistinguishable from one that
+    // threw everything away.
+    bytesUploadedMap[id] = Array.from(existing.keys()).reduce(
+      (sum, n) => sum + (n < totalChunks ? partSize : file.size - (totalChunks - 1) * partSize),
+      0,
+    )
+    updateFile(id, {
+      progress: Math.min(95, Math.round((bytesUploadedMap[id] / Math.max(1, file.size)) * 95)),
+    })
     speedInterval = startSpeedSampler(id, file.size, updateFile)
 
     // Small worker pool instead of one part at a time — see CONCURRENT_PARTS
     // above for why. Workers pull the next part number off a shared counter
     // until none are left; each part still goes through the same
     // pause/retry-with-backoff path as before, just several at once.
-    let nextPartNumber = 1
+    //
+    // §213 — the counter now walks only the MISSING parts.
+    const missing: number[] = []
+    for (let n = 1; n <= totalChunks; n++) if (!existing.has(n)) missing.push(n)
+    let nextIndex = 0
     const claimNextPart = (): number | null => {
-      if (nextPartNumber > totalChunks) return null
-      return nextPartNumber++
+      if (nextIndex >= missing.length) return null
+      return missing[nextIndex++]
     }
 
     const partWorker = async (): Promise<void> => {
@@ -400,8 +599,12 @@ async function runChunkedUpload(params: {
       while (partNumber !== null) {
         if (controller.signal.aborted) throw new DOMException('Upload cancelled', 'AbortError')
 
-        const start = (partNumber - 1) * CHUNK_SIZE
-        const end = Math.min(start + CHUNK_SIZE, file.size)
+        const start = (partNumber - 1) * partSize
+        const end = Math.min(start + partSize, file.size)
+        // A lazy view, not a copy: `Blob.slice` does not read the bytes, so
+        // CONCURRENT_PARTS x part_size is not resident even at a 512 MiB
+        // part size. (The desktop uploader has to allocate real Buffers and
+        // bounds its concurrency accordingly — see workerCountFor there.)
         const chunk = file.slice(start, end)
 
         const result = await uploadPartWithRetry(id, s3_key!, upload_id!, partNumber, chunk, controller, updateFile)
@@ -414,8 +617,10 @@ async function runChunkedUpload(params: {
       }
     }
 
-    const workerCount = Math.min(CONCURRENT_PARTS, totalChunks)
-    await Promise.all(Array.from({ length: workerCount }, () => partWorker()))
+    const workerCount = Math.max(1, Math.min(CONCURRENT_PARTS, missing.length))
+    if (missing.length) {
+      await Promise.all(Array.from({ length: workerCount }, () => partWorker()))
+    }
 
     await api.post('/upload/complete', {
       s3_key,
@@ -424,6 +629,8 @@ async function runChunkedUpload(params: {
       version_id,
       parts,
     })
+    // Completed, so there is nothing left to resume.
+    if (upload_id) void deleteSession(upload_id).catch(() => {})
 
     if (isMediaFile(file)) {
       updateFile(id, { progress: 100, status: 'processing', processingProgress: 0, speedBps: undefined, etaSeconds: undefined })
@@ -431,16 +638,37 @@ async function runChunkedUpload(params: {
       updateFile(id, { progress: 100, status: 'complete', speedBps: undefined, etaSeconds: undefined })
     }
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
+    const cancelled = err instanceof DOMException && err.name === 'AbortError'
+    if (cancelled) {
       updateFile(id, { status: 'cancelled', progress: 0, pauseReason: undefined, speedBps: undefined, etaSeconds: undefined })
+      // §213 — CANCEL is one of the only three things that may end an
+      // upload, so this is where the multipart upload is aborted: the
+      // parts are freed, the version is marked failed rather than left
+      // stuck at `uploading`, and nothing is offered for resume.
+      if (upload_id && s3_key && version_id) {
+        api.post('/upload/abort', { s3_key, upload_id, version_id }).catch(() => {})
+      }
+      if (upload_id) void deleteSession(upload_id).catch(() => {})
     } else {
       const message = err instanceof Error ? err.message : 'Upload failed'
-      updateFile(id, { status: 'failed', error: message, pauseReason: undefined, speedBps: undefined, etaSeconds: undefined })
-    }
-    // Notify backend so the version is marked failed (not stuck at uploading).
-    // This ensures post-refresh history shows the item in "Failed", not "Active".
-    if (upload_id && s3_key && version_id) {
-      api.post('/upload/abort', { s3_key, upload_id, version_id }).catch(() => {})
+      const resumable = Boolean(upload_id && s3_key && version_id)
+      updateFile(id, {
+        status: 'failed',
+        error: resumable
+          ? `${message} — the parts already uploaded are kept; reopen this file to continue`
+          : message,
+        pauseReason: undefined,
+        speedBps: undefined,
+        etaSeconds: undefined,
+      })
+      // §213 — NO ABORT. This used to abort on every failure, which threw
+      // away every byte already transferred to make the history page read
+      // tidily. The session and its parts are kept instead, and the
+      // uploads panel offers it for resume; the version stays
+      // `uploading`, which is the truth — it is unfinished, not failed.
+      //
+      // The cost is explicit: a session nobody ever resumes holds its
+      // parts until something reaps them (§215).
     }
   } finally {
     if (speedInterval) clearInterval(speedInterval)
@@ -466,8 +694,18 @@ interface UploadStore {
   dismissedHistoryIds: string[]
   setPanelOpen: (open: boolean) => void
   togglePanel: () => void
-  startUpload: (file: File, projectId: string, assetName: string, projectName?: string, folderId?: string | null) => string
+  /** §213 — interrupted uploads this browser can still continue. */
+  interrupted: UploadSession[]
+  startUpload: (file: File, projectId: string, assetName: string, projectName?: string, folderId?: string | null, handle?: FileSystemFileHandle) => string
   startVersionUpload: (file: File, assetId: string, assetName: string, projectId: string) => string
+  /** §213 — read the persisted sessions back (any page load). */
+  loadInterrupted: () => Promise<void>
+  /** §213 — continue one, with the file the user re-selected. Rejects with
+   *  a human-readable message if it is not the same file. */
+  resumeInterrupted: (uploadId: string, file: File) => Promise<string>
+  /** §213 — the user does not want to finish this one. Aborts the
+   *  multipart upload so the parts are not left behind, then forgets it. */
+  discardInterrupted: (uploadId: string) => Promise<void>
   cancelUpload: (fileId: string) => void
   pauseUpload: (fileId: string) => void
   resumeUpload: (fileId: string) => void
@@ -549,11 +787,12 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
   historyLoading: false,
   historySkip: 0,
   dismissedHistoryIds: [],
+  interrupted: [],
 
   setPanelOpen: (open) => set({ panelOpen: open }),
   togglePanel: () => set((s) => ({ panelOpen: !s.panelOpen })),
 
-  startUpload: (file, projectId, assetName, projectName, folderId) => {
+  startUpload: (file, projectId, assetName, projectName, folderId, handle) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
 
     const entry: UploadFile = {
@@ -586,6 +825,18 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
       file,
       controller,
       updateFile,
+      // §213 — what a resume needs that the File object cannot tell us:
+      // where this was going.
+      describe: {
+        projectId,
+        folderId: folderId ?? null,
+        versionOf: null,
+        assetName,
+        // §213 — present only where the browser gave one (Chromium, loose
+        // dropped file). Everywhere else a resume is a file picker, which
+        // is why `canStoreFileHandles` exists and nothing depends on this.
+        handle,
+      },
       initiate: () =>
         withInitiateSlot(projectId, () =>
           api.post<InitiateResponse>('/upload/initiate', {
@@ -597,7 +848,7 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
             folder_id: folderId ?? null,
           }),
         ),
-    })
+    }).finally(() => { void get().loadInterrupted() })
 
     return id
   },
@@ -631,6 +882,15 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
       file,
       controller,
       updateFile,
+      describe: {
+        projectId,
+        folderId: null,
+        // A resumed version upload must land on the SAME asset. Without
+        // this it would come back as a brand new asset with the same
+        // name, which is a different file as far as the app is concerned.
+        versionOf: assetId,
+        assetName,
+      },
       initiate: () =>
         api.post<VersionInitiateResponse>(`/assets/${assetId}/versions`, {
           project_id: projectId,
@@ -639,9 +899,130 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
           file_size_bytes: file.size,
           mime_type: file.type,
         }),
-    })
+    }).finally(() => { void get().loadInterrupted() })
 
     return id
+  },
+
+  /**
+   * §213 — the interrupted uploads this browser remembers.
+   *
+   * Read on any page load, by the uploads panel. A session whose file the
+   * user never re-selects simply sits here; it is not an error state and
+   * it is not shown as a failure.
+   */
+  loadInterrupted: async () => {
+    // In-flight uploads have a session too (it is written before the first
+    // part), and offering to "resume" something that is running would be
+    // nonsense. Filtered against what this tab is doing right now.
+    const live = new Set(
+      get()
+        .files.filter((f) => f.status === 'uploading' || f.status === 'paused' || f.status === 'pending')
+        .map((f) => f.uploadId)
+        .filter(Boolean) as string[],
+    )
+    const all = await listSessions()
+    set({ interrupted: all.filter((x) => !live.has(x.uploadId)) })
+  },
+
+  resumeInterrupted: async (uploadId, file) => {
+    const session = (await listSessions()).find((x) => x.uploadId === uploadId)
+    if (!session) throw new Error('That upload is no longer available to resume.')
+    // §213 — the file is checked BEFORE a byte is sent. Resuming the wrong
+    // file into a half-finished session splices two different files into
+    // one object and then completes it as if it were whole: a corrupt
+    // asset that passes every check the app has.
+    if (!fileMatchesSession(file, session)) {
+      throw new Error(
+        `That is not the same file. This upload was "${session.fileName}" ` +
+          `(${session.fileSize.toLocaleString()} bytes). Choose that exact file to continue, ` +
+          'or discard the interrupted upload and start a new one.',
+      )
+    }
+
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const entry: UploadFile = {
+      id,
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type || session.fileType,
+      projectId: session.projectId,
+      assetName: session.assetName,
+      progress: 0,
+      processingProgress: 0,
+      status: 'pending',
+      assetId: session.assetId,
+      versionId: session.versionId,
+      uploadId: session.uploadId,
+      createdAt: Date.now(),
+    }
+    set((st) => ({ files: [entry, ...st.files], panelOpen: true }))
+
+    const updateFile = (fileId: string, patch: Partial<UploadFile>) => {
+      set((st) => ({ files: st.files.map((f) => (f.id === fileId ? { ...f, ...patch } : f)) }))
+    }
+
+    const controller = new AbortController()
+    abortControllers[id] = controller
+
+    void runChunkedUpload({
+      id,
+      file,
+      controller,
+      updateFile,
+      resumeFrom: session,
+      describe: {
+        projectId: session.projectId,
+        folderId: session.folderId,
+        versionOf: session.versionOf,
+        assetName: session.assetName,
+        handle: session.handle,
+      },
+      // Only reached if the session turned out to be gone, in which case
+      // this is an ordinary first upload of the same file to the same
+      // place — including, for a version upload, the same asset.
+      initiate: () =>
+        session.versionOf
+          ? api.post<VersionInitiateResponse>(`/assets/${session.versionOf}/versions`, {
+              project_id: session.projectId,
+              asset_name: session.assetName,
+              original_filename: file.name,
+              file_size_bytes: file.size,
+              mime_type: file.type,
+            })
+          : withInitiateSlot(session.projectId, () =>
+              api.post<InitiateResponse>('/upload/initiate', {
+                project_id: session.projectId,
+                asset_name: session.assetName,
+                original_filename: file.name,
+                file_size_bytes: file.size,
+                mime_type: file.type,
+                folder_id: session.folderId,
+              }),
+            ),
+    }).finally(() => { void get().loadInterrupted() })
+
+    set((st) => ({ interrupted: st.interrupted.filter((x) => x.uploadId !== uploadId) }))
+    return id
+  },
+
+  discardInterrupted: async (uploadId) => {
+    const session = (await listSessions()).find((x) => x.uploadId === uploadId)
+    if (session) {
+      // Aborted, not merely forgotten. §213 keeps sessions alive precisely
+      // so they can be resumed, which means a session nobody will resume
+      // holds its parts in the bucket until §215 reaps it — so when the
+      // user says they are done with it, say so to the server.
+      await api
+        .post('/upload/abort', {
+          s3_key: session.s3Key,
+          upload_id: session.uploadId,
+          version_id: session.versionId,
+        })
+        .catch(() => {})
+      await deleteSession(uploadId)
+    }
+    set((st) => ({ interrupted: st.interrupted.filter((x) => x.uploadId !== uploadId) }))
   },
 
   cancelUpload: (fileId) => {

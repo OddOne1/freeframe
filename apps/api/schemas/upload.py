@@ -36,8 +36,14 @@ ALLOWED_MIME_TYPES = {
     "movie/x-redraw", "movie/redraw", "movie/x-ar", "movie/ari"
 }
 
-MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024 * 1024  # 2000 GB
-CHUNK_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+# §213 — there is no hand-written maximum file size any more. It is
+# arithmetic over the configured per-part ceiling, and it lives in
+# services/upload_policy.py (`plan_parts`, `max_file_bytes`). The old
+# constant here said 2000 GB, which no client could ever upload: at the
+# 10-16 MiB parts they used, S3's 10,000-part limit capped a real upload
+# at 98-156 GiB, and the rest of the promise was discovered as a failure
+# at part 10,001 after hours of transfer.
+CHUNK_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB -- client fallback only
 
 def mime_to_asset_type (mime_type: str) -> AssetType:
     if mime_type.startswith("image/"):
@@ -71,6 +77,15 @@ class InitiateUploadResponse(BaseModel):
     s3_key: str
     asset_id: uuid.UUID
     version_id: uuid.UUID
+    # §213 — the SERVER decides how the file is split, and both clients
+    # use what it says. Additive and optional so a client built against
+    # the older response still parses this one: web and api are rebuilt
+    # as separate containers, so for one rolling deploy a new web talks
+    # to an old api (falls back to its own 10 MiB) and an old web talks
+    # to a new api (ignores these and keeps its 10 MiB, which is still
+    # legal -- just a lower ceiling).
+    part_size: int | None = None
+    total_parts: int | None = None
 
 class PresignPartRequest(BaseModel):
     s3_key: str
@@ -101,3 +116,19 @@ class AbortUploadRequest(BaseModel):
     s3_key: str
     upload_id: str
     version_id: uuid.UUID
+
+
+class UploadedPart(BaseModel):
+    """One part the store already holds, as `GET /upload/parts` reports it.
+
+    `Size` is what makes a resume safe: a part listed at the wrong size is
+    a partial write, and re-sending it is far cheaper than completing a
+    multipart upload around it.
+    """
+    PartNumber: int
+    ETag: str
+    Size: int
+
+
+class UploadedPartsResponse(BaseModel):
+    parts: list[UploadedPart]

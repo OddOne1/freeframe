@@ -212,8 +212,12 @@ contextBridge.exposeInMainWorld("freeframe", {
    *  size before a pull is started. */
   freeframeListAssets: (projectId, folderId, recursive) =>
     ipcRenderer.invoke("freeframe:list-assets", { projectId, folderId, recursive }),
-  freeframeUpload: (sourcePath, projectId, folderId, sourceFiles, concurrencyMode, resumeJobId) =>
-    ipcRenderer.invoke("freeframe:upload", { sourcePath, projectId, folderId, sourceFiles, concurrencyMode, resumeJobId }),
+  // §213 — `startPaused` is for AUTOMATIC resume only: a job the user had
+  // paused when the app stopped comes back paused rather than quietly
+  // running again. An explicit Resume click passes nothing, because
+  // clicking Resume means run it.
+  freeframeUpload: (sourcePath, projectId, folderId, sourceFiles, concurrencyMode, resumeJobId, startPaused) =>
+    ipcRenderer.invoke("freeframe:upload", { sourcePath, projectId, folderId, sourceFiles, concurrencyMode, resumeJobId, startPaused }),
   /** §97A — upload jobs whose journal says they died mid-flight. §87
    *  Phase 2 will decide how these are surfaced; this is the reader. */
   interruptedUploads: () => ipcRenderer.invoke("freeframe:interrupted-uploads"),

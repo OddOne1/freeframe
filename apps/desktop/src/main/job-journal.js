@@ -23,8 +23,14 @@
 const fsp = require("node:fs/promises");
 const path = require("node:path");
 
-/** Bump when the shape changes in a way a reader must notice. */
-const JOURNAL_VERSION = 1;
+/** Bump when the shape changes in a way a reader must notice.
+ *
+ *  2 (§213) — adds `sessions`, the in-progress multipart upload per file,
+ *  and `paused`. Both are ADDITIVE: a version-1 journal has neither, and
+ *  every reader here treats absent as empty, so an interrupted job written
+ *  by an older build still resumes — it just resumes file-by-file rather
+ *  than part-by-part, which is what it could always do. */
+const JOURNAL_VERSION = 2;
 
 const journalFile = (dir, jobId) => path.join(dir, `${jobId}.journal.json`);
 
@@ -106,6 +112,23 @@ async function startJournal(dir, job, meta = {}) {
     folderId: meta.folderId ?? null,
     startedAt: new Date().toISOString(),
     naming: namingSnapshot(meta.naming),
+    // §213 — the multipart upload in progress for each file, keyed by the
+    // same `file` string the rows in `files` use.
+    //
+    // This is the difference between resuming a JOB and resuming a FILE.
+    // §97A's journal could only say "these files are already on the
+    // server", so an interrupted 97 GiB file started again from byte zero.
+    // A session here is written BEFORE the first part goes out, so the
+    // parts already in the bucket stay findable across a crash.
+    //
+    // No per-part ETags, deliberately: the server's own `GET /upload/parts`
+    // is the source of truth for what arrived, and a second record of it
+    // here could only ever be a claim about requests we made.
+    sessions: {},
+    // §213 — the user pressed Pause and the app then quit. A paused job
+    // relaunches paused rather than silently resuming something somebody
+    // deliberately stopped.
+    paused: false,
     files: [],
   };
   open.set(job.id, { dir, doc, writing: Promise.resolve() });
@@ -185,6 +208,92 @@ async function appendFileResult(jobId, result) {
   if (result.versionId) row.versionId = result.versionId;
   entry.doc.files.push(row);
   return flush(jobId);
+}
+
+/**
+ * §213 — the multipart upload a file is in the middle of.
+ *
+ * Written BEFORE the first part is PUT, which is the only placement that
+ * helps: a session recorded after the parts are sent describes work a
+ * crash has already lost track of.
+ *
+ * Fire-and-forget like `appendFileResult` — an upload must never wait on
+ * a log write — but the flush chain means it lands in order.
+ */
+async function recordUploadSession(jobId, file, session) {
+  const entry = open.get(jobId);
+  if (!entry || typeof file !== "string" || !session) return;
+  if (!session.s3Key || !session.uploadId) return;
+  if (!entry.doc.sessions || typeof entry.doc.sessions !== "object") entry.doc.sessions = {};
+  entry.doc.sessions[file] = {
+    s3Key: session.s3Key,
+    uploadId: session.uploadId,
+    assetId: session.assetId ?? null,
+    versionId: session.versionId ?? null,
+    partSize: session.partSize ?? null,
+    totalParts: session.totalParts ?? null,
+    // The source's identity at the moment the session was created. A
+    // resume that skipped this check could splice two different files into
+    // one object and then complete it as if it were whole — the only
+    // outcome worse than re-uploading.
+    size: session.size ?? null,
+    mtimeMs: session.mtimeMs ?? null,
+    at: new Date().toISOString(),
+  };
+  return flush(jobId);
+}
+
+/**
+ * The file finished, so its session is no longer something to resume.
+ *
+ * Dropped rather than kept-and-ignored: a session present in a journal
+ * MEANS "this file was mid-upload when we stopped", and leaving a
+ * completed one behind would have a resume list parts for an upload the
+ * server has already completed.
+ */
+async function clearUploadSession(jobId, file) {
+  const entry = open.get(jobId);
+  if (!entry || typeof file !== "string") return;
+  if (entry.doc.sessions && entry.doc.sessions[file]) {
+    delete entry.doc.sessions[file];
+    return flush(jobId);
+  }
+}
+
+/** §213 — the session a previous run left for this file, or null. */
+function uploadSessionFor(doc, file) {
+  if (!doc || !doc.sessions || typeof doc.sessions !== "object") return null;
+  const s = doc.sessions[file];
+  return s && s.s3Key && s.uploadId ? s : null;
+}
+
+/**
+ * §213 — remember that this job is paused, across a quit.
+ *
+ * A fifth verb on the journal, for the same reason `setHiddenFromPrompt`
+ * is a fourth: none of the others can say it. Two paths for the same
+ * reason too — the journal may be open in this process (the job is
+ * running and was just paused) or only on disk (the app relaunched).
+ */
+async function setPaused(dir, jobId, paused = true) {
+  const entry = open.get(jobId);
+  if (entry) {
+    entry.doc.paused = paused === true;
+    await flush(jobId);
+    return true;
+  }
+  try {
+    const target = journalFile(dir, jobId);
+    const doc = JSON.parse(await fsp.readFile(target, "utf8"));
+    if (!doc || !doc.freeframeJobJournal) return false;
+    doc.paused = paused === true;
+    const tmp = `${target}.tmp`;
+    await fsp.writeFile(tmp, JSON.stringify(doc, null, 2), "utf8");
+    await fsp.rename(tmp, target);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -365,6 +474,10 @@ async function confirmedDestinations(doc) {
 module.exports = {
   JOURNAL_VERSION,
   confirmedDestinations,
+  recordUploadSession,
+  clearUploadSession,
+  uploadSessionFor,
+  setPaused,
   journalFile,
   namingSnapshot,
   startJournal,

@@ -176,6 +176,69 @@ def presign_upload_part(s3_key: str, upload_id: str, part_number: int, expires_i
         ExpiresIn=expires_in,
     )
 
+class NoSuchUploadError(Exception):
+    """The multipart upload named by (key, upload_id) does not exist.
+
+    Its own type rather than a raw ClientError, because the CALLER's
+    decision turns on exactly this case and nothing else: §213's resume
+    must start a fresh upload when the session is gone, and must not do
+    that for a network blip or a permissions failure. Matching on
+    `e.response["Error"]["Code"]` at each call site is how one of them
+    ends up matching on the message text instead.
+    """
+
+
+def list_multipart_parts(s3_key: str, upload_id: str) -> list[dict]:
+    """Every part the store already holds for this upload (§213).
+
+    PAGINATED IN FULL, and that is the whole reason this is a function
+    rather than one `list_parts` call: the API returns at most 1,000 parts
+    per page, and a 100 GB file at the 16 MiB parts the desktop app used
+    is 6,400 parts. Returning the first page would tell a resuming client
+    that 5,400 parts it already sent are missing, and it would send them
+    again -- the exact cost the resume exists to avoid.
+
+    Raises NoSuchUploadError when the upload is gone, and whatever boto3
+    raises for anything else.
+    """
+    s3 = get_s3_client()
+    parts: list[dict] = []
+    marker = None
+    while True:
+        kwargs = {
+            "Bucket": settings.s3_bucket,
+            "Key": s3_key,
+            "UploadId": upload_id,
+            "MaxParts": 1000,
+        }
+        if marker is not None:
+            kwargs["PartNumberMarker"] = marker
+        try:
+            page = s3.list_parts(**kwargs)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") in ("NoSuchUpload", "NoSuchKey"):
+                raise NoSuchUploadError(upload_id) from e
+            raise
+        for p in page.get("Parts", []) or []:
+            parts.append({
+                "PartNumber": int(p["PartNumber"]),
+                "ETag": p.get("ETag") or "",
+                "Size": int(p.get("Size") or 0),
+            })
+        if not page.get("IsTruncated"):
+            break
+        nxt = page.get("NextPartNumberMarker")
+        if nxt in (None, "", marker):
+            # A truncated page with no usable marker would loop forever.
+            # Stopping is the safe direction: a client told about fewer
+            # parts than exist re-sends some, which costs time; a spinning
+            # request costs the whole upload.
+            break
+        marker = nxt
+    parts.sort(key=lambda p: p["PartNumber"])
+    return parts
+
+
 def complete_multipart_upload(s3_key: str, upload_id: str, parts: list[dict]) -> None:
     """Complete a multipart upload. `parts` is a list of {"PartNumber": int, "ETag": str}."""
     s3 = get_s3_client()

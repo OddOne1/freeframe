@@ -5,12 +5,24 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 export class ApiError extends Error {
   status: number
   detail: string
+  /**
+   * A machine-readable code, when the server sent one (§213).
+   *
+   * FastAPI's `detail` is usually prose. Some endpoints now return
+   * `{"code": "...", "message": "..."}` because the CLIENT has to branch:
+   * `no_such_upload` from `GET /upload/parts` means "start a fresh
+   * upload", which is a different action from "show the user an error".
+   * Matching on the message text is how that breaks the first time
+   * someone improves the wording.
+   */
+  code?: string
 
-  constructor(status: number, detail: string) {
+  constructor(status: number, detail: string, code?: string) {
     super(detail)
     this.name = 'ApiError'
     this.status = status
     this.detail = detail
+    this.code = code
   }
 }
 
@@ -57,6 +69,7 @@ async function request<T>(
 
   if (!response.ok) {
     let detail = response.statusText
+    let code: string | undefined
     try {
       const errorBody = await response.json()
       if (errorBody?.detail) {
@@ -68,13 +81,17 @@ async function request<T>(
             .map((e: { msg?: string; loc?: string[] }) => e.msg || 'Validation error')
             .join('; ')
         } else {
-          detail = JSON.stringify(errorBody.detail)
+          // §213 — a structured detail. Its `message` is what a person
+          // reads; its `code` is what the caller branches on.
+          const d = errorBody.detail as { code?: unknown; message?: unknown }
+          if (typeof d.code === 'string') code = d.code
+          detail = typeof d.message === 'string' ? d.message : JSON.stringify(errorBody.detail)
         }
       }
     } catch {
       // ignore parse errors; use statusText as fallback
     }
-    throw new ApiError(response.status, detail)
+    throw new ApiError(response.status, detail, code)
   }
 
   // Handle empty responses (e.g. 204 No Content, or empty body)

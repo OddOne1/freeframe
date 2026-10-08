@@ -20,6 +20,19 @@ export interface DroppedFile {
    * the file, e.g. `['Show', 'Sony']`. Empty for a loose file.
    */
   path: string[]
+  /**
+   * §213 — a re-openable reference to this file, where the browser gives
+   * one (Chromium's File System Access API; absent in Safari and Firefox).
+   *
+   * Stored with an interrupted upload's session so resuming it after a
+   * reload is one permission click instead of finding the file again in a
+   * picker. ONLY populated for a LOOSE dropped file: a file nested inside a
+   * dropped folder would need a second walk over directory handles to
+   * reach, and the picker fallback already covers it. `webkitGetAsEntry`'s
+   * `FileSystemFileEntry` is a different, older interface and cannot be
+   * turned into one of these.
+   */
+  handle?: FileSystemFileHandle
 }
 
 async function walk(entry: FileSystemEntry, path: string[], out: DroppedFile[]): Promise<void> {
@@ -59,14 +72,40 @@ export async function readDroppedEntries(
   dataTransfer: DataTransfer,
 ): Promise<DroppedFile[] | null> {
   const items = Array.from(dataTransfer.items ?? [])
-  const entries = items
-    .map((item) => (item.kind === 'file' ? item.webkitGetAsEntry?.() ?? null : null))
-    .filter((entry): entry is FileSystemEntry => entry !== null)
+  // Paired with the entry, so a loose file's own handle can be attached to
+  // the DroppedFile it produces. Read BEFORE any await: `DataTransferItem`
+  // is only valid during the drop event's synchronous dispatch.
+  const roots = items
+    .map((item) => {
+      if (item.kind !== 'file') return null
+      const entry = item.webkitGetAsEntry?.() ?? null
+      if (!entry) return null
+      const withHandle = item as DataTransferItem & {
+        getAsFileSystemHandle?: () => Promise<FileSystemHandle | null>
+      }
+      return {
+        entry,
+        // Feature-detected, never assumed. A promise rather than a handle:
+        // the call is async and must still be MADE synchronously here.
+        handle:
+          entry.isFile && typeof withHandle.getAsFileSystemHandle === 'function'
+            ? withHandle.getAsFileSystemHandle().catch(() => null)
+            : null,
+      }
+    })
+    .filter((r): r is { entry: FileSystemEntry; handle: Promise<FileSystemHandle | null> | null } => r !== null)
 
-  if (entries.length === 0) return null
+  if (roots.length === 0) return null
 
   const out: DroppedFile[] = []
-  for (const entry of entries) await walk(entry, [], out)
+  for (const root of roots) {
+    const before = out.length
+    await walk(root.entry, [], out)
+    if (root.handle && out.length === before + 1) {
+      const handle = await root.handle
+      if (handle && handle.kind === 'file') out[before].handle = handle as FileSystemFileHandle
+    }
+  }
   return out
 }
 

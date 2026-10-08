@@ -16,6 +16,19 @@
 // on disk so the part reads and the file handle are genuine. `electron` is
 // stubbed through require.cache exactly as test-auth-refresh.js does.
 //
+// §213 CHANGED WHAT "GIVING UP" MEANS HERE, and several scenarios below say
+// so explicitly rather than being quietly deleted. §212 aborted the multipart
+// upload on any terminal failure, which is why the assertions used to read
+// `calls.abort === 1`. That abort threw away every byte already transferred —
+// on the real 392 GiB job, hours of it — so §213 narrowed aborting to the
+// three cases where the session is provably worthless: the user cancelled,
+// the source file changed, or the client and server disagree about the part
+// plan. A part failure now KEEPS the session, and the file resumes.
+//
+// The never-gives-up policy itself, resume, and pause at part granularity
+// live in scripts/test-upload-resume.js. This file stays what it was: the
+// per-response-class policy table.
+//
 // Run: node scripts/test-upload-resilience.js
 const path = require("node:path");
 const os = require("node:os");
@@ -259,7 +272,7 @@ function session() {
         String(calls.presignByPart.get(1)));
   });
 
-  await scenario("3. A 400 fails fast and aborts", async () => {
+  await scenario("3. A 400 fails fast and KEEPS the session (§213)", async () => {
       session();
       const { cfg, delays } = instantRetry();
       const calls = server({ partBehaviour: () => ({ status: 400 }) });
@@ -270,16 +283,14 @@ function session() {
       check(Boolean(err), "throws");
       check(calls.put === 1, "exactly one PUT — no retries on a 400", String(calls.put));
       check(delays.length === 0, "never backed off");
-      check(calls.abort === 1, "/upload/abort called once", String(calls.abort));
-      check(
-        calls.abortBody && calls.abortBody.s3_key === "k/1"
-          && calls.abortBody.upload_id === "u-1" && calls.abortBody.version_id === "v-1",
-        "abort carried s3_key, upload_id and version_id", JSON.stringify(calls.abortBody)
-      );
+      // §213 — NOT aborted. A 400 on one part is a reason to stop trying
+      // that part, not a reason to destroy an upload the user can resume.
+      // The parts that landed stay, and the session stays resumable.
+      check(calls.abort === 0, "the session is kept, not aborted", String(calls.abort));
       check(calls.complete === 0, "never completed");
   });
 
-  await scenario("4. A part that always 502s exhausts the budget, then aborts", async () => {
+  await scenario("4. A part that always 502s keeps the session (§213)", async () => {
       session();
       const { cfg, delays } = instantRetry();
       const calls = server({ partBehaviour: () => ({ status: 502 }), abortStatus: 500 });
@@ -290,12 +301,15 @@ function session() {
           retry: { ...cfg, attempts: 4 },
         });
       } catch (e) { err = e; }
-      check(calls.put === 4, "exactly the attempt budget (4)", String(calls.put));
+      // The budget is INJECTED. In production there is none — see
+      // test-upload-resume.js scenario 1, which is the assertion that a
+      // 502 storm longer than §212's old 12 attempts does not end an
+      // upload at all. A finite budget here is only how this file gets a
+      // boundary to assert around.
+      check(calls.put === 4, "exactly the injected attempt budget (4)", String(calls.put));
       check(delays.length === 3, "backed off between attempts only", String(delays.length));
-      check(calls.abort === 1, "aborted after giving up");
-      // The abort returned 500. The error the caller sees must still be the
-      // part's 502 — otherwise "part 1103 got a 502" becomes "abort failed".
-      check(/502/.test(String(err && err.message)), "the PART error is thrown, not the abort's",
+      check(calls.abort === 0, "the session is KEPT — §213's whole point", String(calls.abort));
+      check(/502/.test(String(err && err.message)), "the part's own error is what surfaces",
         String(err && err.message));
   });
 
@@ -313,7 +327,8 @@ function session() {
       check(Boolean(err), "fails rather than completing");
       check(calls.put === 3, "retried the empty-ETag response", String(calls.put));
       check(calls.complete === 0, "never sent a part list containing an empty ETag");
-      check(calls.abort === 1, "aborted");
+      check(calls.abort === 0, "§213 — the session is kept and stays resumable",
+        String(calls.abort));
   });
 
   await scenario("6. One worker's terminal failure stops the others", async () => {
@@ -418,7 +433,8 @@ function session() {
     check(JSON.stringify(presigned) === "[1,2,3]",
       "parts 4-6 were never even presigned", JSON.stringify(presigned));
 
-    check(calls.abort === 1, "aborted exactly once", String(calls.abort));
+    check(calls.abort === 0, "§213 — no abort: the other parts stay uploaded",
+      String(calls.abort));
   });
 
   await scenario("7. No read-after-close: the handle outlives every worker", async () => {
@@ -470,16 +486,28 @@ function session() {
       check(calls.complete === 0, "never completed");
   });
 
-  await scenario("9. More than 10,000 parts is refused before initiate", async () => {
+  await scenario("9. A part plan that cannot work is refused, not attempted (§213)", async () => {
+      // §212 refused an oversized file in the CLIENT, against its own
+      // hardcoded 16 MiB part size. §213 moved the ceiling to the server
+      // (services/upload_policy.py refuses with 413 before creating
+      // anything), so the client's own arithmetic is no longer the gate —
+      // it is the check that the server's answer is actually usable.
+      //
+      // What is asserted here is that disagreement: a server that hands
+      // back a part_size needing more than 10,000 parts is stopped at once
+      // rather than discovered at part 10,001 after several hours. This IS
+      // one of the three cases that still aborts — the session can never be
+      // completed, so leaving it would be pure orphaned storage.
       session();
       const calls = server({ partBehaviour: () => ({ status: 200 }) });
       // Faked rather than written: a real 157 GiB file is not a test fixture.
       const big = path.join(tmp, "huge.mxf");
       fs.writeFileSync(big, "x");
       const realStat = fs.promises.stat;
+      const fakeSize = (freeframe.MAX_PARTS + 1) * freeframe.PART_SIZE;
       fs.promises.stat = async (p, ...r) =>
         (String(p) === big
-          ? { size: (freeframe.MAX_PARTS + 1) * freeframe.PART_SIZE, isDirectory: () => false }
+          ? { size: fakeSize, mtimeMs: 1, isDirectory: () => false }
           : realStat(p, ...r));
       let err = null;
       try {
@@ -487,37 +515,37 @@ function session() {
       } catch (e) { err = e; }
       fs.promises.stat = realStat;
       check(Boolean(err), "throws");
-      check(/156\.2 GiB|supports up to/.test(String(err && err.message)),
-        "says what the limit is", String(err && err.message));
-      check(calls.initiate === 0, "/upload/initiate was never called", String(calls.initiate));
+      check(/10001 parts|more than the 10000/.test(String(err && err.message)),
+        "names the part count the server's answer would need", String(err && err.message));
+      check(calls.put === 0, "not one part was uploaded", String(calls.put));
+      check(calls.complete === 0, "never completed");
+      check(calls.abort === 1, "the unusable session is aborted", String(calls.abort));
   });
 
-  await scenario("9b. /upload/complete itself fails", async () => {
+  await scenario("9b. /upload/complete is retried, and never aborted (§213)", async () => {
     session();
-    const { cfg } = instantRetry();
-    // Every part succeeds; it is the FINAL call that 502s. That leaves the
-    // same orphan a part failure does — all the bytes are in S3 under an
-    // upload id nothing will ever finish — and it is the case the first
-    // version of §212 missed, because the abort only hung off the part path.
+    const { cfg, delays } = instantRetry();
+    // Every part succeeds; it is the FINAL call that 502s. §212 aborted
+    // here — throwing away a fully transferred file because one request
+    // was unlucky. §213 retries the complete on the same policy as a part,
+    // and keeps the session whatever happens, so the next resume finds
+    // every part already present and only has to complete it.
     const calls = server({ partBehaviour: () => ({ status: 200 }), completeStatus: 502 });
 
     let err = null;
     try {
       await freeframe.uploadFile({
-        projectId: "p", filePath: file3, assetName: "three-parts.mxf", retry: cfg,
+        projectId: "p", filePath: file3, assetName: "three-parts.mxf",
+        retry: { ...cfg, attempts: 3 },
       });
     } catch (e) { err = e; }
 
-    check(Boolean(err), "throws");
-    check(calls.complete === 1, "/upload/complete was attempted once", String(calls.complete));
-    check(calls.abort === 1, "/upload/abort called exactly once", String(calls.abort));
-    check(
-      calls.abortBody && calls.abortBody.s3_key === "k/1"
-        && calls.abortBody.upload_id === "u-1" && calls.abortBody.version_id === "v-1",
-      "abort carried s3_key, upload_id and version_id", JSON.stringify(calls.abortBody)
-    );
-    // The COMPLETE error, not the abort's. The abort is cleanup; reporting it
-    // instead would hide why the upload failed.
+    check(Boolean(err), "throws once the injected budget runs out");
+    check(calls.complete === 3, "/upload/complete was RETRIED, not attempted once",
+      String(calls.complete));
+    check(delays.length === 2, "backed off between completes", String(delays.length));
+    check(calls.abort === 0, "the session is kept so a resume can just complete it",
+      String(calls.abort));
     check(/complete refused|502/.test(String(err && err.message)),
       "the original /complete error is what is thrown", String(err && err.message));
   });
@@ -566,9 +594,20 @@ function session() {
       for (const s of [null, 408, 425, 429, 500, 502, 503, 504]) {
         check(r(s) === true, `${s === null ? "threw" : s} is retried`);
       }
-      for (const s of [400, 401, 403, 404, 409, 422]) {
+      for (const s of [400, 403, 409, 422]) {
         check(r(s) === false, `${s} fails fast`);
       }
+      // §213 — these two are NOT decided by this predicate any more, and
+      // the predicate still answering "false" for them is correct: both are
+      // handled before it is consulted.
+      //
+      //   401 — an expired login that could not refresh. The upload PARKS
+      //         (see test-upload-resume.js scenario 5); retrying a dead
+      //         token on a backoff would just fail faster.
+      //   404 — the multipart session is gone. The file gets a FRESH
+      //         upload; there is nothing to retry and nothing to abort.
+      check(r(401) === false, "401 is not retried as weather — it parks instead");
+      check(r(404) === false, "404 is not retried — it means start fresh");
   });
 
   global.fetch = realFetch;
