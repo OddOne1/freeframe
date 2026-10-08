@@ -206,6 +206,41 @@ check(finalizedAlgoFor(normalize({ defaultChecksumAlgo: "c4" })) === "c4",
 check(Object.keys(normalize({ junk: true })).length === Object.keys(DEFAULTS).length,
   "unknown keys are dropped rather than written back out");
 
+// §216 — the rename was USER-FACING ONLY, and this is the test that says so.
+//
+// Settings now calls this tier "Secondary checksum" and the transfer log's
+// readable half calls it `secondaryChecksum`. Not one stored key moved: a
+// settings.json written by any earlier build must still be read, because
+// renaming a stored key is indistinguishable from "never configured" and
+// would silently reset whatever someone had chosen.
+{
+  const stored = {
+    liveChecksumAlgo: "md5",
+    finalizedChecksumAlgo: "sha1",
+    finalizedTiming: "during",
+    autoResumeUploads: false,
+    dayBoundary: "06:00",
+  };
+  const after = normalize(stored);
+  check(after.finalizedTiming === "during",
+    "\u00a7216: a settings file written before the rename still loads its timing",
+    String(after.finalizedTiming));
+  check(after.finalizedChecksumAlgo === "sha1",
+    "…and its secondary algorithm, still under the stored name",
+    String(after.finalizedChecksumAlgo));
+  check(finalizedAlgoFor(after) === "sha1", "…and resolves to it");
+  check(after.autoResumeUploads === false && after.dayBoundary === "06:00",
+    "…without disturbing anything else on the file");
+  // No new key appeared. A reader of settings.json must not have to know
+  // that a label changed, and a "secondary*" key here would mean the
+  // rename had leaked into stored data.
+  check(!Object.keys(after).some((k) => /^secondary/i.test(k)),
+    "…and no `secondary*` key was invented in storage", Object.keys(after).join(","));
+  check(Object.prototype.hasOwnProperty.call(DEFAULTS, "finalizedTiming")
+    && Object.prototype.hasOwnProperty.call(DEFAULTS, "finalizedChecksumAlgo"),
+    "…because DEFAULTS still uses the stored names");
+}
+
 console.log("7. Hidden drives and projects (\u00a760a)");
 check(Array.isArray(normalize(null).hiddenVolumeNames) && normalize(null).hiddenVolumeNames.length === 0,
   "nothing is hidden by default");

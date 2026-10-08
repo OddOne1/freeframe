@@ -61,6 +61,18 @@ let finalizedAlgorithm = null;   // finalized, when enabled
 // never whether to verify, but when.
 let finalizedTiming = "off";
 let builtInAlgo = null;
+/**
+ * §216 — have the stored values actually been read yet?
+ *
+ * renderAlgoList() is what takes the controls out of their disabled state,
+ * and it runs from TWO places: loadSettings(), and the settings-changed
+ * broadcast at the bottom of this file. The broadcast can arrive from
+ * another window before phase 1 has finished — at which point `algorithms`
+ * is still empty, and enabling on that path would produce exactly the
+ * state all of this exists to prevent: an empty dropdown a person can
+ * click.
+ */
+let settingsLoaded = false;
 
 /**
  * §86 — one <select> per tier, plus the explanations once underneath.
@@ -93,9 +105,30 @@ function renderAlgoList() {
   // so the dropdown shows what would actually run rather than nothing.
   fillAlgoSelect(fin, finalizedAlgorithm || algorithm);
   timing.value = finalizedTiming;
+  // §216 — gated on the stored values having been READ, not merely on
+  // this function running. Before that the controls stay `disabled` as the
+  // markup leaves them: a dropdown with no options, or a checkbox showing
+  // the markup's default rather than the file's, is worse than one that is
+  // briefly inert — because it can be clicked.
+  live.disabled = !settingsLoaded;
+  timing.disabled = !settingsLoaded;
   // Visible but inert while off: hiding it would make the setting look
   // like it does nothing, and the algorithm is what it is about.
-  fin.disabled = finalizedTiming === "off";
+  fin.disabled = !settingsLoaded || finalizedTiming === "off";
+
+  // §216 — and it says WHY it is inert. Only for the by-design reason;
+  // the not-yet-loaded state disables everything (including `timing`) and
+  // lasts milliseconds, so the two can never be confused on screen — and
+  // `settingsLoaded` is what keeps the hint off the screen during it,
+  // rather than claiming the timing is Off before anything has read it.
+  const hint = $("settings-secondary-hint");
+  if (hint) {
+    const because = settingsLoaded && finalizedTiming === "off";
+    hint.hidden = !because;
+    hint.textContent = because
+      ? "Choose when the second pass runs above to pick its algorithm."
+      : "";
+  }
 
   const note = $("settings-finalized-note");
   if (note) {
@@ -802,6 +835,9 @@ async function loadSettings() {
     ? s.finalizedChecksumAlgo
     : null;
   finalizedTiming = s.finalizedTiming || "off";
+  // Set BEFORE the render that reads it: renderAlgoList() enables the
+  // controls only when this is true.
+  settingsLoaded = true;
   renderAlgoList();
   renderHideList();
   // §72 — the Daily overview's day boundary. Saved on change like the
@@ -810,37 +846,145 @@ async function loadSettings() {
   $("settings-day-boundary").value = s.dayBoundary || "00:00";
   // §213 — only an explicit false is off, matching settings.js's
   // normalisation: an absent field means never configured, which is on.
-  $("settings-auto-resume").checked = s.autoResumeUploads !== false;
+  //
+  // §216 — set, THEN enabled. The owner's first launch showed this
+  // unticked while the stored value was on (§213's default), and ticking
+  // it in that state would have written `true` over a value the window had
+  // never read. Disabled-until-loaded makes that unreachable rather than
+  // unlikely.
+  const auto = $("settings-auto-resume");
+  auto.checked = s.autoResumeUploads !== false;
+  auto.disabled = false;
+  $("settings-day-boundary").disabled = false;
 }
 
-(async () => {
-  // getAlgorithms returns { algorithms, default } — not a bare array.
-  const algoInfo = (await window.freeframe.getAlgorithms()) || {};
-  algorithms = algoInfo.algorithms || [];
-  builtInAlgo = algoInfo.default || null;
-  volumes = (await window.freeframe.listVolumes()) || [];
-  displayNames = (await window.freeframe.getDisplayNames()) || {};
-  try {
-    ffStatus = (await window.freeframe.freeframeStatus()) || { loggedIn: false };
-  } catch { ffStatus = { loggedIn: false }; }
-  await refreshBusy();
-  renderAccount();
+/**
+ * §216 — a slow call that must not hold up the window, or take it down.
+ *
+ * The settings pane reads a local JSON file. Volumes walk /Volumes, which
+ * on a real machine includes network mounts (the owner's has an SMB share
+ * at /Volumes/Ichi), and the account pane touches the server. Before this,
+ * init awaited all of those BEFORE applying settings, so the window sat
+ * showing raw HTML for as long as the slowest one took.
+ *
+ * Two guarantees, both needed:
+ *   - a timeout, so a hung mount or an unreachable server degrades to a
+ *     known fallback rather than to an unfinished window;
+ *   - a swallowed rejection, so one failing call cannot abort the rest of
+ *     init. The module-level listeners below are registered outside the
+ *     init sequence for exactly this reason; this applies the same rule
+ *     INSIDE it.
+ *
+ * 5s is the ceiling: long enough that a slow-but-working SMB mount still
+ * answers, short enough that nobody watches a stale pane for longer.
+ */
+const SLOW_CALL_TIMEOUT_MS = 5000;
 
-  // Listeners before the first render, so a change made immediately after
-  // the pane appears is not dropped. Registering them once here rather than
-  // inside renderAlgoList(), which re-runs on every broadcast and would
-  // stack a new listener each time.
-  wireChecksumControls();
-  await loadSettings();
-  await loadProjectsForHideList();
+function withTimeout(label, run, fallback, ms = SLOW_CALL_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      console.warn(`[settings] ${label} timed out after ${ms}ms — using the fallback`);
+      finish(fallback);
+    }, ms);
+    Promise.resolve()
+      .then(run)
+      .then((value) => { clearTimeout(timer); finish(value === undefined ? fallback : value); })
+      .catch((err) => {
+        clearTimeout(timer);
+        console.warn(`[settings] ${label} failed — using the fallback:`, err);
+        finish(fallback);
+      });
+  });
+}
+
+/**
+ * §216 — SETTINGS FIRST, and never behind anything that can be slow.
+ *
+ * The order this replaces was:
+ *
+ *   getAlgorithms → listVolumes → getDisplayNames → freeframeStatus
+ *   → refreshBusy → renderAccount → wireChecksumControls → loadSettings
+ *
+ * with every arrow an `await`. `loadSettings()` is where the checksum
+ * dropdowns get their options and the auto-resume checkbox gets its stored
+ * value, so until the four calls in front of it had all resolved, the
+ * window showed its raw HTML: empty `<select>`s and an unticked checkbox,
+ * on a machine where §213's stored default is ON. `listVolumes()` walks
+ * /Volumes — an SMB mount on the owner's machine — and `freeframeStatus()`
+ * may touch the network, so "until" was seconds, every launch.
+ *
+ * Worse than looking wrong: the controls were live. Ticking the checkbox in
+ * that window writes a value over a setting the window has not read.
+ *
+ * So the two phases are now independent, and the settings phase does not
+ * await the slow one. Settings come from a local file and must never wait
+ * on a network volume or on the server.
+ */
+(async () => {
+  // ── Phase 1: local only. Nothing here touches a volume or the network.
+  //
+  // getAlgorithms is main-process constant data (it returns
+  // { algorithms, default }, not a bare array) and getSettings reads one
+  // JSON file in userData. Both are effectively instant, and both are
+  // REQUIRED before anything can be rendered truthfully — loadSettings
+  // validates the stored algorithm id against the list.
+  const settingsReady = (async () => {
+    const algoInfo = await withTimeout("getAlgorithms", () => window.freeframe.getAlgorithms(), {});
+    algorithms = algoInfo.algorithms || [];
+    builtInAlgo = algoInfo.default || null;
+
+    // Listeners before the first render, so a change made immediately
+    // after the pane appears is not dropped. Registering them once here
+    // rather than inside renderAlgoList(), which re-runs on every
+    // broadcast and would stack a new listener each time.
+    wireChecksumControls();
+    // This is the call that puts stored values on screen and takes the
+    // controls out of their disabled state. Nothing slow precedes it.
+    await loadSettings();
+  })();
+
+  // ── Phase 2: the slow half, started in parallel and bounded.
+  //
+  // Each call has its own timeout and fallback, so one hung mount cannot
+  // strand the others, and a rejection cannot abort init.
+  const slowReady = (async () => {
+    volumes = await withTimeout("listVolumes", () => window.freeframe.listVolumes(), []);
+    displayNames = await withTimeout("getDisplayNames", () => window.freeframe.getDisplayNames(), {});
+    ffStatus = await withTimeout(
+      "freeframeStatus", () => window.freeframe.freeframeStatus(), { loggedIn: false });
+    // Already try/caught internally; wrapped for the timeout, and because
+    // "no answer" and "no project jobs running" are the same decision.
+    await withTimeout("refreshBusy", () => refreshBusy(), undefined);
+    renderAccount();
+    // Needs ffStatus, so it belongs here rather than in phase 1. It calls
+    // renderHideList() itself, which is what folds the volumes and
+    // projects into the list loadSettings() first drew empty.
+    await loadProjectsForHideList();
+  })();
+
+  // Awaited rather than fired and forgotten, so a failure in either shows
+  // up as an unhandled rejection in the console rather than nowhere. Both
+  // already swallow their own faults, so neither can reject in practice —
+  // but a future edit that introduces one should be visible.
+  await settingsReady;
+
+  // The preset editor and the About line are independent of both phases.
   await window.PresetEditor.init({
     onSelectionChange: (savedPresetOpen) => { $("preset-delete").hidden = !savedPresetOpen; },
   });
+  const info = await withTimeout("appInfo", () => window.freeframe.appInfo(), null);
+  if (info) {
+    $("settings-logs-path").textContent = info.logsPath;
+    $("settings-about").textContent = `FreeFrame Desktop ${info.version} · Electron ${info.electron}`;
+  }
 
-  const info = await window.freeframe.appInfo();
-  $("settings-logs-path").textContent = info.logsPath;
-  $("settings-about").textContent = `FreeFrame Desktop ${info.version} · Electron ${info.electron}`;
-
+  await slowReady;
 })();
 
 // Registered at module level, NOT inside the load above: anything in that

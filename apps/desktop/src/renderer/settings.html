@@ -276,7 +276,10 @@
           runs past midnight stays one day's work. Midnight means plain
           calendar days.
         </div>
-        <input id="settings-day-boundary" type="time" step="60" />
+        <!-- §216 — stored state, so disabled until loadSettings() has it:
+             an empty time field someone can type into before the file has
+             been read is the same bug as an empty dropdown. -->
+        <input id="settings-day-boundary" type="time" step="60" disabled />
       </div>
 
       <div class="setting">
@@ -293,7 +296,10 @@
           session — it starts fresh and says so.
         </div>
         <label class="setting-check">
-          <input id="settings-auto-resume" type="checkbox" />
+          <!-- §216 — this is the control that made the bug visible: §213's
+               default is ON, the markup says unchecked, and the window
+               rendered the markup for as long as listVolumes took. -->
+          <input id="settings-auto-resume" type="checkbox" disabled />
           <span>Resume automatically</span>
         </label>
       </div>
@@ -310,11 +316,18 @@
           they do not go through the copy engine at all. Copying the same
           card to a drive as well is what gets you a checksummed copy.
         </div>
-        <select id="settings-live-checksum" class="settings-select"></select>
+        <!-- §216 — see the note on the secondary selects below: disabled
+             until loadSettings() has the stored value. -->
+        <select id="settings-live-checksum" class="settings-select" disabled></select>
       </div>
 
       <div class="setting">
-        <div class="setting-label">Finalized checksum</div>
+        <!-- §216 — the owner's wording. The LABEL changed; every stored
+             identifier behind it (settings-finalized-*, finalizedTiming,
+             finalizedChecksumAlgo) is deliberately untouched, because
+             renaming a stored key silently resets whatever someone had
+             configured. -->
+        <div class="setting-label">Secondary checksum</div>
         <div class="setting-sub">
           An optional second pass: the source and every destination are read
           from disk again and hashed with the algorithm below. It is a full
@@ -324,7 +337,14 @@
           from a FreeFrame project, or from individually-picked files, has
           no source folder to re-read and is skipped.
         </div>
-        <select id="settings-finalized-timing" class="settings-select">
+        <!-- §216 — `disabled` in the MARKUP, not added later by script.
+             The window used to render before its stored values arrived, so
+             a first launch showed an empty dropdown and an unticked
+             checkbox that did not match the file — and could be clicked,
+             acting on a value nothing had loaded. Starting disabled means
+             the only state a person can ever act on is the stored one;
+             loadSettings() enables these. -->
+        <select id="settings-finalized-timing" class="settings-select" disabled>
           <option value="off">Off</option>
           <option value="after">After transfer</option>
           <option value="during">During transfer</option>
@@ -333,7 +353,14 @@
              whole difference between the two ON settings, and burying it
              would make the slower one look like a free upgrade. -->
         <div id="settings-finalized-note" class="setting-sub"></div>
-        <select id="settings-finalized-checksum" class="settings-select"></select>
+        <select id="settings-finalized-checksum" class="settings-select" disabled></select>
+        <!-- §216 — why the dropdown above is grey. It is inert by design
+             while the timing is Off (there is no second pass to pick an
+             algorithm for), and before this nothing said so — a greyed
+             control with no explanation reads as a broken one. Shown only
+             while that is the reason; it is NOT the not-yet-loaded state,
+             which disables everything and lasts milliseconds. -->
+        <div id="settings-secondary-hint" class="setting-sub" hidden></div>
       </div>
 
       <div class="setting">

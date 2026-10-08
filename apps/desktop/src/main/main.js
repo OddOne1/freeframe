@@ -196,8 +196,14 @@ function buildJobLog(job) {
       // which algorithm produced it.
       // §103 — the block names WHEN it ran. Someone comparing two job logs
       // has to be able to tell which setting was in force without going
-      // back through Settings history, and "finalized" alone does not say.
-      finalizedChecksum: fin
+      // back through Settings history, and the name alone does not say.
+      //
+      // §216 — `secondaryChecksum`, matching what Settings now calls it.
+      // This key is USER-VISIBLE: `readable` is the half of the log a
+      // person reads in "Open Log", so it has to use the same word as the
+      // control that produced it. `technical.*` keeps every original name,
+      // and so does every stored/settings identifier — see settings.html.
+      secondaryChecksum: fin
         ? (fin.skipped
             ? `${finalizedModeLabel(fin)} — not run: ${fin.reason}.`
             : `${finalizedModeLabel(fin)} — ${fin.algorithmLabel}: `

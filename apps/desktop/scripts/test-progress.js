@@ -279,6 +279,62 @@ console.log("\n10. (§84) The transfer log reads top-down");
     JSON.stringify(noDest.readable.files[0]));
 }
 
+console.log("\n10b. (§216) The log calls it \"secondary\", and only in the half people read");
+{
+  // §216 renamed what a PERSON sees — the Settings label, and this key in
+  // `readable`, which is the half of the log "Open Log" is for. Every
+  // stored identifier (finalizedChecksumAlgo, finalizedTiming, the journal
+  // fields, `technical.*`) keeps its name on purpose: renaming a stored
+  // key silently resets whatever someone had configured.
+  //
+  // Extracted from finalizedModeLabel so the finalized branch can actually
+  // run — buildJobLog alone would hit a ReferenceError the moment a job
+  // carries a `summary.finalized`, and a thrown script prints no FAIL line.
+  const mainSrc = fs.readFileSync(path.join(__dirname, "..", "src", "main", "main.js"), "utf8");
+  const from = mainSrc.indexOf("function finalizedModeLabel(fin) {");
+  const i = mainSrc.indexOf("function buildJobLog(job) {");
+  const end = mainSrc.indexOf("\n}\n", mainSrc.indexOf("    freeframeTransferLog:", i)) + 3;
+  check(from > 0 && i > from, "both helpers were found in main.js");
+  const build = new Function("path", mainSrc.slice(from, end) + "; return buildJobLog;")(path);
+
+  const job = (finalized) => build({
+    id: "j2", label: "CARD to RAID", status: "done", mode: "free",
+    sourceLabel: "/Volumes/CARD", destPaths: ["/dst"],
+    createdAt: 1, startedAt: 2, finishedAt: 3,
+    summary: {
+      nodes: [{ path: "/dst", status: "verified", files: [
+        { file: "A.MOV", destPath: "/dst/A.MOV", ok: true },
+      ] }],
+      finalized,
+    },
+  });
+
+  const ran = job({
+    mode: "after", algorithmLabel: "SHA-1", checked: 1, verified: 1,
+    skipped: false, ok: true, mismatches: [], errors: [], cancelled: false,
+  });
+  check("secondaryChecksum" in ran.readable,
+    "readable carries secondaryChecksum", Object.keys(ran.readable).join(","));
+  check(!("finalizedChecksum" in ran.readable),
+    "…and the old user-facing key is gone, not kept as an alias");
+  check(/1\/1 verified/.test(ran.readable.secondaryChecksum),
+    "…with the same content as before", String(ran.readable.secondaryChecksum));
+
+  const off = job(null);
+  check(off.readable.secondaryChecksum === "Off",
+    "a job with no second pass still says so under the new key",
+    String(off.readable.secondaryChecksum));
+
+  // THE assertion that the rename did not leak into stored data. `technical`
+  // is where every original name lives, and a reader of it must not have to
+  // care that a label changed.
+  const tech = JSON.stringify(ran.technical);
+  check(/"finalized"/.test(tech),
+    "technical still carries the summary's own `finalized` block, unrenamed");
+  check(!/secondaryChecksum/.test(tech),
+    "…and the new word appears nowhere in technical");
+}
+
 console.log("\n11. (§81) Which token kinds a pattern uses is decided in main");
 {
   // The renderer asks rather than tokenizing again, so the classification
