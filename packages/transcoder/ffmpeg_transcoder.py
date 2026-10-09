@@ -255,6 +255,7 @@ class FFmpegTranscoder(BaseTranscoder):
         total_duration: float,
         progress_callback: Optional[Callable[[int], None]],
         timeout: int,
+        heartbeat_callback: Optional[Callable[[int], None]] = None,
     ) -> None:
         """Run an ffmpeg command that already has `-progress pipe:1` appended,
         streaming percent-complete to progress_callback as ffmpeg reports
@@ -290,6 +291,18 @@ class FFmpegTranscoder(BaseTranscoder):
                 if "=" not in line:
                     continue
                 key, _, value = line.partition("=")
+                # §219 — the third silent phase, and the one that hides.
+                #
+                # Everything below is gated on `total_duration > 0`, so an
+                # encode whose duration ffprobe could not read (a tolerated,
+                # non-fatal outcome just above) reports NO percent for its
+                # entire run -- up to the four-hour timeout -- and the
+                # version row is never touched. The heartbeat is fired from
+                # the progress line itself instead, which is unconditional
+                # and is still real evidence of life: a wedged ffmpeg stops
+                # writing lines, so the beats stop with it.
+                if key == "out_time_ms" and heartbeat_callback:
+                    heartbeat_callback(1)
                 if key == "out_time_ms" and total_duration > 0 and progress_callback:
                     try:
                         out_seconds = int(value) / 1_000_000
@@ -410,6 +423,7 @@ class FFmpegTranscoder(BaseTranscoder):
         self,
         job: TranscodeJob,
         progress_callback: Optional[Callable[[int], None]] = None,
+        heartbeat_callback: Optional[Callable[[int], None]] = None,
     ) -> TranscodeResult:
         """
         Transcode video using streaming input from S3.
@@ -462,9 +476,24 @@ class FFmpegTranscoder(BaseTranscoder):
             # EXIF/camera data that ffprobe's tag parsing cannot reach.
             # Wrapped so a download or exiftool failure degrades to
             # ffprobe-only metadata instead of failing the transcode.
+            #
+            # §219 — and it is the longest silent phase in the pipeline. On a
+            # 95 GiB master this download runs for tens of minutes before the
+            # first progress percent is ever committed, which the
+            # stuck-processing sweeper reads as a hang. `heartbeat_callback`
+            # is handed to boto3 as its transfer `Callback`, so the beat is
+            # driven by bytes that actually arrived: a stalled read produces
+            # no callbacks and therefore no beats, which is the behaviour the
+            # sweeper needs to stay useful.
             exif_path = work_dir / f"exifsrc_{job.version_id}"
             try:
-                self.s3.download_file(self.bucket, job.input_s3_key, str(exif_path))
+                self.s3.download_file(
+                    self.bucket, job.input_s3_key, str(exif_path),
+                    # Spread rather than passed as Callback=None: a caller
+                    # with no heartbeat must reach boto3 with exactly the
+                    # arguments it always did.
+                    **({"Callback": heartbeat_callback} if heartbeat_callback else {}),
+                )
                 probed = merge_exiftool_metadata(probed, probe_exiftool(str(exif_path)))
             except Exception:
                 pass
@@ -553,7 +582,10 @@ class FFmpegTranscoder(BaseTranscoder):
             # blocking subprocess.run, so real percent-complete can be reported while
             # the transcode is still running rather than only success/failure at the end.
             total_duration = probed.get("duration_seconds") or 0
-            self._run_ffmpeg_with_progress(ffmpeg_cmd, total_duration, progress_callback, timeout=14400)
+            self._run_ffmpeg_with_progress(
+                ffmpeg_cmd, total_duration, progress_callback, timeout=14400,
+                heartbeat_callback=heartbeat_callback,
+            )
 
             # 4. Upload HLS files to S3
             uploaded_keys = []
@@ -565,6 +597,11 @@ class FFmpegTranscoder(BaseTranscoder):
                     self.s3.upload_file(
                         str(f), self.bucket, s3_key,
                         ExtraArgs={"ContentType": content_type, "CacheControl": cache_control},
+                        # §219 — the second silent phase. The encode's last
+                        # progress report is 99%, and the ladder for a long
+                        # source is then many GB pushed object by object with
+                        # nothing touching the version row.
+                        **({"Callback": heartbeat_callback} if heartbeat_callback else {}),
                     )
                     uploaded_keys.append(s3_key)
 

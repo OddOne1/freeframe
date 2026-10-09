@@ -4,6 +4,7 @@ import os
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 
 # Ensure the workspace root is on the path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
@@ -123,8 +124,17 @@ def process_asset(self, asset_id: str, version_id: str):
             db.commit()
             return
 
-        # Reset to processing status before each attempt
+        # Reset to processing status before each attempt.
+        #
+        # §219 — and record that the work is REALLY STARTING, in this same
+        # commit. `processing` by itself is set at dispatch and says nothing
+        # about whether a worker ever picked the task up; this timestamp is
+        # the only thing that does, and `sweep_stuck_processing` applies its
+        # 45-minute silence rule to exactly the rows that have one. A
+        # redelivered or retried attempt overwrites it, which is correct:
+        # the clock should start from this attempt, not the dead one.
         version.processing_status = ProcessingStatus.processing
+        version.processing_started_at = datetime.now(timezone.utc)
         db.commit()
 
         # The project's prefix is already frozen -- upload initiation locks
@@ -240,6 +250,90 @@ HEAVY_BITRATE_BPS = 100_000_000  # 100 Mbit/s
 HEAVY_LONG_EDGE = 3840
 
 
+# §219 — how often a long silent phase may touch the version row.
+#
+# One write a minute against one indexed row is nothing, and it is two
+# orders of magnitude under the 45-minute silence threshold the sweeper
+# uses, so a phase that is alive can never be mistaken for one that is not.
+TRANSFER_HEARTBEAT_SECONDS = 60
+
+
+def _touch_version_activity(version_id: str) -> None:
+    """Move one version's `updated_at`, and nothing else.
+
+    Its OWN short-lived session, deliberately. The task's session is holding
+    an open transaction for the duration of the transcode, and committing it
+    mid-phase to record a heartbeat would publish whatever else is pending
+    on it; keeping the heartbeat in a separate session means this writes one
+    column and ends, with no coupling to the work in flight.
+
+    `updated_at` is set explicitly rather than relying on the column's
+    `onupdate`, because an UPDATE has to set something for onupdate to ride
+    along on — and "touch this row" is exactly the case where there is no
+    other column to write.
+
+    Never raises. A heartbeat is a convenience for the sweeper; failing a
+    multi-hour transcode because a bookkeeping UPDATE could not get a
+    connection would be a far worse outcome than one missed beat.
+    """
+    db = SessionLocal()
+    try:
+        db.query(AssetVersion).filter(
+            AssetVersion.id == uuid.UUID(str(version_id))
+        ).update(
+            {AssetVersion.updated_at: datetime.now(timezone.utc)},
+            synchronize_session=False,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning(
+            "Heartbeat touch failed for version %s; the sweeper may see this "
+            "row as silent", version_id, exc_info=True,
+        )
+    finally:
+        db.close()
+
+
+def _make_transfer_heartbeat(version_id, *, interval_seconds=None, now=None, touch=None):
+    """A throttled, ACTIVITY-DRIVEN heartbeat for the silent phases.
+
+    Returns a callable taking a count of work units just completed -- bytes,
+    for a boto3 `Callback`; one ffmpeg progress line otherwise -- which
+    touches the version row at most once per `interval_seconds`.
+
+    Activity-driven and NOT a timer thread, which is the whole design
+    constraint. A timer would keep ticking while a wedged ffmpeg or a hung
+    S3 read did nothing at all, which would make the row look alive forever
+    and defeat the sweeper this exists to cooperate with. Here, no bytes and
+    no progress lines mean no heartbeat, so a genuine hang still goes silent
+    and is still swept.
+
+    `now` and `touch` are injectable so the throttle can be tested against a
+    fake clock rather than by sleeping.
+    """
+    interval = TRANSFER_HEARTBEAT_SECONDS if interval_seconds is None else interval_seconds
+    clock = now or (lambda: datetime.now(timezone.utc))
+    write = touch or _touch_version_activity
+    state = {"last": None, "units": 0}
+
+    def heartbeat(units: int = 1) -> None:
+        # A callback that reports nothing transferred is not evidence of
+        # life, so it must not produce a beat.
+        if not units or units <= 0:
+            return
+        state["units"] += units
+        stamp = clock()
+        if state["last"] is not None and (
+            (stamp - state["last"]).total_seconds() < interval
+        ):
+            return
+        state["last"] = stamp
+        write(str(version_id))
+
+    return heartbeat
+
+
 def _needs_download_proxy(result) -> bool:
     """Decided once, from the ffprobe pass the transcode already ran (§57).
 
@@ -297,7 +391,20 @@ def _process_video(db, asset, version, media_file, s3, output_prefix):
             # usable for the real work still to come.
             db.rollback()
 
-    result = _run_async(transcoder.transcode(job, progress_callback=_report_progress))
+    # §219 — the phases that report no percent at all.
+    #
+    # ffmpeg's own progress drives _report_progress above, which is a real
+    # heartbeat for the encode. It covers nothing before or after it: the
+    # EXIF pass downloads the WHOLE original (multi-GB camera masters, tens
+    # of minutes), the HLS ladder is then uploaded object by object, and an
+    # encode whose duration ffprobe could not read reports no percent for
+    # its entire run. All three are long stretches with no row update, which
+    # the sweeper's silence rule reads as a hang.
+    heartbeat = _make_transfer_heartbeat(version.id)
+
+    result = _run_async(transcoder.transcode(
+        job, progress_callback=_report_progress, heartbeat_callback=heartbeat,
+    ))
     if not result.success:
         raise RuntimeError(f"Transcode failed: {result.error}")
 

@@ -120,7 +120,10 @@ class _FakeTranscoder:
         self.proxy_calls: list[tuple[str, str]] = []
         _FakeTranscoder.instances.append(self)
 
-    async def transcode(self, job, progress_callback=None):
+    # **_kwargs for the same reason the signature below carries *_args: this
+    # mirrors FFmpegTranscoder.transcode, and a new optional argument there
+    # (§219's heartbeat_callback) must not read as a transcode failure here.
+    async def transcode(self, job, progress_callback=None, **_kwargs):
         from packages.transcoder.base import TranscodeResult
         return _FakeTranscoder.next_result
 

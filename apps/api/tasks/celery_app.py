@@ -186,10 +186,34 @@ celery_app.conf.update(
     },
 )
 
+# §219 — EVERY entry carries `options: {"expires": N}`, and that is not
+# optional decoration.
+#
+# Beat keeps dispatching on schedule regardless of whether a worker is free.
+# All of these are routed to `transcoding`, which is also where the
+# multi-hour ffmpeg jobs run at concurrency 2 with prefetch 1 — so while a
+# large import is encoding, the maintenance jobs simply accumulate behind
+# it. Measured on the live server during a 641 GiB import: the queue held
+# 15x sweep_stuck_processing, 15x purge_expired_trash, 15x
+# reconcile_file_sizes and 4x sweep_zip_exports, every one of which would
+# have run back-to-back the moment a slot freed.
+#
+# `expires` makes a stale copy be discarded by the worker instead of
+# replayed. Each is set just under its own interval, so at most one pending
+# copy of a job can ever be waiting: the next tick's message supersedes the
+# last one rather than queueing beside it. Running a sweep fifteen times in
+# a row is not just wasted work — `purge_expired_trash` and
+# `reconcile_file_sizes` both do real volumes of S3 calls.
+#
+# test_celery_wiring.py::test_every_beat_entry_expires pins this: an entry
+# added without `expires`, or with one longer than its own interval, fails
+# there rather than being discovered during the next big import.
 celery_app.conf.beat_schedule = {
     "due-date-reminders": {
         "task": "send_due_date_reminders",
         "schedule": crontab(minute="0"),  # every hour
+        # Hourly, so just under an hour.
+        "options": {"expires": 3540},
     },
     # Safety net for the countdown-scheduled graded-export deletes -- an
     # in-memory ETA task does not survive the worker restart that every
@@ -202,6 +226,8 @@ celery_app.conf.beat_schedule = {
         # nothing. It only matters for exports orphaned by a worker restart,
         # which then survive up to ~12h instead of ~1h before being cleared.
         "schedule": crontab(minute="30", hour="*/12"),
+        # Every 12 hours.
+        "options": {"expires": 43140},
     },
     # §143 — same backstop, same reason, for the three-day zip archives.
     # Hourly rather than twice-daily: the countdown is three days, so a
@@ -211,6 +237,7 @@ celery_app.conf.beat_schedule = {
     "sweep-zip-exports": {
         "task": "sweep_zip_exports",
         "schedule": crontab(minute="15"),
+        "options": {"expires": 3540},
     },
     # 30-day Recently Deleted retention. Daily is ample: the window is
     # measured in days, so the worst case is an item surviving its
@@ -232,6 +259,9 @@ celery_app.conf.beat_schedule = {
     "purge-expired-trash": {
         "task": "purge_expired_trash",
         "schedule": crontab(minute="*/15"),
+        # Every 15 minutes, so just under 15 minutes. This is one of
+        # the two that stacked 15 deep.
+        "options": {"expires": 840},
     },
     # §114 — the backstop for anything acks_late still cannot save (a worker
     # lost inside the ack window itself, or a task that hangs rather than
@@ -241,6 +271,7 @@ celery_app.conf.beat_schedule = {
     "sweep-stuck-processing": {
         "task": "sweep_stuck_processing",
         "schedule": crontab(minute="*/15"),
+        "options": {"expires": 840},
     },
     # §181/§182 — drains the `size_verified_at IS NULL` queue nightly, so
     # the backfill stays done rather than needing someone to remember the
@@ -253,6 +284,7 @@ celery_app.conf.beat_schedule = {
     "reconcile-file-sizes": {
         "task": "reconcile_file_sizes",
         "schedule": crontab(minute="*/15"),
+        "options": {"expires": 840},
     },
     # §215 — hourly is plenty. The TTL it enforces is measured in DAYS, so
     # the worst case of an hourly pass is an abandoned upload surviving its
@@ -265,6 +297,7 @@ celery_app.conf.beat_schedule = {
     "sweep-abandoned-uploads": {
         "task": "sweep_abandoned_uploads",
         "schedule": crontab(minute="45"),
+        "options": {"expires": 3540},
     },
 }
 

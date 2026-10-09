@@ -114,6 +114,27 @@ class AssetVersion(Base):
     # seconds without a single call site knowing about the sweeper. Matches
     # Asset.updated_at's own definition deliberately.
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    # §219 — when the transcode task ACTUALLY STARTED, as opposed to when it
+    # was dispatched.
+    #
+    # `processing_status` is set to `processing` at dispatch, by whoever
+    # queues the work (upload complete, retry, re-version). With a busy
+    # `transcoding` queue a version can then sit at `processing` for hours
+    # before a worker frees up, and nothing touches the row in the meantime
+    # -- so a queued file and a dead one looked identical to the sweeper,
+    # which relabelled two 95 GiB originals `failed` while they were still
+    # waiting their turn.
+    #
+    # NULL is the queued state: "status says processing, but no worker has
+    # picked this up yet". Only `process_asset` itself fills it in, in the
+    # same commit where it re-asserts `processing` at real task start, and
+    # every dispatch path clears it back to NULL so a re-queue is treated as
+    # queued again rather than inheriting the previous attempt's start.
+    #
+    # Existing rows stay NULL, which is the safe direction: they are read as
+    # queued and are therefore never failed by the 45-minute silence rule,
+    # only by the much longer STUCK_QUEUED_HOURS backstop.
+    processing_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 class FileType(str, PyEnum):

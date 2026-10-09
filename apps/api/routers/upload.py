@@ -358,6 +358,12 @@ def complete_upload(
         _reconcile_file_size(media_file)
 
     version.processing_status = ProcessingStatus.processing
+    # §219 — DISPATCHED, not started. `processing` here means "queued": the
+    # Celery task below may wait hours behind other transcodes, and nothing
+    # touches this row while it does. NULL is what tells the
+    # stuck-processing sweeper not to apply its 45-minute silence rule to a
+    # file that is merely waiting its turn. Only process_asset fills it in.
+    version.processing_started_at = None
     db.commit()
 
     # Trigger transcoding in background (task dispatched in Step 7)

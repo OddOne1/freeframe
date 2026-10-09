@@ -114,6 +114,25 @@ class Settings(BaseSettings):
     # orphaned row inside the hour. Override with STUCK_PROCESSING_MINUTES.
     stuck_processing_minutes: int = 45
 
+    # §219 -- the SECOND, much longer threshold, for a version that is at
+    # `processing` but has never actually started (processing_started_at IS
+    # NULL).
+    #
+    # The 45-minute rule above only applies once a worker has really begun
+    # the work. A queued version has nothing touching its row at all -- the
+    # status is set at dispatch and the progress callback cannot run yet --
+    # so measuring silence against it is meaningless, and doing so failed
+    # two 95 GiB originals that were waiting their turn behind a 641 GiB
+    # import.
+    #
+    # This is the backstop for the case that remains real: a task lost from
+    # the broker entirely, where nothing will ever pick the row up. A week
+    # is deliberately far longer than any legitimate queue wait -- the point
+    # is that such a row is eventually visible as failed rather than
+    # spinning forever, not that it is reaped promptly. Override with
+    # STUCK_QUEUED_HOURS.
+    stuck_queued_hours: int = 168
+
     # Speech-to-text (faster-whisper, CPU-only -- see CLAUDE.md).
     # MUST stay a multilingual checkpoint: the ".en" variants (small.en etc.)
     # exist and would silently break every non-English upload.

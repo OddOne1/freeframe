@@ -471,6 +471,101 @@ def test_the_sweep_module_is_in_the_include_list():
     assert '"apps.api.tasks.upload_sweep_tasks"' in block
 
 
+def _beat_entries() -> dict:
+    """{entry name -> its source chunk} for every beat_schedule entry.
+
+    Split on the entry keys themselves rather than parsed as Python, keeping
+    this file stdlib-only and import-free like everything else here.
+    """
+    src = _celery_source()
+    block = src[src.index("celery_app.conf.beat_schedule = {"):]
+    names = re.findall(r'^    "([a-z0-9-]+)": \{', block, re.M)
+    out = {}
+    for i, name in enumerate(names):
+        start = block.index(f'    "{name}": {{')
+        end = block.index(f'    "{names[i + 1]}": {{') if i + 1 < len(names) else len(block)
+        out[name] = block[start:end]
+    return out
+
+
+def _interval_seconds(name: str, chunk: str) -> int:
+    """How often this entry fires, from its crontab.
+
+    Only the shapes actually used are understood, and an unrecognised one is
+    a FAILURE rather than a skip: a new entry on a schedule this cannot read
+    must force someone to extend this helper, not slip past the expiry check
+    below with its interval silently treated as unknown.
+    """
+    schedule = re.search(r'"schedule":\s*crontab\(([^)]*)\)', chunk)
+    assert schedule, f"{name}: no crontab(...) schedule found"
+    args = schedule.group(1)
+
+    every_n_minutes = re.search(r'minute="\*/(\d+)"', args)
+    if every_n_minutes:
+        assert "hour=" not in args, f"{name}: minute=*/N combined with hour= is not handled"
+        return int(every_n_minutes.group(1)) * 60
+
+    every_n_hours = re.search(r'hour="\*/(\d+)"', args)
+    if every_n_hours:
+        return int(every_n_hours.group(1)) * 3600
+
+    # A fixed minute of the hour, e.g. minute="45" -- hourly.
+    if re.fullmatch(r'minute="\d+"(,\s*#.*)?', args.strip()) or \
+            re.match(r'^minute="\d+"$', args.strip()):
+        return 3600
+
+    raise AssertionError(
+        f"{name}: schedule shape {args!r} is not understood. Extend "
+        f"_interval_seconds rather than exempting the entry."
+    )
+
+
+def test_every_beat_entry_expires():
+    """§219 — a maintenance job must not pile up behind a long transcode.
+
+    Beat dispatches on schedule whether or not a worker is free, and every
+    one of these is routed to `transcoding`, which is also where multi-hour
+    ffmpeg jobs run at concurrency 2. Measured on the live server during a
+    641 GiB import, the queue held 15x sweep_stuck_processing, 15x
+    purge_expired_trash, 15x reconcile_file_sizes and 4x sweep_zip_exports —
+    all of which would have run back-to-back the moment a slot freed.
+
+    `expires` makes a stale copy be dropped instead of replayed. It must be
+    no longer than the entry's own interval, or two copies can still be
+    waiting at once and the pile-up is merely slower.
+    """
+    entries = _beat_entries()
+    assert len(entries) >= 7, f"only found {len(entries)} beat entries: {list(entries)}"
+
+    missing = [n for n, chunk in entries.items() if '"expires"' not in chunk]
+    assert not missing, (
+        f"beat entr(ies) with no options.expires: {missing}. A copy that "
+        f"waited behind a long transcode will be replayed instead of dropped."
+    )
+
+    too_long = {}
+    for name, chunk in entries.items():
+        expires = int(re.search(r'"expires":\s*(\d+)', chunk).group(1))
+        interval = _interval_seconds(name, chunk)
+        if not 0 < expires <= interval:
+            too_long[name] = f"expires={expires}s, interval={interval}s"
+    assert not too_long, (
+        f"expiry must be positive and no longer than the entry's own "
+        f"interval: {too_long}"
+    )
+
+
+def test_the_options_key_is_the_one_celery_reads():
+    """`expires` has to sit under `options`, which is what beat passes to
+    apply_async. A top-level "expires" in the entry dict is silently ignored
+    -- the job would keep piling up and the test above would still be green
+    if it only looked for the word."""
+    for name, chunk in _beat_entries().items():
+        assert re.search(r'"options":\s*\{[^}]*"expires"', chunk), (
+            f"{name}: expires is not inside an \"options\" dict"
+        )
+
+
 def test_late_acks_are_enabled():
     """Without these two, a killed worker's task is dropped, not redelivered.
 

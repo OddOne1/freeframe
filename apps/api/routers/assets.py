@@ -839,6 +839,12 @@ def retry_version_processing(
         raise HTTPException(status_code=409, detail="Only failed or stuck-processing versions can be retried")
 
     version.processing_status = ProcessingStatus.processing
+    # §219 — cleared, for the same reason the upload path clears it: this is
+    # a re-DISPATCH. Leaving the previous attempt's start time in place would
+    # hand the sweeper a row that claims to have started hours ago and has
+    # been silent ever since, and it would be failed almost immediately --
+    # while its replacement task sat perfectly healthily in the queue.
+    version.processing_started_at = None
     db.commit()
     db.refresh(version)
 

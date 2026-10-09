@@ -307,9 +307,14 @@ def _patch_transcode_env(monkeypatch, thumbnail_runs):
     `thumbnail_runs` is called with each ffmpeg thumbnail command and
     returns (returncode, writes_a_file).
     """
+    # **kw, not a fixed parameter list: this stands in for a real method, and
+    # a stub that cannot be called the way the real one is called turns any
+    # added argument into `success=False` with a TypeError hidden in the
+    # result's `error` string -- which reads as "the thumbnail logic broke".
+    # §219 added heartbeat_callback this way.
     monkeypatch.setattr(
         FFmpegTranscoder, "_run_ffmpeg_with_progress",
-        staticmethod(lambda cmd, dur, cb, timeout: None),
+        staticmethod(lambda cmd, dur, cb, timeout, **kw: None),
     )
     calls: list[list[str]] = []
 
