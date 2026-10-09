@@ -15,6 +15,14 @@ import type { Project } from '@/types'
 
 const GB = 1024 ** 3
 
+/** The storage-limit field's text for a project.
+ *
+ *  Shared by the initial state and the re-seed below so the two cannot
+ *  drift -- they were the same expression written twice. */
+function storageLimitFieldFor(project: Project): string {
+  return project.storage_limit_bytes ? String(Math.round(project.storage_limit_bytes / GB)) : ''
+}
+
 interface ProjectSettingsDialogProps {
   /** Supplied by whichever parent renders both dialogs. Rendered
    *  unconditionally within Settings: today, opening Settings at all
@@ -46,8 +54,13 @@ export function ProjectSettingsDialog({
   const [slugError, setSlugError] = React.useState('')
   const storageLocked = Boolean(project.storage_locked)
   const [isPublic, setIsPublic] = React.useState(project.is_public ?? false)
-  const [posterPreview, setPosterPreview] = React.useState<string | null>(resolveApiMediaUrl(project.poster_url))
   const [posterFile, setPosterFile] = React.useState<File | null>(null)
+  // The object URL for `posterFile` while one is pending. Kept apart from
+  // the stored poster rather than one "preview" slot holding either,
+  // because the two have different lifetimes: this one is owned here and
+  // has to be revoked, the stored one is only ever whatever the project
+  // currently says.
+  const [posterObjectUrl, setPosterObjectUrl] = React.useState<string | null>(null)
   const [saving, setSaving] = React.useState(false)
   const [ratingsVisible, setRatingsVisible] = React.useState(project.ratings_visible_to_all ?? false)
   // §127 — null means "never chosen", which falls through to the app-wide
@@ -56,9 +69,7 @@ export function ProjectSettingsDialog({
   const [transcribeNew, setTranscribeNew] = React.useState(project.transcription_default ?? true)
   const [savingTranscribeNew, setSavingTranscribeNew] = React.useState(false)
   const [savingRatingsVisible, setSavingRatingsVisible] = React.useState(false)
-  const [storageLimitGB, setStorageLimitGB] = React.useState<string>(
-    project.storage_limit_bytes ? String(Math.round(project.storage_limit_bytes / (1024 ** 3))) : ''
-  )
+  const [storageLimitGB, setStorageLimitGB] = React.useState<string>(storageLimitFieldFor(project))
   const [storageError, setStorageError] = React.useState('')
   const fileInputRef = React.useRef<HTMLInputElement>(null)
 
@@ -78,24 +89,79 @@ export function ProjectSettingsDialog({
   )
   const remainingBytes = personalTotalBytes === null ? null : Math.max(personalTotalBytes - otherAllocatedBytes, 0)
 
-  // Sync state when project changes
+  // The project, reachable from the re-seed below without that effect
+  // having to re-run whenever a refetch hands over a new object.
+  // Deliberately declared BEFORE that effect: within one commit React runs
+  // effects in declaration order, so a render that flips `open` and
+  // changes `project` at once still seeds from the new project.
+  const projectRef = React.useRef(project)
   React.useEffect(() => {
-    setName(project.name)
-    setDescription(project.description || '')
-    setStorageLimitGB(project.storage_limit_bytes ? String(Math.round(project.storage_limit_bytes / (1024 ** 3))) : '')
-    setIsPublic(project.is_public ?? false)
-    setRatingsVisible(project.ratings_visible_to_all ?? false)
-    setTranscribeNew(project.transcription_default ?? true)
-    setPosterPreview(resolveApiMediaUrl(project.poster_url))
-    setPosterFile(null)
+    projectRef.current = project
+  })
+
+  // A blob URL is not garbage-collected -- it pins its File for the life of
+  // the document until revoked. Every change to the pending pick goes
+  // through here, which is what makes "the replaced URL is released" true
+  // by construction rather than by remembering to do it at each call site.
+  const posterObjectUrlRef = React.useRef<string | null>(null)
+  const setPendingPoster = React.useCallback((file: File | null) => {
+    if (posterObjectUrlRef.current) URL.revokeObjectURL(posterObjectUrlRef.current)
+    const next = file ? URL.createObjectURL(file) : null
+    posterObjectUrlRef.current = next
+    setPosterObjectUrl(next)
+    setPosterFile(file)
+  }, [])
+
+  // Navigating away mid-edit. Closing the dialog is handled by the re-seed
+  // below, which in projects/[id] is not an unmount: the dialog stays
+  // mounted there and only `open` changes.
+  React.useEffect(
+    () => () => {
+      if (posterObjectUrlRef.current) URL.revokeObjectURL(posterObjectUrlRef.current)
+    },
+    [],
+  )
+
+  // Start a fresh draft at the two moments that mean one -- the dialog
+  // opening, and a different project -- and at no other time.
+  //
+  // This used to be keyed on `[project]`, which looked like "re-sync when
+  // the project changes" and was really "re-sync on every refetch". The
+  // prop comes from useSWR, which revalidates on window focus, and every
+  // project response re-signs poster_url (proxy_url_for -> a JWT whose exp
+  // is now + 24h), so no two responses are equal and each one arrives as a
+  // new object. A tab switch therefore wiped unsaved text, and -- the
+  // damaging half -- dropped a just-picked cover image together with its
+  // pending File, so the preview reverted and Save uploaded nothing.
+  React.useEffect(() => {
+    // On close as much as on open: cancel means cancel, and it releases the
+    // blob URL of anything that was picked and not saved.
+    setPendingPoster(null)
+    if (!open) return
+    const p = projectRef.current
+    setName(p.name)
+    setDescription(p.description || '')
+    // Seeded here too, unlike in the old effect, which left it out: a slug
+    // typed and then abandoned used to still be in the field on reopen,
+    // ready to be saved by a later unrelated edit.
+    setStorageSlug(p.storage_slug || '')
+    setStorageLimitGB(storageLimitFieldFor(p))
+    setIsPublic(p.is_public ?? false)
+    setRatingsVisible(p.ratings_visible_to_all ?? false)
+    setTranscribeNew(p.transcription_default ?? true)
     setStorageError('')
-  }, [project])
+    setSlugError('')
+  }, [open, project.id, setPendingPoster])
+
+  // Read live from the project whenever nothing is pending, so a cover
+  // changed elsewhere still appears while this form sits idle; a pending
+  // pick always wins, so no refetch can replace what was just chosen.
+  const posterPreview = posterObjectUrl ?? resolveApiMediaUrl(project.poster_url)
 
   const handlePosterSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    setPosterFile(file)
-    setPosterPreview(URL.createObjectURL(file))
+    setPendingPoster(file)
   }
 
   const handleToggleRatingsVisible = async (next: boolean) => {
