@@ -165,23 +165,79 @@ def thumbnail_cmd(
     return cmd
 
 
+#: §221 — how long an input URL handed to ffmpeg stays valid.
+#:
+#: This was 7200, and 7200 is shorter than the work it has to survive. One
+#: `transcode()` presigns the input once and keeps using it through the
+#: ffprobe pass, the HLS ladder (its own ceiling is 14400 — twice the old
+#: expiry on its own), the ladder upload, and finally the thumbnail. Two
+#: 95+ GiB MXF masters on the live server encoded for ~2 h, uploaded for
+#: ~21 min, and then died on the thumbnail against `Expires=<start+7200>`;
+#: the ladder itself had cleared its expiry by about forty seconds, so a
+#: marginally slower file would have failed mid-encode instead, throwing
+#: away hours rather than a jpeg.
+#:
+#: 43200 (12 h) is sized from the ceilings in this file rather than picked
+#: round: 14400 for the ladder, 120 for ffprobe and up to 2x600 for the
+#: thumbnail attempts come to ~15720 of bounded work, and the two phases
+#: with NO timeout at all -- the full-size EXIF download and the ladder
+#: upload -- get the remaining ~7.6 h. It also matches §219's Celery
+#: visibility timeout, which is the other end of the same bound: a task
+#: that may run for 12 h needs input that is readable for 12 h.
+DEFAULT_URL_EXPIRY_SECONDS = 43200
+
+#: The SigV4 ceiling for a presigned URL, and therefore the hard cap on the
+#: setting above. AWS documents 1..604800 (7 days) because the signing key
+#: itself is only valid that long, and MinIO/AIStor follow S3's SigV4 here
+#: (the MinIO client's own default expiry is this same 604800). Anything
+#: larger is rejected at signing time rather than merely ignored.
+MAX_PRESIGN_EXPIRY_SECONDS = 604800
+
+
 class FFmpegTranscoder(BaseTranscoder):
-    def __init__(self, s3_client, bucket: str, s3_endpoint: str = None):
+    def __init__(
+        self,
+        s3_client,
+        bucket: str,
+        s3_endpoint: str = None,
+        url_expiry_seconds: int = DEFAULT_URL_EXPIRY_SECONDS,
+    ):
         self.s3 = s3_client
         self.bucket = bucket
         self.s3_endpoint = s3_endpoint
-    
-    def _get_presigned_url(self, s3_key: str, expires_in: int = 7200) -> str:
-        """Generate a presigned URL for streaming input to FFmpeg."""
+        # Passed in rather than read from a settings module, like `bucket`
+        # and `s3_endpoint` above: this package deliberately imports nothing
+        # from apps.api, so its configuration arrives through its caller.
+        self.url_expiry_seconds = url_expiry_seconds
+
+    def _get_presigned_url(self, s3_key: str, expires_in: int = None,
+                           stage: str = "input") -> str:
+        """A presigned GET for streaming input to ffmpeg.
+
+        `expires_in` defaults to this transcoder's configured expiry; no
+        call site should pass a literal, because the one number that decides
+        whether a long encode can still read its own input belongs in
+        configuration, not scattered through the pipeline.
+        """
+        ttl = self.url_expiry_seconds if expires_in is None else expires_in
+        # §221 — WARNING, not INFO: every Celery service runs at
+        # --loglevel=warning in production, and this one line is what makes
+        # the next expiry incident readable straight from the worker log.
+        # The URL itself is NEVER logged: it carries the signature, and
+        # redact_presigned_urls exists precisely because these leak into
+        # ffmpeg stderr otherwise.
+        logger.warning(
+            "Presigning %s for %s: expires in %ds", s3_key, stage, ttl,
+        )
         return self.s3.generate_presigned_url(
             "get_object",
             Params={"Bucket": self.bucket, "Key": s3_key},
-            ExpiresIn=expires_in,
+            ExpiresIn=ttl,
         )
 
     async def get_video_metadata(self, s3_key: str) -> VideoMetadata:
         """Get video metadata using streaming (no full download)."""
-        input_url = self._get_presigned_url(s3_key)
+        input_url = self._get_presigned_url(s3_key, stage="metadata probe")
         cmd = [
             "ffprobe", "-v", "quiet", "-print_format", "json",
             "-show_streams", "-select_streams", "v:0", input_url,
@@ -213,7 +269,7 @@ class FFmpegTranscoder(BaseTranscoder):
         before it returned them, which made every path it handed back point
         at nothing.
         """
-        input_url = self._get_presigned_url(s3_key)
+        input_url = self._get_presigned_url(s3_key, stage="thumbnail batch")
         thumb_dir = tempfile.mkdtemp()
         pattern = f"{thumb_dir}/thumb_%04d.jpg"
         try:
@@ -245,7 +301,7 @@ class FFmpegTranscoder(BaseTranscoder):
 
     async def generate_waveform(self, s3_key: str) -> dict:
         """Generate waveform data for audio visualization using streaming."""
-        input_url = self._get_presigned_url(s3_key)
+        input_url = self._get_presigned_url(s3_key, stage="waveform")
         # Simplified waveform: just return peak data (full waveform extraction is complex)
         return {"samples": [], "peak": 1.0, "source": s3_key}
 
@@ -432,8 +488,11 @@ class FFmpegTranscoder(BaseTranscoder):
         """
         work_dir = Path(tempfile.mkdtemp(prefix=f"transcode_{job.version_id}_"))
         
-        # Generate presigned URL for streaming input (2 hour expiry for large files)
-        input_url = self._get_presigned_url(job.input_s3_key, expires_in=7200)
+        # §221 — this URL has to outlive the ffprobe pass AND the whole HLS
+        # ladder, which is why its expiry is configuration rather than a
+        # literal. It is deliberately NOT reused for the thumbnail: see
+        # step 5, which presigns again.
+        input_url = self._get_presigned_url(job.input_s3_key, stage="probe + HLS ladder")
 
         try:
             # 1. Probe metadata via streaming (no download) — feeds both the
@@ -611,8 +670,19 @@ class FFmpegTranscoder(BaseTranscoder):
             # is encoded AND uploaded by now; raising here would have
             # process_asset mark the version `failed` and re-run all of it.
             thumbnail_keys: list[str] = []
+            # §221 — a FRESH signature, not `input_url`.
+            #
+            # By this point the ladder has encoded (hours) and uploaded
+            # (tens of minutes) since that URL was signed, and reusing it
+            # here is exactly what failed two 95 GiB masters: ffmpeg exit 8
+            # on an expired link, after all the real work was already done
+            # and correct. Re-signing costs one local HMAC and nothing else.
+            #
+            # The ladder keeps the URL it started with, on purpose: an open
+            # ffmpeg connection must not have its input swapped mid-run.
             thumb_path = self._make_thumbnail(
-                input_url, work_dir, probed.get("duration_seconds") or 0,
+                self._get_presigned_url(job.input_s3_key, stage="thumbnail"),
+                work_dir, probed.get("duration_seconds") or 0,
             )
             if thumb_path is not None:
                 thumbnail_key = f"{job.output_s3_prefix}/thumbnail.jpg"
@@ -674,8 +744,17 @@ class FFmpegTranscoder(BaseTranscoder):
         work_dir = Path(tempfile.mkdtemp(prefix="proxy1080_"))
         try:
             output_path = work_dir / "proxy_1080p.mp4"
+            # §221 — signed HERE, immediately before use, and never handed
+            # down from transcode(). This runs AFTER a full ladder encode
+            # and upload have already completed, so any URL from that call
+            # would be hours old; and this ffmpeg has its own 14400s ceiling
+            # on top, which the old 7200s expiry could not have covered even
+            # if it had been fresh.
+            proxy_input_url = self._get_presigned_url(
+                input_s3_key, stage="1080p download proxy",
+            )
             cmd = [
-                "ffmpeg", "-y", "-i", self._get_presigned_url(input_s3_key),
+                "ffmpeg", "-y", "-i", proxy_input_url,
                 "-vf",
                 "scale=1920:1080:force_original_aspect_ratio=decrease,"
                 "pad=ceil(iw/2)*2:ceil(ih/2)*2",

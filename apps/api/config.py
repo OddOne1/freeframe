@@ -156,6 +156,31 @@ class Settings(BaseSettings):
     # CELERY_VISIBILITY_TIMEOUT_SECONDS.
     celery_visibility_timeout_seconds: int = 43200
 
+    # §221 -- how long the presigned input URL handed to ffmpeg stays valid.
+    #
+    # It was 7200, hardcoded in the transcoder, and 7200 is shorter than the
+    # work one URL has to survive: ONE transcode() signs the input once and
+    # then uses it for the ffprobe pass, the HLS ladder (whose own ceiling
+    # is 14400 -- twice the old expiry by itself), and, after the ladder has
+    # also been uploaded, the thumbnail. Two 95+ GiB masters encoded for
+    # ~2 h, uploaded for ~21 min and then failed on the thumbnail with
+    # ffmpeg exit 8 against Expires=<start+7200>, discarding a ladder that
+    # was finished and correct. The ladder had cleared its own expiry by
+    # roughly forty seconds, so a slightly slower file would have died
+    # mid-encode instead.
+    #
+    # 43200 (12 h) is derived from the ceilings in the code, not picked
+    # round: 14400 (ladder) + 120 (ffprobe) + up to 2x600 (thumbnail
+    # attempts) is ~15720s of BOUNDED work, and the two phases with no
+    # timeout at all -- the full-size EXIF download and the multi-GB ladder
+    # upload -- get the remaining ~7.6 h. It deliberately equals
+    # celery_visibility_timeout_seconds above: that one says a task may run
+    # for 12 h, and this one says its input stays readable that long. The
+    # hard cap is SigV4's own 604800 (7 days).
+    #
+    # Override with TRANSCODE_URL_EXPIRY_SECONDS.
+    transcode_url_expiry_seconds: int = 43200
+
     # Speech-to-text (faster-whisper, CPU-only -- see CLAUDE.md).
     # MUST stay a multilingual checkpoint: the ".en" variants (small.en etc.)
     # exist and would silently break every non-English upload.

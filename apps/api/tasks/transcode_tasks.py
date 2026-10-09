@@ -352,7 +352,13 @@ def _process_video(db, asset, version, media_file, s3, output_prefix):
     from packages.transcoder.ffmpeg_transcoder import FFmpegTranscoder
     from packages.transcoder.base import TranscodeJob
 
-    transcoder = FFmpegTranscoder(s3, settings.s3_bucket, settings.s3_endpoint)
+    # §221 — the input URL's lifetime is configuration, not a constant
+    # buried in the transcoder. It has to outlive the ladder AND everything
+    # that runs after it; see the setting's own comment.
+    transcoder = FFmpegTranscoder(
+        s3, settings.s3_bucket, settings.s3_endpoint,
+        url_expiry_seconds=settings.transcode_url_expiry_seconds,
+    )
     job = TranscodeJob(
         media_id=str(asset.id),
         version_id=str(version.id),

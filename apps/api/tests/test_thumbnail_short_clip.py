@@ -544,7 +544,11 @@ def test_real_ffmpeg_generate_thumbnails_gives_a_short_clip_one_frame(tmp_path):
 
     for clip, expected in ((short, 1), (long_, 6)):
         t = FFmpegTranscoder(_FakeS3(), "freeframe", "http://s3")
-        t._get_presigned_url = lambda key, expires_in=7200, _c=clip: str(_c)  # noqa: ARG005
+        # **_kw: this stands in for a real method, and §221 gave it a
+        # `stage` argument. A fixed signature here is latent breakage that
+        # only fires where ffmpeg exists, so it would never be seen in the
+        # container these tests usually skip in.
+        t._get_presigned_url = lambda key, expires_in=None, _c=clip, **_kw: str(_c)  # noqa: ARG005
         paths = ft.asyncio.run(t.generate_thumbnails("raw/k", 0))
         try:
             assert len(paths) == expected, f"{clip.name}: {len(paths)} frames"
@@ -563,7 +567,7 @@ def test_real_ffmpeg_generate_thumbnails_raises_with_a_reason(tmp_path):
     broken = tmp_path / "broken.mxf"
     broken.write_bytes(b"not a video at all")
     t = FFmpegTranscoder(_FakeS3(), "freeframe", "http://s3")
-    t._get_presigned_url = lambda key, expires_in=7200: str(broken)  # noqa: ARG005
+    t._get_presigned_url = lambda key, expires_in=None, **_kw: str(broken)  # noqa: ARG005
     with pytest.raises(FFmpegError) as exc:
         ft.asyncio.run(t.generate_thumbnails("raw/k", 0))
     assert "exit" in str(exc.value) and len(str(exc.value)) > 40
