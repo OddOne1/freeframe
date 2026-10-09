@@ -192,7 +192,8 @@ def run_sweep(
     """Run the real task against a fake store, and report what it called."""
     from apps.api.tasks import upload_sweep_tasks as mod
 
-    calls = {"aborted": [], "list_parts": [], "exists": [], "list_uploads": 0}
+    calls = {"aborted": [], "list_parts": [], "exists": [], "list_uploads": 0,
+             "parts_strict": []}
 
     def fake_list_uploads(prefix):
         calls["list_uploads"] += 1
@@ -203,8 +204,13 @@ def run_sweep(
         calls["prefix"] = prefix
         return list(uploads or [])
 
-    def fake_list_parts(key, upload_id):
+    def fake_list_parts(key, upload_id, strict=False):
+        # `strict` is recorded, not ignored. The sweep MUST ask strictly
+        # (§215a): the default returns a short list when paging breaks, and
+        # a short list of parts reads to this task as an upload with no
+        # recent activity — which it then aborts.
         calls["list_parts"].append(key)
+        calls["parts_strict"].append(strict)
         if parts_raises and key in parts_raises:
             raise parts_raises[key]
         return list((parts_by_key or {}).get(key, []))
@@ -887,6 +893,310 @@ class TestPagination:
         assert len(got) == 1001
         assert got[0]["LastModified"] == t1
         assert got[-1]["LastModified"] == t2
+
+
+# ── d2 — a parts listing that cannot be paged to the end (§215a) ───────────
+
+
+def _truncated_parts_page(count=1, days_ago=30, marker=None, first=1):
+    """A ListParts page that says there is more, with a marker or without."""
+    page = {
+        "Parts": [{"PartNumber": n, "ETag": f'"e{n}"', "Size": 16 * 1024 * 1024,
+                   "LastModified": NOW - timedelta(days=days_ago)}
+                  for n in range(first, first + count)],
+        "IsTruncated": True,
+    }
+    if marker is not None:
+        page["NextPartNumberMarker"] = marker
+    return page
+
+
+def _stuck_marker_pages():
+    """Two truncated pages whose NextPartNumberMarker never advances.
+
+    Distinct part numbers per page on purpose: the point under test is the
+    marker, and identical pages would make the assertion about which parts
+    came back unreadable.
+    """
+    return [_truncated_parts_page(count=2, marker=2, first=1),
+            _truncated_parts_page(count=2, marker=2, first=3)]
+
+
+class TestTheStrictPartsPaginator:
+    """`list_multipart_parts(..., strict=True)` — §215a.
+
+    §213's paginator stops early when paging breaks, which is correct for
+    the caller it was written for: a resuming client told about fewer parts
+    than the store holds re-sends some, which costs time and nothing else.
+    The §215 sweep is the opposite case — it reads the absence of a recent
+    part timestamp as "abandoned" and aborts the upload — so it asks for
+    the same listing strictly, and gets an error instead of a short list.
+    """
+
+    def test_strict_raises_on_a_truncated_page_with_no_marker(self):
+        from apps.api.services import s3_service
+
+        s3 = MagicMock()
+        s3.list_parts.return_value = _truncated_parts_page(count=3)
+        with patch.object(s3_service, "get_s3_client", return_value=s3):
+            with pytest.raises(s3_service.IncompleteListingError):
+                s3_service.list_multipart_parts("raw/k", "u", strict=True)
+        # Raised instead of spinning: asked once, gave up.
+        assert s3.list_parts.call_count == 1
+
+    def test_strict_raises_when_the_marker_does_not_advance(self):
+        """The other guard condition. A marker that comes back unchanged is
+        a loop, not a page — and it must not be read as the end either."""
+        from apps.api.services import s3_service
+
+        s3 = MagicMock()
+        s3.list_parts.side_effect = _stuck_marker_pages()
+        with patch.object(s3_service, "get_s3_client", return_value=s3):
+            with pytest.raises(s3_service.IncompleteListingError):
+                s3_service.list_multipart_parts("raw/k", "u", strict=True)
+        # Advanced once, then noticed the marker had not moved.
+        assert s3.list_parts.call_count == 2
+
+    def test_the_default_still_returns_what_it_read_with_no_marker(self):
+        """THE MUTATION LINE for making the default strict.
+
+        §213's resume path (`GET /upload/parts`) calls this with no `strict`
+        argument, and a 500 there turns a resumable upload into one the
+        client must start over. If the default is ever flipped, this test
+        fails with an IncompleteListingError instead of a list.
+        """
+        from apps.api.services import s3_service
+
+        s3 = MagicMock()
+        s3.list_parts.return_value = _truncated_parts_page(count=3)
+        with patch.object(s3_service, "get_s3_client", return_value=s3):
+            got = s3_service.list_multipart_parts("raw/k", "u")
+        assert [p["PartNumber"] for p in got] == [1, 2, 3]
+        assert s3.list_parts.call_count == 1
+
+    def test_the_default_still_returns_what_it_read_on_a_stuck_marker(self):
+        """The same mutation line for the second guard condition."""
+        from apps.api.services import s3_service
+
+        s3 = MagicMock()
+        s3.list_parts.side_effect = _stuck_marker_pages()
+        with patch.object(s3_service, "get_s3_client", return_value=s3):
+            got = s3_service.list_multipart_parts("raw/k", "u")
+        assert [p["PartNumber"] for p in got] == [1, 2, 3, 4]
+        assert s3.list_parts.call_count == 2
+
+    def test_healthy_paging_is_unaffected_in_either_mode(self):
+        """The guard must not fire on a listing that simply has two pages —
+        otherwise strict would make the sweep skip every large upload."""
+        from apps.api.services import s3_service
+
+        def pages():
+            return [
+                {"Parts": [{"PartNumber": n, "ETag": f'"e{n}"', "Size": 16,
+                            "LastModified": NOW} for n in range(1, 1001)],
+                 "IsTruncated": True, "NextPartNumberMarker": 1000},
+                {"Parts": [{"PartNumber": 1001, "ETag": '"e1001"', "Size": 16,
+                            "LastModified": NOW}],
+                 "IsTruncated": False},
+            ]
+
+        for strict in (False, True):
+            s3 = MagicMock()
+            s3.list_parts.side_effect = pages()
+            with patch.object(s3_service, "get_s3_client", return_value=s3):
+                got = s3_service.list_multipart_parts("raw/k", "u", strict=strict)
+            assert len(got) == 1001, strict
+            assert s3.list_parts.call_count == 2, strict
+
+    def test_the_strict_error_says_what_it_read_and_why_it_refused(self):
+        """It is logged once per affected upload at WARNING and nothing
+        reproduces it, so the line has to be enough to act on by itself."""
+        from apps.api.services import s3_service
+
+        s3 = MagicMock()
+        s3.list_parts.return_value = _truncated_parts_page(count=4)
+        with patch.object(s3_service, "get_s3_client", return_value=s3):
+            with pytest.raises(s3_service.IncompleteListingError) as exc:
+                s3_service.list_multipart_parts("raw/key.mxf", "u-7", strict=True)
+        text = str(exc.value)
+        assert "raw/key.mxf" in text              # which key
+        assert "u-7" in text                      # which upload
+        assert "4" in text                        # how much it had read
+        assert "incomplete" in text.lower()       # and why it stopped
+
+    def test_a_missing_upload_still_wins_over_the_strict_guard(self):
+        """NoSuchUpload is the caller's own branch (§213) and strict mode
+        must not reclassify it as a paging failure."""
+        from botocore.exceptions import ClientError
+        from apps.api.services import s3_service
+
+        s3 = MagicMock()
+        s3.list_parts.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchUpload", "Message": "gone"}}, "ListParts")
+        with patch.object(s3_service, "get_s3_client", return_value=s3):
+            with pytest.raises(s3_service.NoSuchUploadError):
+                s3_service.list_multipart_parts("raw/k", "u", strict=True)
+
+
+class TestTheSweepAsksStrictlyAndContainsTheFailure:
+    def test_the_sweep_asks_for_a_complete_parts_listing(self):
+        """THE MUTATION LINE for dropping `strict=True` in the sweep.
+
+        Without it the paginator hands back whatever it read, and the parts
+        it dropped are the recent ones — so a live upload looks idle and
+        gets aborted.
+        """
+        key = "raw/p/a/v/original.mxf"
+        _, calls, _ = run_sweep(
+            uploads=[upload(key, days_ago=30)],
+            parts_by_key={key: parts(count=2, newest_days_ago=20)},
+        )
+        assert calls["list_parts"] == [key]
+        assert calls["parts_strict"] == [True]
+
+    def test_an_unpageable_listing_skips_that_upload_and_counts_an_error(self):
+        from apps.api.services.s3_service import IncompleteListingError
+
+        key = "raw/p/a/v/original.mxf"
+        version = make_version(_uploading())
+        session = FakeSession(
+            media_files={key: make_media_file(key, version.id)},
+            versions={version.id: version},
+        )
+        result, calls, _ = run_sweep(
+            uploads=[upload(key, days_ago=30)],
+            parts_raises={key: IncompleteListingError("paging broke")},
+            session=session,
+        )
+        assert calls["aborted"] == []
+        assert result["aborted"] == 0
+        assert result["errors"] == 1
+        # NOT judged by any other route either: it is not "alive", and it
+        # is not the untimestamped-parts skip.
+        assert result["alive"] == 0
+        assert result["no_part_timestamps"] == 0
+        assert version.processing_status == _uploading()
+        assert result["versions_failed"] == 0
+
+    def test_the_others_in_the_same_run_are_still_judged(self):
+        """Contained PER UPLOAD, unlike pass 1's own listing. One upload
+        whose parts cannot be paged must not stop the sweep forever — the
+        orphaned parts it exists to reap would just keep accumulating."""
+        from apps.api.services.s3_service import IncompleteListingError
+
+        broken = "raw/p/a/broken/original.mxf"
+        dead = "raw/p/a/dead/original.mxf"
+        live = "raw/p/a/live/original.mxf"
+        result, calls, _ = run_sweep(
+            uploads=[upload(broken, days_ago=40, upload_id="u-broken"),
+                     upload(dead, days_ago=30, upload_id="u-dead"),
+                     upload(live, days_ago=30, upload_id="u-live")],
+            parts_by_key={
+                dead: parts(count=2, newest_days_ago=29),
+                live: parts(count=2, newest_hours_ago=1),
+            },
+            parts_raises={broken: IncompleteListingError("paging broke")},
+        )
+        assert calls["aborted"] == [dead]
+        assert result["aborted"] == 1
+        assert result["alive"] == 1
+        assert result["errors"] == 1
+
+    def test_the_skipped_upload_is_not_failed_as_a_ghost_either(self):
+        """Its row must survive BOTH passes. Pass 1 could not judge it, and
+        pass 2 judges by absence from the listing — where it is present."""
+        from apps.api.services.s3_service import IncompleteListingError
+
+        key = "raw/p/a/v/original.mxf"
+        version = make_version(_uploading(), created_at=NOW - timedelta(days=5))
+        session = FakeSession(
+            media_files={key: make_media_file(key, version.id)},
+            versions={version.id: version},
+            ghosts=[(version, make_media_file(key, version.id))],
+        )
+        result, calls, _ = run_sweep(
+            uploads=[upload(key, days_ago=30)],
+            parts_raises={key: IncompleteListingError("paging broke")},
+            session=session,
+        )
+        assert result["ghosts_failed"] == 0
+        assert version.processing_status == _uploading()
+        assert calls["exists"] == []
+
+    def test_the_run_finishes_and_names_the_upload_at_warning(self):
+        """Every Celery service here runs at --loglevel=warning, so an INFO
+        line would be invisible in the one environment that matters."""
+        from apps.api.services.s3_service import IncompleteListingError
+
+        key = "raw/p/a/v/original.mxf"
+        with patch("apps.api.tasks.upload_sweep_tasks.logger") as log:
+            result, _, db = run_sweep(
+                uploads=[upload(key, days_ago=30)],
+                parts_raises={key: IncompleteListingError("paging broke")},
+            )
+        # The run RETURNED rather than raising, and its row is intact.
+        assert result["errors"] == 1
+        assert db.rolled_back == 0
+        warned = " ".join(str(c) for c in log.warning.call_args_list)
+        assert key in warned
+        assert "u-1" in warned
+        # And it says PAGING broke, not just "something went wrong reading
+        # the parts" — the two have different answers, and the generic
+        # store-error branch's wording cannot tell an operator which.
+        assert "paging" in warned.lower()
+        summary = [c for c in log.warning.call_args_list
+                   if "open upload(s) under" in str(c.args[0])]
+        assert len(summary) == 1
+
+    def test_the_real_paginator_skips_only_that_upload_end_to_end(self):
+        """The two halves joined, with NOTHING between them faked.
+
+        The real task calls the real `list_multipart_parts` against a store
+        whose ListParts returns a truncated page with no marker. The one
+        part it does return is 30 days old, so a non-strict read would judge
+        this upload abandoned and abort it — which is exactly what this
+        asserts does not happen. Drop `strict=True` in `_last_activity` and
+        `abort.assert_not_called()` fails.
+        """
+        from apps.api.services import s3_service
+        from apps.api.tasks import upload_sweep_tasks as mod
+
+        key = "raw/p/a/v/original.mxf"
+        version = make_version(_uploading())
+        db = FakeSession(
+            media_files={key: make_media_file(key, version.id)},
+            versions={version.id: version},
+        )
+
+        s3 = MagicMock()
+        s3.list_multipart_uploads.return_value = {
+            "Uploads": [{"Key": key, "UploadId": "u1",
+                         "Initiated": NOW - timedelta(days=30)}],
+            "IsTruncated": False,
+        }
+        s3.list_parts.return_value = _truncated_parts_page(count=1, days_ago=30)
+
+        settings_patches = {
+            "upload_sweep_enabled": True,
+            "upload_sweep_dry_run": False,
+            "upload_abandon_days": 14,
+            "upload_ghost_grace_hours": 24,
+            "upload_sweep_max_aborts": 50,
+        }
+        with patch.object(s3_service, "get_s3_client", return_value=s3), \
+             patch.object(mod, "abort_multipart_upload") as abort, \
+             patch.object(mod, "SessionLocal", lambda: db):
+            for k, v in settings_patches.items():
+                patch.object(mod.settings, k, v, create=True).start()
+            try:
+                result = mod.sweep_abandoned_uploads()
+            finally:
+                patch.stopall()
+
+        abort.assert_not_called()
+        assert result["aborted"] == 0
+        assert result["errors"] == 1
+        assert version.processing_status == _uploading()
 
 
 # ── e — safety ─────────────────────────────────────────────────────────────

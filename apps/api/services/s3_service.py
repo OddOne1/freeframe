@@ -200,15 +200,19 @@ class IncompleteListingError(RuntimeError):
     upload that was never there — and a LIVE upload's version row gets a
     terminal status while its parts keep arriving.
 
-    `list_multipart_parts` (§213) deliberately does the opposite and stops
-    early, because its caller's worst case is a resuming client re-sending
-    parts it already sent: slower, never wrong. The two guards differ on
-    purpose; what is safe depends entirely on what the caller does with a
-    short answer.
+    `list_multipart_parts` raises this too, but only when asked
+    (`strict=True`, which §215's sweep passes). Its default stops early
+    instead, because its caller's worst case is a resuming client
+    re-sending parts it already sent: slower, never wrong. The two modes
+    differ on purpose; what is safe depends entirely on what the caller
+    does with a short answer, which is why the mode is the caller's to
+    choose rather than the paginator's.
     """
 
 
-def list_multipart_parts(s3_key: str, upload_id: str) -> list[dict]:
+def list_multipart_parts(
+    s3_key: str, upload_id: str, strict: bool = False
+) -> list[dict]:
     """Every part the store already holds for this upload (§213).
 
     PAGINATED IN FULL, and that is the whole reason this is a function
@@ -217,6 +221,25 @@ def list_multipart_parts(s3_key: str, upload_id: str) -> list[dict]:
     is 6,400 parts. Returning the first page would tell a resuming client
     that 5,400 parts it already sent are missing, and it would send them
     again -- the exact cost the resume exists to avoid.
+
+    `strict` picks what happens when paging CANNOT continue — a truncated
+    page with no usable next marker, or a marker that comes back unchanged.
+    Neither mode loops; they differ on what a short answer costs the caller
+    (§215a):
+
+    * `strict=False` (the default, §213's resume path) returns what it read.
+      Its caller sends the answer to a resuming client, whose worst case is
+      re-sending parts the store already has: slower, never wrong.
+    * `strict=True` raises `IncompleteListingError`. §215's sweep judges an
+      upload ABANDONED from the absence of recent part timestamps, so a list
+      cut short by broken paging reads as "nothing has happened here" for a
+      live upload — and the sweep aborts it, destroying every byte already
+      transferred. There is no safe short answer for that caller, so it gets
+      an error instead of one.
+
+    The default is not an oversight and must not be flipped to tidy the two
+    callers into one: it is the resume path's correct behaviour, and making
+    it strict turns a resumable upload into a 500.
 
     Raises NoSuchUploadError when the upload is gone, and whatever boto3
     raises for anything else.
@@ -254,16 +277,29 @@ def list_multipart_parts(s3_key: str, upload_id: str) -> list[dict]:
         if not page.get("IsTruncated"):
             break
         nxt = page.get("NextPartNumberMarker")
-        if nxt in (None, "", marker):
-            # A truncated page with no usable marker would loop forever.
-            # Stopping is the safe direction HERE: a client told about
-            # fewer parts than exist re-sends some, which costs time; a
-            # spinning request costs the whole upload.
-            #
-            # Deliberately unlike `list_multipart_uploads_all`, which
-            # raises in the same situation (§215a) — its caller marks
-            # database rows `failed` based on what is ABSENT from its
-            # answer, so a short list there is not slower, it is wrong.
+        no_marker = nxt in (None, "")
+        no_progress = nxt == marker
+        if no_marker or no_progress:
+            # A truncated page with no usable marker, or one whose marker
+            # did not move, would loop forever. Neither mode keeps asking;
+            # what differs is whether the caller is handed the short list.
+            if strict:
+                # §215a. The sweep reads "no recent part timestamp" as
+                # "abandoned" and aborts the upload, so a list that is
+                # short because paging broke is not a slower answer here,
+                # it is a live upload dressed as a dead one.
+                raise IncompleteListingError(
+                    "ListParts returned a truncated page that paging could not "
+                    f"continue past (key={s3_key!r}, upload_id={upload_id!r}, read "
+                    f"{len(parts)} part(s) so far, PartNumberMarker={marker!r} -> "
+                    f"NextPartNumberMarker={nxt!r}, reason="
+                    f"{'no usable next marker' if no_marker else 'marker did not advance'}"
+                    "). Refusing to return a possibly incomplete list of parts: "
+                    "missing parts read as an upload with no recent activity."
+                )
+            # The resume path's own worst case is a client re-sending parts
+            # the store already has — slower, never wrong — so stopping is
+            # the safe direction for it, the way it has always been.
             break
         marker = nxt
     parts.sort(key=lambda p: p["PartNumber"])

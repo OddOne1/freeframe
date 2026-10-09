@@ -301,6 +301,40 @@ class TestTheServerSaysWhichPartsItAlreadyHas:
         assert markers[0] is None
         assert markers[1:] == [1000, 2000, 3000, 4000, 5000]
 
+    def test_a_listing_that_cannot_be_paged_still_answers_the_client(
+        self, client, mock_db, auth_headers, test_user
+    ):
+        """THE MUTATION LINE for making `list_multipart_parts` strict by
+        default, or for asking strictly here (§215a).
+
+        §215's sweep asks strictly because a short list of parts reads to
+        it as an abandoned upload. This caller is the opposite: a resuming
+        client told about fewer parts than the store holds re-sends some —
+        slower, never wrong — whereas a 500 here makes it start a multi-
+        hundred-gigabyte upload over. So a truncated page with no usable
+        marker must still come back as the parts that were read.
+        """
+        media_file, version = _owned(test_user.id)
+        mock_db.first.side_effect = [media_file, version]
+        s3 = MagicMock()
+        s3.list_parts.return_value = {
+            "Parts": [{"PartNumber": n, "ETag": f'"e{n}"', "Size": 16 * MIB}
+                      for n in (1, 2, 3)],
+            "IsTruncated": True,          # ...and no NextPartNumberMarker
+        }
+
+        with patch("apps.api.services.s3_service.get_s3_client", return_value=s3):
+            res = client.get(
+                "/upload/parts",
+                params={"s3_key": S3_KEY, "upload_id": "u-1"},
+                headers=auth_headers,
+            )
+
+        assert res.status_code == 200, res.text
+        assert [p["PartNumber"] for p in res.json()["parts"]] == [1, 2, 3]
+        # Did not spin on the unusable marker either.
+        assert s3.list_parts.call_count == 1
+
     def test_another_users_upload_is_refused(self, client, mock_db, auth_headers):
         media_file, version = _owned(uuid.uuid4())   # somebody else's
         mock_db.first.side_effect = [media_file, version]

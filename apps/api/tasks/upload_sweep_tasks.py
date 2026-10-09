@@ -36,6 +36,12 @@ of a silent reaping of every large upload in the bucket. An upload with
 ZERO parts is a separate case and still judged by `Initiated`: nothing
 was ever sent, so that is the only event there has ever been.
 
+The same rule covers a parts listing that could not be PAGED to the end:
+asked strictly (§215a), it raises rather than handing back a short list,
+and a short list of parts here would be the dangerous reading again — the
+parts it dropped are the recent ones. That upload is skipped and counted
+as an error; the others in the run are judged normally.
+
 ── Two passes, because there are two kinds of leftover ───────────────────
 Pass 1  an open multipart upload at the store with no recent activity:
         abort it, and fail its version if that row is still `uploading`.
@@ -53,6 +59,7 @@ from ..config import settings
 from ..database import SessionLocal
 from ..models.asset import AssetVersion, MediaFile, ProcessingStatus
 from ..services.s3_service import (
+    IncompleteListingError,
     NoSuchUploadError,
     abort_multipart_upload,
     list_multipart_parts,
@@ -94,6 +101,15 @@ def _last_activity(key: str, upload_id: str, initiated, counters: dict):
     reimplemented — it already walks every page, which matters here because
     a 100 GB upload is ~6,000 parts over six pages.
 
+    `strict=True` IS LOAD-BEARING, not a tidy-up (§215a). §213's default
+    returns what it managed to read when paging breaks, which is right for
+    a resuming client and wrong here: the parts this sweep never sees are
+    exactly the recent ones a live upload is still adding, so a short list
+    reads as "nothing has happened for the whole TTL" and the upload gets
+    aborted. Raising instead turns that into one skipped upload. Dropping
+    the flag makes this sweep destroy live uploads whenever ListParts pages
+    badly, and nothing else in this function would notice.
+
     `timestamped_parts` is counted separately and is NOT a statistic. It is
     how the caller can tell "every part is older than the TTL" apart from
     "no part carried a timestamp at all", which otherwise look identical:
@@ -102,7 +118,7 @@ def _last_activity(key: str, upload_id: str, initiated, counters: dict):
     has to be able to see it.
     """
     counters["list_parts_calls"] += 1
-    parts = list_multipart_parts(key, upload_id)
+    parts = list_multipart_parts(key, upload_id, strict=True)
     newest = initiated
     total = 0
     timestamped = 0
@@ -225,6 +241,27 @@ def sweep_abandoned_uploads():
                 # It went away between the listing and now — somebody
                 # completed or aborted it. Nothing to do and not an error.
                 counters["skipped_recent"] += 1
+                continue
+            except IncompleteListingError:
+                # §215a — CONTAINED PER UPLOAD, unlike pass 1's own listing.
+                # That one decides which rows pass 2 may touch, so a broken
+                # listing there poisons the whole run and the raise is let
+                # through. This one is about ONE upload: its parts could not
+                # be read, so it is not judged, and every other upload in
+                # the run is still perfectly judgeable. Giving up the run
+                # here would mean one badly-paging upload stops the sweep
+                # forever, and the 92 GiB of orphaned parts that started
+                # all this would just keep accumulating.
+                #
+                # Not judged, not aborted, and its key is in `uploads`, so
+                # pass 2's `skip_keys` leaves its row alone as well.
+                counters["errors"] += 1
+                logger.warning(
+                    "Abandoned-upload sweep: could not read a COMPLETE list of parts "
+                    "for %s (upload %s) — paging broke part-way, so it is not judged "
+                    "and not aborted; the rest of this run continues",
+                    key, upload_id, exc_info=True,
+                )
                 continue
             except Exception:
                 counters["errors"] += 1
