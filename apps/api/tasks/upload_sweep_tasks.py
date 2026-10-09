@@ -26,6 +26,16 @@ and sent a part two minutes ago — a live upload, destroyed, with every
 transferred byte lost. The part timestamp is what moves while an upload
 is alive, so it is what gets asked.
 
+And when it is not answered, nothing is judged. An upload that HAS parts
+but whose parts carry no `LastModified` is skipped, loudly, rather than
+falling back to `Initiated` — because that fallback is the dangerous
+reading above, reached by a different route. Whether AIStor populates
+`LastModified` on ListParts at all is not proven anywhere but against a
+fake; if it does not, this is what makes the sweep a loud no-op instead
+of a silent reaping of every large upload in the bucket. An upload with
+ZERO parts is a separate case and still judged by `Initiated`: nothing
+was ever sent, so that is the only event there has ever been.
+
 ── Two passes, because there are two kinds of leftover ───────────────────
 Pass 1  an open multipart upload at the store with no recent activity:
         abort it, and fail its version if that row is still `uploading`.
@@ -79,21 +89,32 @@ def _aware(value):
 def _last_activity(key: str, upload_id: str, initiated, counters: dict):
     """When something last happened to this upload, and its size so far.
 
-    Returns `(last_activity, bytes_so_far, parts)`. `list_multipart_parts`
-    is §213's paginator, reused rather than reimplemented — it already
-    walks every page, which matters here because a 100 GB upload is ~6,000
-    parts over six pages.
+    Returns `(last_activity, bytes_so_far, parts, timestamped_parts)`.
+    `list_multipart_parts` is §213's paginator, reused rather than
+    reimplemented — it already walks every page, which matters here because
+    a 100 GB upload is ~6,000 parts over six pages.
+
+    `timestamped_parts` is counted separately and is NOT a statistic. It is
+    how the caller can tell "every part is older than the TTL" apart from
+    "no part carried a timestamp at all", which otherwise look identical:
+    both leave `newest` sitting at `initiated`. The second case is the one
+    where judging by `Initiated` would destroy a live upload, so the caller
+    has to be able to see it.
     """
     counters["list_parts_calls"] += 1
     parts = list_multipart_parts(key, upload_id)
     newest = initiated
     total = 0
+    timestamped = 0
     for part in parts:
         total += int(part.get("Size") or 0)
         when = _aware(part.get("LastModified"))
-        if when is not None and (newest is None or when > newest):
+        if when is None:
+            continue
+        timestamped += 1
+        if newest is None or when > newest:
             newest = when
-    return newest, total, len(parts)
+    return newest, total, len(parts), timestamped
 
 
 def _version_for_key(db, key: str):
@@ -140,6 +161,7 @@ def sweep_abandoned_uploads():
         "open_uploads": 0,
         "skipped_recent": 0,
         "alive": 0,
+        "no_part_timestamps": 0,
         "aborted": 0,
         "unmatched": 0,
         "versions_failed": 0,
@@ -187,7 +209,7 @@ def sweep_abandoned_uploads():
                 continue
 
             try:
-                last_activity, size, part_count = _last_activity(
+                last_activity, size, part_count, timestamped = _last_activity(
                     key, upload_id, initiated, counters)
             except NoSuchUploadError:
                 # It went away between the listing and now — somebody
@@ -199,6 +221,37 @@ def sweep_abandoned_uploads():
                 logger.warning(
                     "Abandoned-upload sweep: could not read parts of %s (upload %s); "
                     "leaving it alone", key, upload_id, exc_info=True,
+                )
+                continue
+
+            if part_count > 0 and timestamped == 0:
+                # NOT JUDGED. Parts exist, so bytes were sent after
+                # `Initiated` — but not one of them carried a
+                # `LastModified`, so there is no way to know WHEN. Falling
+                # back to `Initiated` here would be the exact failure the
+                # whole signal exists to prevent: a 100 GB offload that
+                # started three weeks ago and sent a part two minutes ago
+                # looks, by `Initiated` alone, precisely like an abandoned
+                # one, and aborting it destroys every transferred byte.
+                #
+                # Whether AIStor populates LastModified on ListParts at all
+                # is asserted nowhere but against a fake (§215's own
+                # report says so). If it does not, this branch is what
+                # turns that into a loud no-op instead of a silent reaping
+                # of every large upload in the bucket.
+                #
+                # An upload with ZERO parts is a different case and is NOT
+                # caught here: nothing was ever sent, so `Initiated` is the
+                # only event that ever happened to it and judging by it is
+                # correct.
+                counters["no_part_timestamps"] += 1
+                logger.warning(
+                    "Abandoned-upload sweep: %s (upload %s) has %d part(s) but NONE "
+                    "carries a LastModified timestamp — refusing to judge it by "
+                    "Initiated (%s) alone; left alone. If every upload reports this, "
+                    "the store does not return LastModified on ListParts and this "
+                    "sweep cannot tell a live upload from an abandoned one.",
+                    key, upload_id, part_count, initiated,
                 )
                 continue
 
@@ -346,11 +399,13 @@ def sweep_abandoned_uploads():
         # distinguishable from a tick that did not run.
         logger.warning(
             "Abandoned-upload sweep%s: %d open upload(s) under %s — %d recent, %d alive, "
-            "%d aborted (%.2f GiB, %d unmatched), %d version(s) failed, "
-            "%d ghost row(s) failed, %d kept because the object exists, %d error(s)%s",
+            "%d with no part timestamps, %d aborted (%.2f GiB, %d unmatched), "
+            "%d version(s) failed, %d ghost row(s) failed, "
+            "%d kept because the object exists, %d error(s)%s",
             " [DRY RUN]" if dry_run else "",
             counters["open_uploads"], RAW_PREFIX, counters["skipped_recent"],
-            counters["alive"], counters["aborted"], counters["bytes_freed"] / GIB,
+            counters["alive"], counters["no_part_timestamps"],
+            counters["aborted"], counters["bytes_freed"] / GIB,
             counters["unmatched"], counters["versions_failed"],
             counters["ghosts_failed"], counters["ghosts_kept_object_exists"],
             counters["errors"], " [CAPPED]" if counters["capped"] else "",

@@ -166,6 +166,18 @@ def parts(count=3, size=16 * 1024 * 1024, newest_hours_ago=None, newest_days_ago
     return out
 
 
+def untimestamped_parts(count=3, size=16 * 1024 * 1024):
+    """Parts the store returned WITHOUT a LastModified on any of them.
+
+    `parts()` above timestamps only its newest, which is the realistic
+    shape; this is the shape that appears if the store does not populate
+    LastModified on ListParts at all — the case §215's own report flagged
+    as asserted nowhere but against a fake.
+    """
+    return [{"PartNumber": n, "ETag": f'"e{n}"', "Size": size,
+             "LastModified": None} for n in range(1, count + 1)]
+
+
 def run_sweep(
     *,
     uploads=None,
@@ -307,6 +319,130 @@ class TestWhatCountsAsAbandoned:
         )
         assert calls["aborted"] == [dead]
         assert result["alive"] == 1
+
+    def test_parts_with_no_timestamps_are_never_judged_by_initiated(self):
+        """THE OTHER WAY to reach the dangerous reading.
+
+        `Initiated` 30 days ago, four parts, and not one of them carries a
+        LastModified. That is indistinguishable from an upload whose parts
+        are all 30 days old — and one of those two is a live 100 GB offload
+        whose every transferred byte an abort would destroy. So it is not
+        judged at all: skipped, counted, and logged loudly enough that
+        "every upload reports this" is visible in the worker log.
+        """
+        key = "raw/p/a/v/original.mxf"
+        version = make_version(_uploading())
+        session = FakeSession(
+            media_files={key: make_media_file(key, version.id)},
+            versions={version.id: version},
+        )
+        result, calls, db = run_sweep(
+            uploads=[upload(key, days_ago=30)],
+            parts_by_key={key: untimestamped_parts(count=4)},
+            session=session,
+        )
+        assert calls["aborted"] == []
+        assert result["aborted"] == 0
+        assert result["no_part_timestamps"] == 1
+        # And the row it belongs to is left exactly as it was.
+        assert version.processing_status == _uploading()
+        assert result["versions_failed"] == 0
+
+    def test_a_skipped_upload_is_not_counted_as_alive_either(self):
+        """"Could not judge" is its own answer. Folding it into `alive`
+        would hide a store that never returns LastModified behind a
+        counter that reads as business as usual."""
+        key = "raw/p/a/v/original.mxf"
+        result, _, _ = run_sweep(
+            uploads=[upload(key, days_ago=30)],
+            parts_by_key={key: untimestamped_parts(count=2)},
+        )
+        assert result["no_part_timestamps"] == 1
+        assert result["alive"] == 0
+        assert result["skipped_recent"] == 0
+        assert result["errors"] == 0
+
+    def test_one_timestamped_part_is_enough_to_judge_the_upload(self):
+        """The realistic shape, unchanged: ListParts answers, so the sweep
+        reads the answer. A single real timestamp, older than the TTL, is a
+        judgement — not a missing signal."""
+        key = "raw/p/a/v/original.mxf"
+        result, calls, _ = run_sweep(
+            uploads=[upload(key, days_ago=30)],
+            parts_by_key={key: parts(count=4, newest_days_ago=20)},
+        )
+        assert calls["aborted"] == [key]
+        assert result["aborted"] == 1
+        assert result["no_part_timestamps"] == 0
+
+    def test_a_timestamped_recent_part_is_still_alive(self):
+        """The pair of the above, so the new branch cannot be what makes
+        `alive` work: the same count of parts, one of them recent."""
+        key = "raw/p/a/v/original.mxf"
+        result, calls, _ = run_sweep(
+            uploads=[upload(key, days_ago=30)],
+            parts_by_key={key: parts(count=4, newest_hours_ago=2)},
+        )
+        assert calls["aborted"] == []
+        assert result["alive"] == 1
+        assert result["no_part_timestamps"] == 0
+
+    def test_an_upload_with_zero_parts_and_an_old_start_is_still_abandoned(self):
+        """NOT the skip case, and the distinction is the point.
+
+        No parts means nothing was ever sent, so `Initiated` is the only
+        event that has ever happened to this upload — judging by it is
+        correct, and these are exactly the sessions /upload/initiate leaves
+        behind when a request dies after creating the multipart upload.
+        """
+        key = "raw/p/a/v/original.mxf"
+        result, calls, _ = run_sweep(
+            uploads=[upload(key, days_ago=30)],
+            parts_by_key={key: []},
+        )
+        assert calls["list_parts"] == [key]
+        assert calls["aborted"] == [key]
+        assert result["aborted"] == 1
+        assert result["no_part_timestamps"] == 0
+
+    def test_the_skip_does_not_block_other_uploads_in_the_same_run(self):
+        """Containment: one unjudgeable upload must not stop the run, the
+        way one failing abort does not (TestSafety)."""
+        mute = "raw/p/a/mute/original.mxf"
+        dead = "raw/p/a/dead/original.mxf"
+        result, calls, _ = run_sweep(
+            uploads=[upload(mute, days_ago=40, upload_id="u-mute"),
+                     upload(dead, days_ago=30, upload_id="u-dead")],
+            parts_by_key={
+                mute: untimestamped_parts(count=3),
+                dead: parts(count=2, newest_days_ago=29),
+            },
+        )
+        assert calls["aborted"] == [dead]
+        assert result["no_part_timestamps"] == 1
+        assert result["aborted"] == 1
+
+    def test_the_skipped_count_is_in_the_summary_and_the_log_names_the_upload(self):
+        """A counter nothing reports is a counter nobody acts on, and every
+        Celery service here runs at --loglevel=warning."""
+        key = "raw/p/a/v/original.mxf"
+        with patch("apps.api.tasks.upload_sweep_tasks.logger") as log:
+            result, _, _ = run_sweep(
+                uploads=[upload(key, days_ago=30)],
+                parts_by_key={key: untimestamped_parts(count=5)},
+            )
+        assert "no_part_timestamps" in result
+        assert result["no_part_timestamps"] == 1
+        warned = " ".join(str(c) for c in log.warning.call_args_list)
+        assert "LastModified" in warned
+        assert key in warned
+        assert "u-1" in warned          # the upload id, not just the key
+        # …and the final summary line carries the count.
+        summary = [c for c in log.warning.call_args_list
+                   if "open upload(s) under" in str(c.args[0])]
+        assert len(summary) == 1
+        assert "no part timestamps" in summary[0].args[0]
+        assert 1 in summary[0].args
 
     def test_an_upload_that_vanished_between_listing_and_reading_is_not_an_error(self):
         from apps.api.services.s3_service import NoSuchUploadError
