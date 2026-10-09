@@ -431,6 +431,46 @@ def test_the_stuck_sweeper_is_actually_scheduled():
     assert "sweep_stuck_processing" in _beat_task_names()
 
 
+def test_the_abandoned_upload_sweeper_reaches_a_worker():
+    """§215 — the sixth task in this file to need an explicit route.
+
+    It declares `name="sweep_abandoned_uploads"`, so the module glob cannot
+    match it; unrouted it would fall through to `default`, which no
+    container consumes, and an upload reaper that never runs is worse than
+    none at all — §213 keeps sessions alive expecting this to clear them.
+
+    Checked here as well as against the live conf in test_upload_sweep.py,
+    because this file is stdlib-only and runs where Celery is not installed.
+    """
+    registered = _registered_task_names()
+    assert "sweep_abandoned_uploads" in registered, "the task is not defined"
+    assert "sweep_abandoned_uploads" in _beat_task_names(), "it is not scheduled"
+
+    queue = _queue_for_name("sweep_abandoned_uploads")
+    consumed = _consumed_queues()
+    assert queue in consumed, (
+        f"sweep_abandoned_uploads routes to {queue!r}, which no worker "
+        f"consumes (consumed: {sorted(consumed)}). Abandoned uploads would "
+        f"keep accumulating exactly as §213 warned."
+    )
+
+
+def test_the_abandoned_upload_sweeper_is_routed_in_both_forms():
+    """The bare name is what Celery routes on; the glob covers anything
+    added to the module later that forgets a name= of its own."""
+    src = _celery_source()
+    assert '"sweep_abandoned_uploads": {"queue": "transcoding"}' in src
+    assert '"apps.api.tasks.upload_sweep_tasks.*": {"queue": "transcoding"}' in src
+
+
+def test_the_sweep_module_is_in_the_include_list():
+    """A task Celery never imports is never registered, so beat's string
+    dispatch finds nothing and the message dies on the queue."""
+    src = _celery_source()
+    block = src[:src.index("celery_app.conf.update")]
+    assert '"apps.api.tasks.upload_sweep_tasks"' in block
+
+
 def test_late_acks_are_enabled():
     """Without these two, a killed worker's task is dropped, not redelivered.
 

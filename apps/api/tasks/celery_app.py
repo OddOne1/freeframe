@@ -23,6 +23,7 @@ celery_app = Celery(
         "apps.api.tasks.cleanup_tasks",
         "apps.api.tasks.zip_tasks",
         "apps.api.tasks.reconcile_tasks",
+        "apps.api.tasks.upload_sweep_tasks",
     ],
 )
 
@@ -164,6 +165,20 @@ celery_app.conf.update(
         # that is the whole lesson of the four tasks above.
         "apps.api.tasks.reconcile_tasks.*": {"queue": "transcoding"},
         "reconcile_file_sizes": {"queue": "transcoding"},
+        # §215 — the abandoned-upload sweep. Routed EXPLICITLY, in both
+        # forms, from the first commit: the bare name because that is what
+        # Celery routes on for a task declaring `name=`, and the module glob
+        # so anything added to this module later that forgets a name= is
+        # covered too. Five tasks in this file reached production unrouted
+        # and silently never ran (§126, §143, §182); this one is not going
+        # to be the sixth.
+        #
+        # `transcoding` because it is the DB-plus-many-S3-calls profile the
+        # purge, LUT and zip sweeps already have, it is not
+        # latency-sensitive, and that container is the one whose stranded
+        # work it cleans up.
+        "apps.api.tasks.upload_sweep_tasks.*": {"queue": "transcoding"},
+        "sweep_abandoned_uploads": {"queue": "transcoding"},
     },
     # Rate limiting for email queues (SES limits)
     task_annotations={
@@ -238,6 +253,18 @@ celery_app.conf.beat_schedule = {
     "reconcile-file-sizes": {
         "task": "reconcile_file_sizes",
         "schedule": crontab(minute="*/15"),
+    },
+    # §215 — hourly is plenty. The TTL it enforces is measured in DAYS, so
+    # the worst case of an hourly pass is an abandoned upload surviving its
+    # fourteenth day by under an hour — which costs a few GiB of storage for
+    # an hour and errs towards keeping a user's bytes rather than destroying
+    # them early. Minute 45, offset from the other four entries: this one
+    # issues real volumes of S3 calls (one ListMultipartUploads plus a
+    # ListParts per old upload) against the same AIStor endpoint as the
+    # purge and reconcile windows.
+    "sweep-abandoned-uploads": {
+        "task": "sweep_abandoned_uploads",
+        "schedule": crontab(minute="45"),
     },
 }
 

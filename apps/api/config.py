@@ -50,6 +50,45 @@ class Settings(BaseSettings):
     # MAX_FILE_SIZE_BYTES = 2000 GiB was exactly that kind of promise, and
     # the client died at part 10,001 keeping it.
     upload_max_file_bytes: int | None = None
+
+    # ── §215 — reaping abandoned uploads ────────────────────────────────
+    #
+    # §213 made a failed upload KEEP its multipart session so it can be
+    # resumed. That is the point, and it means abandoned uploads otherwise
+    # accumulate forever: parts billed as storage and invisible in the app,
+    # plus versions stuck at `uploading`. An earlier incident left 92.3 GiB
+    # of orphaned parts and five ghost rows.
+
+    # How long NOTHING may happen before an upload counts as abandoned.
+    #
+    # Measured from the newest part's LastModified (falling back to
+    # Initiated), NOT from when the upload started — a 100 GB offload that
+    # began three weeks ago and sent a part two minutes ago is alive.
+    #
+    # 14 days is deliberately generous. Reaping costs the user every byte
+    # already sent: a resume against a reaped session is safe (§213 treats
+    # NoSuchUpload as "start a fresh upload") but starts from zero. A user
+    # may pause for days, and the desktop app resumes across quits and
+    # reboots. Lower it only with that cost in mind.
+    upload_abandon_days: int = 14
+
+    # Pass 2's grace period: how old an `uploading` row must be before the
+    # absence of a store-side upload is read as "ghost" rather than "just
+    # started". /upload/initiate creates the multipart upload BEFORE it
+    # commits the row, so the only window is between those two statements —
+    # milliseconds. 24h is far beyond any version of that race.
+    upload_ghost_grace_hours: int = 24
+
+    # Off switches, for the first real run against a live bucket.
+    upload_sweep_enabled: bool = True
+    # Does everything except the aborts and the status writes, and logs
+    # exactly what it WOULD have done.
+    upload_sweep_dry_run: bool = False
+
+    # Per-run ceiling on aborts, so a surprise (a misconfigured prefix, a
+    # clock skew) cannot empty the bucket in one tick. The remainder waits
+    # for the next hourly run.
+    upload_sweep_max_aborts: int = 50
     jwt_secret: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15

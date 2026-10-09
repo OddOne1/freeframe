@@ -224,6 +224,12 @@ def list_multipart_parts(s3_key: str, upload_id: str) -> list[dict]:
                 "PartNumber": int(p["PartNumber"]),
                 "ETag": p.get("ETag") or "",
                 "Size": int(p.get("Size") or 0),
+                # §215 — ADDED, not a second listing. This is the signal the
+                # abandoned-upload sweep judges by: it moves every time a
+                # live upload sends a part, which `Initiated` does not. The
+                # resume path (§213) ignores it, so adding it costs that
+                # caller nothing.
+                "LastModified": p.get("LastModified"),
             })
         if not page.get("IsTruncated"):
             break
@@ -237,6 +243,85 @@ def list_multipart_parts(s3_key: str, upload_id: str) -> list[dict]:
         marker = nxt
     parts.sort(key=lambda p: p["PartNumber"])
     return parts
+
+
+def list_multipart_uploads_all(prefix: str = "raw/") -> list[dict]:
+    """Every multipart upload currently open under `prefix` (§215).
+
+    Returns `[{"Key", "UploadId", "Initiated"}]`.
+
+    PAGINATED IN FULL, on BOTH markers. ListMultipartUploads pages on
+    `KeyMarker` AND `UploadIdMarker` together — one key can hold several
+    open uploads, so a paginator that only advanced the key marker would
+    loop on the same key forever or skip the rest of its uploads. Both are
+    echoed back as `NextKeyMarker`/`NextUploadIdMarker` and both have to be
+    sent back.
+
+    `prefix` defaults to `raw/` and is the whole safety boundary for the
+    sweep: originals live under `raw/`, and everything else in the bucket
+    (HLS renditions, posters, LUT exports, zips, brand images) is not an
+    upload session and must never be aborted by this. A caller that wants
+    a different prefix has to say so.
+    """
+    s3 = get_s3_client()
+    uploads: list[dict] = []
+    key_marker = None
+    upload_id_marker = None
+    while True:
+        kwargs = {
+            "Bucket": settings.s3_bucket,
+            "Prefix": prefix,
+            "MaxUploads": 1000,
+        }
+        if key_marker is not None:
+            kwargs["KeyMarker"] = key_marker
+        if upload_id_marker is not None:
+            kwargs["UploadIdMarker"] = upload_id_marker
+        page = s3.list_multipart_uploads(**kwargs)
+        for u in page.get("Uploads", []) or []:
+            key = u.get("Key") or ""
+            # Belt and braces: the store is asked for a prefix, and the
+            # answer is checked against it anyway. An abort is destructive
+            # and a mis-set Prefix must not be the only thing standing
+            # between this sweep and a rendition.
+            if not key.startswith(prefix):
+                continue
+            uploads.append({
+                "Key": key,
+                "UploadId": u.get("UploadId") or "",
+                "Initiated": u.get("Initiated"),
+            })
+        if not page.get("IsTruncated"):
+            break
+        nxt_key = page.get("NextKeyMarker")
+        nxt_upload = page.get("NextUploadIdMarker")
+        # A truncated page with no usable marker would spin. Stopping early
+        # means the sweep sees fewer uploads than exist, which costs one
+        # more hourly tick; spinning costs the worker.
+        if not nxt_key or (nxt_key == key_marker and nxt_upload == upload_id_marker):
+            break
+        key_marker = nxt_key
+        upload_id_marker = nxt_upload
+    return uploads
+
+
+def object_exists(s3_key: str) -> bool:
+    """Is there a finished object at this key? (§215)
+
+    Raises on anything that is not a clean 404, deliberately. The caller
+    (§215's ghost-row pass) uses a False to mark a database row `failed`,
+    so "the store did not answer" must never be flattened into "the object
+    is not there" — that would fail a row over a network blip.
+    """
+    s3 = get_s3_client()
+    try:
+        s3.head_object(Bucket=settings.s3_bucket, Key=s3_key)
+        return True
+    except ClientError as e:
+        err = e.response.get("Error", {})
+        if str(err.get("Code")) in ("404", "NoSuchKey", "NotFound"):
+            return False
+        raise
 
 
 def complete_multipart_upload(s3_key: str, upload_id: str, parts: list[dict]) -> None:
