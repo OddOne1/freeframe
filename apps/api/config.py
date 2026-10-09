@@ -133,6 +133,29 @@ class Settings(BaseSettings):
     # STUCK_QUEUED_HOURS.
     stuck_queued_hours: int = 168
 
+    # §219 -- how long Redis hides a delivered message before deciding the
+    # worker is gone and handing it to someone else.
+    #
+    # The Redis transport's own default is 3600. Combined with
+    # `task_acks_late=True` -- which means a long task stays unacked for its
+    # whole run -- that is a duplicate-execution bug, not a tuning
+    # parameter: any transcode still encoding after an hour is restored to
+    # the queue and started AGAIN on the next free slot, while the first one
+    # is still writing to the same deterministic S3 prefix. Observed on the
+    # live server: the same task id active twice on one worker.
+    # `process_asset`'s idempotency guard cannot help, because it only skips
+    # `ready`, and a version that is still being encoded is `processing`.
+    #
+    # 43200 (12 h) is chosen against the real worst case rather than picked
+    # round: ONE `process_asset` can run the HLS ladder (4 h timeout) and
+    # then the 1080p download proxy (another 4 h timeout) in sequence, with
+    # the full-size EXIF download and the ladder upload on top. That is
+    # ~8 h of ffmpeg ceilings alone, so 12 h leaves real margin while still
+    # being a finite backstop. tests assert this stays above every timeout
+    # and task time limit in the codebase. Override with
+    # CELERY_VISIBILITY_TIMEOUT_SECONDS.
+    celery_visibility_timeout_seconds: int = 43200
+
     # Speech-to-text (faster-whisper, CPU-only -- see CLAUDE.md).
     # MUST stay a multilingual checkpoint: the ".en" variants (small.en etc.)
     # exist and would silently break every non-English upload.

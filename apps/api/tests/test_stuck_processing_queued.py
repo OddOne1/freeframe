@@ -800,3 +800,59 @@ def test_the_heartbeat_interval_is_far_below_the_sweep_threshold():
 
     assert transcode_tasks.TRANSFER_HEARTBEAT_SECONDS * 10 < \
         settings.stuck_processing_minutes * 60
+
+
+# ── the broker must outwait the task (§219 item 7) ─────────────────────────
+
+
+def test_the_live_visibility_timeout_outlasts_the_transcoder_and_the_zip_limit():
+    """The same bound as test_celery_wiring's, but against the SETTING as
+    actually resolved -- env override included -- rather than the default
+    compiled into config.py.
+
+    An operator who lowers CELERY_VISIBILITY_TIMEOUT_SECONDS to "tune" the
+    broker reintroduces concurrent duplicate encodes, and nothing else would
+    tell them.
+    """
+    from apps.api.config import settings
+    from apps.api.tasks.zip_tasks import ZIP_HARD_TIME_LIMIT
+
+    configured = settings.celery_visibility_timeout_seconds
+
+    # The HLS ladder's own ceiling, read from the transcoder rather than
+    # repeated here.
+    src = (REPO / "packages" / "transcoder" / "ffmpeg_transcoder.py").read_text()
+    ceilings = sorted(
+        {int(m) for m in __import__("re").findall(r"timeout=(\d{4,})", src)},
+        reverse=True,
+    )
+    assert ceilings, "no long ffmpeg ceiling found in the transcoder"
+
+    assert configured >= ceilings[0], (
+        f"visibility_timeout {configured}s is under the transcoder's "
+        f"{ceilings[0]}s ceiling; a transcode that reaches it is redelivered "
+        f"and encoded again alongside the first"
+    )
+    assert configured >= ZIP_HARD_TIME_LIMIT, (
+        f"visibility_timeout {configured}s is under build_zip_export's hard "
+        f"limit of {ZIP_HARD_TIME_LIMIT}s"
+    )
+    # build_zip_export is well inside the window either way -- 21 minutes
+    # against 12 hours -- so it never relied on the old 3600 and nothing
+    # about it changes. Asserted so that stays true if either moves.
+    assert ZIP_HARD_TIME_LIMIT < 3600 < configured
+
+
+def test_the_broker_option_is_actually_on_the_app():
+    """Asserted against the live Celery conf, not only the source: a
+    misspelled key in conf.update is accepted silently and leaves the 3600s
+    default in place."""
+    from apps.api.config import settings
+    from apps.api.tasks.celery_app import celery_app
+
+    options = celery_app.conf.broker_transport_options
+    assert "visibility_timeout" in options, (
+        f"the app's broker_transport_options is {options!r}; Redis would use "
+        f"its own 3600s default"
+    )
+    assert options["visibility_timeout"] == settings.celery_visibility_timeout_seconds

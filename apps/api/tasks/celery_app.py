@@ -53,6 +53,26 @@ celery_app.conf.update(
     # worker dies is marked failed rather than redelivered.
     task_acks_late=True,
     task_reject_on_worker_lost=True,
+    # §219 — and late acks are only safe if the broker waits longer than the
+    # task takes.
+    #
+    # Redis has no real ack: kombu emulates one by hiding a delivered message
+    # for `visibility_timeout` seconds and restoring it to the queue if it is
+    # not acked by then. That default is 3600. With acks_late a transcode
+    # stays unacked for its entire run, so every job over an hour was being
+    # restored and STARTED A SECOND TIME on the next free slot while the
+    # first was still encoding — both writing to the same deterministic
+    # output prefix. Seen on the live server as one task id active twice on a
+    # single worker. task_acks_late above cannot detect this and
+    # process_asset's idempotency guard cannot either: it skips only `ready`,
+    # and a version mid-encode is `processing`.
+    #
+    # Must stay above the longest legitimate task; see the setting's own
+    # comment for the ~8 h worst case this is sized against, and
+    # test_celery_wiring.py for the assertion that keeps it there.
+    broker_transport_options={
+        "visibility_timeout": settings.celery_visibility_timeout_seconds,
+    },
     # With acks_late, prefetched-but-unstarted tasks are also redelivered on
     # a restart. Fetching one at a time keeps that set to the task actually
     # running, and matters more here than throughput: these are minutes-long

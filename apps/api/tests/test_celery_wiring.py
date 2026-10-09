@@ -578,6 +578,194 @@ def test_late_acks_are_enabled():
     assert re.search(r"^\s*task_reject_on_worker_lost=True,", src, re.M)
 
 
+# §219 — the visibility timeout, and everything it has to stay above.
+#
+# An hour was the Redis transport's default and it was never set, so with
+# acks_late every task over an hour was restored to the queue and run a
+# second time concurrently with the first.
+
+TRANSCODER = REPO / "packages" / "transcoder"
+CONFIG = API / "config.py"
+
+#: Below this, a `timeout=` is a short subprocess (ffprobe, a thumbnail) and
+#: has nothing to do with how long the TASK holds its message unacked.
+_LONG = 3600
+
+
+def _module_int_names(tree) -> dict:
+    """Module-level int constants, including simple products like 21 * 60."""
+    out = {}
+
+    def value_of(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, int):
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mult, ast.Add)):
+            left, right = value_of(node.left), value_of(node.right)
+            if left is None or right is None:
+                return None
+            return left * right if isinstance(node.op, ast.Mult) else left + right
+        if isinstance(node, ast.Name):
+            return out.get(node.id)
+        return None
+
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            v = value_of(node.value)
+            for t in node.targets:
+                if isinstance(t, ast.Name) and v is not None:
+                    out[t.id] = v
+    return out
+
+
+def _long_subprocess_timeouts() -> dict:
+    """{where -> seconds} for every `timeout=N` of an hour or more.
+
+    Discovered from the source rather than listed here, so raising an ffmpeg
+    ceiling past the visibility timeout fails this file instead of producing
+    duplicate encodes in production.
+    """
+    found = {}
+    for directory in (TRANSCODER, API / "tasks"):
+        for path in sorted(directory.glob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.Call):
+                    continue
+                for kw in node.keywords:
+                    if kw.arg != "timeout" or not isinstance(kw.value, ast.Constant):
+                        continue
+                    if isinstance(kw.value.value, int) and kw.value.value >= _LONG:
+                        found[f"{path.name}:{node.lineno}"] = kw.value.value
+    return found
+
+
+def _task_time_limits() -> dict:
+    """{task -> seconds} for every time_limit/soft_time_limit on a task."""
+    found = {}
+    for path in sorted((API / "tasks").glob("*.py")):
+        tree = ast.parse(path.read_text())
+        names = _module_int_names(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            for dec in node.decorator_list:
+                if not isinstance(dec, ast.Call):
+                    continue
+                for kw in dec.keywords:
+                    if kw.arg not in ("time_limit", "soft_time_limit"):
+                        continue
+                    if isinstance(kw.value, ast.Constant):
+                        found[f"{node.name}.{kw.arg}"] = kw.value.value
+                    elif isinstance(kw.value, ast.Name):
+                        resolved = names.get(kw.value.id)
+                        assert resolved is not None, (
+                            f"{path.name}: cannot resolve {kw.arg}={kw.value.id}; "
+                            f"extend _module_int_names rather than skipping it"
+                        )
+                        found[f"{node.name}.{kw.arg}"] = resolved
+    return found
+
+
+def _visibility_timeout_default() -> int:
+    """The setting's default, read out of config.py."""
+    m = re.search(
+        r"celery_visibility_timeout_seconds:\s*int\s*=\s*(\d+)", CONFIG.read_text()
+    )
+    assert m, "config.py has no celery_visibility_timeout_seconds default"
+    return int(m.group(1))
+
+
+def test_the_broker_has_an_explicit_visibility_timeout():
+    """Left unset, Redis uses 3600 — which with acks_late means every task
+    over an hour is silently run twice."""
+    src = _celery_source()
+    assert "broker_transport_options" in src, (
+        "no broker_transport_options at all, so the Redis transport's 3600s "
+        "default applies and any task over an hour is redelivered while it "
+        "is still running"
+    )
+    block = re.search(r"broker_transport_options=\{([^}]*)\}", src)
+    assert block, "broker_transport_options is not a dict literal here"
+    assert "visibility_timeout" in block.group(1)
+
+
+def test_the_visibility_timeout_is_the_setting_not_a_literal():
+    """It has to be overridable without a rebuild: the one number that makes
+    duplicate encodes possible should not need a code change to move."""
+    block = re.search(
+        r"broker_transport_options=\{([^}]*)\}", _celery_source()
+    ).group(1)
+    assert "settings.celery_visibility_timeout_seconds" in block, (
+        f"visibility_timeout should read the setting, not a hardcoded value: "
+        f"{block.strip()!r}"
+    )
+
+
+def test_the_visibility_timeout_exceeds_every_long_timeout_in_the_codebase():
+    """THE assertion. A task that can legitimately run longer than the
+    visibility timeout WILL be started a second time while the first is
+    still working.
+
+    Both sides are discovered from source, so raising an ffmpeg ceiling past
+    this window fails here rather than in production.
+    """
+    configured = _visibility_timeout_default()
+    timeouts = _long_subprocess_timeouts()
+    assert timeouts, "found no long timeouts at all — the scan is broken"
+
+    over = {w: t for w, t in timeouts.items() if t > configured}
+    assert not over, (
+        f"visibility_timeout is {configured}s but these can run longer: "
+        f"{over}. Each would be redelivered and executed concurrently with "
+        f"the still-running original."
+    )
+
+
+def test_the_visibility_timeout_exceeds_every_task_time_limit():
+    """A task Celery would still allow to run must not be redeliverable."""
+    configured = _visibility_timeout_default()
+    limits = _task_time_limits()
+    assert limits, "found no task time limits — the scan is broken"
+
+    over = {t: v for t, v in limits.items() if v > configured}
+    assert not over, (
+        f"visibility_timeout is {configured}s, under these task time "
+        f"limit(s): {over}"
+    )
+
+
+def test_the_visibility_timeout_covers_the_two_ffmpeg_ceilings_one_task_can_hit():
+    """One `process_asset` can run the HLS ladder AND then the download
+    proxy, each with its own 4-hour ceiling, in sequence — plus a full-size
+    EXIF download and the ladder upload.
+
+    So the bound is not the largest single timeout; it is the worst
+    SEQUENCE inside one message's lifetime.
+    """
+    configured = _visibility_timeout_default()
+    hls = _long_subprocess_timeouts()
+    ladder = [t for w, t in hls.items() if w.startswith("ffmpeg_transcoder.py")]
+    assert len(ladder) >= 2, (
+        f"expected at least two long ffmpeg ceilings in the transcoder "
+        f"(ladder + download proxy); found {ladder}"
+    )
+    worst_sequence = sum(sorted(ladder, reverse=True)[:2])
+    assert configured >= worst_sequence, (
+        f"visibility_timeout is {configured}s but one task can spend "
+        f"{worst_sequence}s in ffmpeg alone"
+    )
+
+
+def test_the_visibility_timeout_is_still_a_finite_backstop():
+    """Not the opposite mistake. Set absurdly high, a genuinely lost task is
+    never redelivered at all and acks_late stops being a recovery
+    mechanism."""
+    configured = _visibility_timeout_default()
+    assert 3600 < configured <= 7 * 24 * 3600, (
+        f"visibility_timeout of {configured}s is either back under Redis's "
+        f"own default or so long that a lost task is never recovered"
+    )
+
+
 def test_celery_services_do_not_inherit_the_api_healthcheck():
     """Every Celery service must override it, or it is permanently unhealthy.
 
