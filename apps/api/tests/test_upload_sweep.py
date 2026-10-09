@@ -695,7 +695,14 @@ class TestPagination:
             got = s3_service.list_multipart_uploads_all("raw/")
         assert [u["Key"] for u in got] == ["raw/good"]
 
-    def test_a_truncated_page_with_no_marker_does_not_spin(self):
+    def test_a_truncated_page_with_no_marker_raises_instead_of_spinning(self):
+        """§215a. It must not loop — and it must not quietly return either.
+
+        Pass 2 reads "absent from the listing" as "no open upload exists"
+        and marks the row `failed`. A list cut short by broken paging hands
+        it a LIVE upload dressed as a ghost, so a short answer is not a
+        slower answer here, it is a wrong one.
+        """
         from apps.api.services import s3_service
 
         s3 = MagicMock()
@@ -704,9 +711,160 @@ class TestPagination:
             "IsTruncated": True,
         }
         with patch.object(s3_service, "get_s3_client", return_value=s3):
-            got = s3_service.list_multipart_uploads_all("raw/")
-        assert len(got) == 1
+            with pytest.raises(s3_service.IncompleteListingError):
+                s3_service.list_multipart_uploads_all("raw/")
+        # Still did not spin.
         assert s3.list_multipart_uploads.call_count == 1
+
+    def test_pages_that_make_no_progress_raise_rather_than_loop(self):
+        """The other half of the guard: a marker that comes back unchanged.
+        One key can hold several open uploads, so "same key" alone is not
+        a loop — "same key AND same upload id" is."""
+        from apps.api.services import s3_service
+
+        page = {
+            "Uploads": [{"Key": "raw/a", "UploadId": "u1", "Initiated": NOW}],
+            "IsTruncated": True,
+            "NextKeyMarker": "raw/a",
+            "NextUploadIdMarker": "u1",
+        }
+        s3 = MagicMock()
+        s3.list_multipart_uploads.side_effect = [dict(page), dict(page), dict(page)]
+        with patch.object(s3_service, "get_s3_client", return_value=s3):
+            with pytest.raises(s3_service.IncompleteListingError):
+                s3_service.list_multipart_uploads_all("raw/")
+        # Advanced once, then noticed it had not moved.
+        assert s3.list_multipart_uploads.call_count == 2
+
+    def test_the_error_says_what_it_read_and_why_it_refused(self):
+        """It aborts a whole sweep run, so the log line has to be enough to
+        act on without reproducing it."""
+        from apps.api.services import s3_service
+
+        s3 = MagicMock()
+        s3.list_multipart_uploads.return_value = {
+            "Uploads": [{"Key": f"raw/k{i}", "UploadId": f"u{i}", "Initiated": NOW}
+                        for i in range(3)],
+            "IsTruncated": True,
+        }
+        with patch.object(s3_service, "get_s3_client", return_value=s3):
+            with pytest.raises(s3_service.IncompleteListingError) as exc:
+                s3_service.list_multipart_uploads_all("raw/")
+        text = str(exc.value)
+        assert "raw/" in text                 # which prefix
+        assert "3" in text                    # how much it had read
+        assert "incomplete" in text.lower()   # and why it stopped
+
+    def test_a_complete_multi_page_listing_is_unaffected(self):
+        """The guard must not fire on healthy paging — including the page
+        that advances the key marker while leaving the upload-id marker
+        empty, which is what a page ending on a key boundary looks like."""
+        from apps.api.services import s3_service
+
+        pages = [
+            {"Uploads": [{"Key": "raw/a", "UploadId": "u1", "Initiated": NOW}],
+             "IsTruncated": True, "NextKeyMarker": "raw/a", "NextUploadIdMarker": "u1"},
+            {"Uploads": [{"Key": "raw/a", "UploadId": "u2", "Initiated": NOW}],
+             "IsTruncated": True, "NextKeyMarker": "raw/b", "NextUploadIdMarker": ""},
+            {"Uploads": [{"Key": "raw/b", "UploadId": "u3", "Initiated": NOW}],
+             "IsTruncated": False},
+        ]
+        s3 = MagicMock()
+        s3.list_multipart_uploads.side_effect = pages
+        with patch.object(s3_service, "get_s3_client", return_value=s3):
+            got = s3_service.list_multipart_uploads_all("raw/")
+        assert [u["UploadId"] for u in got] == ["u1", "u2", "u3"]
+        assert s3.list_multipart_uploads.call_count == 3
+
+    def test_the_sweep_gives_up_the_whole_run_and_writes_nothing(self):
+        """§215a, the reason the raise exists. Pass 2 must never run on a
+        listing pass 1 could not complete — a row whose upload is simply
+        missing from a short list would be failed as a ghost."""
+        from apps.api.services.s3_service import IncompleteListingError
+
+        key = "raw/p/a/v/original.mxf"
+        ghost = make_version(_uploading(), created_at=NOW - timedelta(days=5))
+        stale = make_version(_uploading())
+        session = FakeSession(
+            media_files={key: make_media_file(key, stale.id)},
+            versions={stale.id: stale},
+            ghosts=[(ghost, make_media_file("raw/other/original.mxf", ghost.id))],
+        )
+        with pytest.raises(IncompleteListingError):
+            run_sweep(
+                uploads_raises=IncompleteListingError("paging broke"),
+                session=session,
+            )
+        # Nothing aborted in pass 1, nothing failed in pass 2, nothing
+        # committed, and the transaction rolled back.
+        assert ghost.processing_status == _uploading()
+        assert stale.processing_status == _uploading()
+        assert session.committed == 0
+        assert session.rolled_back == 1
+        assert session.closed is True
+
+    def test_the_real_paginator_aborts_the_real_sweep_end_to_end(self):
+        """The two halves joined, with NOTHING between them faked.
+
+        The tests above either exercise the paginator alone or inject the
+        exception into the task; this one lets the task call the real
+        `list_multipart_uploads_all` against a store that returns a
+        truncated page with no marker, which is the whole claim: a broken
+        listing stops the sweep before pass 2 can fail a live upload's row.
+        """
+        from apps.api.services import s3_service
+        from apps.api.services.s3_service import IncompleteListingError
+        from apps.api.tasks import upload_sweep_tasks as mod
+
+        ghost = make_version(_uploading(), created_at=NOW - timedelta(days=5))
+        db = FakeSession(
+            ghosts=[(ghost, make_media_file("raw/other/original.mxf", ghost.id))])
+
+        s3 = MagicMock()
+        s3.list_multipart_uploads.return_value = {
+            "Uploads": [{"Key": "raw/a/original.mxf", "UploadId": "u1",
+                         "Initiated": NOW - timedelta(days=30)}],
+            "IsTruncated": True,
+        }
+
+        settings_patches = {
+            "upload_sweep_enabled": True,
+            "upload_sweep_dry_run": False,
+            "upload_abandon_days": 14,
+            "upload_ghost_grace_hours": 24,
+            "upload_sweep_max_aborts": 50,
+        }
+        with patch.object(s3_service, "get_s3_client", return_value=s3), \
+             patch.object(mod, "abort_multipart_upload") as abort, \
+             patch.object(mod, "object_exists") as exists, \
+             patch.object(mod, "SessionLocal", lambda: db):
+            for k, v in settings_patches.items():
+                patch.object(mod.settings, k, v, create=True).start()
+            try:
+                with pytest.raises(IncompleteListingError):
+                    mod.sweep_abandoned_uploads()
+            finally:
+                patch.stopall()
+
+        abort.assert_not_called()       # pass 1 never got to decide
+        exists.assert_not_called()      # pass 2 never ran at all
+        assert ghost.processing_status == _uploading()
+        assert db.committed == 0
+        assert db.rolled_back == 1
+
+    def test_the_sweep_does_not_swallow_it_in_dry_run_either(self):
+        """DRY RUN exists to be read before anyone trusts the task, so it
+        must not be the mode in which a broken listing looks fine."""
+        from apps.api.services.s3_service import IncompleteListingError
+
+        session = FakeSession()
+        with pytest.raises(IncompleteListingError):
+            run_sweep(
+                uploads_raises=IncompleteListingError("paging broke"),
+                session=session,
+                upload_sweep_dry_run=True,
+            )
+        assert session.committed == 0
 
     def test_parts_carry_last_modified_through_every_page(self):
         """§215 added LastModified to §213's paginator rather than writing a

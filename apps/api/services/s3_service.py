@@ -188,6 +188,26 @@ class NoSuchUploadError(Exception):
     """
 
 
+class IncompleteListingError(RuntimeError):
+    """A paginated listing could not be walked to the end (§215a).
+
+    Its own type, and raised rather than returning what was read so far,
+    because a SHORT list of open multipart uploads is not a harmless
+    approximation to the caller that matters. §215's pass 2 treats "this
+    row says `uploading` and there is no open upload at the store" as a
+    ghost and marks the row `failed`. An upload missing from the listing
+    only because paging stopped early therefore looks exactly like an
+    upload that was never there — and a LIVE upload's version row gets a
+    terminal status while its parts keep arriving.
+
+    `list_multipart_parts` (§213) deliberately does the opposite and stops
+    early, because its caller's worst case is a resuming client re-sending
+    parts it already sent: slower, never wrong. The two guards differ on
+    purpose; what is safe depends entirely on what the caller does with a
+    short answer.
+    """
+
+
 def list_multipart_parts(s3_key: str, upload_id: str) -> list[dict]:
     """Every part the store already holds for this upload (§213).
 
@@ -236,9 +256,14 @@ def list_multipart_parts(s3_key: str, upload_id: str) -> list[dict]:
         nxt = page.get("NextPartNumberMarker")
         if nxt in (None, "", marker):
             # A truncated page with no usable marker would loop forever.
-            # Stopping is the safe direction: a client told about fewer
-            # parts than exist re-sends some, which costs time; a spinning
-            # request costs the whole upload.
+            # Stopping is the safe direction HERE: a client told about
+            # fewer parts than exist re-sends some, which costs time; a
+            # spinning request costs the whole upload.
+            #
+            # Deliberately unlike `list_multipart_uploads_all`, which
+            # raises in the same situation (§215a) — its caller marks
+            # database rows `failed` based on what is ABSENT from its
+            # answer, so a short list there is not slower, it is wrong.
             break
         marker = nxt
     parts.sort(key=lambda p: p["PartNumber"])
@@ -262,6 +287,10 @@ def list_multipart_uploads_all(prefix: str = "raw/") -> list[dict]:
     (HLS renditions, posters, LUT exports, zips, brand images) is not an
     upload session and must never be aborted by this. A caller that wants
     a different prefix has to say so.
+
+    Raises `IncompleteListingError` rather than returning a short list if
+    paging cannot continue — see that class for why a short answer is
+    dangerous HERE specifically and safe in `list_multipart_parts`.
     """
     s3 = get_s3_client()
     uploads: list[dict] = []
@@ -295,11 +324,22 @@ def list_multipart_uploads_all(prefix: str = "raw/") -> list[dict]:
             break
         nxt_key = page.get("NextKeyMarker")
         nxt_upload = page.get("NextUploadIdMarker")
-        # A truncated page with no usable marker would spin. Stopping early
-        # means the sweep sees fewer uploads than exist, which costs one
-        # more hourly tick; spinning costs the worker.
+        # A truncated page with no usable marker would spin, so this cannot
+        # keep looping — but it must not quietly return what it has either.
+        # §215a: the caller is a sweep whose pass 2 reads "absent from this
+        # listing" as "no open upload exists" and marks the matching row
+        # `failed`. A listing that is short because paging broke hands it a
+        # LIVE upload dressed as a ghost. Raising costs one hourly tick and
+        # a loud log line; returning costs a real upload's row.
         if not nxt_key or (nxt_key == key_marker and nxt_upload == upload_id_marker):
-            break
+            raise IncompleteListingError(
+                "ListMultipartUploads returned a truncated page with no usable "
+                f"next marker (prefix={prefix!r}, read {len(uploads)} upload(s) so "
+                f"far, KeyMarker={key_marker!r} -> NextKeyMarker={nxt_key!r}, "
+                f"UploadIdMarker={upload_id_marker!r} -> "
+                f"NextUploadIdMarker={nxt_upload!r}). Refusing to return a "
+                "possibly incomplete list: a missing open upload reads as a ghost."
+            )
         key_marker = nxt_key
         upload_id_marker = nxt_upload
     return uploads

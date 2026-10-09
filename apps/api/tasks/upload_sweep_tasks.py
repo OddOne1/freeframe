@@ -176,6 +176,16 @@ def sweep_abandoned_uploads():
     db = SessionLocal()
     try:
         # ── Pass 1 — stale multipart uploads at the store ───────────────
+        #
+        # This listing has to be COMPLETE, not merely best-effort, and the
+        # dependency is pass 2's: it reads "absent from this listing" as
+        # "no open upload exists" and marks the matching row `failed`. A
+        # listing cut short by broken paging would hand it a live upload
+        # dressed as a ghost. `list_multipart_uploads_all` raises rather
+        # than returning a short list for exactly that reason (§215a), and
+        # the raise is let through: the whole run is given up, before
+        # anything is aborted and before any status is written, and the
+        # next hourly tick tries again.
         try:
             uploads = list_multipart_uploads_all(RAW_PREFIX)
         except Exception:
