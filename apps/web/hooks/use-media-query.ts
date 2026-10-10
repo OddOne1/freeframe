@@ -34,3 +34,29 @@ export function useMediaQuery(query: string): boolean {
 
 /** Tailwind's `xl` breakpoint — where this app puts its right-hand panels. */
 export const XL_UP = '(min-width: 1280px)'
+
+/**
+ * Is the viewport at least `xl` RIGHT NOW? (§224)
+ *
+ * A one-shot read, not a subscription, for the one rule that needs it: a
+ * right-hand panel starts closed below `xl`, because below `xl` it is an
+ * overlay rather than a column and arriving to a covered page is not what
+ * a persisted "open" meant. Called from an effect, never during render.
+ *
+ * Returns `true` when there is no `matchMedia` — on the server, and in a
+ * test that has not stubbed it. `true` means "leave the panel alone", so
+ * an environment that cannot answer the question changes nothing.
+ */
+export function viewportIsXlUp(): boolean {
+  if (typeof window === 'undefined' || !window.matchMedia) return true
+  return window.matchMedia(XL_UP).matches
+}
+
+/**
+ * Tailwind's `md` breakpoint — where §224 puts the phone/tablet line.
+ *
+ * Phrased as a min-width rather than `(max-width: 767px)` so the hook's
+ * `false` starting value means "not known to be wide", which is the safe
+ * default for a decision that only ever ADDS a narrow-screen affordance.
+ */
+export const MD_UP = '(min-width: 768px)'

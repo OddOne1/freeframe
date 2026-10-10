@@ -38,7 +38,11 @@ function Segment<T extends string>({
           key={opt.value}
           onClick={() => onChange(opt.value)}
           className={cn(
+            // §224 — 44px minimum where there is no mouse. `min-w` and
+            // `min-h` rather than fixed sizes, so the desktop popover keeps
+            // its compact row exactly as it was.
             'flex items-center justify-center px-3 py-1.5 text-xs transition-colors min-w-[36px]',
+            'hover-none:min-h-11 hover-none:min-w-11',
             value === opt.value
               ? 'bg-accent text-white'
               : 'bg-white/5 text-text-tertiary hover:text-text-secondary hover:bg-white/10',
@@ -118,9 +122,21 @@ function SelectRow({
   )
 }
 
-// ─── Main popover ───────────────────────────────────────────────────────────
+// ─── The controls themselves ───────────────────────────────────────────────
 
-export function AppearancePopover() {
+/**
+ * Every appearance control, without the popover around it (§224).
+ *
+ * Split out so the phone Settings tab can render the same controls bound to
+ * the same `useViewStore` rather than growing a parallel set — two copies
+ * of "set card size" is how one of them ends up writing a different key.
+ *
+ * `sizeFirst` reorders rather than adds: on a phone the card size is the
+ * setting people actually reach for (it decides how many clips fit on a
+ * 390px screen), so it goes above Layout there. The desktop popover keeps
+ * Layout first, which is what it has always shown.
+ */
+export function AppearanceControls({ sizeFirst = false }: { sizeFirst?: boolean }) {
   const {
     layout, setLayout,
     cardSize, setCardSize,
@@ -133,6 +149,117 @@ export function AppearancePopover() {
     showUploader, setShowUploader,
   } = useViewStore()
 
+  const layoutRow = (
+    <div className="flex items-center justify-between">
+      <span className="text-sm text-text-secondary">Layout</span>
+      <Segment<ViewLayout>
+        options={[
+          { value: 'grid', icon: <LayoutGrid className="h-3.5 w-3.5" /> },
+          { value: 'list', icon: <List className="h-3.5 w-3.5" /> },
+        ]}
+        value={layout}
+        onChange={setLayout}
+      />
+    </div>
+  )
+
+  const sizeRows = layout === 'grid' && (
+    <>
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-text-secondary">Card Size</span>
+        <Segment<CardSize>
+          // Ascending, smallest first (§51).
+          options={[
+            { value: 'XS', label: 'XS' },
+            { value: 'S', label: 'S' },
+            { value: 'M', label: 'M' },
+            { value: 'L', label: 'L' },
+          ]}
+          value={cardSize}
+          onChange={setCardSize}
+        />
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-text-secondary">Thumbnail Scale</span>
+        <Segment<ThumbnailScale>
+          options={[
+            { value: 'fit', label: 'Fit' },
+            { value: 'fill', label: 'Fill' },
+          ]}
+          value={thumbnailScale}
+          onChange={setThumbnailScale}
+        />
+      </div>
+    </>
+  )
+
+  return (
+    <>
+      {sizeFirst ? (
+        <>
+          {sizeRows}
+          {layoutRow}
+        </>
+      ) : (
+        <>
+          {layoutRow}
+          {sizeRows}
+        </>
+      )}
+
+      {/* Aspect Ratio — only in grid mode */}
+      {layout === 'grid' && (
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-text-secondary">Aspect Ratio</span>
+          <Segment<AspectRatio>
+            options={[
+              { value: 'landscape', icon: <RectangleHorizontal className="h-3.5 w-3.5" /> },
+              { value: 'square', icon: <Square className="h-3.5 w-3.5" /> },
+              { value: 'portrait', icon: <RectangleVertical className="h-3.5 w-3.5" /> },
+            ]}
+            value={aspectRatio}
+            onChange={setAspectRatio}
+          />
+        </div>
+      )}
+
+      {/* Show Card Info */}
+      <ToggleRow label="Show Card Info" checked={showCardInfo} onCheckedChange={setShowCardInfo} />
+
+      {/* Titles */}
+      {showCardInfo && (
+        <SelectRow
+          label="Titles"
+          value={titleLines}
+          options={[
+            { value: '1', label: '1 Line' },
+            { value: '2', label: '2 Lines' },
+            { value: '3', label: '3 Lines' },
+          ]}
+          onChange={(v) => setTitleLines(v as TitleLines)}
+        />
+      )}
+
+      {/* Flatten Folders */}
+      <ToggleRow label="Flatten Folders" checked={flattenFolders} onCheckedChange={setFlattenFolders} />
+
+      {/* Fields section */}
+      <div className="pt-1 border-t border-white/10">
+        <p className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider mb-2.5">Fields</p>
+        <div className="space-y-3">
+          <ToggleRow label="File Size" checked={showFileSize} onCheckedChange={setShowFileSize} />
+          <ToggleRow label="Uploaded By" checked={showUploader} onCheckedChange={setShowUploader} />
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ─── Main popover ───────────────────────────────────────────────────────────
+
+export function AppearancePopover() {
+  // No store read here any more — AppearanceControls owns that, so the
+  // popover is just the trigger and the surface.
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
@@ -152,96 +279,7 @@ export function AppearancePopover() {
             data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0
             data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
         >
-          {/* Layout */}
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-text-secondary">Layout</span>
-            <Segment<ViewLayout>
-              options={[
-                { value: 'grid', icon: <LayoutGrid className="h-3.5 w-3.5" /> },
-                { value: 'list', icon: <List className="h-3.5 w-3.5" /> },
-              ]}
-              value={layout}
-              onChange={setLayout}
-            />
-          </div>
-
-          {/* Card Size — only in grid mode */}
-          {layout === 'grid' && (
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-text-secondary">Card Size</span>
-              <Segment<CardSize>
-                // Ascending, smallest first (§51).
-                options={[
-                  { value: 'XS', label: 'XS' },
-                  { value: 'S', label: 'S' },
-                  { value: 'M', label: 'M' },
-                  { value: 'L', label: 'L' },
-                ]}
-                value={cardSize}
-                onChange={setCardSize}
-              />
-            </div>
-          )}
-
-          {/* Aspect Ratio — only in grid mode */}
-          {layout === 'grid' && (
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-text-secondary">Aspect Ratio</span>
-              <Segment<AspectRatio>
-                options={[
-                  { value: 'landscape', icon: <RectangleHorizontal className="h-3.5 w-3.5" /> },
-                  { value: 'square', icon: <Square className="h-3.5 w-3.5" /> },
-                  { value: 'portrait', icon: <RectangleVertical className="h-3.5 w-3.5" /> },
-                ]}
-                value={aspectRatio}
-                onChange={setAspectRatio}
-              />
-            </div>
-          )}
-
-          {/* Thumbnail Scale — only in grid mode */}
-          {layout === 'grid' && (
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-text-secondary">Thumbnail Scale</span>
-              <Segment<ThumbnailScale>
-                options={[
-                  { value: 'fit', label: 'Fit' },
-                  { value: 'fill', label: 'Fill' },
-                ]}
-                value={thumbnailScale}
-                onChange={setThumbnailScale}
-              />
-            </div>
-          )}
-
-          {/* Show Card Info */}
-          <ToggleRow label="Show Card Info" checked={showCardInfo} onCheckedChange={setShowCardInfo} />
-
-          {/* Titles */}
-          {showCardInfo && (
-            <SelectRow
-              label="Titles"
-              value={titleLines}
-              options={[
-                { value: '1', label: '1 Line' },
-                { value: '2', label: '2 Lines' },
-                { value: '3', label: '3 Lines' },
-              ]}
-              onChange={(v) => setTitleLines(v as TitleLines)}
-            />
-          )}
-
-          {/* Flatten Folders */}
-          <ToggleRow label="Flatten Folders" checked={flattenFolders} onCheckedChange={setFlattenFolders} />
-
-          {/* Fields section */}
-          <div className="pt-1 border-t border-white/10">
-            <p className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider mb-2.5">Fields</p>
-            <div className="space-y-3">
-              <ToggleRow label="File Size" checked={showFileSize} onCheckedChange={setShowFileSize} />
-              <ToggleRow label="Uploaded By" checked={showUploader} onCheckedChange={setShowUploader} />
-            </div>
-          </div>
+          <AppearanceControls />
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>

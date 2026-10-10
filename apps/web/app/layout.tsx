@@ -74,6 +74,11 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   themeColor: "#0A0A0B",
+  // §224 — without this, `env(safe-area-inset-bottom)` is always 0 and the
+  // phone tab bar sits under the iPhone home indicator. It also lets the
+  // page paint into the notch area, which is why every fixed bar that
+  // touches an edge pads itself with the matching inset.
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

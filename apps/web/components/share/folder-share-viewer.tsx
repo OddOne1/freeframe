@@ -16,6 +16,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   ArrowLeft,
+  X,
 } from 'lucide-react'
 import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import {
@@ -27,7 +28,7 @@ import { triggerBrowserDownload } from '@/lib/download'
 import { BatchDownloadDialog, type BatchDownloadApi } from '@/components/shared/batch-download-dialog'
 import { INDIVIDUAL_DOWNLOAD_LIMIT, type ZipScope } from '@/lib/bulk-download'
 import { useFormatBytesOrDash } from '@/hooks/use-byte-units'
-import { useMediaQuery, XL_UP } from '@/hooks/use-media-query'
+import { useMediaQuery, viewportIsXlUp, XL_UP } from '@/hooks/use-media-query'
 import { useSessionPreference } from '@/hooks/use-session-preference'
 import type {
   SharePermission,
@@ -363,7 +364,7 @@ function AssetGridCard({ asset, downloadVariants, token, shareSession, isSelecte
         )}
 
         {/* Download — §30: which versions, per asset */}
-        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 hover-none:opacity-100 transition-opacity"
              onClick={(e) => e.stopPropagation()}>
           <DownloadMenu
             token={token}
@@ -761,7 +762,7 @@ function ShareReviewScreen({
   }, [])
 
   if (!loaded || !ReviewProvider) {
-    return <div className="flex items-center justify-center h-screen bg-bg-primary"><Loader2 className="h-8 w-8 animate-spin text-text-tertiary" /></div>
+    return <div className="flex items-center justify-center h-dvh bg-bg-primary"><Loader2 className="h-8 w-8 animate-spin text-text-tertiary" /></div>
   }
 
   return (
@@ -893,11 +894,11 @@ function ShareReviewInner({
   )
 
   if (isLoading || !asset) {
-    return <div className="flex items-center justify-center h-screen bg-bg-primary"><Loader2 className="h-8 w-8 animate-spin text-text-tertiary" /></div>
+    return <div className="flex items-center justify-center h-dvh bg-bg-primary"><Loader2 className="h-8 w-8 animate-spin text-text-tertiary" /></div>
   }
 
   return (
-    <div className="flex flex-col h-screen bg-bg-primary text-text-primary">
+    <div className="flex flex-col h-dvh bg-bg-primary text-text-primary">
       {/* Top bar — same style as project review */}
       <div className="flex items-center justify-between border-b border-border px-3 h-12 bg-bg-secondary shrink-0">
         <div className="flex items-center gap-1 min-w-0 flex-1">
@@ -1076,6 +1077,13 @@ export function FolderShareViewer({
   const [foldersExpanded, setFoldersExpanded] = React.useState(true)
   const [assetsExpanded, setAssetsExpanded] = React.useState(true)
   const [panelOpen, setPanelOpen] = React.useState(true)
+  // §224 — below `xl` this panel is an overlay drawer, so it starts closed:
+  // landing on a share link and finding the file list covered by an empty
+  // "select an asset" pane is what §142 was reported for. Once per mount,
+  // not on resize — dragging a window narrow must not shut it mid-use.
+  React.useEffect(() => {
+    if (!viewportIsXlUp()) setPanelOpen(false)
+  }, [])
   // Below xl the right panel is not rendered, so "select" has nowhere to
   // show a result. A tap therefore has to open the asset itself — CSS can
   // hide a pane but it cannot rewrite a click handler.
@@ -1420,7 +1428,7 @@ export function FolderShareViewer({
   }
 
   return (
-    <div className="flex-1 min-h-screen flex flex-col bg-bg-primary text-text-primary">
+    <div className="flex-1 min-h-dvh flex flex-col bg-bg-primary text-text-primary">
       {/* ─── Top Bar (Frame.io style) ─────────────────────────────────── */}
       <header className="flex items-center justify-between border-b border-border px-4 h-12 bg-bg-secondary shrink-0">
         {/* Left: viewer profile + breadcrumb */}
@@ -1499,9 +1507,17 @@ export function FolderShareViewer({
               <span className="hidden sm:inline">Download All</span>
             </button>
           )}
+          {/* §224 — no longer `hidden xl:flex`. It used to be invisible at
+              exactly the widths where the panel it controls had become
+              unreachable, which is the reported bug: a toggle that is
+              either missing or does nothing. The panel below is now a
+              drawer at those widths, so this works everywhere. */}
           <button
             onClick={() => setPanelOpen((v) => !v)}
-            className="hidden xl:flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
+            data-testid="share-panel-toggle"
+            aria-label={panelOpen ? 'Hide panel' : 'Show panel'}
+            aria-pressed={panelOpen}
+            className="flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors hover-none:h-11 hover-none:w-11"
             title={panelOpen ? 'Hide panel' : 'Show panel'}
           >
             {panelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
@@ -1730,7 +1746,7 @@ export function FolderShareViewer({
                                     {formatDate(asset.created_at)}
                                   </span>
                                   {/* Download */}
-                                  <div className="w-7 shrink-0 opacity-0 group-hover:opacity-100 transition-all"
+                                  <div className="w-7 shrink-0 opacity-0 group-hover:opacity-100 hover-none:opacity-100 transition-all"
                                        onClick={(e) => e.stopPropagation()}>
                                     <DownloadMenu
                                       token={token}
@@ -1802,11 +1818,32 @@ export function FolderShareViewer({
         />
 
         {/* ─── Right Panel ───────────────────────────────────────────── */}
-        {/* Hidden below xl, matching the authenticated app's own right panel
-            (projects/[id]/page.tsx). At 390px this 320px pane left the asset
-            list ~70px wide and filled the screen with its own empty state. */}
+        {/* §224 — ONE element: a right-hand drawer over a scrim below `xl`,
+            the same in-flow 320px column at `xl`+.
+            §142's fix was `hidden xl:flex`, which solved the 390px squeeze
+            (a 320px pane left the asset list ~70px wide) by removing the
+            panel outright — so below 1280px there was no way to see an
+            asset's comments or fields at all. A drawer keeps §142's
+            guarantee (the list is never squeezed) without that cost. */}
         {panelOpen && (
-          <div className="hidden xl:flex w-[320px] shrink-0 border-l border-border bg-bg-secondary flex-col overflow-hidden">
+          <div
+            data-testid="share-panel-scrim"
+            className="fixed inset-0 z-30 bg-black/50 xl:hidden"
+            onClick={() => setPanelOpen(false)}
+          />
+        )}
+        {panelOpen && (
+          <div
+            data-testid="share-right-panel"
+            className="fixed inset-y-0 right-0 z-40 flex w-[320px] max-w-[90vw] flex-col overflow-hidden border-l border-border bg-bg-secondary shadow-2xl xl:static xl:z-auto xl:w-[320px] xl:max-w-none xl:shrink-0 xl:shadow-none"
+          >
+            <button
+              onClick={() => setPanelOpen(false)}
+              aria-label="Close panel"
+              className="absolute right-1 top-1 z-10 flex h-11 w-11 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary xl:hidden"
+            >
+              <X className="h-4 w-4" />
+            </button>
             <RightPanel
               selectedAsset={selectedAsset}
               token={token}

@@ -239,7 +239,7 @@ export function AssetCard({
               <DropdownMenu.Trigger asChild>
                 <button
                   onClick={(e) => e.stopPropagation()}
-                  className="shrink-0 h-5 w-5 flex items-center justify-center rounded text-text-tertiary opacity-0 group-hover:opacity-100 hover:bg-bg-hover hover:text-text-primary transition-all outline-none"
+                  className="shrink-0 h-5 w-5 flex items-center justify-center rounded text-text-tertiary opacity-0 group-hover:opacity-100 hover:bg-bg-hover hover-none:opacity-100 hover:text-text-primary transition-all outline-none"
                 >
                   <MoreHorizontal className="h-3.5 w-3.5" />
                 </button>

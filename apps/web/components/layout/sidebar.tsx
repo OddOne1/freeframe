@@ -32,9 +32,18 @@ const navItems: NavItem[] = [
 interface SidebarProps {
   collapsed: boolean
   onToggle: () => void
+  /** §224 — below `md` this is an off-canvas drawer; `collapsed` is the
+   *  desktop rail preference and is deliberately not consulted there. */
+  mobileOpen?: boolean
+  onMobileClose?: () => void
 }
 
-export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export function Sidebar({
+  collapsed,
+  onToggle,
+  mobileOpen = false,
+  onMobileClose,
+}: SidebarProps) {
   const pathname = usePathname()
   const { user } = useAuthStore()
   const { files: uploadFiles, togglePanel, panelOpen } = useUploadStore()
@@ -49,6 +58,15 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     ? (logoLightUrl ?? logoDarkUrl)
     : (logoDarkUrl ?? logoLightUrl)
   const [notifOpen, setNotifOpen] = React.useState(false)
+  /**
+   * §224 — whether rows show their labels and full-width hit areas.
+   *
+   * Not `!collapsed` any more: the mobile drawer is 244px wide, so a rail's
+   * icon-only rows inside it would waste the width and leave nothing to aim
+   * at. `mobileOpen` is false on every desktop render, so at `md`+ this is
+   * exactly `!collapsed` and nothing about the rail changed.
+   */
+  const expanded = mobileOpen || !collapsed
   const activeUploads = uploadFiles.filter((f) => f.status === 'uploading' || f.status === 'pending' || f.status === 'paused' || f.status === 'processing').length
 
   // Fetch notifications on mount
@@ -56,13 +74,37 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
   return (
     <>
+    {/* §224 — the scrim. Below `md` only, and only while the drawer is
+        open: at `md`+ the sidebar is a rail in the layout and dimming the
+        page behind it would make no sense. */}
+    {mobileOpen && (
+      <div
+        data-testid="mobile-nav-scrim"
+        className="fixed inset-0 z-30 bg-black/60 md:hidden"
+        onClick={onMobileClose}
+      />
+    )}
     <aside
+      data-testid="app-sidebar"
       className={cn(
-        'fixed left-0 top-0 z-30 flex h-screen flex-col border-r border-nav-border',
+        // h-dvh rather than h-screen, so the bottom section is reachable
+        // inside iOS Safari's visible viewport (§224).
+        'fixed left-0 top-0 z-40 flex h-dvh flex-col border-r border-nav-border',
         // bg-nav-bg defaults to the same token as the rest of the theme (see
         // globals.css) but can be overridden per theme in Branding settings ->
         // Theme colors.
-        'bg-nav-bg transition-[width] duration-200 overflow-hidden',
+        'bg-nav-bg transition-[width,transform] duration-200 overflow-hidden',
+        // §224 — below `md`: a fixed-width drawer that slides in from the
+        // left. `transform` rather than conditional rendering, so it
+        // animates and so its contents keep their state while closed.
+        'max-md:w-[244px] max-md:shadow-2xl',
+        mobileOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full',
+        // At `md`+, untouched: the rail/expanded widths and z-30 as before.
+        'md:translate-x-0 md:z-30',
+        collapsed ? 'md:w-[52px]' : 'md:w-[192px]',
+        // The base width is the desktop one; `max-md:w-[244px]` above wins
+        // below `md`. The drawer is never the 52px rail, which is why
+        // `expanded` below is not simply `!collapsed`.
         collapsed ? 'w-[52px]' : 'w-[192px]',
       )}
     >
@@ -73,7 +115,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         href="/projects"
         className={cn(
           'flex h-11 items-center shrink-0 border-b border-nav-border hover:bg-nav-text/10 transition-colors',
-          collapsed ? 'justify-center px-0' : 'px-4 gap-2.5',
+          !expanded ? 'justify-center px-0' : 'px-4 gap-2.5',
         )}
         title="Go to Projects"
       >
@@ -101,7 +143,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             />
           </>
         )}
-        {!collapsed && (
+        {expanded && (
           <span className="text-sm font-semibold text-nav-text tracking-tight">
             {orgName}
           </span>
@@ -118,18 +160,18 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             <Link
               key={item.href}
               href={item.href}
-              onClick={() => setNotifOpen(false)}
+              onClick={() => { setNotifOpen(false); onMobileClose?.() }}
               className={cn(
                 'group relative flex items-center rounded-md transition-colors duration-100',
-                collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9',
+                !expanded ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9 max-md:h-11',
                 isActive
                   ? 'bg-nav-text/15 text-nav-text'
                   : 'text-nav-text/60 hover:bg-nav-text/10 hover:text-nav-text',
               )}
-              title={collapsed ? item.label : undefined}
+              title={!expanded ? item.label : undefined}
             >
               <Icon className="h-[18px] w-[18px] shrink-0" strokeWidth={isActive ? 2 : 1.5} />
-              {!collapsed && (
+              {expanded && (
                 <span className={cn('text-[13px]', isActive && 'font-medium')}>
                   {item.label}
                 </span>
@@ -143,12 +185,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           onClick={() => setNotifOpen((v) => !v)}
           className={cn(
             'group relative flex w-full items-center rounded-md transition-colors duration-100',
-            collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9',
+            !expanded ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9 max-md:h-11',
             notifOpen
               ? 'bg-nav-text/15 text-nav-text'
               : 'text-nav-text/60 hover:bg-nav-text/10 hover:text-nav-text',
           )}
-          title={collapsed ? 'Notifications' : undefined}
+          title={!expanded ? 'Notifications' : undefined}
         >
           <div className="relative shrink-0">
             <Bell className="h-[18px] w-[18px]" strokeWidth={notifOpen ? 2 : 1.5} />
@@ -158,7 +200,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               </span>
             )}
           </div>
-          {!collapsed && (
+          {expanded && (
             <span className={cn('text-[13px]', notifOpen && 'font-medium')}>
               Notifications
             </span>
@@ -170,12 +212,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           onClick={() => { setNotifOpen(false); togglePanel() }}
           className={cn(
             'group relative flex w-full items-center rounded-md transition-colors duration-100',
-            collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9',
+            !expanded ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9 max-md:h-11',
             panelOpen
               ? 'bg-nav-text/15 text-nav-text'
               : 'text-nav-text/60 hover:bg-nav-text/10 hover:text-nav-text',
           )}
-          title={collapsed ? 'Uploads' : undefined}
+          title={!expanded ? 'Uploads' : undefined}
         >
           <div className="relative shrink-0">
             <Upload className="h-[18px] w-[18px]" strokeWidth={panelOpen ? 2 : 1.5} />
@@ -185,7 +227,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               </span>
             )}
           </div>
-          {!collapsed && (
+          {expanded && (
             <span className={cn('text-[13px]', panelOpen && 'font-medium')}>
               Uploads
             </span>
@@ -202,14 +244,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             out moved to the Profile page, which is where this lands. */}
         <Link
           href="/settings/profile"
-          title={collapsed ? (user?.name ?? 'Account') : undefined}
+          title={!expanded ? (user?.name ?? 'Account') : undefined}
           className={cn(
             'flex w-full items-center rounded-md text-nav-text/60 hover:bg-nav-text/10 hover:text-nav-text transition-colors',
-            collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2 py-1.5',
+            !expanded ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2 py-1.5 max-md:py-2.5',
           )}
         >
           <Avatar src={user?.avatar_url} name={user?.name} size="sm" />
-          {!collapsed && (
+          {expanded && (
             <div className="flex flex-col items-start overflow-hidden min-w-0">
               <span className="truncate text-[13px] font-medium text-nav-text leading-tight w-full text-left">
                 {user?.name ?? 'User'}
@@ -221,17 +263,20 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           )}
         </Link>
 
-        {/* Collapse toggle */}
+        {/* Collapse toggle — desktop only (§224): below `md` there is no
+            rail to collapse to, and the drawer is dismissed by the scrim,
+            Escape or navigating. */}
         <button
           onClick={onToggle}
+          data-testid="sidebar-collapse-toggle"
           className={cn(
             'flex w-full items-center rounded-md text-nav-text/50 hover:bg-nav-text/10 hover:text-nav-text transition-colors',
-            collapsed ? 'justify-center h-8 w-8 mx-auto' : 'gap-2 px-2.5 h-8',
+            'max-md:hidden', !expanded ? 'justify-center h-8 w-8 mx-auto' : 'gap-2 px-2.5 h-8',
           )}
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={!expanded ? 'Expand sidebar' : 'Collapse sidebar'}
         >
-          <ChevronsLeft className={cn('h-4 w-4 transition-transform', collapsed && 'rotate-180')} />
-          {!collapsed && <span className="text-xs">Collapse</span>}
+          <ChevronsLeft className={cn('h-4 w-4 transition-transform', !expanded && 'rotate-180')} />
+          {expanded && <span className="text-xs">Collapse</span>}
         </button>
       </div>
     </aside>

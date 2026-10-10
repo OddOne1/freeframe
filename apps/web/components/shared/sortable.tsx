@@ -108,7 +108,7 @@ export function useSort<T, K extends string>(
 
 function SortGlyph({ active, direction }: { active: boolean; direction: SortDirection }) {
   if (!active) {
-    return <ChevronsUpDown className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-60" />
+    return <ChevronsUpDown className="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-60 hover-none:opacity-60" />
   }
   return direction === 'asc' ? (
     <ArrowUp className="h-3 w-3 shrink-0 text-accent" />

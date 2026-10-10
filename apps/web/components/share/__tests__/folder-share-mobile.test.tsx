@@ -110,18 +110,70 @@ describe('xl and up (desktop) is unchanged', () => {
   })
 })
 
-describe('layout classes follow the authenticated app', () => {
-  it('the right panel and its toggle are hidden below xl', async () => {
-    // Structural: jsdom applies no media queries, so the guarantee worth
-    // pinning is that the same `hidden xl:` idiom the main app uses is
-    // present — the pixel behaviour was verified in a real browser.
-    const fs = await import('node:fs')
-    const path = await import('node:path')
-    const src = fs.readFileSync(
-      path.resolve(process.cwd(), 'components/share/folder-share-viewer.tsx'), 'utf8')
-    expect(src).toMatch(/hidden xl:flex w-\[320px\]/)
-    const toggle = src.slice(src.indexOf('setPanelOpen((v) => !v)'))
-    expect(toggle.slice(0, 300)).toMatch(/hidden xl:flex/)
+describe('the right panel below xl — §224 replaced §142’s `hidden xl:flex`', () => {
+  /* §142 solved a 320px panel squeezing a 390px screen by removing the
+     panel below `xl` outright, and hiding its toggle with it. That left no
+     way to see an asset's comments or fields on any screen under 1280px,
+     and a toggle that was simply absent. §224 makes it a drawer instead:
+     the list is still never squeezed, and the panel is reachable.
+
+     Asserted through the toggle and the rendered panel rather than by
+     matching class strings, because the class strings are exactly what
+     changed and a test that reads them only ever pins the current spelling. */
+
+  it('starts closed, so the asset list is not covered on arrival', async () => {
+    setViewport(false)
+    mockApi()
+    renderViewer()
+    await screen.findByText('one')
+    expect(screen.queryByTestId('share-right-panel')).not.toBeInTheDocument()
+  })
+
+  it('offers a toggle that actually reveals the panel', async () => {
+    setViewport(false)
+    mockApi()
+    renderViewer()
+    await screen.findByText('one')
+
+    // The control §142 hid. It must exist below xl…
+    const toggle = screen.getByTestId('share-panel-toggle')
+    expect(toggle).toBeInTheDocument()
+
+    // …and do something when pressed.
+    await userEvent.click(toggle)
+    const panel = await screen.findByTestId('share-right-panel')
+    // Not `hidden`: the whole bug was a panel that was rendered-but-hidden
+    // (or not rendered) at exactly the widths where it was needed.
+    expect(panel.className).not.toMatch(/(^|\s)hidden(\s|$)/)
+    // It overlays rather than sits in flow, which is what keeps §142's own
+    // guarantee — the list behind it keeps its full width.
+    expect(panel.className).toMatch(/\bfixed\b/)
+  })
+
+  it('the scrim closes it again', async () => {
+    setViewport(false)
+    mockApi()
+    renderViewer()
+    await screen.findByText('one')
+    await userEvent.click(screen.getByTestId('share-panel-toggle'))
+    await screen.findByTestId('share-right-panel')
+
+    await userEvent.click(screen.getByTestId('share-panel-scrim'))
+    await waitFor(() =>
+      expect(screen.queryByTestId('share-right-panel')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('at xl it is a column in the layout, open from the start', async () => {
+    setViewport(true)
+    mockApi()
+    renderViewer()
+    await screen.findByText('one')
+    const panel = await screen.findByTestId('share-right-panel')
+    // `xl:static` is what puts it back in flow beside the list; there is no
+    // scrim at this width because nothing is being overlaid.
+    expect(panel.className).toMatch(/xl:static/)
+    expect(screen.getByTestId('share-panel-scrim').className).toMatch(/xl:hidden/)
   })
 
   it('the full-screen viewer stacks its comments pane below the media', async () => {

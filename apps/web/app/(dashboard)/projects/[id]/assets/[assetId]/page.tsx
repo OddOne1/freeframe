@@ -65,6 +65,7 @@ import {
 } from 'lucide-react'
 import Link from 'next/link'
 import { cn, formatRelativeTime, formatTime, resolveApiMediaUrl } from '@/lib/utils'
+import { viewportIsXlUp } from '@/hooks/use-media-query'
 import { useFormatBytes } from '@/hooks/use-byte-units'
 import { triggerBrowserDownload } from '@/lib/download'
 import { usePageTitle } from '@/hooks/use-page-title'
@@ -293,7 +294,7 @@ function EditableAssetName({
     >
       <span className="text-sm font-medium text-text-primary truncate">{name}</span>
       {canEdit && (
-        <Pencil className="h-3 w-3 text-text-tertiary opacity-0 group-hover:opacity-100 shrink-0" />
+        <Pencil className="h-3 w-3 text-text-tertiary opacity-0 group-hover:opacity-100 shrink-0 hover-none:opacity-100" />
       )}
     </button>
   )
@@ -364,6 +365,12 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const [annotationData, setAnnotationData] = useState<Record<string, unknown> | null>(null)
   const [activeTab, setActiveTab] = useState<'comments' | 'fields' | 'transcript'>('comments')
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  // §224 — below `xl` the comments pane is a drawer over the player rather
+  // than a 360px column beside it, so it starts closed: on a phone that
+  // column left the video about 30px wide. Once per mount, not on resize.
+  useEffect(() => {
+    if (!viewportIsXlUp()) setSidebarOpen(false)
+  }, [])
   const deepLinkApplied = useRef(false)
 
   // ── Transcript ──
@@ -1264,9 +1271,25 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
           {renderMediaViewer()}
         </div>
 
-        {/* Right: comments sidebar */}
+        {/* §224 — the scrim, below `xl` only. */}
         {sidebarOpen && (
-          <div className="w-[360px] flex flex-col border-l border-border bg-bg-secondary shrink-0 animate-in slide-in-from-right-2 duration-150">
+          <div
+            data-testid="viewer-panel-scrim"
+            className="fixed inset-0 z-30 bg-black/50 xl:hidden"
+            onClick={() => setSidebarOpen(false)}
+          />
+        )}
+
+        {/* Right: comments sidebar.
+            §224 — ONE element: a drawer over the player below `xl`, the
+            same in-flow 360px column at `xl`+. It used to be in flow at
+            every width, so on a 768px tablet the player got 408px and on a
+            390px phone it got 30px. The toggle in the top bar was always
+            visible and always worked; what it did below `xl` was unusable. */}
+        {sidebarOpen && (
+          <div
+            data-testid="viewer-right-panel"
+            className="fixed inset-y-0 right-0 z-40 flex w-[360px] max-w-[90vw] flex-col overflow-hidden border-l border-border bg-bg-secondary shadow-2xl animate-in slide-in-from-right-2 duration-150 xl:static xl:z-auto xl:w-[360px] xl:max-w-none xl:shrink-0 xl:shadow-none">
             {/* Tabs (Frame.io pill style) */}
             <div className="px-4 pt-3 pb-2 shrink-0">
               <div className="flex items-center bg-bg-tertiary rounded-lg p-0.5">

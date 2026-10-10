@@ -671,7 +671,7 @@ function CommentItem({
 
             <div className="ml-auto flex items-center gap-0.5">
               {/* Emoji — hover only */}
-              <div className="relative opacity-0 group-hover/comment:opacity-100 transition-opacity">
+              <div className="relative opacity-0 group-hover/comment:opacity-100 hover-none:opacity-100 transition-opacity">
                 <button
                   className="h-7 w-7 flex items-center justify-center rounded-full text-text-tertiary hover:text-text-secondary hover:bg-bg-tertiary transition-colors"
                   onClick={() => setShowEmojiPicker((p) => !p)}
@@ -695,7 +695,7 @@ function CommentItem({
               </div>
 
               {/* Context menu — hover only */}
-              <div className="opacity-0 group-hover/comment:opacity-100 transition-opacity">
+              <div className="opacity-0 group-hover/comment:opacity-100 hover-none:opacity-100 transition-opacity">
                 <CommentMenu
                   isOwn={isOwn}
                   commentId={comment.id}
@@ -717,7 +717,7 @@ function CommentItem({
                 </button>
               ) : (
                 <button
-                  className="h-6 w-6 flex items-center justify-center rounded-full text-text-tertiary hover:text-emerald-400 hover:bg-bg-tertiary transition-colors disabled:opacity-50 opacity-0 group-hover/comment:opacity-100"
+                  className="h-6 w-6 flex items-center justify-center rounded-full text-text-tertiary hover:text-emerald-400 hover:bg-bg-tertiary transition-colors disabled:opacity-50 opacity-0 group-hover/comment:opacity-100 hover-none:opacity-100"
                   onClick={handleResolve}
                   disabled={resolving}
                   title="Resolve"

@@ -568,7 +568,7 @@ export default function CollectionsPage() {
                 }}
                 className={cn(
                   "absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-md border border-border bg-bg-secondary text-text-tertiary",
-                  "opacity-0 group-hover/card:opacity-100 hover:text-text-primary hover:bg-bg-hover transition-all",
+                  "opacity-0 group-hover/card:opacity-100 hover-none:opacity-100 hover:text-text-primary hover:bg-bg-hover transition-all",
                 )}
                 title="Share collection"
               >

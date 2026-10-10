@@ -15,13 +15,64 @@ const sortOptions: { value: SortKey; label: string }[] = [
   { value: 'votes', label: 'Votes' },
 ]
 
-export function SortPopover() {
+/**
+ * The sort list itself, without the popover (§224).
+ *
+ * Extracted for the same reason `AppearanceControls` was: the phone
+ * Settings tab shows these options, and a second copy of "set sort key /
+ * toggle direction" is how the two drift apart.
+ */
+export function SortOptions() {
   const { sortKey, setSortKey, sortDirection, toggleSortDirection } = useViewStore()
+
+  return (
+    <>
+      {sortOptions.map((opt) => (
+        <button
+          key={opt.value}
+          onClick={() => {
+            if (sortKey === opt.value) {
+              toggleSortDirection()
+            } else {
+              setSortKey(opt.value)
+            }
+          }}
+          className={cn(
+            'flex w-full items-center gap-2 px-3 py-1.5 text-sm transition-colors',
+            // §224 — a thumb-sized row where there is no pointer.
+            'hover-none:min-h-11',
+            sortKey === opt.value
+              ? 'text-accent'
+              : 'text-text-secondary hover:text-text-primary hover:bg-white/5',
+          )}
+        >
+          <span className="w-4 shrink-0">
+            {sortKey === opt.value && <Check className="h-3.5 w-3.5" />}
+          </span>
+          {opt.label}
+          {sortKey === opt.value && (
+            <span className="ml-auto text-xs text-text-tertiary">
+              {sortDirection === 'asc' ? 'A-Z' : 'Z-A'}
+            </span>
+          )}
+        </button>
+      ))}
+    </>
+  )
+}
+
+export function SortPopover() {
+  const { sortKey } = useViewStore()
   const activeLabel = sortOptions.find((o) => o.value === sortKey)?.label ?? 'Custom'
 
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
+        {/* §224 — "Sorted by" wraps onto two lines at 768px, and at 1280px
+            too. `whitespace-nowrap` fixes the tablet, but it also changes
+            the desktop row's height, and "desktop looks exactly as today"
+            is the harder constraint. Left alone, reported as a follow-up
+            rather than traded away quietly. */}
         <button className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-sm text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors">
           <ArrowUpDown className="h-4 w-4" />
           <span>Sorted by</span>
@@ -39,34 +90,7 @@ export function SortPopover() {
             data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0
             data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
         >
-          {sortOptions.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => {
-                if (sortKey === opt.value) {
-                  toggleSortDirection()
-                } else {
-                  setSortKey(opt.value)
-                }
-              }}
-              className={cn(
-                'flex w-full items-center gap-2 px-3 py-1.5 text-sm transition-colors',
-                sortKey === opt.value
-                  ? 'text-accent'
-                  : 'text-text-secondary hover:text-text-primary hover:bg-white/5',
-              )}
-            >
-              <span className="w-4 shrink-0">
-                {sortKey === opt.value && <Check className="h-3.5 w-3.5" />}
-              </span>
-              {opt.label}
-              {sortKey === opt.value && (
-                <span className="ml-auto text-xs text-text-tertiary">
-                  {sortDirection === 'asc' ? 'A-Z' : 'Z-A'}
-                </span>
-              )}
-            </button>
-          ))}
+          <SortOptions />
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>

@@ -167,7 +167,7 @@ function UploadItem({ upload }: { upload: UploadFile }) {
       </div>
 
       {/* Actions */}
-      <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity hover-none:opacity-100">
         {upload.status === 'uploading' && (
           <button
             onClick={() => pauseUpload(upload.id)}
@@ -407,7 +407,7 @@ export function UploadsPanel() {
       />
 
       {/* Panel */}
-      <div className="fixed left-[52px] top-0 z-50 h-screen w-[380px] border-r border-border bg-bg-secondary shadow-2xl flex flex-col animate-in slide-in-from-left-4 duration-150">
+      <div className="fixed left-0 top-0 z-50 h-dvh w-full max-w-[380px] border-r border-border bg-bg-secondary shadow-2xl flex flex-col animate-in slide-in-from-left-4 duration-150 md:left-[52px] md:w-[380px]">
         {/* Header */}
         <div className="flex items-center justify-between px-4 h-12 border-b border-border shrink-0">
           <h2 className="text-sm font-semibold text-text-primary">

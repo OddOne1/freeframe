@@ -13,6 +13,7 @@ import {
   AccountSetupGate,
   accountSetupOutstanding,
 } from "@/components/auth/account-setup-gate";
+import { useRightPanelViewportDefault } from "@/hooks/use-right-panel-viewport-default";
 import { cn } from "@/lib/utils";
 
 /**
@@ -29,6 +30,11 @@ export function DashboardShell({
 }) {
   const pathname = usePathname();
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(true);
+  // §224 — below `md` the sidebar is an off-canvas drawer rather than a
+  // 52px rail, because 52px of a 390px screen is 13% of the width spent on
+  // one icon. Separate from `sidebarCollapsed`, which is the desktop
+  // rail/expanded preference and must survive a phone visit untouched.
+  const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const [commandOpen, setCommandOpen] = React.useState(false);
   const { fetchUser, user } = useAuthStore();
   const { fetchHistory } = useUploadStore();
@@ -47,6 +53,24 @@ export function DashboardShell({
     fetchUser();
     fetchHistory();
   }, [fetchUser, fetchHistory]);
+
+  // §224 — once per load, and only when the viewport is narrow.
+  useRightPanelViewportDefault();
+
+  // A route change closes the drawer: tapping Projects should take you
+  // there, not leave the nav sitting over the page you arrived at.
+  React.useEffect(() => {
+    setMobileNavOpen(false);
+  }, [pathname]);
+
+  React.useEffect(() => {
+    if (!mobileNavOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setMobileNavOpen(false);
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [mobileNavOpen]);
 
   // Global keyboard shortcut for command palette
   React.useEffect(() => {
@@ -67,27 +91,42 @@ export function DashboardShell({
     // showing them would be an interface that does not work rather than an
     // explanation of why.
     return (
-      <div className="h-screen overflow-hidden bg-bg-primary">
+      <div className="h-dvh overflow-hidden bg-bg-primary">
         <AccountSetupGate user={user} />
       </div>
     );
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-bg-primary">
+    // h-dvh, not h-screen: on iOS Safari `100vh` is the height the viewport
+    // has with the toolbars HIDDEN, so a h-screen shell is taller than the
+    // visible area and its bottom — which is where §224 puts the phone tab
+    // bar — sits under the browser chrome (§224).
+    <div className="flex h-dvh overflow-hidden bg-bg-primary">
       <Sidebar
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed((c) => !c)}
+        mobileOpen={mobileNavOpen}
+        onMobileClose={() => setMobileNavOpen(false)}
       />
 
       {/* Main content area */}
       <main
         className={cn(
           "flex flex-1 flex-col overflow-hidden transition-[margin] duration-200 ease-spring",
-          sidebarCollapsed ? "ml-[52px]" : "ml-[192px]",
+          // §224 — no left margin below `md`: the sidebar is off-canvas
+          // there, so reserving a rail's width would leave a permanent
+          // empty gutter. At `md`+ the margin is exactly what it was.
+          "ml-0",
+          sidebarCollapsed ? "md:ml-[52px]" : "md:ml-[192px]",
         )}
       >
-        {!isAssetViewer && <Header onSearchOpen={() => setCommandOpen(true)} />}
+        {!isAssetViewer && (
+          <Header
+            onSearchOpen={() => setCommandOpen(true)}
+            onMobileNavOpen={() => setMobileNavOpen(true)}
+          />
+        )}
 
         <div className="relative flex-1 overflow-y-auto">{children}</div>
       </main>

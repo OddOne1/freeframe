@@ -508,12 +508,23 @@ export function AssetGrid({
       {/* ─── Navigator Bar (Frame.io style) ─────────────────────────────── */}
       {!shareMode && (
         <div className="flex items-center gap-1 border-b border-border pb-2.5">
-          {/* Left group: Appearance + Fields + Sort */}
-          <AppearancePopover />
+          {/* Left group: Appearance + Fields + Sort.
+              §224 — hidden below `md`: these two popovers are the phone
+              Settings tab's contents, which renders the SAME controls
+              rather than a second set, so showing them here as well would
+              be two routes to one setting on the smallest screen. */}
+          {/* `md:contents` rather than `md:flex`: at `md`+ the wrapper
+              dissolves and these three become direct flex children of the
+              bar again, exactly as before — a real flex wrapper added its
+              own gap and shifted the row 4px, which a desktop that must
+              look unchanged cannot afford. */}
+          <div className="hidden md:contents">
+            <AppearancePopover />
 
-          <div className="h-4 w-px bg-border mx-0.5" />
+            <div className="h-4 w-px bg-border mx-0.5" />
 
-          <SortPopover />
+            <SortPopover />
+          </div>
 
           <div className="flex-1" />
 
@@ -551,7 +562,7 @@ export function AssetGrid({
                       'absolute top-2 left-2 z-10 h-5 w-5 rounded border flex items-center justify-center transition-all',
                       isFolderSelected
                         ? 'bg-accent border-accent text-white opacity-100'
-                        : 'bg-black/40 border-white/30 text-transparent opacity-0 group-hover/folder:opacity-100',
+                        : 'bg-black/40 border-white/30 text-transparent opacity-0 group-hover/folder:opacity-100 hover-none:opacity-100',
                     )}
                     onClick={(e) => { e.stopPropagation(); toggleFolderSelect(folder.id) }}
                   >
@@ -683,7 +694,7 @@ export function AssetGrid({
                   <button
                     className={cn(
                       'absolute inset-0 flex items-center justify-center transition-all',
-                      isFolderSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+                      isFolderSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 hover-none:opacity-100',
                     )}
                     onClick={(e) => { e.stopPropagation(); toggleFolderSelect(folder.id) }}
                   >
@@ -722,7 +733,7 @@ export function AssetGrid({
                 <div className="w-8 shrink-0" />
 
                 {/* Context menu */}
-                <div className="w-8 shrink-0 flex justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="w-8 shrink-0 flex justify-center opacity-0 group-hover:opacity-100 hover-none:opacity-100 transition-opacity">
                   <DropdownMenu.Root>
                     <DropdownMenu.Trigger asChild>
                       <button
@@ -809,7 +820,7 @@ export function AssetGrid({
                       ? `Deselect ${asset.name}` : `Select ${asset.name}`}
                     className={cn(
                       'absolute inset-0 flex items-center justify-center transition-all',
-                      selectedAssetIds.has(asset.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+                      selectedAssetIds.has(asset.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 hover-none:opacity-100',
                     )}
                     onClick={(e) => { e.stopPropagation(); handleCheckboxClick(asset, e) }}
                   >
@@ -855,7 +866,7 @@ export function AssetGrid({
                   {assignee && <Avatar src={assignee.avatar_url} name={assignee.name} size="sm" />}
                 </div>
                 {/* Context menu — hidden until hover */}
-                <div className="w-8 shrink-0 flex justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="w-8 shrink-0 flex justify-center opacity-0 group-hover:opacity-100 hover-none:opacity-100 transition-opacity">
                   <DropdownMenu.Root>
                     <DropdownMenu.Trigger asChild>
                       <button

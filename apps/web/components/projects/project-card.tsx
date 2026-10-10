@@ -147,7 +147,7 @@ export function ProjectCard({
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button
-                className="absolute bottom-2 right-2.5 flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary hover:bg-bg-hover hover:text-text-primary transition-all opacity-0 group-hover:opacity-100"
+                className="absolute bottom-2 right-2.5 flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary hover:bg-bg-hover hover:text-text-primary transition-all opacity-0 group-hover:opacity-100 hover-none:opacity-100"
                 onClick={(e) => { e.preventDefault(); e.stopPropagation() }}
               >
                 <MoreHorizontal className="h-4 w-4" />

@@ -3,9 +3,9 @@ import { Skeleton, SkeletonGrid, SkeletonText } from '@/components/shared/skelet
 
 export default function DashboardLoading() {
   return (
-    <div className="flex h-screen overflow-hidden bg-bg-primary">
+    <div className="flex h-dvh overflow-hidden bg-bg-primary">
       {/* Sidebar placeholder */}
-      <aside className="fixed left-0 top-0 flex h-screen w-60 flex-col border-r border-border bg-bg-secondary">
+      <aside className="fixed left-0 top-0 hidden h-dvh w-60 flex-col border-r border-border bg-bg-secondary md:flex">
         {/* Logo */}
         <div className="flex h-14 items-center gap-2 border-b border-border px-3">
           <Skeleton className="h-7 w-7 rounded-md" />

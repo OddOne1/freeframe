@@ -19,6 +19,7 @@ import {
   Music,
 } from 'lucide-react'
 import { cn, resolveApiMediaUrl } from '@/lib/utils'
+import { viewportIsXlUp } from '@/hooks/use-media-query'
 import { Button } from '@/components/ui/button'
 import { GuestCommentInput } from '@/components/review/guest-comment-input'
 import { FolderShareViewer } from '@/components/share/folder-share-viewer'
@@ -122,7 +123,7 @@ function PasswordGate({ onSubmit, error, loading }: PasswordGateProps) {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-bg-primary p-4">
+    <div className="flex min-h-dvh items-center justify-center bg-bg-primary p-4">
       <div className="w-full max-w-sm rounded-xl border border-border bg-bg-secondary p-6 shadow-xl">
         <div className="mb-4 flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-accent-muted">
@@ -160,7 +161,7 @@ interface ErrorStateProps {
 
 function ErrorState({ expired }: ErrorStateProps) {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-bg-primary p-4">
+    <div className="flex min-h-dvh items-center justify-center bg-bg-primary p-4">
       <div className="w-full max-w-sm rounded-xl border border-border bg-bg-secondary p-6 text-center shadow-xl">
         <div className="mb-4 flex justify-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-status-error/10">
@@ -474,7 +475,13 @@ function ShareRightPanel({
   const { showTabSwitcher, showComments, activeTab, setActiveTab } = sidebar
 
   return (
-    <div className="w-[360px] flex flex-col border-l border-white/[0.06] bg-[#141416] shrink-0 animate-in slide-in-from-right-2 duration-150">
+    /* §224 — ONE element: a drawer over the player below `xl`, the same
+       in-flow 360px column at `xl`+. In flow at every width it squeezed the
+       player on anything narrower than a laptop. Its toggle was already
+       visible and already worked — only what it revealed was unusable. */
+    <div
+      data-testid="share-asset-panel"
+      className="fixed inset-y-0 right-0 z-40 flex w-[360px] max-w-[90vw] flex-col overflow-hidden border-l border-white/[0.06] bg-[#141416] shadow-2xl animate-in slide-in-from-right-2 duration-150 xl:static xl:z-auto xl:w-[360px] xl:max-w-none xl:shrink-0 xl:shadow-none">
       {/* Tabs — §33: only when there is actually something to switch
           between. A switcher with one live tab and one dead one is worse
           than no switcher. */}
@@ -604,6 +611,11 @@ function ShareViewer({
   const [streamLoading, setStreamLoading] = React.useState(false)
   const [commentKey, setCommentKey] = React.useState(0)
   const [sidebarOpen, setSidebarOpen] = React.useState(true)
+  // §224 — same rule as every other right panel: below `xl` it overlays
+  // the content, so it starts closed.
+  React.useEffect(() => {
+    if (!viewportIsXlUp()) setSidebarOpen(false)
+  }, [])
   // §33 — one decision, shared with the folder viewer.
   const sidebar = useShareSidebar({ permission, fieldsVisibility, showComments })
 
@@ -652,6 +664,14 @@ function ShareViewer({
           streamUrl={streamUrl}
           streamLoading={streamLoading}
         />
+
+        {/* §224 — the scrim, below `xl` only. */}
+        {sidebar.showSidebar && sidebarOpen && (
+          <div
+            className="fixed inset-0 z-30 bg-black/50 xl:hidden"
+            onClick={() => setSidebarOpen(false)}
+          />
+        )}
 
         {/* Right: comments panel */}
         {sidebar.showSidebar && sidebarOpen && (
@@ -760,7 +780,7 @@ function FolderAssetViewer({
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950">
+      <div className="flex min-h-dvh items-center justify-center bg-zinc-950">
         <Loader2 className="h-8 w-8 animate-spin text-zinc-500" />
       </div>
     )
@@ -933,7 +953,7 @@ export default function SharePage({
 
   if (state.stage === 'loading') {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950">
+      <div className="flex min-h-dvh items-center justify-center bg-zinc-950">
         <Loader2 className="h-8 w-8 animate-spin text-zinc-500" />
       </div>
     )
@@ -959,7 +979,7 @@ export default function SharePage({
 
   if (state.stage === 'auth_required') {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-bg-primary p-4">
+      <div className="flex min-h-dvh items-center justify-center bg-bg-primary p-4">
         <div className="w-full max-w-sm rounded-xl border border-border bg-bg-secondary p-6 shadow-xl text-center">
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-accent-muted">
             <Lock className="h-6 w-6 text-accent" />

@@ -1,4 +1,5 @@
 import type { Config } from 'tailwindcss'
+import plugin from 'tailwindcss/plugin'
 
 const config: Config = {
   darkMode: 'class',
@@ -105,7 +106,30 @@ const config: Config = {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    /**
+     * §224 — `hover-none:` for devices that cannot hover.
+     *
+     * This app reveals a lot of controls on hover (`opacity-0
+     * group-hover:opacity-100`): the "···" button on every folder row and
+     * card, the multi-select checkboxes. On a touch screen there is no
+     * hover, so those controls were permanently invisible and the actions
+     * behind them unreachable — the kebab menu is the only way to rename a
+     * folder or create a share link from a card.
+     *
+     * A media feature, not a width breakpoint, deliberately: a touch laptop
+     * at 1440px has the same problem as a phone, and a phone plugged into a
+     * desktop monitor does not stop being touch-only.
+     *
+     * Written as a plugin because `plugins: []` was empty and Tailwind 3.4
+     * has no built-in variant for this. No dependency added —
+     * `tailwindcss/plugin` ships with Tailwind.
+     */
+    plugin(({ addVariant }) => {
+      addVariant('hover-none', '@media (hover: none)')
+      addVariant('group-hover-none', '@media (hover: none)')
+    }),
+  ],
 }
 
 export default config

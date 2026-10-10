@@ -39,6 +39,9 @@ interface ViewStore extends ViewSettings {
   setSortDirection: (dir: SortDirection) => void
   toggleSortDirection: () => void
   toggleRightPanel: () => void
+  /** §224 — set it outright. The narrow-viewport rule has to CLOSE the
+   *  panel, and a toggle would open it when the persisted value was false. */
+  setRightPanelOpen: (open: boolean) => void
 }
 
 export const useViewStore = create<ViewStore>()(
@@ -72,6 +75,7 @@ export const useViewStore = create<ViewStore>()(
         set((s) => ({ sortDirection: s.sortDirection === 'asc' ? 'desc' : 'asc' })),
       toggleRightPanel: () =>
         set((s) => ({ rightPanelOpen: !s.rightPanelOpen })),
+      setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
     }),
     { name: 'freeframe-view-settings' },
   ),
