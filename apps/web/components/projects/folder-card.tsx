@@ -4,6 +4,7 @@ import React, { useCallback, useState } from 'react'
 import useSWR from 'swr'
 import { Folder, Film, Music, Image as ImageIcon, Images, MoreHorizontal, Pencil, Trash, Share2 } from 'lucide-react'
 import { cn, resolveApiMediaUrl } from '@/lib/utils'
+import { dragCarriesFiles } from '@/hooks/use-file-drop-zone'
 import { useFormatBytes } from '@/hooks/use-byte-units'
 import { api } from '@/lib/api'
 import { NameDialog } from './name-dialog'
@@ -85,7 +86,7 @@ interface FolderCardProps {
   onSelect?: (e: React.MouseEvent) => void
   onRename?: (folderId: string, name: string) => Promise<void>
   onDelete?: (folderId: string) => Promise<void>
-  onShare?: (folderId: string, folderName: string) => Promise<void>
+  onShare?: (folderId: string, folderName: string) => void
   onDropItems?: (targetFolderId: string, assetIds: string[], folderIds: string[]) => void
   className?: string
 }
@@ -134,6 +135,11 @@ export function FolderCard({
 
   // Drop target
   const handleDragOver = useCallback((e: React.DragEvent) => {
+      // §223 C.2 — an OS file drag is not an internal move, and the page
+      // handles it. Without this guard a card dropped from Finder lit up
+      // this ring as well as the page's own overlay, promising a move that
+      // was never going to happen.
+      if (dragCarriesFiles(e.dataTransfer)) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
     setIsDragOver(true)
@@ -141,6 +147,9 @@ export function FolderCard({
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
+      // Not preventDefault'd and not stopped: the page's own handler is
+      // upstream and this drop belongs to it.
+      if (dragCarriesFiles(e.dataTransfer)) return
       e.preventDefault()
       setIsDragOver(false)
       try {
@@ -194,7 +203,7 @@ export function FolderCard({
               </button>
 
               {menuOpen && (
-                <div className="absolute right-0 top-full mt-1 z-50 w-40 rounded-lg border border-border bg-bg-elevated shadow-xl py-1">
+                <div className="absolute right-0 top-full mt-1 z-50 w-44 rounded-lg border border-border bg-bg-elevated shadow-xl py-1">
                   <button
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover"
                     onClick={(e) => {
@@ -205,16 +214,22 @@ export function FolderCard({
                   >
                     <Pencil className="h-3 w-3" /> Rename
                   </button>
-                  <button
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setMenuOpen(false)
-                      onShare?.(folder.id, folder.name)
-                    }}
-                  >
-                    <Share2 className="h-3 w-3" /> Share
-                  </button>
+                  {/* §223 — rendered only when there is a handler, the way
+                      the tree's and the list row's entries are. The page
+                      withholds it from a viewer, and a menu row that
+                      silently does nothing is worse than no row. */}
+                  {onShare && (
+                    <button
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setMenuOpen(false)
+                        onShare(folder.id, folder.name)
+                      }}
+                    >
+                      <Share2 className="h-3 w-3" /> Create share link
+                    </button>
+                  )}
                   <button
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10"
                     onClick={(e) => {

@@ -54,7 +54,10 @@ interface AssetGridProps {
   onFolderOpen?: (folder: Folder) => void
   onFolderRename?: (folderId: string, name: string) => Promise<void>
   onFolderDelete?: (folderId: string) => Promise<void>
-  onFolderShare?: (folderId: string, folderName: string) => Promise<void>
+  // §223 — `void`, not `Promise<void>`: nothing here awaits it, and the
+  // single page-level handler that both folder menus now share is a
+  // plain state update.
+  onFolderShare?: (folderId: string, folderName: string) => void
   onDropToFolder?: (targetFolderId: string, assetIds: string[], folderIds: string[]) => void
   /** Share selection mode */
   shareMode?: boolean
@@ -742,7 +745,7 @@ export function AssetGrid({
                             className="flex items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
                           >
                             <Share2 className="h-3.5 w-3.5 text-text-tertiary" />
-                            Share
+                            Create share link
                           </DropdownMenu.Item>
                         )}
                         {onFolderRename && (

@@ -17,6 +17,7 @@ import {
   ChevronRight,
   ChevronLeft,
   MessageSquare,
+  MessagesSquare,
   Download,
   Key,
   Clock,
@@ -256,6 +257,11 @@ function ShareInviteInput({ token, shareLink }: { token: string; shareLink: { as
 interface ShareConfig {
   title: string
   allowComments: boolean
+  /** §223 B.2 / §188 — whether a viewer may READ the existing discussion,
+   *  which is a separate decision from `allowComments` (posting). Same
+   *  semantics as the detail panel's "Show comments". */
+  showComments: boolean
+  showVersions: boolean
   downloadVariants: DownloadVariant[]
   fieldsVisibility: FieldsVisibility
   passphrase: string | null
@@ -276,6 +282,12 @@ interface ConfigurePhaseProps {
 function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigurePhaseProps) {
   const [title, setTitle] = React.useState(defaultTitle)
   const [allowComments, setAllowComments] = React.useState(false)
+  // §223 B.2 — both default to the value the server would have used for a
+  // link created without them (ShareLinkCreate/MultiShareCreate default
+  // `show_comments` and `show_versions` to True), so adding the controls
+  // changes no default, only what can be chosen.
+  const [showComments, setShowComments] = React.useState(true)
+  const [showVersions, setShowVersions] = React.useState(true)
   const [downloadVariants, setDownloadVariants] = React.useState<DownloadVariant[]>([])
   const [fieldsVisibility, setFieldsVisibility] = React.useState<FieldsVisibility>('disabled')
   const [passphrase, setPassphrase] = React.useState(false)
@@ -285,10 +297,34 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
   const [expiresAt, setExpiresAt] = React.useState('')
   const [visibility, setVisibility] = React.useState<'public' | 'secure'>('public')
 
+  /* §189, enforced at creation the same way the detail panel enforces it
+     on edit: `permission=comment` with `show_comments=false` lets a viewer
+     post into a panel that is never rendered — there is no box. The server
+     collapses that pair too (`_reconcile_comment_settings`), so without
+     these two rules the dialog would offer a choice the server silently
+     overrules, which is worse than not offering it.
+
+     The combination that DOES stay is the one §188 was built for: read the
+     discussion without joining it (comments off, show-comments on). Only
+     the reverse is collapsed. */
+  function setAllowCommentsConsistently(next: boolean) {
+    setAllowComments(next)
+    // Posting implies a place to post into.
+    if (next) setShowComments(true)
+  }
+
+  function setShowCommentsConsistently(next: boolean) {
+    setShowComments(next)
+    // Nothing visible to comment on, so nothing to permit.
+    if (!next) setAllowComments(false)
+  }
+
   function handleCreate() {
     onCreate({
       title: title.trim() || defaultTitle,
       allowComments,
+      showComments,
+      showVersions,
       downloadVariants,
       fieldsVisibility,
       passphrase: passphrase && passphraseValue ? passphraseValue : null,
@@ -353,8 +389,33 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
             </div>
             <Switch.Root
               checked={allowComments}
-              onCheckedChange={setAllowComments}
+              onCheckedChange={setAllowCommentsConsistently}
+              aria-label="Allow comments"
               className="w-9 h-5 rounded-full relative bg-bg-tertiary border border-border data-[state=checked]:bg-accent transition-colors"
+            >
+              <Switch.Thumb className="block w-4 h-4 rounded-full bg-white shadow transition-transform translate-x-0.5 data-[state=checked]:translate-x-[18px]" />
+            </Switch.Root>
+          </div>
+
+          {/* Show comments — §188's reading half, brought here by §223 B.2.
+              Labelled "see existing" against "Allow comments" above, because
+              the two read as duplicates otherwise; the same wording split
+              the detail panel uses. */}
+          <div className="flex items-center justify-between py-2.5">
+            <div className="flex items-center gap-2.5">
+              <MessagesSquare className="h-4 w-4 text-text-tertiary shrink-0" />
+              <div>
+                <span className="text-sm text-text-primary">Show comments</span>
+                <p className="text-2xs text-text-tertiary">
+                  Viewers can see existing comments, even if they can’t post
+                </p>
+              </div>
+            </div>
+            <Switch.Root
+              checked={showComments}
+              onCheckedChange={setShowCommentsConsistently}
+              aria-label="Show comments"
+              className="shrink-0 w-9 h-5 rounded-full relative bg-bg-tertiary border border-border data-[state=checked]:bg-accent transition-colors"
             >
               <Switch.Thumb className="block w-4 h-4 rounded-full bg-white shadow transition-transform translate-x-0.5 data-[state=checked]:translate-x-[18px]" />
             </Switch.Root>
@@ -384,6 +445,23 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
             />
           </div>
 
+          {/* Show all versions — §21b put this in the created-link settings
+              panel; §223 B.2 makes it a creation-time choice too. */}
+          <div className="flex items-center justify-between py-2.5">
+            <div className="flex items-center gap-2.5">
+              <Layers className="h-4 w-4 text-text-tertiary" />
+              <span className="text-sm text-text-primary">Show all versions</span>
+            </div>
+            <Switch.Root
+              checked={showVersions}
+              onCheckedChange={setShowVersions}
+              aria-label="Show all versions"
+              className="shrink-0 w-9 h-5 rounded-full relative bg-bg-tertiary border border-border data-[state=checked]:bg-accent transition-colors"
+            >
+              <Switch.Thumb className="block w-4 h-4 rounded-full bg-white shadow transition-transform translate-x-0.5 data-[state=checked]:translate-x-[18px]" />
+            </Switch.Root>
+          </div>
+
           {/* Passphrase */}
           <div className="space-y-2">
             <div className="flex items-center justify-between py-2.5">
@@ -393,6 +471,7 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
               </div>
               <Switch.Root
                 checked={passphrase}
+                aria-label="Passphrase"
                 onCheckedChange={(v) => {
                   setPassphrase(v)
                   setShowPassphraseInput(v)
@@ -453,6 +532,7 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
             <Switch.Root
               checked={watermark}
               onCheckedChange={setWatermark}
+              aria-label="Watermark"
               className="w-9 h-5 rounded-full relative bg-bg-tertiary border border-border data-[state=checked]:bg-accent transition-colors"
             >
               <Switch.Thumb className="block w-4 h-4 rounded-full bg-white shadow transition-transform translate-x-0.5 data-[state=checked]:translate-x-[18px]" />
@@ -1123,6 +1203,15 @@ export function ShareCreateDialog({
           folder_ids: items.filter(i => i.type === 'folder').map(i => i.id),
           title: config.title,
           permission: config.allowComments ? 'comment' : 'view',
+          // §223 B.3 — sent explicitly, not left to the server default.
+          // `MultiShareCreate.show_comments` defaults to True, so omitting
+          // it silently ignored a viewer-chosen "off"; the server's own
+          // `_reconcile_comment_settings` is what kept the OTHER direction
+          // (permission=comment, show_comments unset) from ever landing in
+          // the §189 dead end, so the omission was invisible until the
+          // toggle existed.
+          show_comments: config.showComments,
+          show_versions: config.showVersions,
           visibility: config.visibility,
           allowed_download_variants: config.downloadVariants,
           fields_visibility: config.fieldsVisibility,
@@ -1164,9 +1253,16 @@ export function ShareCreateDialog({
         }
 
         // Apply configured settings
+        // One PATCH covers all three single-item paths (asset, folder,
+        // project root), because each of those POSTs sends only the title
+        // and takes the server's defaults for everything else. §223 B.4:
+        // every setting the popup offers has to be in here, or it reaches
+        // the server on the multi path only.
         const patches: Record<string, unknown> = {
           visibility: config.visibility,
           permission: config.allowComments ? 'comment' : 'view',
+          show_comments: config.showComments,
+          show_versions: config.showVersions,
           allowed_download_variants: config.downloadVariants,
           fields_visibility: config.fieldsVisibility,
           show_watermark: config.watermark,

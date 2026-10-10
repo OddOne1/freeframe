@@ -64,6 +64,7 @@ import { useComments } from "@/hooks/use-comments";
 import { useFolders, useTrash } from "@/hooks/use-folders";
 import { useShareLinks } from "@/hooks/use-share-links";
 import { FolderTree } from "@/components/projects/folder-tree";
+import { useFileDropZone } from "@/hooks/use-file-drop-zone";
 import { ShareLinksTable } from "@/components/projects/share-links-table";
 import {
   ShareLinkContent,
@@ -603,6 +604,24 @@ export default function ProjectDetailPage() {
     setShareDialogOpen(true);
   }
 
+  /**
+   * §223 — "Create share link" on a folder, from either folder menu.
+   *
+   * The grid card had this inline; the sidebar tree had no share entry at
+   * all. Both now call this, so the two menus cannot drift into opening
+   * the dialog in different states. The folder's name comes from the menu
+   * rather than from `subfolders`, which only holds the CURRENT folder's
+   * children — a tree row for a folder several levels away is not in it,
+   * so looking the name up the way `openShareDialog` does would title the
+   * link "Shared Folder".
+   */
+  function openFolderShareDialog(folderId: string, folderName: string) {
+    setShareDialogPreselect({ type: "folder", id: folderId, name: folderName });
+    setShareDialogPreselectedItems([]);
+    setShareDialogResult(null);
+    setShareDialogOpen(true);
+  }
+
   React.useEffect(() => {
     const anyComplete = uploadFiles.some(
       (f) => f.projectId === projectId && f.status === "complete",
@@ -618,6 +637,48 @@ export default function ProjectDetailPage() {
   >(null);
 
   const [skippedJunkCount, setSkippedJunkCount] = React.useState(0);
+
+  /**
+   * §223 C — the whole main view is a drop target for OS files and folders.
+   *
+   * It feeds `handleFilesSelected` and opens the existing Upload dialog, so
+   * a drop and a pick go through exactly the same path: camera-junk
+   * filtering, the keep-structure choice, sidecar splitting, and
+   * `ensureFolderPath` under the open folder. Nothing about uploading is
+   * duplicated here — the only new thing is where the files can come from,
+   * and the confirmation step stays, because a whole card dropped by
+   * accident should not start uploading on its own.
+   *
+   * Withheld exactly where the toolbar's own Upload button is withheld (a
+   * viewer, or the trash view), plus the two views that are not the asset
+   * grid at all: dropping a card onto the Share Links table or onto
+   * share-selection mode means nothing, and a highlight there would be a
+   * promise the page cannot keep.
+   */
+  const fileDrop = useFileDropZone({
+    disabled: !canUpload || showTrash || showShareLinks || shareMode,
+    onFiles: (files) => {
+      handleFilesSelected(files);
+      setUploadOpen(true);
+    },
+  });
+
+  /** What the drop overlay says it will upload into.
+   *  Walked rather than looked up in `subfolders` (which holds the open
+   *  folder's CHILDREN, not itself) or in `folderPaths` (which is keyed by
+   *  asset id). */
+  const dropTargetName = React.useMemo(() => {
+    if (!currentFolderId) return project?.name || "this project";
+    const find = (nodes: FolderTreeNode[]): string | null => {
+      for (const n of nodes) {
+        if (n.id === currentFolderId) return n.name;
+        const hit = find(n.children);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return find(tree ?? []) ?? "this folder";
+  }, [currentFolderId, tree, project?.name]);
 
   const handleFilesSelected = (files: DroppedFile[]) => {
     // Camera housekeeping files are dropped here rather than at upload time,
@@ -779,6 +840,7 @@ export default function ProjectDetailPage() {
               mutateAssets();
               mutateSubfolders();
             }}
+            onShareFolder={canShare ? openFolderShareDialog : undefined}
             onDropItems={async (targetFolderId, assetIds, folderIds) => {
               await bulkMove(assetIds, folderIds, targetFolderId);
               mutateAssets();
@@ -1011,10 +1073,18 @@ export default function ProjectDetailPage() {
         // counts query (§50). It goes on the element whose width actually
         // changes when the side panel mounts — this flex child — not on the
         // grid itself, which would query its own already-shrunk width.
-        className="asset-grid-container flex-1 flex flex-col min-w-0 bg-bg-primary h-full overflow-y-auto"
+        // §223 C — `relative` and no longer the scrolling element itself:
+        // the scroll moved to the child below so that the drop overlay,
+        // which is `absolute inset-0` here, covers the visible area instead
+        // of stretching to the full content height and scrolling its own
+        // border off screen. The container-query class stays on THIS
+        // element, because it is still the flex child whose width the right
+        // panel changes (§50).
+        className="asset-grid-container flex-1 flex flex-col min-w-0 relative bg-bg-primary h-full overflow-hidden"
         onClick={() => setSelectedAsset(null)}
+        {...fileDrop.dropProps}
       >
-        <div className="px-5 pt-3 pb-6 space-y-3">
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-3 pb-6 space-y-3">
           {/* Asset grid, Share links, or Trash view */}
           {showShareLinks && !selectedShareLink ? (
             <ShareLinksTable
@@ -1211,14 +1281,7 @@ export default function ProjectDetailPage() {
                 mutateAssets();
                 mutateSubfolders();
               }}
-              onFolderShare={async (folderId, folderName) => {
-                setShareDialogPreselect({
-                  type: "folder",
-                  id: folderId,
-                  name: folderName,
-                });
-                setShareDialogOpen(true);
-              }}
+              onFolderShare={!canShare ? undefined : openFolderShareDialog}
               onDropToFolder={async (targetFolderId, assetIds, folderIds) => {
                 await bulkMove(assetIds, folderIds, targetFolderId);
                 mutateAssets();
@@ -1521,6 +1584,22 @@ export default function ProjectDetailPage() {
             </Dialog.Portal>
           </Dialog.Root>
         </div>
+
+        {/* §223 C.1 — the drag feedback. `pointer-events-none` matters: an
+            overlay that took the pointer would fire `dragleave` on the
+            target the instant it appeared, so the highlight would flicker
+            itself out of existence. */}
+        {fileDrop.isOver && (
+          <div
+            data-testid="project-file-drop-overlay"
+            aria-hidden
+            className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-accent bg-accent/10"
+          >
+            <p className="rounded-lg bg-bg-elevated/90 px-4 py-2 text-sm font-medium text-text-primary shadow-lg">
+              Drop to upload to {dropTargetName}
+            </p>
+          </div>
+        )}
       </div>
 
       {/* ─── Right Panel (Comments + Fields tabs, or Share Link Settings) ─ */}
