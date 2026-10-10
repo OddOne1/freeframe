@@ -18,6 +18,7 @@ import { useSiteSettings } from '@/hooks/use-site-settings'
 import { useThemeStore } from '@/stores/theme-store'
 import { Avatar } from '@/components/shared/avatar'
 import { NotificationDrawer } from './notification-drawer'
+import { SidebarUserBlock } from './sidebar-user-block'
 
 interface NavItem {
   href: string
@@ -76,11 +77,14 @@ export function Sidebar({
     <>
     {/* §224 — the scrim. Below `md` only, and only while the drawer is
         open: at `md`+ the sidebar is a rail in the layout and dimming the
-        page behind it would make no sense. */}
+        page behind it would make no sense.
+        §224b — z-[45], above the project view's bottom tab bar (z-40).
+        At z-30 the tab bar floated over the dimmed page looking live,
+        and tapping it switched a pane nobody could see. */}
     {mobileOpen && (
       <div
         data-testid="mobile-nav-scrim"
-        className="fixed inset-0 z-30 bg-black/60 md:hidden"
+        className="fixed inset-0 z-[45] bg-black/60 md:hidden"
         onClick={onMobileClose}
       />
     )}
@@ -89,7 +93,11 @@ export function Sidebar({
       className={cn(
         // h-dvh rather than h-screen, so the bottom section is reachable
         // inside iOS Safari's visible viewport (§224).
-        'fixed left-0 top-0 z-40 flex h-dvh flex-col border-r border-nav-border',
+        // §224b — z-50 below `md`: the phone tab bar is fixed at z-40 and
+        // comes later in the DOM, so at z-40 it painted over the foot of
+        // this drawer and hid the whole user block. `md:z-30` below is
+        // unchanged, so the desktop rail still sits where it did.
+        'fixed left-0 top-0 z-50 flex h-dvh flex-col border-r border-nav-border',
         // bg-nav-bg defaults to the same token as the rest of the theme (see
         // globals.css) but can be overridden per theme in Branding settings ->
         // Theme colors.
@@ -236,7 +244,12 @@ export function Sidebar({
       </nav>
 
       {/* Bottom section */}
-      <div className="border-t border-nav-border p-2 space-y-1 shrink-0">
+      {/* §224b — below `md` this block holds the whole user menu, which on
+          a short phone can be taller than what is left of the drawer; the
+          cap plus its own scroll keeps Log out reachable without taking
+          height away from the nav above. Both are `max-md:`, so the
+          desktop rail's bottom section is untouched. */}
+      <div className="border-t border-nav-border p-2 space-y-1 shrink-0 max-md:max-h-[70dvh] max-md:overflow-y-auto">
         {/* The avatar is a plain link now, not a menu (§46). Settings itself
             already gates what each user sees once they arrive, so the old
             per-role routing between /settings/admin and /settings/projects
@@ -278,6 +291,11 @@ export function Sidebar({
           <ChevronsLeft className={cn('h-4 w-4 transition-transform', !expanded && 'rotate-180')} />
           {expanded && <span className="text-xs">Collapse</span>}
         </button>
+
+        {/* §224b — mounted only while the drawer is open. It is `md:hidden`
+            as well, but gating on `mobileOpen` also keeps its /projects
+            read off every desktop page, where the rail never shows it. */}
+        {mobileOpen && <SidebarUserBlock onNavigate={onMobileClose} />}
       </div>
     </aside>
 

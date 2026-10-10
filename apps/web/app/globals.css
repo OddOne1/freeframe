@@ -156,3 +156,76 @@
   .asset-grid[data-size='M']  { grid-template-columns: repeat(7, minmax(0, 1fr)); }
   .asset-grid[data-size='L']  { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
+
+/* ─── Project toolbar: degrades with the COLUMN's width (§224b) ───────────
+ *
+ * The Navigator Bar holds Appearance/Sort on the left and the project's
+ * action buttons on the right. It broke whenever the main column got
+ * narrow: at 1280px with the right panel open that column is 580px, and
+ * "Sorted by" wrapped onto two lines, "New Folder" wrapped, and Upload was
+ * clipped 87px past the right edge. Window breakpoints cannot see any of
+ * that — the window is 1280px either way, and what actually changed is the
+ * sidebar and the panel standing beside this column.
+ *
+ * Raw CSS against the `assetgrid` container, same mechanism and the same
+ * reason as §50 above: @container needs a Tailwind plugin, and a
+ * dependency added to apps/web is what left the production image
+ * unbuildable for eleven days (CLAUDE.md §13c).
+ *
+ * The thresholds are measured in Chromium against the real toolbar, not
+ * guessed from window sizes. With every button labelled the row needs
+ * 694px of content box (a 734px container); stacked with labels, 560px
+ * (600); stacked with icons, 441px (481). The four steps below are the
+ * owner's own order of degradation, each taking over where the one above
+ * runs out of room, with the cushion rounded outward:
+ *
+ *   >= 740px    one row, pixel-identical to before
+ *   620-739     Appearance stacks above Sort
+ *   490-619     ...and Share / New Folder drop to their icons
+ *   < 490       ...and the action group takes a row of its own
+ *
+ * 740 rather than 734 because 740 is exactly the column at 1440 with the
+ * panel open, which must not change; the 6px between them is the whole
+ * margin that case has, and it is measured, not assumed. `flex-wrap` on
+ * the bar is the floor under all of it: if any band is a pixel short the
+ * action group wraps rather than putting a button out of reach.
+ *
+ * Nothing here applies unless the bar carries `toolbar-crowded`, which it
+ * only does when it has an action group at all — the /assets page renders
+ * the same bar without one and has nothing to make room for. The inner
+ * @media keeps every step at `md`+, which is the only place the bar is
+ * displayed; without it a narrow container below `md` would turn
+ * `toolbar-left` from `display: none` into a visible column.
+ */
+@container assetgrid (max-width: 739px) {
+  @media (min-width: 768px) {
+    .toolbar-crowded .toolbar-left {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
+    }
+    /* A 1px vertical rule between two stacked rows separates nothing. */
+    .toolbar-crowded .toolbar-divider { display: none; }
+  }
+}
+
+@container assetgrid (max-width: 619px) {
+  @media (min-width: 768px) {
+    /* The buttons keep their aria-label and title, so the name survives
+     * for a screen reader and on hover — only the drawn text goes. */
+    .toolbar-crowded .toolbar-label { display: none; }
+  }
+}
+
+@container assetgrid (max-width: 489px) {
+  @media (min-width: 768px) {
+    /* Last resort, and the one rule that must hold whatever else fails:
+     * a whole row to itself rather than a button pushed out of view.
+     * `flex-wrap` on the bar is what lets this take effect. */
+    .toolbar-crowded .toolbar-actions {
+      flex-basis: 100%;
+      justify-content: flex-end;
+    }
+  }
+}

@@ -1541,23 +1541,32 @@ export default function ProjectDetailPage() {
                       </Button>
                     </>
                   )}
+                  {/* §224b — `toolbar-label` is what the narrow
+                      container-query step hides, leaving the icon. The
+                      explicit aria-label and title are not decoration:
+                      with the text gone they are the only name the button
+                      has left, for a screen reader and on hover alike. */}
                   {canShare && (
                     <Button
                       variant="secondary"
                       size="sm"
                       onClick={openProjectShareDialog}
+                      aria-label="Share"
+                      title="Share"
                     >
                       <Share2 className="h-4 w-4" />
-                      Share
+                      <span className="toolbar-label">Share</span>
                     </Button>
                   )}
                   {canCreateFolder && (
                     <button
                       className="flex items-center gap-1.5 h-8 px-3 rounded-lg border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover text-[13px] transition-colors"
                       onClick={openNewFolderDialog}
+                      aria-label="New Folder"
+                      title="New Folder"
                     >
                       <FolderPlus className="h-4 w-4" />
-                      New Folder
+                      <span className="toolbar-label">New Folder</span>
                     </button>
                   )}
                   {canUpload && (

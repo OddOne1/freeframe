@@ -68,12 +68,18 @@ export function SortPopover() {
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
-        {/* §224 — "Sorted by" wraps onto two lines at 768px, and at 1280px
-            too. `whitespace-nowrap` fixes the tablet, but it also changes
-            the desktop row's height, and "desktop looks exactly as today"
-            is the harder constraint. Left alone, reported as a follow-up
-            rather than traded away quietly. */}
-        <button className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-sm text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors">
+        {/* §224b — never two lines, and never "Sorted by" on one line with
+            its value on the next. §224 left this alone because the fix on
+            its own changed the row's height at widths where it was already
+            wrapping; the owner has since asked for the wrap to go. The
+            height now only changes where it was wrapped before, and the
+            room the nowrap costs is found by the container-query steps in
+            globals.css rather than taken out of this button.
+
+            `shrink-0` as well as `whitespace-nowrap`: without it a flex
+            parent is still free to squeeze the button below its content
+            width and push the overflow out of view instead of wrapping. */}
+        <button className="flex shrink-0 items-center gap-1.5 whitespace-nowrap px-2.5 py-1.5 rounded-md text-sm text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors">
           <ArrowUpDown className="h-4 w-4" />
           <span>Sorted by</span>
           <span className="text-text-primary font-medium">{activeLabel}</span>

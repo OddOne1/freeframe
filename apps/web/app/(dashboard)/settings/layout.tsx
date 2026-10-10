@@ -3,49 +3,15 @@
 import * as React from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { User, Bell, Shield, Palette, Brush, FolderKanban, LifeBuoy, SwatchBook } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
-import { useHasProjectPrivilege } from '@/hooks/use-project-privilege'
+import { useVisibleSettingsNav } from '@/lib/settings-nav'
 
-interface SettingsNavItem {
-  href: string
-  label: string
-  icon: React.ElementType
-  adminOnly?: boolean
-  // Projects tab: visible to superadmins AND superuser/admin/owner on at
-  // least one project (its own non-superadmin branch), not admin-only.
-  projectPrivilegeOnly?: boolean
-}
-
-/**
- * Grouped rather than flat, so a divider belongs to a group instead of
- * sitting at a fixed index. Every item here is gated individually, and
- * Projects/Admin/Branding are all conditional — an index-counted separator
- * would leave a stray line whenever the item beside it is hidden.
- * A group renders no divider when it has no visible items at all.
- */
-const settingsNavGroups: SettingsNavItem[][] = [
-  [
-    { href: '/settings/profile', label: 'Profile', icon: User },
-    { href: '/settings/appearance', label: 'Appearance', icon: Palette },
-    { href: '/settings/notifications', label: 'Notifications', icon: Bell },
-    // Ungated: a personal LUT library is the user's own, not project- or
-    // admin-scoped.
-    { href: '/settings/luts', label: 'LUTs', icon: SwatchBook },
-  ],
-  [
-    { href: '/settings/projects', label: 'Projects', icon: FolderKanban, projectPrivilegeOnly: true },
-  ],
-  [
-    { href: '/settings/admin', label: 'Admin', icon: Shield, adminOnly: true },
-    { href: '/settings/branding', label: 'Branding', icon: Brush, adminOnly: true },
-  ],
-  [
-    // Ungated, and last: reaching a human is not an admin feature.
-    { href: '/settings/contact', label: 'Contact', icon: LifeBuoy },
-  ],
-]
+/* §224b — `SettingsNavItem`, `settingsNavGroups` and the gate that
+ * filters them now live in lib/settings-nav.tsx, because the phone
+ * navigation drawer shows the same sections and must agree with this one
+ * about who may see Admin. Nothing about the list or the gate changed in
+ * the move. */
 
 export default function SettingsLayout({
   children,
@@ -53,20 +19,8 @@ export default function SettingsLayout({
   children: React.ReactNode
 }) {
   const pathname = usePathname()
-  const { user, isSuperAdmin } = useAuthStore()
-  const hasProjectPrivilege = useHasProjectPrivilege()
-
-  // Filter first, then drop empty groups, so the dividers below can be a
-  // simple "every group after the first" rule.
-  const visibleGroups = settingsNavGroups
-    .map((group) =>
-      group.filter((item) => {
-        if (item.adminOnly && !isSuperAdmin) return false
-        if (item.projectPrivilegeOnly && !hasProjectPrivilege) return false
-        return true
-      }),
-    )
-    .filter((group) => group.length > 0)
+  const { user } = useAuthStore()
+  const visibleGroups = useVisibleSettingsNav()
 
   return (
     <div className="flex h-full">

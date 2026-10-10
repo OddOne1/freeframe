@@ -507,7 +507,23 @@ export function AssetGrid({
 
       {/* ─── Navigator Bar (Frame.io style) ─────────────────────────────── */}
       {!shareMode && (
-        <div className="flex items-center gap-1 border-b border-border pb-2.5">
+        <div
+          data-testid="navigator-bar"
+          className={cn(
+            // §224b — `hidden md:flex`, not `flex`. Below `md` every child
+            // of this bar is itself hidden (the two popovers live in the
+            // phone Settings tab, the actions in the project header's
+            // "···" menu), so what rendered on a phone was an empty row
+            // with a bottom border: a divider band with nothing in it
+            // between the folder name and "3 FOLDERS".
+            'hidden md:flex items-center gap-1 flex-wrap border-b border-border pb-2.5',
+            // The container-query steps in globals.css only make sense
+            // when there is an action group to make room for; the /assets
+            // page renders this bar without one and should keep the plain
+            // single row at every width.
+            actions && 'toolbar-crowded',
+          )}
+        >
           {/* Left group: Appearance + Fields + Sort.
               §224 — hidden below `md`: these two popovers are the phone
               Settings tab's contents, which renders the SAME controls
@@ -517,11 +533,16 @@ export function AssetGrid({
               dissolves and these three become direct flex children of the
               bar again, exactly as before — a real flex wrapper added its
               own gap and shifted the row 4px, which a desktop that must
-              look unchanged cannot afford. */}
-          <div className="hidden md:contents">
+              look unchanged cannot afford.
+              §224b — `toolbar-left` gives the narrow container-query step
+              something to materialise the box for: `display: contents`
+              becomes a real flex column so Appearance sits above Sort.
+              The class carries no styles of its own, so the wide case is
+              still exactly `display: contents`. */}
+          <div className="toolbar-left hidden md:contents">
             <AppearancePopover />
 
-            <div className="h-4 w-px bg-border mx-0.5" />
+            <div className="toolbar-divider h-4 w-px bg-border mx-0.5" />
 
             <SortPopover />
           </div>
@@ -530,7 +551,7 @@ export function AssetGrid({
 
           {/* Right group: action buttons passed from parent */}
           {actions && (
-            <div className="flex items-center gap-2">
+            <div className="toolbar-actions flex items-center gap-2">
               {actions}
             </div>
           )}

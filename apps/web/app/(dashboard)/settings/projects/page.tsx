@@ -32,6 +32,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/shared/empty-state";
 import { CollapsibleSection } from "@/components/shared/collapsible-section";
 import { PlainTh, SortableTh, useSort } from "@/components/shared/sortable";
+import { useStorageSummary } from "@/hooks/use-storage-summary";
 import { useAuthStore } from "@/stores/auth-store";
 import { useHasProjectPrivilege } from "@/hooks/use-project-privilege";
 import { ProjectSettingsDialog } from "@/components/projects/project-settings-dialog";
@@ -495,11 +496,6 @@ function OwnedProjectsView() {
     () => (projects ?? []).filter((p) => p.role === "owner" || p.role === "admin"),
     [projects],
   );
-  const ownedProjects = React.useMemo(
-    () => managedProjects.filter((p) => p.role === "owner"),
-    [managedProjects],
-  );
-
   const owners = useProjectOwners(React.useMemo(
     () => managedProjects.map((p) => p.id),
     [managedProjects],
@@ -517,21 +513,13 @@ function OwnedProjectsView() {
     limit: (p: Project) => p.storage_limit_bytes ?? null,
   }, { key: 'name' });
 
-  // NULL (unlimited) sibling projects contribute 0 to this sum rather than
-  // being unbounded -- same simplification as the backend's SQL SUM, kept
-  // consistent on purpose so the client-side check below never disagrees
-  // with the server.
-  const allocatedBytes = React.useMemo(
-    () => ownedProjects.reduce((sum, p) => sum + (p.storage_limit_bytes ?? 0), 0),
-    [ownedProjects],
-  );
-  const usedBytes = React.useMemo(
-    () => ownedProjects.reduce((sum, p) => sum + (p.storage_bytes ?? 0), 0),
-    [ownedProjects],
-  );
-  const personalTotalBytes = user?.storage_limit_bytes ?? null;
-  const percentUsed =
-    personalTotalBytes === null ? null : personalTotalBytes > 0 ? (usedBytes / personalTotalBytes) * 100 : 100;
+  // §224b — the four numbers moved into useStorageSummary, which the
+  // phone navigation drawer now reads too. Same derivation, same
+  // owner-only filter, same "unlimited counts as 0" simplification the
+  // backend's SQL SUM makes; the only change is that there is one copy of
+  // it instead of one per surface.
+  const { ownedProjects, allocatedBytes, usedBytes, personalTotalBytes, percentUsed } =
+    useStorageSummary();
 
   const refresh = () => mutate("/projects");
 
