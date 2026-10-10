@@ -55,7 +55,13 @@ describe('the grid', () => {
   })
 
   it('has a column rule for all four sizes at every breakpoint', () => {
-    const breakpoints = CSS.split('@container assetgrid').slice(1)
+    // min-width only. §224b added `max-width` blocks against the same
+    // container for the toolbar, which have nothing to say about columns
+    // — counting every `@container assetgrid` would make this test fail
+    // whenever an unrelated rule joins the file.
+    const breakpoints = CSS.split('@container assetgrid')
+      .slice(1)
+      .filter((b) => b.trimStart().startsWith('(min-width'))
     expect(breakpoints).toHaveLength(3)
     for (const size of ['XS', 'S', 'M', 'L']) {
       expect(CSS).toMatch(new RegExp(`\\.asset-grid\\[data-size='${size}'\\]`))

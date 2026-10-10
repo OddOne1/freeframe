@@ -151,15 +151,15 @@ describe('§224 — the nav is off-canvas below md', () => {
     const user = userEvent.setup()
     renderShell()
     // Collapsed is the default, so a rail would show icons only — useless
-    // in a 244px drawer. Scoped to the sidebar, because the header's own
-    // breadcrumb also says "Projects".
-    expect(within(sidebar()).queryByText('Projects')).toBeNull()
+    // in a 244px drawer. Scoped to the sidebar's own <nav>, because the
+    // header's breadcrumb also says "Projects" and, since §224b, so does
+    // the Settings section list in the drawer's user block.
+    const navItems = () => within(sidebar().querySelector('nav') as HTMLElement)
+    expect(navItems().queryByText('Projects')).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Open navigation' }))
-    await waitFor(() =>
-      expect(within(sidebar()).getByText('Projects')).toBeInTheDocument(),
-    )
+    await waitFor(() => expect(navItems().getByText('Projects')).toBeInTheDocument())
     // …and Notifications and Uploads, which are icon-only in the rail.
-    expect(within(sidebar()).getByText('Notifications')).toBeInTheDocument()
+    expect(navItems().getByText('Notifications')).toBeInTheDocument()
   })
 
   it('hides the collapse toggle below md — there is no rail to collapse to', () => {
