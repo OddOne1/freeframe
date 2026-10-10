@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ..models.share import VARIANT_QUALITY, VARIANT_USES_LUT, DownloadVariant
+from . import zip_stream
 from .s3_service import build_download_filename
 
 #: Everything this feature writes lives under here. The delete task refuses
@@ -347,14 +348,32 @@ def build_manifest_entry(
     resolved: ResolvedFile,
     media_file,
     asset_name: str,
+    created_at=None,
 ) -> dict:
     """One row of the build plan, as stored on ZipExport.manifest.
 
     Written by the endpoint and consumed by the worker rather than
     recomputed there: it encodes permission decisions, and re-deriving those
     in a worker would be a second copy of a permission rule.
+
+    §217 adds the three fields a STREAMED archive's byte layout needs, and
+    the reason each is frozen here rather than read at serve time is the
+    same in all three cases: every byte of the archive must be identical on
+    every request, or a resumed download splices two different archives
+    together and extracts to garbage.
+
+      * `mtime` — the DOS timestamp, derived from the ASSET's `created_at`
+        and never from "now". A timestamp that moved between two requests
+        would change two bytes inside every header.
+      * `declared_size` — what the database believes the object to be, so a
+        `preparing` export can report a byte-based estimate instead of
+        looking hung. NOT what the layout uses.
+      * `size` and `crc32` — filled in during `preparing` from
+        `object_checksums`, which is the only source that has verified the
+        two together. Null here until then.
     """
     s3_key, needs_render = source_key_for(resolved.variant, media_file)
+    dos_time, dos_date = zip_stream.dos_timestamp(created_at)
     return {
         "asset_id": resolved.asset_id,
         "version_id": resolved.version_id,
@@ -365,6 +384,11 @@ def build_manifest_entry(
         "applied_lut_id": resolved.applied_lut_id,
         "s3_key": s3_key,
         "needs_render": needs_render,
+        # §217
+        "mtime": [dos_time, dos_date],
+        "declared_size": int(getattr(media_file, "file_size_bytes", 0) or 0),
+        "size": None,
+        "crc32": None,
     }
 
 
@@ -525,3 +549,160 @@ def is_stale(export, *, now=None) -> bool:
     if last.tzinfo is None:
         last = last.replace(tzinfo=timezone.utc)
     return (now - last) > timedelta(seconds=ZIP_STALE_AFTER_SECONDS)
+
+
+# ── §217 — freezing a manifest, and finishing the freeze ────────────────────
+#
+# A streamed archive is never built. What used to be a BUILD is now a
+# FREEZE: the ordered list of (path, size, CRC-32, timestamp) is pinned
+# once, and from then on every byte of the archive — including the ones no
+# file supplies — is a pure function of that list (services/zip_stream.py).
+#
+# The freeze is in two halves because one of its inputs is expensive. The
+# endpoint writes everything it knows at request time (paths, variants,
+# permissions, timestamps, declared sizes); the CRCs and the verified sizes
+# arrive later, from `object_checksums`, and the export reports `preparing`
+# with real per-file and per-byte progress until they do. `ready` here
+# means "the layout is computable", NOT "a file was written anywhere".
+
+#: How long a STREAMED export's frozen manifest may be served.
+#:
+#: Thirty days, against the built archive's three (ZIP_TTL_SECONDS), and
+#: the difference is not generosity — it is that the two numbers bound
+#: different things. Three days bounded a second copy of the BYTES sitting
+#: in the bucket. This bounds how long a row holding a few hundred rows of
+#: JSON may be served, and the thing it protects against is a manifest
+#: drifting out of step with storage — which the serve path already catches
+#: per request by comparing every object's size before it streams a byte.
+#:
+#: Thirty days is sized against the download it has to outlive: 641 GiB
+#: over a 10 Mbit/s hotel connection is six days of wall clock, and §217
+#: exists precisely so that transfer can be paused and resumed. A TTL
+#: shorter than the download is the bug this feature was built to remove.
+#: The share link's own expiry, its password session and its download
+#: permissions are all re-checked on EVERY request regardless, so this is
+#: never the only thing standing between a dead link and a download.
+STREAMED_ZIP_TTL_SECONDS = 30 * 24 * 60 * 60
+
+
+def _entry_keys(manifest) -> list[str]:
+    """Every stored object a frozen manifest needs a CRC for."""
+    return [
+        e["s3_key"]
+        for e in (manifest or [])
+        if e.get("s3_key") and e.get("path") and not e.get("needs_render")
+        and not e.get("skipped")
+    ]
+
+
+def freeze_progress(manifest) -> dict:
+    """How much of the freeze is done, per file AND per byte.
+
+    Both, because neither alone is honest. "3 of 9 files" is what a person
+    can act on; the byte estimate is what stops a selection of one 105 GB
+    original and eight small stills from showing 8/9 and then appearing to
+    hang for half an hour on the last one.
+
+    The byte figures come from `declared_size` (what the database believes)
+    rather than from the verified size, so they are available for every
+    entry from the moment the manifest is written — including the ones not
+    yet read.
+    """
+    total = prepared = 0
+    bytes_total = bytes_prepared = 0
+    for entry in (manifest or []):
+        if not entry.get("s3_key") or not entry.get("path"):
+            continue
+        declared = int(entry.get("declared_size") or 0)
+        total += 1
+        bytes_total += declared
+        if entry.get("skipped") or entry.get("crc32") is not None:
+            prepared += 1
+            # A skipped entry counts as prepared on purpose: it is settled,
+            # and leaving it out would hold the bar permanently short of
+            # 100% for an export that is already servable.
+            bytes_prepared += declared
+    return {
+        "files_prepared": prepared,
+        "files_total": total,
+        "bytes_prepared": bytes_prepared,
+        "bytes_total": bytes_total,
+    }
+
+
+def apply_checksums(manifest, checksums: dict, *, given_up) -> tuple[list, bool]:
+    """Fill `size`/`crc32` from the store. Returns (manifest, changed).
+
+    `checksums` is {s3_key -> ObjectChecksum} and `given_up` is a predicate
+    on one of those rows. An entry whose object will never get a CRC is
+    marked `skipped` with the store's own reason — the same per-file note
+    the UI already shows for a fallback — so one missing file cannot hold
+    the other ninety-nine at `preparing` forever.
+
+    Returns a NEW list, so the caller can assign it and have SQLAlchemy
+    notice: in-place edits to a JSONB column are invisible to the session,
+    which is a bug this file's history already records once.
+    """
+    out = []
+    changed = False
+    for entry in (manifest or []):
+        entry = dict(entry)
+        key = entry.get("s3_key")
+        row = checksums.get(key) if key else None
+        if entry.get("skipped") or entry.get("crc32") is not None:
+            out.append(entry)
+            continue
+        if row is not None and row.crc32 is not None and row.size_bytes is not None:
+            entry["crc32"] = int(row.crc32) & 0xFFFFFFFF
+            entry["size"] = int(row.size_bytes)
+            changed = True
+        elif given_up(row):
+            entry["skipped"] = (
+                (row.error or "this file could not be read")[:200] if row else
+                "this file could not be read"
+            )
+            changed = True
+        out.append(entry)
+    return out, changed
+
+
+def streamable_entries(manifest) -> list:
+    """The manifest as `zip_stream.Entry` objects, in order.
+
+    Skipped and render-only entries are left out — they contribute nothing
+    to the archive, exactly as a skipped member contributed nothing to a
+    built one. Everything that remains has a verified size and CRC, which
+    is the precondition `layout` needs.
+    """
+    entries = []
+    for e in (manifest or []):
+        if not e.get("s3_key") or not e.get("path"):
+            continue
+        if e.get("needs_render") or e.get("skipped"):
+            continue
+        if e.get("crc32") is None or e.get("size") is None:
+            continue
+        mtime = e.get("mtime") or [0, (1 << 5) | 1]
+        entries.append(
+            zip_stream.Entry(
+                path=e["path"],
+                size=int(e["size"]),
+                crc32=int(e["crc32"]),
+                dos_time=int(mtime[0]),
+                dos_date=int(mtime[1]),
+                s3_key=e["s3_key"],
+            )
+        )
+    return entries
+
+
+def manifest_is_complete(manifest) -> bool:
+    """True when every entry is settled — verified or skipped."""
+    for entry in (manifest or []):
+        if not entry.get("s3_key") or not entry.get("path"):
+            continue
+        if entry.get("skipped"):
+            continue
+        if entry.get("crc32") is None or entry.get("size") is None:
+            return False
+    return True

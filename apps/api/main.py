@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
-from .routers import auth, users, projects, upload, events, assets, me, comments, approvals, share, metadata, branding, notifications, admin, setup, folders, hls_proxy, site_settings, luts, email_settings, sidecars, contact
+from .routers import auth, users, projects, upload, events, assets, me, comments, approvals, share, metadata, branding, notifications, admin, setup, folders, hls_proxy, zip_stream, site_settings, luts, email_settings, sidecars, contact
 from .services.s3_service import ensure_bucket_exists
 from .middleware.global_rate_limit import GlobalRateLimitMiddleware
 from .middleware.setup_guard import SetupGuardMiddleware
@@ -72,6 +72,12 @@ app.include_router(admin.router)
 app.include_router(setup.router)
 app.include_router(folders.router)
 app.include_router(hls_proxy.router)
+# §217 — the streamed batch download. Its own router rather than a
+# branch in hls_proxy: that one proxies one stored OBJECT, this one
+# synthesises an archive from a frozen manifest, and the only thing they
+# share is the Range parser (which zip_stream imports rather than
+# re-implementing).
+app.include_router(zip_stream.router)
 app.include_router(site_settings.router)
 app.include_router(luts.router)
 app.include_router(email_settings.router)

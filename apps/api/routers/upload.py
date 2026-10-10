@@ -368,6 +368,12 @@ def complete_upload(
 
     # Trigger transcoding in background (task dispatched in Step 7)
     background_tasks.add_task(_trigger_processing, body.asset_id, body.version_id)
+    # §217 — and the CRC-32 the streamed batch download needs. After the
+    # commit, so the size it is checked against is the reconciled one.
+    if media_file and media_file.s3_key_raw:
+        background_tasks.add_task(
+            _trigger_crc, media_file.s3_key_raw, media_file.file_size_bytes
+        )
 
     return CompleteUploadResponse(status="processing", asset_id=body.asset_id, version_id=body.version_id)
 
@@ -377,6 +383,29 @@ def _trigger_processing(asset_id: uuid.UUID, version_id: uuid.UUID):
     from ..tasks.transcode_tasks import process_asset
     from ..tasks.celery_app import send_task_safe
     send_task_safe(process_asset, str(asset_id), str(version_id))
+
+
+def _trigger_crc(s3_key: str, size: int):
+    """Ask for this object's CRC-32 now, so a download never waits for it (§217).
+
+    A streamed batch download cannot answer a single `Range` request until
+    it knows the CRC of every file in it (services/zip_stream.py), and
+    reading a 105 GB original takes minutes. Doing it HERE — once, right
+    after the bytes land and while nothing is waiting — is what makes the
+    common case instant: by the time anyone asks for a batch download, the
+    answer is already in `object_checksums`.
+
+    A background task rather than inline, and dispatched after the commit,
+    for the same reason the transcode is: the person who just finished a
+    multi-hour upload is waiting on this response.
+
+    Lazy computation still exists and still matters — it covers everything
+    uploaded before §217 and anything whose dispatch was lost — so a
+    failure here costs a slower first download, never a broken one.
+    """
+    from ..tasks.celery_app import send_task_safe
+    from ..tasks.crc_tasks import compute_object_crc32
+    send_task_safe(compute_object_crc32, s3_key, int(size or 0))
 
 
 @router.post("/abort", status_code=status.HTTP_204_NO_CONTENT)

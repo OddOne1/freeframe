@@ -291,6 +291,39 @@ class ZipExportStatusResponse(BaseModel):
     error: Optional[str] = None
     files: list[ZipExportFile] = []
 
+    # ── §217 — a zip that is never built, only streamed ─────────────────
+    #
+    # All additive, all defaulted, so a browser tab open across the deploy
+    # keeps working against the fields it already knows.
+
+    #: True when this export is served by streaming its frozen manifest
+    #: (no archive in storage, resumable by byte offset). False for a row
+    #: created before §217, whose real archive keeps downloading until its
+    #: own TTL.
+    streamed: bool = False
+    #: Exactly what a full download's `Content-Length` will be, once the
+    #: layout is computable. Null while `status == "preparing"`.
+    archive_size: Optional[int] = None
+    #: The strong validator a resume is checked against. A client that
+    #: holds a different one must restart from zero rather than append to
+    #: a different archive.
+    etag: Optional[str] = None
+
+    #: How far the FREEZE has got. `status == "preparing"` means the
+    #: manifest is pinned but some entries' CRC-32 is still being read —
+    #: minutes, for a 105 GB original — so the UI can say "preparing, 3 of
+    #: 9 files" instead of looking hung.
+    #:
+    #: Both a file count and a byte estimate, because neither alone is
+    #: honest: 8 of 9 files tells a reassuring lie when the ninth is 105 GB
+    #: and the other eight are stills. The byte figures are an ESTIMATE
+    #: from the sizes the database already holds, not from the verified
+    #: ones, so they are available from the first poll.
+    files_prepared: int = 0
+    files_total: int = 0
+    bytes_prepared: int = 0
+    bytes_total: int = 0
+
 
 class ZipExportVersionOption(BaseModel):
     version_id: uuid.UUID

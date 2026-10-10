@@ -24,6 +24,7 @@ celery_app = Celery(
         "apps.api.tasks.zip_tasks",
         "apps.api.tasks.reconcile_tasks",
         "apps.api.tasks.upload_sweep_tasks",
+        "apps.api.tasks.crc_tasks",
     ],
 )
 
@@ -199,6 +200,26 @@ celery_app.conf.update(
         # work it cleans up.
         "apps.api.tasks.upload_sweep_tasks.*": {"queue": "transcoding"},
         "sweep_abandoned_uploads": {"queue": "transcoding"},
+        # §217 — the CRC-32 pass a streamed zip cannot exist without, and
+        # the backfill that drains the already-uploaded library. BOTH
+        # FORMS, from the first commit, for the sixth time in this file:
+        # each declares an explicit `name=`, so the module glob alone
+        # cannot match it, and an unrouted task lands on `default`, which
+        # no container consumes. The symptom here would be every batch
+        # download stuck at `preparing` forever with nothing in the logs.
+        #
+        # `transcoding` rather than a new queue, and that is a deliberate
+        # trade recorded in tasks/crc_tasks.py's module docstring: a new
+        # queue needs a new container in docker-compose.prod.yml and a
+        # change to CLAUDE.md's six-service rebuild rule, and missing
+        # either on the deploy reproduces §126/§143/§182 exactly. The cost
+        # of sharing — a long read holding a transcode slot — is bounded
+        # instead by a Redis lease that caps CRC work at
+        # `settings.crc_max_concurrent` (1), so one of the worker's two
+        # slots always stays free for the ladder.
+        "apps.api.tasks.crc_tasks.*": {"queue": "transcoding"},
+        "compute_object_crc32": {"queue": "transcoding"},
+        "backfill_object_crc32": {"queue": "transcoding"},
     },
     # Rate limiting for email queues (SES limits)
     task_annotations={

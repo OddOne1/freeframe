@@ -89,6 +89,109 @@ class Settings(BaseSettings):
     # clock skew) cannot empty the bucket in one tick. The remainder waits
     # for the next hourly run.
     upload_sweep_max_aborts: int = 50
+    # ── §217 — download links that outlive a bad day ────────────────────
+    #
+    # How long a link that hands out an ORIGINAL or a BATCH download stays
+    # valid. Replaces the hard-coded 24 at every `proxy_url_for` download
+    # call site and the 1 on the zip route.
+    #
+    # 72 rather than 24 because the thing it bounds is now a resumable
+    # multi-hour transfer, not a click: a 641 GiB folder at 50 Mbit/s is
+    # ~28 h of wall clock, and the old 1-hour zip link meant an interrupted
+    # download could not be resumed at all once the token died. The clients
+    # can also renew — a 401 on the download URL is answered by re-polling
+    # the status endpoint, which re-checks the share link and the session
+    # live — so this is the ceiling on how long a LEAKED url keeps working,
+    # not on how long a legitimate download may take.
+    #
+    # WHAT A LEAKED 72 h LINK EXPOSES, stated so the number is chosen
+    # knowingly: an originals link is a `create_hls_token` prefix token, so
+    # it authorises every object under that asset-version's S3 folder —
+    # the original, the HLS ladder, the thumbnail, the persisted 1080p
+    # proxy, any sidecar stored there. One asset version, not the project.
+    # A streamed-zip link is narrower: it authorises one export id, and
+    # every request against it re-validates the share link (enabled,
+    # not expired, downloads still permitted, password session still
+    # valid) or the in-app creator's project membership, so revoking
+    # access kills the link immediately regardless of this setting.
+    #
+    # Deliberately NOT applied to thumbnails, HLS manifests or segments
+    # (playback keeps `proxy_url_for`'s own 24 h default), nor to the
+    # graded-LUT export links — those point at an object that
+    # `delete_lut_export` removes after exactly one hour, so a longer link
+    # would promise access to something already deleted.
+    #
+    # Override with DOWNLOAD_LINK_HOURS.
+    download_link_hours: int = 72
+
+    # ── §217 — CRC-32 of stored objects ────────────────────────────────
+    #
+    # A ZIP_STORED entry's local header AND the central directory both
+    # carry the CRC, so a streamed archive has to know it for every file
+    # before it can answer a single Range request. Read once per object,
+    # 8 MiB at a time: a camera original is routinely multi-GB and the
+    # worker holds one at a time, so the file is never loaded into memory.
+    # 8 MiB matches tasks/zip_tasks._CHUNK, which already streams S3
+    # bodies at that size on this hardware.
+    crc_chunk_bytes: int = 8 * 1024 * 1024
+
+    # How many CRC jobs may run at once across the whole fleet.
+    #
+    # ONE, and this is the §217 "do not occupy a transcode slot" decision.
+    # These tasks are routed to `transcoding`, which is the only queue any
+    # container consumes for this kind of work (`worker`, concurrency 2,
+    # also the transcoder). A new queue would have needed a new container,
+    # and a queue nothing consumes is how `apply_watermark`,
+    # `purge_expired_trash` and four zip tasks each silently never ran
+    # (§126, §143, §182) — not a risk worth taking for a tidier topology.
+    # So: same queue, but a Redis lease caps concurrency at this number, so
+    # a CRC pass can never hold BOTH transcode slots and stall the ladder.
+    crc_max_concurrent: int = 1
+
+    # How long the lease above is held before Redis expires it, and how
+    # often the holder renews it. The task can legitimately run for tens of
+    # minutes, so the lease is short and refreshed rather than long and
+    # trusted: a worker killed mid-read (every deploy does this) must not
+    # block the next CRC job for the rest of the day.
+    crc_lease_seconds: int = 300
+    crc_lease_refresh_seconds: int = 60
+
+    # Attempts before an object is left alone by the backfill. A missing or
+    # permanently unreadable object marks its own entry skipped — exactly
+    # as the old build path skipped a member it could not read — rather
+    # than being retried on every pass forever.
+    crc_max_attempts: int = 3
+
+    # ── §217 — the throttled backfill ──────────────────────────────────
+    #
+    # The owner's library already holds hundreds of GB with no CRC. The
+    # migration does NOT backfill (see the revision's own docstring); this
+    # task does, one object per run, re-queueing itself with the pause
+    # below until nothing is left. Skips anything already verified, so it
+    # is safe to start repeatedly and resumes by itself after a deploy.
+    crc_backfill_enabled: bool = True
+    crc_backfill_objects_per_run: int = 1
+    crc_backfill_pause_seconds: int = 30
+
+    # ── §217 — streaming a zip through the API process ─────────────────
+    #
+    # A stalled client must not pin an upstream S3 read forever. Two
+    # separate ceilings, because they catch different things:
+    #
+    # `zip_stream_idle_seconds` bounds ONE 1 MiB read from the bucket. A
+    # LAN read that takes two minutes is a dead connection, not a slow one.
+    #
+    # `zip_stream_stall_seconds` bounds the gap between two chunks being
+    # TAKEN by the client. A download manager that pauses, or a connection
+    # that silently dies without an RST, leaves the response coroutine
+    # suspended; once it moves again — or once the gap is noticed — the
+    # upstream body is closed and the stream ends rather than being held
+    # open for the rest of the token's life. 15 minutes is far longer than
+    # any TCP stall a working client produces and far shorter than the
+    # multi-hour transfer it is protecting.
+    zip_stream_idle_seconds: int = 120
+    zip_stream_stall_seconds: int = 900
+
     jwt_secret: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
