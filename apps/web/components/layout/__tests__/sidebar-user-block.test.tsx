@@ -1,26 +1,36 @@
 /**
- * Everything behind the avatar, on a screen with no rail (§224b).
+ * The navigation drawer's bottom block, on a screen with no rail (§227).
  *
- * The §224 screenshot showed the phone navigation drawer offering
- * Projects / Notifications / Uploads and nothing else: no profile, no
- * admin entry, no storage, no way to sign out. Two separate causes, and
- * the tests below cover both.
+ * §224b filled it with the whole settings list — Profile, Appearance,
+ * Notifications, LUTs, Projects, Admin, Branding, Contact, plus a storage
+ * row. That came from the advisor's specification ("whatever the desktop
+ * avatar menu offers, including admin entries"), and it was the wrong
+ * thing to ask for: the drawer exists so the USER is reachable on a phone,
+ * where §224 hid the avatar behind the bottom tab bar. A navigation drawer
+ * that lists eight settings sections is a second Settings page.
  *
- *   - What the drawer DOES show was being painted over. The sidebar and
- *     the project view's bottom tab bar are both `fixed` at z-40, and the
- *     tab bar comes later in the DOM, so it won. That is asserted by
- *     reading both numbers out of both components and comparing them,
- *     not by matching a class string — the bug is the RELATIONSHIP, and a
- *     test that pins `z-50` would still pass if someone raised the tab
- *     bar to z-60 tomorrow.
- *   - What it shows at all. The section list and its permission gate come
- *     from the same hook the Settings sub-nav reads, so this file renders
- *     the real component through the real hook rather than asserting on a
- *     list it keeps its own copy of.
+ * What the block is for now, and what these tests pin:
+ *
+ *   a) the user row — avatar, name, email — is in the drawer and is ONE
+ *      link to Settings;
+ *   b) Log out is there, and calls the store the Profile page's button
+ *      calls;
+ *   c) NO settings section is listed in the drawer, for a superadmin
+ *      either — that is the regression this section is;
+ *   d) both a superadmin and a plain member reach the Settings page, and
+ *      the Admin entry is reachable FROM THERE for the superadmin only.
+ *      §229 turns that landing into a list on phones; until then the
+ *      existing settings layout is what presents the sections, so (d)
+ *      renders the real layout rather than asserting on a promise.
+ *
+ * The drawer assertions render the real `Sidebar` with `mobileOpen`,
+ * because the user row belongs to the sidebar's shared avatar link and the
+ * question "is it in the drawer" cannot be answered by the block alone.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { SWRConfig } from 'swr'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -34,15 +44,23 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/stores/auth-store', () => ({
   useAuthStore: () => ({ logout, ...authState }),
 }))
-vi.mock('swr', async () => {
-  const actual = await vi.importActual<typeof import('swr')>('swr')
-  return { ...actual, default: () => ({ data: projects, isLoading: false }) }
-})
+vi.mock('@/hooks/use-site-settings', () => ({
+  useSiteSettings: () => ({ orgName: 'FreeFrame', logoDarkUrl: null, logoLightUrl: null }),
+}))
+// The sidebar fetches notifications on mount; without this the real store
+// reaches for localhost:8000.
+vi.mock('@/stores/notification-store', () => ({
+  useNotificationStore: () => ({ unreadCount: 0, fetchNotifications: vi.fn() }),
+}))
+vi.mock('@/lib/api', () => ({
+  api: { get: async () => projects },
+  ApiError: class extends Error {},
+}))
 
 import { SidebarUserBlock } from '../sidebar-user-block'
+import { Sidebar } from '../sidebar'
+import SettingsLayout from '@/app/(dashboard)/settings/layout'
 
-// Decimal, because that is the app's default byte-unit mode — these
-// numbers are here to be read back out of the rendered string.
 const GB = 1_000_000_000
 
 const ADMIN = {
@@ -57,69 +75,66 @@ const MEMBER = {
 beforeEach(() => {
   vi.clearAllMocks()
   authState = ADMIN
-  projects = [{ id: 'p1', name: 'Podcast', role: 'owner', storage_limit_bytes: 50 * GB, storage_bytes: 12 * GB }]
+  projects = [
+    { id: 'p1', name: 'Podcast', role: 'owner', storage_limit_bytes: 50 * GB, storage_bytes: 12 * GB },
+  ]
 })
 
+/** The drawer, open, as a phone has it. */
+function renderDrawer() {
+  return render(
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <Sidebar collapsed onToggle={() => {}} mobileOpen onMobileClose={() => {}} />
+    </SWRConfig>,
+  )
+}
+
+const drawer = () => screen.getByTestId('app-sidebar')
 const block = () => screen.getByTestId('sidebar-user-block')
 
-describe('an admin sees the admin entries', () => {
-  it('offers Admin and Branding', () => {
-    render(<SidebarUserBlock />)
-    expect(within(block()).getByRole('link', { name: 'Admin' })).toHaveAttribute(
-      'href', '/settings/admin',
-    )
-    expect(within(block()).getByRole('link', { name: 'Branding' })).toBeInTheDocument()
+/** Every settings section that exists, by the label the nav gives it. */
+const ALL_SECTIONS = [
+  'Profile',
+  'Appearance',
+  'Notifications',
+  'LUTs',
+  'Projects',
+  'Admin',
+  'Branding',
+  'Contact',
+]
+
+// ─── (a) the user row ───────────────────────────────────────────────────
+
+describe('§227 (a) — the user row is in the drawer and reaches Settings', () => {
+  it('shows the avatar, the name and the email as ONE link', () => {
+    renderDrawer()
+    const row = within(drawer()).getByRole('link', { name: /Mathias/ })
+    expect(row).toHaveAttribute('href', '/settings/profile')
+    expect(row).toHaveTextContent('Mathias')
+    expect(row).toHaveTextContent('m@e.com')
+    // One link, not a row of them: the whole point of §227 item 2.
+    expect(within(row).queryAllByRole('link')).toHaveLength(0)
   })
 
-  it('and the ungated ones everybody gets', () => {
-    render(<SidebarUserBlock />)
-    for (const label of ['Profile', 'Appearance', 'Notifications', 'LUTs', 'Contact']) {
-      expect(within(block()).getByRole('link', { name: label })).toBeInTheDocument()
-    }
-  })
-})
-
-describe('a plain member sees neither', () => {
-  beforeEach(() => {
-    authState = MEMBER
-    // Owns nothing and manages nothing: no project privilege either.
-    projects = [{ id: 'p1', name: 'Podcast', role: 'viewer', storage_limit_bytes: null, storage_bytes: 0 }]
-  })
-
-  it('has no Admin or Branding entry', () => {
-    render(<SidebarUserBlock />)
-    expect(within(block()).queryByRole('link', { name: 'Admin' })).toBeNull()
-    expect(within(block()).queryByRole('link', { name: 'Branding' })).toBeNull()
-  })
-
-  it('has no Projects entry either, which is privilege-gated, not admin-gated', () => {
-    render(<SidebarUserBlock />)
-    expect(within(block()).queryByRole('link', { name: 'Projects' })).toBeNull()
-  })
-
-  it('still reaches their own profile and can sign out', () => {
-    render(<SidebarUserBlock />)
-    expect(within(block()).getByRole('link', { name: 'Profile' })).toBeInTheDocument()
-    expect(within(block()).getByRole('button', { name: /log out/i })).toBeInTheDocument()
-  })
-})
-
-describe('the gate is the Settings page’s own', () => {
-  it('reads the shared list rather than keeping a copy', () => {
+  it('is the sidebar’s own avatar row, not a second copy for the drawer', () => {
+    renderDrawer()
+    // Two user rows in one drawer is what a duplicated block would give.
+    expect(within(drawer()).getAllByRole('link', { name: /Mathias/ })).toHaveLength(1)
     const SRC = fs.readFileSync(
       path.join(process.cwd(), 'components/layout/sidebar-user-block.tsx'), 'utf8')
-    const LAYOUT = fs.readFileSync(
-      path.join(process.cwd(), 'app/(dashboard)/settings/layout.tsx'), 'utf8')
-    // Both surfaces import the same hook. If one ever grows its own
-    // isSuperAdmin check, they can start disagreeing about who is an
-    // admin — which is the failure this is here to prevent.
-    expect(SRC).toMatch(/useVisibleSettingsNav.*from '@\/lib\/settings-nav'/)
-    expect(LAYOUT).toMatch(/useVisibleSettingsNav.*from '@\/lib\/settings-nav'/)
-    expect(SRC).not.toMatch(/isSuperAdmin/)
+    expect(SRC).not.toMatch(/Avatar/)
   })
 })
 
-describe('sign out', () => {
+// ─── (b) Log out ────────────────────────────────────────────────────────
+
+describe('§227 (b) — Log out', () => {
+  it('is in the drawer', () => {
+    renderDrawer()
+    expect(within(block()).getByRole('button', { name: /log out/i })).toBeInTheDocument()
+  })
+
   it('calls the store, the same one the Profile page’s button calls', async () => {
     const user = userEvent.setup()
     render(<SidebarUserBlock />)
@@ -128,27 +143,107 @@ describe('sign out', () => {
   })
 })
 
-describe('storage', () => {
-  it('quotes the Projects settings page’s numbers', () => {
-    render(<SidebarUserBlock />)
-    // 12 GB held by the owned project, against the 100 GB personal
-    // total — the same pair the Projects settings page prints.
-    expect(within(block()).getByTestId('drawer-storage').textContent).toMatch(
-      /12 GB used of 100 GB total/,
-    )
+// ─── (c) no settings menu ───────────────────────────────────────────────
+
+describe('§227 (c) — the drawer is not a settings menu', () => {
+  it('lists no settings section at all, for a SUPERADMIN', () => {
+    renderDrawer()
+    // Profile included: the user row above leads there, and a "Profile"
+    // row beside it was the §224b list's first entry.
+    for (const label of ALL_SECTIONS) {
+      expect(within(block()).queryByRole('link', { name: label })).toBeNull()
+    }
+    // Nothing anywhere in the drawer's bottom block except the user row,
+    // the desktop-only collapse toggle, and Log out.
+    expect(within(block()).queryAllByRole('link')).toHaveLength(0)
   })
 
-  it('says nothing at all when the user owns no project', () => {
+  it('and none for a plain member either', () => {
     authState = MEMBER
-    projects = [{ id: 'p1', role: 'viewer', storage_limit_bytes: null, storage_bytes: 0 }]
-    render(<SidebarUserBlock />)
-    // A figure of "0 B used of an unlimited total" is noise, not
-    // information, for someone with nothing allocated.
-    expect(within(block()).queryByTestId('drawer-storage')).toBeNull()
+    projects = [{ id: 'p1', name: 'Podcast', role: 'viewer' }]
+    renderDrawer()
+    for (const label of ALL_SECTIONS) {
+      expect(within(block()).queryByRole('link', { name: label })).toBeNull()
+    }
+  })
+
+  it('has no storage row', () => {
+    renderDrawer()
+    expect(screen.queryByTestId('drawer-storage')).toBeNull()
+    expect(screen.queryAllByTestId('drawer-settings-group')).toHaveLength(0)
+  })
+
+  it('does not read the settings list or the storage summary at all', () => {
+    // The structural half: a drawer that merely renders none of them today
+    // is one `groups.map` away from being a settings menu again.
+    const SRC = fs.readFileSync(
+      path.join(process.cwd(), 'components/layout/sidebar-user-block.tsx'), 'utf8')
+    // On the IMPORTS, not the prose: the docstring names both hooks to
+    // explain where they went, and a component cannot call what it has
+    // not imported.
+    expect(SRC).not.toMatch(/^import .*settings-nav/m)
+    expect(SRC).not.toMatch(/^import .*use-storage-summary/m)
+  })
+
+  it('but the Settings sub-nav still reads the shared list — it was not deleted', () => {
+    const LAYOUT = fs.readFileSync(
+      path.join(process.cwd(), 'app/(dashboard)/settings/layout.tsx'), 'utf8')
+    expect(LAYOUT).toMatch(/useVisibleSettingsNav.*from '@\/lib\/settings-nav'/)
   })
 })
 
-describe('nothing of this reaches the desktop rail', () => {
+// ─── (d) what the Settings page then offers ─────────────────────────────
+
+describe('§227 (d) — the sections live on the Settings page', () => {
+  function renderSettings() {
+    return render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <SettingsLayout>
+          <div />
+        </SettingsLayout>
+      </SWRConfig>,
+    )
+  }
+
+  it('a superadmin arriving there finds Admin', async () => {
+    renderSettings()
+    expect(await screen.findByRole('link', { name: 'Admin' })).toHaveAttribute(
+      'href', '/settings/admin',
+    )
+    expect(screen.getByRole('link', { name: 'Profile' })).toBeInTheDocument()
+  })
+
+  it('a plain member arriving there does not, but still gets their own sections', async () => {
+    authState = MEMBER
+    projects = [{ id: 'p1', name: 'Podcast', role: 'viewer' }]
+    renderSettings()
+    expect(await screen.findByRole('link', { name: 'Profile' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Admin' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Branding' })).toBeNull()
+  })
+
+  it('and the drawer’s one link is the way in, for both', () => {
+    renderDrawer()
+    expect(within(drawer()).getByRole('link', { name: /Mathias/ })).toHaveAttribute(
+      'href', '/settings/profile',
+    )
+    authState = MEMBER
+    screen.getByTestId('app-sidebar') // the admin render, still mounted
+    const second = render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <Sidebar collapsed onToggle={() => {}} mobileOpen onMobileClose={() => {}} />
+      </SWRConfig>,
+    )
+    expect(
+      within(second.container.querySelector('[data-testid="app-sidebar"]') as HTMLElement)
+        .getByRole('link', { name: /Sam/ }),
+    ).toHaveAttribute('href', '/settings/profile')
+  })
+})
+
+// ─── What §224b got right and §227 keeps ────────────────────────────────
+
+describe('§227 — the §224b fixes that stay', () => {
   it('the whole block is md:hidden', () => {
     render(<SidebarUserBlock />)
     expect(block().className).toMatch(/\bmd:hidden\b/)
@@ -159,10 +254,23 @@ describe('nothing of this reaches the desktop rail', () => {
       path.join(process.cwd(), 'components/layout/sidebar.tsx'), 'utf8')
     expect(SIDEBAR).toMatch(/\{mobileOpen && <SidebarUserBlock/)
   })
+
+  it('pads past the home indicator, which no other element does for it', () => {
+    render(<SidebarUserBlock />)
+    expect(block().innerHTML).toContain('env(safe-area-inset-bottom)')
+  })
 })
 
-describe('the tab bar no longer covers it', () => {
-  /** The z-index of the one `fixed` root element in a component. */
+describe('§227 — the drawer still paints above the tab bar', () => {
+  /**
+   * The z-index of the one `fixed` root element in a component.
+   *
+   * Kept from §224b: `mobile-tab-bar.tsx` is no longer mounted by the
+   * project view (§227 item 3), but it survives for §228's asset viewer,
+   * and the drawer has to win against it there too. Read out of both files
+   * and compared, because the bug is the RELATIONSHIP — a test pinning
+   * `z-50` would still pass if someone raised the tab bar to z-60.
+   */
   function fixedZ(file: string, marker: RegExp): number {
     const src = fs.readFileSync(path.join(process.cwd(), file), 'utf8')
     const line = src.split('\n').find((l) => marker.test(l))
@@ -180,13 +288,10 @@ describe('the tab bar no longer covers it', () => {
     fixedZ('components/layout/sidebar.tsx', /fixed inset-0 z-.*bg-black/)
 
   it('the drawer paints above it', () => {
-    // Equal values are not good enough: both are `fixed`, and at a tie
-    // the later element in the DOM wins — which is the tab bar, and which
-    // is exactly how the user block came to be hidden.
     expect(drawerZ()).toBeGreaterThan(tabBarZ())
   })
 
-  it('and so does the scrim, so the tab bar reads as inert rather than live', () => {
+  it('and so does the scrim', () => {
     expect(scrimZ()).toBeGreaterThan(tabBarZ())
     expect(drawerZ()).toBeGreaterThan(scrimZ())
   })

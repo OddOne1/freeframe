@@ -2,11 +2,15 @@
 
 import * as React from 'react'
 import { usePathname } from 'next/navigation'
-import { Search, ChevronRight, PanelRightClose, PanelRightOpen, Menu } from 'lucide-react'
+import { Search, ChevronRight, PanelRightClose, PanelRightOpen, Menu, Settings } from 'lucide-react'
 import Link from 'next/link'
 import { cn } from '@/lib/utils'
 import { useViewStore } from '@/stores/view-store'
-import { useBreadcrumbStore } from '@/stores/breadcrumb-store'
+import { useBreadcrumbsFor } from '@/stores/breadcrumb-store'
+import {
+  useMobileViewSettingsStore,
+  pathHasMobileViewSettings,
+} from '@/stores/mobile-view-settings-store'
 
 interface HeaderProps {
   onSearchOpen: () => void
@@ -58,7 +62,19 @@ function buildBreadcrumbs(pathname: string, dynamicLabels: Record<string, string
 export function Header({ onSearchOpen, onMobileNavOpen }: HeaderProps) {
   const pathname = usePathname()
   const { rightPanelOpen, toggleRightPanel } = useViewStore()
-  const { labels, extraCrumbs } = useBreadcrumbStore()
+  // §227 — scoped to THIS pathname. The Header never unmounts on a route
+  // change, and the crumbs are written by the pages, so an unscoped read
+  // appended an asset's folder path and name to every page the user went
+  // to next: `Settings > Admin > src > Video > ... > A010C030....MXF`, and
+  // on a phone, which shows only the last crumb, the Projects list read
+  // `> Fabio_close`. The store now keeps the pathname each entry was
+  // written for and this hands back only the matching one.
+  const { labels, extraCrumbs } = useBreadcrumbsFor(pathname)
+  // §227 — the phone view-settings pane, which §224 opened from a bottom
+  // tab bar that no longer exists on the project view.
+  const viewSettingsOpen = useMobileViewSettingsStore((s) => s.open)
+  const toggleViewSettings = useMobileViewSettingsStore((s) => s.toggle)
+  const hasViewSettings = pathHasMobileViewSettings(pathname)
   const urlCrumbs = buildBreadcrumbs(pathname, labels)
   const breadcrumbs = [...urlCrumbs, ...extraCrumbs.map((c) => ({ label: c.label, href: c.href ?? '' }))]
 
@@ -118,6 +134,40 @@ export function Header({ onSearchOpen, onMobileNavOpen }: HeaderProps) {
 
       {/* Right side actions */}
       <div className="flex shrink-0 items-center gap-1.5">
+        {/* §227 — the cogwheel: card size, thumbnail scale, layout, aspect
+            ratio, card info, titles, flatten folders, fields and sort, as a
+            full-screen pane. It replaces the bottom tab bar's Settings tab,
+            which went with the bar (the owner's decision: Assets /
+            Comments / Settings only make sense inside an asset).
+
+            Immediately LEFT of Search, as asked, which is why it is the
+            first child of this group rather than appended after it.
+
+            `md:hidden`: at `md`+ every one of those controls is back in
+            the toolbar's own two popovers, which render the SAME
+            components the pane does — a second route to them here would
+            be a duplicate, not a convenience. Project and folder pages
+            only; `pathHasMobileViewSettings` is what decides that, and
+            the pane itself lives in projects/[id]/page.tsx. */}
+        {hasViewSettings && (
+          <button
+            data-testid="header-view-settings"
+            onClick={toggleViewSettings}
+            aria-label="View settings"
+            aria-expanded={viewSettingsOpen}
+            title="View settings"
+            className={cn(
+              // 44px, the same target as the hamburger on the other side.
+              'md:hidden flex h-11 w-11 shrink-0 items-center justify-center rounded-md transition-colors',
+              viewSettingsOpen
+                ? 'bg-nav-text/15 text-nav-text'
+                : 'text-nav-text/70 hover:bg-nav-text/10 hover:text-nav-text',
+            )}
+          >
+            <Settings className="h-5 w-5" />
+          </button>
+        )}
+
         {/* Search trigger */}
         <button
           onClick={onSearchOpen}

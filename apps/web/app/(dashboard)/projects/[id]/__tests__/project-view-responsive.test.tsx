@@ -13,11 +13,18 @@
  * jsdom applies no media queries, so these cannot prove what a browser
  * paints. What they CAN prove is the part a CSS-only reading would miss and
  * the part that regressed: that the panel is one element which is never
- * `hidden` below `xl`, that it starts closed there, that the tree is
- * reachable through the top sheet with its menu intact, and that the three
- * phone panes switch. Where an assertion is about a class, it is about a
- * class that encodes a decision (`fixed` vs `static`, `max-md:` vs `md:`),
- * not about spelling.
+ * `hidden` below `xl`, that it starts closed there, and that the tree is
+ * reachable through the navigator with its menu intact. Where an assertion
+ * is about a class, it is about a class that encodes a decision (`fixed`
+ * vs `static`, `max-md:` vs `md:`), not about spelling.
+ *
+ * §227 item 3 — the three phone tabs are gone. The owner's decision:
+ * Assets / Comments / Settings only make sense INSIDE an asset, so the
+ * project view has no bottom tab bar, no Comments pane and no Settings
+ * tab; the view settings are a cogwheel in the global header, left of
+ * search. The sections at the foot of this file assert the absence as
+ * well as the replacement — "no tab bar" is half the fix, and the half a
+ * test for the cogwheel alone would not catch.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
@@ -103,8 +110,13 @@ vi.mock('@/components/review/comment-panel', () => ({ CommentPanel: () => null }
 vi.mock('@/components/upload/upload-zone', () => ({ UploadZone: () => null }))
 
 import ProjectPage from '../page'
+import { Header } from '@/components/layout/header'
 import { useBreadcrumbStore } from '@/stores/breadcrumb-store'
 import { useViewStore } from '@/stores/view-store'
+import {
+  useMobileViewSettingsStore,
+  pathHasMobileViewSettings,
+} from '@/stores/mobile-view-settings-store'
 
 function renderPage() {
   return render(
@@ -114,12 +126,25 @@ function renderPage() {
   )
 }
 
+/**
+ * The page WITH the global header above it, as DashboardShell mounts them
+ * (§227). The cogwheel that opens the settings pane is in the Header and
+ * the pane is in the page, so neither alone can answer "does the button
+ * open the pane" — that is the whole reason the flag is in a store.
+ */
+function renderShell() {
+  return render(
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <Header onSearchOpen={() => {}} onMobileNavOpen={() => {}} />
+      <ProjectPage />
+    </SWRConfig>,
+  )
+}
+
 const panel = () => screen.getByTestId('project-right-panel')
 const settingsPane = () => screen.getByTestId('project-settings-pane')
-const tabBar = () => screen.getByTestId('mobile-tab-bar')
-/** Scoped, because "Assets" is also the sidebar's section heading and
- *  "settings" also matches the actions menu's "Project settings". */
-const tab = (name: RegExp) => within(tabBar()).getByRole('button', { name })
+const cogwheel = () => screen.getByTestId('header-view-settings')
+const searchButton = () => screen.getByRole('button', { name: /^Search/ })
 
 /** Does this element's class list ever resolve to `display: none` in the
  *  band Tailwind's `max-md:`/`md:` prefixes name? */
@@ -136,8 +161,15 @@ beforeEach(() => {
   folderParam = null
   get.mockClear()
   push.mockClear()
-  useBreadcrumbStore.setState({ labels: {}, extraCrumbs: [] })
-  useViewStore.setState({ rightPanelOpen: true, flattenFolders: false, layout: 'grid' })
+  useBreadcrumbStore.setState({ pathname: null, labels: {}, extraCrumbs: [] })
+  useViewStore.setState({
+    rightPanelOpen: true,
+    flattenFolders: false,
+    layout: 'grid',
+    cardSize: 'M',
+    sortKey: 'date',
+  })
+  useMobileViewSettingsStore.setState({ open: false })
 })
 
 // ─── The reported bug: the panel below xl ────────────────────────────────
@@ -153,8 +185,8 @@ describe('§224 — the right panel is ONE element, never hidden below xl', () =
     renderPage()
     await ready()
     const cls = panel().className
-    // Below md: a full-screen pane. md–xl: a right drawer. xl+: in flow.
-    expect(cls).toMatch(/max-md:fixed/)
+    // md–xl: a right drawer. xl+: in flow. §227 removed the third
+    // behaviour, the full-screen phone pane — see the §227 section below.
     expect(cls).toMatch(/md:max-xl:fixed/)
     expect(cls).toMatch(/md:max-xl:right-0/)
     expect(cls).toMatch(/xl:static/)
@@ -227,7 +259,7 @@ describe('§224 — the right panel is ONE element, never hidden below xl', () =
 
 // ─── The other half: the folder tree ────────────────────────────────────
 
-describe('§224 — folders are reachable at every width', () => {
+describe('§224/§227 — folders are reachable at every width', () => {
   it('the sidebar column is xl-only now, not lg-only', async () => {
     renderPage()
     await ready()
@@ -238,39 +270,53 @@ describe('§224 — folders are reachable at every width', () => {
     expect((column as HTMLElement).className).toMatch(/hidden xl:flex/)
   })
 
-  it('the project name is a trigger that opens the tree', async () => {
+  it('the navigator bar names where you are and opens the tree', async () => {
     const user = userEvent.setup()
     renderPage()
     await ready()
 
-    const trigger = await screen.findByTestId('folder-tree-sheet-trigger')
+    const trigger = await screen.findByTestId('folder-navigator-trigger')
     expect(trigger).toHaveTextContent('Podcast')
     expect(trigger.className).toMatch(/h-11/)
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
 
     await user.click(trigger)
-    const sheet = await screen.findByTestId('folder-tree-sheet')
-    expect(sheet).toBeTruthy()
+    expect(await screen.findByTestId('folder-navigator-panel')).toBeTruthy()
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
     // The real tree, with its rows.
     expect(await screen.findAllByText('Day 1')).not.toHaveLength(0)
   })
 
-  it('the trigger names the OPEN folder, not just the project', async () => {
+  it('the bar names the OPEN folder, with the project as its prefix', async () => {
     folderParam = 'f-1a'
     renderPage()
     await ready()
-    const trigger = await screen.findByTestId('folder-tree-sheet-trigger')
+    const trigger = await screen.findByTestId('folder-navigator-trigger')
+    // "Podcast / Day 1 / Rushes" — the owner's "Just Ride 2026 / Podcast"
+    // shape, and the open folder is the part that must always be legible.
     await waitFor(() => expect(trigger).toHaveTextContent('Rushes'))
+    expect(trigger).toHaveTextContent('Podcast')
+    expect(trigger).toHaveTextContent('Day 1')
+    // The accessible name carries the unabbreviated path.
+    expect(trigger).toHaveAttribute('aria-label', 'Folders: Podcast / Day 1 / Rushes')
   })
 
-  it('the sheet carries §223’s per-folder menu, because it reuses FolderTree', async () => {
+  it('with no folder open the path is the project name', async () => {
+    renderPage()
+    await ready()
+    const trigger = await screen.findByTestId('folder-navigator-trigger')
+    await waitFor(() => expect(trigger).toHaveAttribute('aria-label', 'Folders: Podcast'))
+  })
+
+  it('the panel carries §223’s per-folder menu, because it reuses FolderTree', async () => {
     const user = userEvent.setup()
     renderPage()
     await ready()
-    await user.click(await screen.findByTestId('folder-tree-sheet-trigger'))
-    await screen.findByTestId('folder-tree-sheet')
+    await user.click(await screen.findByTestId('folder-navigator-trigger'))
+    await screen.findByTestId('folder-navigator-panel')
 
-    const sheet = screen.getByTestId('folder-tree-sheet')
-    await user.click(within(sheet).getByRole('button', { name: 'Folder options for Day 1' }))
+    const panelEl = screen.getByTestId('folder-navigator-panel')
+    await user.click(within(panelEl).getByRole('button', { name: 'Folder options for Day 1' }))
     await waitFor(() =>
       expect(screen.getAllByRole('menuitem').map((i) => i.textContent?.trim())).toEqual([
         'Rename',
@@ -281,123 +327,305 @@ describe('§224 — folders are reachable at every width', () => {
     )
   })
 
-  it('picking a folder navigates and closes the sheet', async () => {
+  it('picking a folder navigates and closes the panel', async () => {
     const user = userEvent.setup()
     renderPage()
     await ready()
-    await user.click(await screen.findByTestId('folder-tree-sheet-trigger'))
-    await screen.findByTestId('folder-tree-sheet')
+    await user.click(await screen.findByTestId('folder-navigator-trigger'))
+    await screen.findByTestId('folder-navigator-panel')
 
-    // Scoped to the sheet: jsdom renders the sidebar column's tree too,
+    // Scoped to the panel: jsdom renders the sidebar column's tree too,
     // because it applies no media queries.
-    const sheet = screen.getByTestId('folder-tree-sheet')
-    await user.click(within(sheet).getByText('Day 1'))
+    const panelEl = screen.getByTestId('folder-navigator-panel')
+    await user.click(within(panelEl).getByText('Day 1'))
     await waitFor(() => expect(push).toHaveBeenCalled())
     expect(String(push.mock.calls[0][0])).toContain('folder=f-1')
     await waitFor(() =>
-      expect(screen.queryByTestId('folder-tree-sheet')).not.toBeInTheDocument(),
+      expect(screen.queryByTestId('folder-navigator-panel')).not.toBeInTheDocument(),
     )
   })
 
-  it('the header row it lives in is hidden at xl, where the column is back', async () => {
+  it('the bar itself closes it, and so do the scrim and Escape', async () => {
+    const user = userEvent.setup()
     renderPage()
     await ready()
-    const row = (await screen.findByTestId('folder-tree-sheet-trigger')).parentElement
-    expect((row as HTMLElement).className).toMatch(/xl:hidden/)
+    const trigger = await screen.findByTestId('folder-navigator-trigger')
+
+    // The bar again.
+    await user.click(trigger)
+    await screen.findByTestId('folder-navigator-panel')
+    await user.click(trigger)
+    await waitFor(() =>
+      expect(screen.queryByTestId('folder-navigator-panel')).not.toBeInTheDocument(),
+    )
+
+    // The scrim.
+    await user.click(trigger)
+    await user.click(screen.getByTestId('folder-navigator-scrim'))
+    await waitFor(() =>
+      expect(screen.queryByTestId('folder-navigator-panel')).not.toBeInTheDocument(),
+    )
+
+    // Escape.
+    await user.click(trigger)
+    await screen.findByTestId('folder-navigator-panel')
+    await user.keyboard('{Escape}')
+    await waitFor(() =>
+      expect(screen.queryByTestId('folder-navigator-panel')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('and there is no ✕ and no title bar to close it with', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    await user.click(await screen.findByTestId('folder-navigator-trigger'))
+    const panelEl = await screen.findByTestId('folder-navigator-panel')
+    // §224's sheet had a "FOLDERS ✕" header, which is what made it read as
+    // a floating dialog rather than part of the bar.
+    expect(within(panelEl).queryByRole('button', { name: /close folders/i })).toBeNull()
+    expect(within(panelEl).queryByText(/^folders$/i)).toBeNull()
+  })
+
+  it('is attached to the bar, not centred or floating', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    await user.click(await screen.findByTestId('folder-navigator-trigger'))
+    const panelEl = await screen.findByTestId('folder-navigator-panel')
+    const bar = screen.getByTestId('folder-navigator')
+
+    // A child of the bar, positioned from the bar's bottom edge and the
+    // bar's full width — not a portal into document.body (which is what
+    // made §224's Radix Dialog float) and not `fixed`.
+    expect(bar.contains(panelEl)).toBe(true)
+    expect(panelEl.className).toMatch(/\babsolute\b/)
+    expect(panelEl.className).toMatch(/\btop-full\b/)
+    expect(panelEl.className).toMatch(/\binset-x-0\b/)
+    expect(panelEl.className.split(/\s+/)).not.toContain('fixed')
+  })
+
+  it('wears the header’s colours, not the content area’s', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    const bar = screen.getByTestId('folder-navigator')
+    await user.click(await screen.findByTestId('folder-navigator-trigger'))
+    const panelEl = await screen.findByTestId('folder-navigator-panel')
+    // The same three tokens header.tsx uses, so a Branding override moves
+    // the bar with the header instead of leaving it behind.
+    for (const el of [bar, panelEl]) {
+      expect(el.className).toMatch(/bg-nav-bg/)
+      expect(el.className).toMatch(/border-nav-border/)
+    }
+    expect(screen.getByTestId('folder-navigator-trigger').innerHTML).toMatch(/text-nav-text/)
+  })
+
+  it('scrolls inside itself rather than running off the screen', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    await user.click(await screen.findByTestId('folder-navigator-trigger'))
+    const panelEl = await screen.findByTestId('folder-navigator-panel')
+    expect(panelEl.className).toContain('max-h-[min(60dvh,calc(100dvh-5.5rem))]')
+    expect(panelEl.className).toMatch(/overflow-y-auto/)
+  })
+
+  it('the scrim starts below the bar, so the bar stays live', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    await user.click(await screen.findByTestId('folder-navigator-trigger'))
+    const scrim = await screen.findByTestId('folder-navigator-scrim')
+    // `top-full` of the bar, and painted UNDER the panel — so what reads as
+    // dimmed is the content below the panel and nothing else.
+    expect(scrim.className).toMatch(/\btop-full\b/)
+    const z = (el: HTMLElement) => Number(el.className.match(/\bz-(\d+)\b/)![1])
+    expect(z(screen.getByTestId('folder-navigator-panel'))).toBeGreaterThan(z(scrim))
+  })
+
+  it('the chevron rotates when open', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    const chevron = screen.getByTestId('folder-navigator-chevron')
+    expect(chevron.getAttribute('class')).not.toMatch(/rotate-180/)
+    await user.click(await screen.findByTestId('folder-navigator-trigger'))
+    await waitFor(() => expect(chevron.getAttribute('class')).toMatch(/rotate-180/))
+  })
+
+  it('the bar is hidden at xl, where the column is back', async () => {
+    renderPage()
+    await ready()
+    expect(screen.getByTestId('folder-navigator').className).toMatch(/xl:hidden/)
   })
 })
 
-// ─── The phone layout ───────────────────────────────────────────────────
+// ─── The phone layout (§227) ────────────────────────────────────────────
 
-describe('§224 — the three phone tabs', () => {
-  it('renders a tab bar, phones only', async () => {
+describe('§227 — the project view has no bottom tab bar', () => {
+  it('mounts none at all', async () => {
     renderPage()
     await ready()
-    expect(tabBar().className).toMatch(/md:hidden/)
-    expect(
-      screen.getAllByRole('button').filter((b) => tabBar().contains(b)).length,
-    ).toBe(3)
+    // Not "hidden below md": absent. §224's bar offered Comments and
+    // Settings tabs on a screen where neither belongs, and the 56px it
+    // cost the grid is the space §227 reclaims.
+    expect(screen.queryByTestId('mobile-tab-bar')).toBeNull()
+    expect(screen.queryByRole('navigation', { name: 'Project views' })).toBeNull()
   })
 
-  it('starts on Assets', async () => {
+  it('and no Comments pane for it to switch to', async () => {
     renderPage()
     await ready()
-    const assets = tab(/^assets$/i)
-    expect(assets).toHaveAttribute('aria-current', 'page')
-    expect(displayClasses(settingsPane())).toContain('max-md:hidden')
+    // The panel still exists as the md+ drawer/column — that is §224's fix
+    // and it stays — but below `md` it is gone, and there is no control on
+    // this screen that could open it.
     expect(displayClasses(panel())).toContain('max-md:hidden')
+    expect(displayClasses(panel())).not.toContain('max-md:flex')
+    expect(screen.queryByRole('button', { name: /go to assets/i })).toBeNull()
   })
 
-  it('Comments shows the panel pane and hides the grid', async () => {
-    const user = userEvent.setup()
+  it('leaves the md-and-up bands exactly as §224 built them', async () => {
+    renderPage()
+    await ready()
+    const cls = panel().className
+    expect(cls).toMatch(/md:max-xl:fixed/)
+    expect(cls).toMatch(/md:max-xl:right-0/)
+    expect(cls).toMatch(/xl:static/)
+    // Still never a bare `hidden`, which is what made the toggle dead.
+    expect(cls.split(/\s+/)).not.toContain('hidden')
+  })
+
+  it('the grid is the content area at every width, not one of three panes', async () => {
     renderPage()
     await ready()
     const grid = document.querySelector('.asset-grid-container') as HTMLElement
-
-    await user.click(tab(/^comments$/i))
-    await waitFor(() => expect(displayClasses(panel())).toContain('max-md:flex'))
-    expect(displayClasses(grid)).toContain('max-md:hidden')
-    // …and the desktop band is untouched by the tab.
-    expect(displayClasses(grid)).toContain('md:flex')
+    // No `max-md:hidden` to switch it off, and nothing conditional left.
+    expect(displayClasses(grid)).toEqual(['flex'])
   })
 
-  it('Settings shows the settings pane', async () => {
-    const user = userEvent.setup()
+  it('reclaims the bar’s 56px from the grid’s bottom padding', async () => {
     renderPage()
     await ready()
-    await user.click(tab(/^settings$/i))
+    const scroller = document.querySelector('.asset-grid-container .overflow-y-auto') as HTMLElement
+    // 3.5rem was the bar. The home-indicator inset stays: this scroll area
+    // now reaches the bottom edge of the screen itself.
+    expect(scroller.className).not.toMatch(/3\.5rem/)
+    expect(scroller.className).toContain('max-md:pb-[calc(1.5rem+env(safe-area-inset-bottom))]')
+  })
+
+  it('and from the settings pane, which pads only for the home indicator', async () => {
+    renderPage()
+    await ready()
+    expect(settingsPane().className).not.toMatch(/3\.5rem/)
+    expect(settingsPane().className).toContain('max-md:pb-[env(safe-area-inset-bottom)]')
+  })
+})
+
+describe('§227 — the cogwheel in the header opens the settings pane', () => {
+  it('exists, is 44px, and names itself', async () => {
+    renderShell()
+    await ready()
+    expect(cogwheel()).toHaveAttribute('aria-label', 'View settings')
+    expect(cogwheel().className).toMatch(/\bh-11\b/)
+    expect(cogwheel().className).toMatch(/\bw-11\b/)
+    // Phones only: at md+ every control in the pane is back in the
+    // toolbar's own popovers.
+    expect(cogwheel().className).toMatch(/md:hidden/)
+  })
+
+  it('sits immediately LEFT of the search button', async () => {
+    renderShell()
+    await ready()
+    const cog = cogwheel()
+    const search = searchButton()
+    // Same flex row, cogwheel first — and the row has no `order-*`
+    // utilities, so DOM order is paint order.
+    expect(cog.parentElement).toBe(search.parentElement)
+    expect(cog.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const between = Array.from(cog.parentElement!.children)
+    expect(between.indexOf(search) - between.indexOf(cog)).toBe(1)
+    expect(cog.parentElement!.className).not.toMatch(/\border-/)
+  })
+
+  it('opens the pane, and says so', async () => {
+    const user = userEvent.setup()
+    renderShell()
+    await ready()
+    expect(cogwheel()).toHaveAttribute('aria-expanded', 'false')
+    expect(displayClasses(settingsPane())).toContain('max-md:hidden')
+
+    await user.click(cogwheel())
     await waitFor(() => expect(displayClasses(settingsPane())).toContain('max-md:flex'))
+    expect(cogwheel()).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByText('View settings')).toBeTruthy()
   })
 
-  it('switching back to Assets restores the grid', async () => {
+  it('closes it again, from the pane’s own back control', async () => {
     const user = userEvent.setup()
-    renderPage()
+    renderShell()
     await ready()
-    const grid = document.querySelector('.asset-grid-container') as HTMLElement
-    await user.click(tab(/^settings$/i))
-    await waitFor(() => expect(displayClasses(grid)).toContain('max-md:hidden'))
-    await user.click(tab(/^assets$/i))
-    await waitFor(() => expect(displayClasses(grid)).toContain('max-md:flex'))
+    await user.click(cogwheel())
+    await waitFor(() => expect(displayClasses(settingsPane())).toContain('max-md:flex'))
+
+    // The pane covers the header, cogwheel included, so it has to offer
+    // its own way out — §224 had the tab bar for that.
+    const close = screen.getByTestId('close-view-settings')
+    expect(close).toHaveAttribute('aria-label', 'Close view settings')
+    expect(close.className).toMatch(/\bh-11\b/)
+    await user.click(close)
+    await waitFor(() => expect(displayClasses(settingsPane())).toContain('max-md:hidden'))
   })
 
-  it('every tab is at least 44px tall', async () => {
-    renderPage()
+  it('and from Escape', async () => {
+    const user = userEvent.setup()
+    renderShell()
     await ready()
-    for (const b of screen.getAllByRole('button').filter((b) => tabBar().contains(b))) {
-      // h-14 = 56px.
-      expect(b.className).toMatch(/\bh-14\b/)
-    }
+    await user.click(cogwheel())
+    await waitFor(() => expect(displayClasses(settingsPane())).toContain('max-md:flex'))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(displayClasses(settingsPane())).toContain('max-md:hidden'))
   })
 
-  it('pads itself past the home indicator', async () => {
-    renderPage()
+  it('starts closed, however the store was left', async () => {
+    useMobileViewSettingsStore.setState({ open: true })
+    renderShell()
     await ready()
-    // viewport-fit=cover (root layout) is what makes this inset non-zero;
-    // without the padding the labels sit under the iPhone home indicator.
-    expect(tabBar().className).toContain('pb-[env(safe-area-inset-bottom)]')
+    // Arriving at a project with the grid covered by a pane nobody opened
+    // is what a persisted or carried-over flag would give.
+    await waitFor(() => expect(useMobileViewSettingsStore.getState().open).toBe(false))
+  })
+
+  it('is offered on the project and folder pages only', () => {
+    // The predicate the Header reads, asserted directly: a cogwheel on the
+    // projects list would open a pane that is not mounted there.
+    expect(pathHasMobileViewSettings(`/projects/${PROJECT}`)).toBe(true)
+    expect(pathHasMobileViewSettings('/projects')).toBe(false)
+    expect(pathHasMobileViewSettings(`/projects/${PROJECT}/assets/a-1`)).toBe(false)
+    expect(pathHasMobileViewSettings(`/projects/${PROJECT}/collections`)).toBe(false)
+    expect(pathHasMobileViewSettings('/settings/admin')).toBe(false)
   })
 })
 
-describe('§224 — the Settings tab drives the same store as the toolbar', () => {
+describe('§227 — the pane drives the same store as the toolbar', () => {
   it('the card-size control writes the key the Appearance popover writes', async () => {
     const user = userEvent.setup()
-    renderPage()
+    renderShell()
     await ready()
-    await user.click(tab(/^settings$/i))
+    await user.click(cogwheel())
     await screen.findByText('View settings')
 
     expect(useViewStore.getState().cardSize).toBe('M')
-    await user.click(screen.getByRole('button', { name: 'XS' }))
+    await user.click(within(settingsPane()).getByRole('button', { name: 'XS' }))
     // The same store, the same key — not a parallel mobile preference.
     await waitFor(() => expect(useViewStore.getState().cardSize).toBe('XS'))
   })
 
   it('asset size is the FIRST control in the pane', async () => {
     const user = userEvent.setup()
-    renderPage()
+    renderShell()
     await ready()
-    await user.click(tab(/^settings$/i))
+    await user.click(cogwheel())
     const pane = settingsPane()
     const labels = Array.from(pane.querySelectorAll('span.text-sm')).map((e) => e.textContent)
     expect(labels[0]).toBe('Card Size')
@@ -406,12 +634,26 @@ describe('§224 — the Settings tab drives the same store as the toolbar', () =
 
   it('also offers sort, which the toolbar popover owns on desktop', async () => {
     const user = userEvent.setup()
-    renderPage()
+    renderShell()
     await ready()
-    await user.click(tab(/^settings$/i))
+    await user.click(cogwheel())
     await screen.findByText('Sort by')
-    await user.click(screen.getByRole('button', { name: /^Name$/ }))
+    await user.click(within(settingsPane()).getByRole('button', { name: /^Name$/ }))
     await waitFor(() => expect(useViewStore.getState().sortKey).toBe('name'))
+  })
+
+  it('and the whole §224 list of controls, in one pane', async () => {
+    const user = userEvent.setup()
+    renderShell()
+    await ready()
+    await user.click(cogwheel())
+    const pane = settingsPane()
+    for (const label of [
+      'Card Size', 'Thumbnail Scale', 'Layout', 'Aspect Ratio',
+      'Show Card Info', 'Titles', 'Flatten Folders',
+    ]) {
+      expect(within(pane).getByText(label)).toBeTruthy()
+    }
   })
 })
 
@@ -468,10 +710,10 @@ describe('§224 — hover-only controls are reachable without hover', () => {
     const user = userEvent.setup()
     renderPage()
     await ready()
-    await user.click(await screen.findByTestId('folder-tree-sheet-trigger'))
-    await screen.findByTestId('folder-tree-sheet')
+    await user.click(await screen.findByTestId('folder-navigator-trigger'))
+    await screen.findByTestId('folder-navigator-panel')
 
-    const kebab = within(screen.getByTestId('folder-tree-sheet')).getByRole('button', {
+    const kebab = within(screen.getByTestId('folder-navigator-panel')).getByRole('button', {
       name: 'Folder options for Day 1',
     })
     // `opacity-0 group-hover:opacity-100` alone means permanently invisible

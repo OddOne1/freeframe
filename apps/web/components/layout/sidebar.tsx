@@ -293,9 +293,15 @@ export function Sidebar({
         </button>
 
         {/* §224b — mounted only while the drawer is open. It is `md:hidden`
-            as well, but gating on `mobileOpen` also keeps its /projects
-            read off every desktop page, where the rail never shows it. */}
-        {mobileOpen && <SidebarUserBlock onNavigate={onMobileClose} />}
+            as well, but gating on `mobileOpen` keeps it out of every
+            desktop render too.
+            §227 — it is Log out now, and nothing else: the user row is the
+            avatar link directly above, which the rail and the drawer share,
+            and the settings sections live behind it on the Settings page
+            rather than beside it in the drawer. Tapping the avatar row
+            closes the drawer by itself — DashboardShell closes it on every
+            pathname change. */}
+        {mobileOpen && <SidebarUserBlock />}
       </div>
     </aside>
 

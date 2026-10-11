@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useFormatBytes } from '@/hooks/use-byte-units'
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import Link from "next/link";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -11,6 +11,7 @@ import {
   Upload,
   Settings,
   X,
+  ArrowLeft,
   FolderOpen,
   Link as LinkIcon,
   Download,
@@ -60,12 +61,16 @@ import {
 import { useAuthStore } from "@/stores/auth-store";
 import { useViewStore } from "@/stores/view-store";
 import { useBreadcrumbStore } from "@/stores/breadcrumb-store";
+import { useMobileViewSettingsStore } from "@/stores/mobile-view-settings-store";
 import { useComments } from "@/hooks/use-comments";
 import { useFolders, useTrash } from "@/hooks/use-folders";
 import { useShareLinks } from "@/hooks/use-share-links";
 import { FolderTree } from "@/components/projects/folder-tree";
-import { FolderTreeSheet } from "@/components/projects/folder-tree-sheet";
-import { MobileTabBar, type PhoneTab } from "@/components/projects/mobile-tab-bar";
+import { FolderNavigator } from "@/components/projects/folder-navigator";
+import {
+  ShareLinksSection,
+  ProjectStorageMeter,
+} from "@/components/projects/share-links-section";
 import { MobileViewSettings } from "@/components/projects/mobile-view-settings";
 import { useFileDropZone } from "@/hooks/use-file-drop-zone";
 import { ShareLinksTable } from "@/components/projects/share-links-table";
@@ -136,6 +141,7 @@ function TrashExpiry({ deletedAt }: { deletedAt: string | null }) {
 export default function ProjectDetailPage() {
   const formatBytes = useFormatBytes()
   const params = useParams();
+  const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
   const projectId = params.id as string;
@@ -213,15 +219,25 @@ export default function ProjectDetailPage() {
   } | null>(null);
   const [shareMode, setShareMode] = React.useState(false);
   /**
-   * §224 — which of the three phone panes is showing.
+   * §227 — whether the phone's view-settings pane is on screen.
    *
-   * Plain state, not a media query: at `md`+ the CSS restores all three
-   * elements to their desktop behaviour regardless of what this holds, so
-   * nothing has to know how wide the screen is. That is what keeps this
-   * free of a hydration mismatch and of a one-frame flash of the phone
-   * layout on a desktop — the server and the client render the same thing.
+   * §224 had three phone panes here (Assets / Comments / Settings) and a
+   * bottom tab bar to switch them. The owner's decision: those three only
+   * make sense INSIDE an asset, so the bar is gone from this view, the
+   * Comments pane with it (comments and fields live in the asset viewer,
+   * §228), and the grid gets the whole height back. What is left is the
+   * settings pane, opened by the cogwheel in the global header.
+   *
+   * In a store rather than `useState` because the button is in the Header,
+   * which the dashboard layout mounts — see stores/mobile-view-settings-store.ts.
+   *
+   * Still not a media query: at `md`+ the CSS restores every element to
+   * its desktop behaviour regardless of what this holds, so nothing here
+   * has to know how wide the screen is, and the server and the client
+   * render the same thing.
    */
-  const [phoneTab, setPhoneTab] = React.useState<PhoneTab>("assets");
+  const mobileSettingsOpen = useMobileViewSettingsStore((s) => s.open);
+  const setMobileSettingsOpen = useMobileViewSettingsStore((s) => s.setOpen);
   const [membersDialogOpen, setMembersDialogOpen] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [pendingBulkDelete, setPendingBulkDelete] = React.useState<{
@@ -342,21 +358,61 @@ export default function ProjectDetailPage() {
 
   // Register project name for header breadcrumb + page title
   usePageTitle(project?.name ?? null);
+  // §227 — every write names the pathname it describes, and the store
+  // hands crumbs back only to the page they were written for. The folder
+  // path below used to survive into Settings and into the Projects list.
   const setLabel = useBreadcrumbStore((s) => s.setLabel);
   const setExtraCrumbs = useBreadcrumbStore((s) => s.setExtraCrumbs);
   React.useEffect(() => {
-    if (project?.name) setLabel(projectId, project.name);
-  }, [project?.name, projectId, setLabel]);
+    if (project?.name) setLabel(pathname, projectId, project.name);
+  }, [project?.name, projectId, pathname, setLabel]);
 
-  // Push folder path as extra breadcrumb crumbs when navigating folders
+  /**
+   * §227 — the pane is closed on arrival and on the way out.
+   *
+   * The flag lives in a store that outlives this page, because the button
+   * that flips it is in the Header. Without this, leaving a project with
+   * the pane open and coming back to another one would show the pane over
+   * a grid nobody had asked to cover — and Escape has to work, because a
+   * full-screen pane over the header is not dismissable any other way on
+   * a keyboard.
+   */
   React.useEffect(() => {
-    if (!currentFolderId || !tree) {
-      setExtraCrumbs([]);
-      return;
+    const close = () => useMobileViewSettingsStore.getState().setOpen(false);
+    close();
+    return close;
+  }, [projectId]);
+
+  React.useEffect(() => {
+    if (!mobileSettingsOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setMobileSettingsOpen(false);
     }
-    // Walk the tree to collect path nodes (id + name) to currentFolderId
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [mobileSettingsOpen, setMobileSettingsOpen]);
+
+  // The second layer (§227): leaving the page drops its crumbs outright,
+  // so nothing stale is even stored. Guarded by pathname inside `clear`,
+  // because React unmounts the OLD page after the new one has mounted and
+  // an unguarded clear here would wipe the crumbs its successor just wrote.
+  React.useEffect(
+    () => () => useBreadcrumbStore.getState().clear(pathname),
+    [pathname],
+  );
+
+  /**
+   * The chain of open folders, root first: `[{id, name}, ...]`.
+   *
+   * §227 — one walk, three readers: the Header's crumbs below, the folder
+   * navigator's path ("Just Ride 2026 / Podcast") and the drop overlay's
+   * target name. §224 walked the tree separately for each of them, which
+   * is how two of them can start disagreeing about which folder is open.
+   */
+  const folderTrail = React.useMemo(() => {
+    if (!currentFolderId || !tree) return [];
     function findPath(
-      nodes: typeof tree,
+      nodes: FolderTreeNode[],
       targetId: string,
       trail: { id: string; name: string }[],
     ): { id: string; name: string }[] | null {
@@ -368,11 +424,16 @@ export default function ProjectDetailPage() {
       }
       return null
     }
-    const path = findPath(tree, currentFolderId, []) ?? []
+    return findPath(tree, currentFolderId, []) ?? [];
+  }, [currentFolderId, tree]);
+
+  // Push folder path as extra breadcrumb crumbs when navigating folders
+  React.useEffect(() => {
     setExtraCrumbs(
-      path.map((f) => ({ label: f.name, href: `/projects/${projectId}?folder=${f.id}` }))
+      pathname,
+      folderTrail.map((f) => ({ label: f.name, href: `/projects/${projectId}?folder=${f.id}` }))
     );
-  }, [currentFolderId, tree, projectId, setExtraCrumbs]);
+  }, [folderTrail, projectId, pathname, setExtraCrumbs]);
 
   const folderParam = currentFolderId
     ? `folder_id=${currentFolderId}`
@@ -681,21 +742,14 @@ export default function ProjectDetailPage() {
   });
 
   /** What the drop overlay says it will upload into.
-   *  Walked rather than looked up in `subfolders` (which holds the open
-   *  folder's CHILDREN, not itself) or in `folderPaths` (which is keyed by
-   *  asset id). */
+   *  §227 — the foot of `folderTrail`, which is the same walk the crumbs
+   *  and the navigator read; it is neither in `subfolders` (which holds the
+   *  open folder's CHILDREN, not itself) nor in `folderPaths` (which is
+   *  keyed by asset id). */
   const dropTargetName = React.useMemo(() => {
     if (!currentFolderId) return project?.name || "this project";
-    const find = (nodes: FolderTreeNode[]): string | null => {
-      for (const n of nodes) {
-        if (n.id === currentFolderId) return n.name;
-        const hit = find(n.children);
-        if (hit) return hit;
-      }
-      return null;
-    };
-    return find(tree ?? []) ?? "this folder";
-  }, [currentFolderId, tree, project?.name]);
+    return folderTrail[folderTrail.length - 1]?.name ?? "this folder";
+  }, [currentFolderId, folderTrail, project?.name]);
 
   const handleFilesSelected = (files: DroppedFile[]) => {
     // Camera housekeeping files are dropped here rather than at upload time,
@@ -891,6 +945,52 @@ export default function ProjectDetailPage() {
    * drag-drop targets for free, which is the point of reusing `FolderTree`
    * rather than forking it.
    */
+  /**
+   * §227 — the Share Links list's props, in one place.
+   *
+   * Two mount points render it now: the `xl`+ sidebar column and the
+   * folder navigator's panel below `xl`, where the owner reported there
+   * was "no way to get to the share links" at all. Written once and spread
+   * into both, for the same reason `folderTreeProps` below is: a second
+   * copy is how the "+" in one of them stops clearing `showTrash`, or how
+   * one grows a menu entry the other does not have.
+   *
+   * Clearing the open folder with a REPLACE on every selection is §29's
+   * handling, and is why these handlers live here rather than inside the
+   * component: Trash and Share Links are not in the URL, so a history
+   * entry would let Back restore the folder while leaving this view open.
+   */
+  const shareLinksSectionProps = {
+    shareLinks,
+    expanded: shareLinksExpanded,
+    onToggleExpanded: () => setShareLinksExpanded(!shareLinksExpanded),
+    showShareLinks,
+    selectedShareLink,
+    onCreate: () => {
+      setShowShareLinks(false);
+      setShowTrash(false);
+      openShareDialog([], []);
+    },
+    onSelectAll: () => {
+      setShowShareLinks(true);
+      setSelectedShareLink(null);
+      setShowTrash(false);
+      goToFolder(null, { replace: true });
+    },
+    onSelectLink: (token: string) => {
+      setShowShareLinks(true);
+      setSelectedShareLink(token);
+      setShowTrash(false);
+      goToFolder(null, { replace: true });
+    },
+    onToggleEnabled: (token: string, enabled: boolean) =>
+      toggleEnabled(token, enabled),
+    onDelete: async (token: string) => {
+      await deleteShareLink(token);
+      if (selectedShareLink === token) setSelectedShareLink(null);
+    },
+  };
+
   const folderTreeProps = {
     tree,
     projectName: project?.name || "Project",
@@ -971,166 +1071,13 @@ export default function ProjectDetailPage() {
           <FolderTree {...folderTreeProps} />
         </div>
 
-        {/* Share Links section — only visible to owner/editor */}
-        {canSeeShareLinks && <div className="px-3 py-2 border-t border-border">
-          <div className="w-full flex items-center justify-between px-2 mb-1">
-            <span
-              className="text-2xs font-semibold text-text-tertiary uppercase tracking-wider cursor-pointer"
-              onClick={() => setShareLinksExpanded(!shareLinksExpanded)}
-            >
-              Share Links
-            </span>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowShareLinks(false);
-                  setShowTrash(false);
-                  openShareDialog([], []);
-                }}
-                className="text-text-tertiary hover:text-text-primary transition-colors"
-                title="Create share link"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-              <button
-                onClick={() => setShareLinksExpanded(!shareLinksExpanded)}
-                className="text-text-tertiary hover:text-text-primary transition-colors"
-              >
-                <ChevronDown
-                  className={cn(
-                    "h-3 w-3 transition-transform",
-                    !shareLinksExpanded && "-rotate-90",
-                  )}
-                />
-              </button>
-            </div>
-          </div>
+        {/* Share Links section — only visible to owner/editor.
+            §227 — the markup moved to share-links-section.tsx so the
+            folder navigator can show the SAME list below `xl`, where this
+            column does not exist and nothing led to the share links at
+            all. Nothing about what this column renders changed. */}
+        {canSeeShareLinks && <ShareLinksSection {...shareLinksSectionProps} />}
 
-          {shareLinksExpanded && (
-            <div className="space-y-0.5">
-              <button
-                onClick={() => {
-                  setShowShareLinks(true);
-                  setSelectedShareLink(null);
-                  setShowTrash(false);
-                  // replace, not push: Trash and Share Links aren't in the URL,
-                  // so a history entry here would let Back restore the folder
-                  // while leaving this view open (§29).
-                  goToFolder(null, { replace: true });
-                }}
-                className={cn(
-                  "w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm transition-colors",
-                  showShareLinks && !selectedShareLink
-                    ? "bg-bg-hover text-text-primary"
-                    : "text-text-secondary hover:bg-bg-hover hover:text-text-primary",
-                )}
-              >
-                <LinkIcon className="h-4 w-4" />
-                <span>All Share Links ({shareLinks.length})</span>
-              </button>
-              {shareLinks.map((link) => (
-                <div
-                  key={link.token}
-                  className={cn(
-                    // pl-6 = 24px, which is exactly what folder-tree.tsx's
-                    // own `8 + depth * 16` gives a depth-1 row (§21d). The
-                    // "All Share Links" button above sits at px-2 = 8px,
-                    // i.e. depth 0 — so these read as its children rather
-                    // than its siblings, using the indent convention this
-                    // sidebar already has instead of a new one.
-                    "group w-full flex items-center gap-2 pl-6 pr-2 py-1.5 rounded text-sm transition-colors cursor-pointer",
-                    selectedShareLink === link.token
-                      ? "bg-bg-hover text-text-primary"
-                      : "text-text-secondary hover:bg-bg-hover hover:text-text-primary",
-                  )}
-                  onClick={() => {
-                    setShowShareLinks(true);
-                    setSelectedShareLink(link.token);
-                    setShowTrash(false);
-                    // replace, not push: Trash and Share Links aren't in the URL,
-                    // so a history entry here would let Back restore the folder
-                    // while leaving this view open (§29).
-                    goToFolder(null, { replace: true });
-                  }}
-                >
-                  {link.share_type === "folder" ? (
-                    <FolderIcon className="h-4 w-4 shrink-0" />
-                  ) : (
-                    <FileText className="h-4 w-4 shrink-0" />
-                  )}
-                  <span className="truncate flex-1">
-                    {link.title || link.target_name}
-                  </span>
-                  <DropdownMenu.Root>
-                    <DropdownMenu.Trigger asChild>
-                      <button
-                        className="h-5 w-5 flex items-center justify-center rounded text-text-tertiary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity shrink-0 hover-none:opacity-100"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                        }}
-                      >
-                        <MoreHorizontal className="h-3.5 w-3.5" />
-                      </button>
-                    </DropdownMenu.Trigger>
-                    <DropdownMenu.Portal>
-                      <DropdownMenu.Content
-                        className="z-50 min-w-[180px] rounded-xl border border-border bg-bg-secondary p-1 shadow-xl"
-                        sideOffset={4}
-                        align="end"
-                      >
-                        <DropdownMenu.Item
-                          className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
-                          onSelect={() =>
-                            window.open(
-                              `${window.location.origin}/share/${link.token}`,
-                              "_blank",
-                            )
-                          }
-                        >
-                          <ExternalLink className="h-4 w-4 text-text-tertiary" />
-                          Open Share
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Item
-                          className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
-                          onSelect={() =>
-                            navigator.clipboard.writeText(
-                              `${window.location.origin}/share/${link.token}`,
-                            )
-                          }
-                        >
-                          <LinkIcon className="h-4 w-4 text-text-tertiary" />
-                          Copy Link
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Separator className="my-1 h-px bg-border" />
-                        <DropdownMenu.Item
-                          className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
-                          onSelect={() =>
-                            toggleEnabled(link.token, !link.is_enabled)
-                          }
-                        >
-                          <MinusCircle className="h-4 w-4 text-text-tertiary" />
-                          {link.is_enabled ? "Disable Access" : "Enable Access"}
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Item
-                          className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-status-error hover:bg-status-error/10 cursor-pointer outline-none transition-colors"
-                          onSelect={async () => {
-                            await deleteShareLink(link.token);
-                            if (selectedShareLink === link.token)
-                              setSelectedShareLink(null);
-                          }}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                          Delete
-                        </DropdownMenu.Item>
-                      </DropdownMenu.Content>
-                    </DropdownMenu.Portal>
-                  </DropdownMenu.Root>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>}
 
         {/* Spacer */}
         <div className="flex-1" />
@@ -1139,54 +1086,16 @@ export default function ProjectDetailPage() {
            bottom section (user avatar + collapse button, also 89px in its
            collapsed state), so the border-t line here lines up with the
            rail's border-t line at the same distance from the viewport
-           bottom. */}
-        {(() => {
-          const used = project?.storage_bytes ?? 0;
-          const limit = project?.storage_limit_bytes ?? null;
-          if (limit === null) {
-            return (
-              <div className="h-[89px] border-t border-border shrink-0 p-2 space-y-1">
-                <div className="flex flex-col gap-1 px-2.5 py-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-medium text-text-secondary">Storage</span>
-                    <span className="text-[10px] tabular-nums text-text-tertiary">
-                      {formatBytes(used)} used
-                    </span>
-                  </div>
-                </div>
-                <div className="h-5" />
-              </div>
-            );
-          }
-          const pct = Math.min((used / limit) * 100, 100);
-          const isCritical = pct >= 90;
-          const isWarning = pct >= 80;
-          return (
-            <div className="h-[89px] border-t border-border shrink-0 p-2 space-y-1">
-              <div className="flex flex-col gap-1 px-2.5 py-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-medium text-text-secondary">Storage</span>
-                  <span className={cn(
-                    "text-[10px] tabular-nums",
-                    isCritical ? "text-status-error font-medium" : isWarning ? "text-amber-400 font-medium" : "text-text-tertiary",
-                  )}>
-                    {formatBytes(used)} / {formatBytes(limit)}
-                  </span>
-                </div>
-                <div className="h-1 w-full rounded-full bg-bg-hover overflow-hidden">
-                  <div
-                    className={cn(
-                      "h-full rounded-full transition-all duration-300",
-                      isCritical ? "bg-status-error" : isWarning ? "bg-amber-400" : "bg-accent",
-                    )}
-                    style={{ width: `${Math.max(pct, 1)}%` }}
-                  />
-                </div>
-              </div>
-              <div className="h-5" />
-            </div>
-          );
-        })()}
+           bottom.
+           §227 — also in the folder navigator's panel now, where it was
+           unreachable before: this column is `hidden xl:flex`, so below
+           1280px the project's storage figure did not exist anywhere. */}
+        <ProjectStorageMeter
+          used={project?.storage_bytes ?? 0}
+          limit={project?.storage_limit_bytes ?? null}
+          formatBytes={formatBytes}
+          fixedHeight
+        />
       </div>
 
       {/* ─── Main Content ───────────────────────────────────────────────── */}
@@ -1204,42 +1113,65 @@ export default function ProjectDetailPage() {
         // panel changes (§50).
         className={cn(
           "asset-grid-container flex-1 flex flex-col min-w-0 relative bg-bg-primary h-full overflow-hidden",
-          // §224 — on a phone this is one of three panes the bottom tab bar
-          // switches between; at `md`+ it is the content area again, always.
-          // Two disjoint media bands, so the two display utilities can
-          // never both apply and Tailwind's class ordering is irrelevant.
-          phoneTab === "assets" ? "max-md:flex" : "max-md:hidden",
-          "md:flex",
+          // §227 — unconditionally `flex` (the base class above) at every
+          // width. §224 made this one of three phone panes the bottom tab
+          // bar switched between; with the bar gone from this view there is
+          // nothing to switch to, so the grid is simply the content area.
         )}
         onClick={() => setSelectedAsset(null)}
         {...fileDrop.dropProps}
       >
-        {/* §224 — the project view's own header, below `xl`: the folder
-            name as the way into the tree ("Podcast ▾"), plus the toolbar's
-            actions, which have no room in the Navigator Bar at this width.
+        {/* §227 — the folder navigator, below `xl`. A full-width bar in the
+            header's colours with a tree icon, the current location as a
+            short path and a chevron, expanding DOWNWARDS from itself.
+            §224 had a "Podcast ▾" text button opening a floating Radix
+            Dialog sheet with its own "FOLDERS ✕" title bar; the owner, on
+            a real phone: it is not clear that is a folder tree, and it
+            becomes a popup instead of expanding.
+
+            The panel also carries what the `hidden xl:flex` column holds
+            and nothing else below `xl` led to: the Share Links list (for
+            an owner or editor) and the project's storage figure.
+
             Hidden at `xl`+, where the sidebar column and the full toolbar
-            are both present and nothing changed. */}
-        <div className="flex h-12 shrink-0 items-center gap-1 border-b border-border px-3 xl:hidden">
-          <FolderTreeSheet
-            {...folderTreeProps}
-            label={
-              showTrash
-                ? "Recently Deleted"
-                : showShareLinks
-                  ? "Share Links"
-                  : dropTargetName
-            }
-            className="min-w-0 flex-1"
-          />
-          {mobileActions}
-        </div>
+            are both present and nothing changed. The toolbar's actions
+            share the bar's right end on phones, as they shared §224's
+            row — they have no room in the grid's own Navigator Bar at
+            this width. */}
+        <FolderNavigator
+          {...folderTreeProps}
+          segments={
+            showTrash
+              ? ["Recently Deleted"]
+              : showShareLinks
+                ? ["Share Links"]
+                : [project?.name || "Project", ...folderTrail.map((f) => f.name)]
+          }
+          actions={mobileActions}
+          extra={(close) => (
+            <>
+              {canSeeShareLinks && (
+                <ShareLinksSection {...shareLinksSectionProps} onSelect={close} />
+              )}
+              <ProjectStorageMeter
+                used={project?.storage_bytes ?? 0}
+                limit={project?.storage_limit_bytes ?? null}
+                formatBytes={formatBytes}
+              />
+            </>
+          )}
+          className="xl:hidden"
+        />
 
         <div
           className={cn(
             "flex-1 min-h-0 overflow-y-auto px-5 pt-3 pb-6 space-y-3",
-            // Clears the fixed tab bar (56px + the home-indicator inset),
-            // or the last row of cards sits underneath it.
-            "max-md:pb-[calc(3.5rem+1.5rem+env(safe-area-inset-bottom))]",
+            // §227 — the 56px that cleared the fixed tab bar is gone with
+            // the bar: the grid has the full height now. The home-indicator
+            // inset stays, and is the grid's OWN need rather than the
+            // bar's — `viewport-fit=cover` lets this scroll area end under
+            // the indicator, and the last row of cards with it.
+            "max-md:pb-[calc(1.5rem+env(safe-area-inset-bottom))]",
           )}
         >
           {/* Asset grid, Share links, or Trash view */}
@@ -1781,19 +1713,25 @@ export default function ProjectDetailPage() {
       )}
 
       {/* ─── Right Panel (Comments + Fields tabs, or Share Link Settings) ─ */}
-      {/* §224 — ONE element, three behaviours, which is the whole fix:
-            < md   full-screen pane, shown by the bottom tab bar
+      {/* §224 — ONE element, two behaviours from `md` up:
             md-xl  slide-over drawer from the right, over a scrim, opened by
                    the header's EXISTING toggle — the control the owner
                    reported as dead, because the panel it toggled was
                    `hidden xl:flex` and so never appeared below 1280px
             xl+    in-flow 360px column, byte-for-byte what it was
 
-          Not two trees: a second copy would mean two CommentPanels mounted
-          against the same asset, two SWR subscriptions, and a tab state
-          that disagrees with itself depending on how wide the window is.
+          §227 — and NOT below `md` at all any more. §224 made it a
+          full-screen phone pane on the Comments tab; the owner's decision
+          is that comments and fields belong inside the asset viewer
+          (§228), not on the project view, so the tab, the pane and the bar
+          that switched them are all gone from here. The panel is not
+          merely hidden on a phone: there is no control on this screen that
+          could open it, which is the point.
 
-          The display classes come in two DISJOINT media bands
+          Not two trees: a second copy would mean two CommentPanels mounted
+          against the same asset and two SWR subscriptions.
+
+          The display classes still come in two DISJOINT media bands
           (`max-md:` and `md:`) so exactly one applies at any width. That
           matters: `flex` and `hidden` in the same band would leave the
           outcome to Tailwind's class ordering rather than to this code. */}
@@ -1801,10 +1739,9 @@ export default function ProjectDetailPage() {
         data-testid="project-right-panel"
         className={cn(
           "flex-col border-l border-border bg-bg-secondary",
-          // phone: a pane, driven by the tab bar, clearing the tab bar.
-          "max-md:fixed max-md:inset-0 max-md:z-30 max-md:w-full max-md:border-l-0",
-          "max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]",
-          phoneTab === "panel" ? "max-md:flex" : "max-md:hidden",
+          // phone: absent. Not a bare `hidden` — that was the §224 bug,
+          // which hid it at every width below xl and made the toggle dead.
+          "max-md:hidden",
           // tablet / small laptop: a drawer over the content.
           "md:max-xl:fixed md:max-xl:inset-y-0 md:max-xl:right-0 md:max-xl:z-40",
           "md:max-xl:w-[360px] md:max-xl:max-w-[85vw] md:max-xl:shadow-2xl",
@@ -1816,10 +1753,7 @@ export default function ProjectDetailPage() {
         {/* The drawer needs its own way out: below `xl` the header toggle
             is behind the scrim, and on a phone there is no toggle at all. */}
         <button
-          onClick={() => {
-            setRightPanelOpen(false);
-            setPhoneTab("assets");
-          }}
+          onClick={() => setRightPanelOpen(false)}
           aria-label="Close panel"
           className="absolute right-1 top-1 z-10 flex h-11 w-11 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary xl:hidden"
         >
@@ -2045,15 +1979,10 @@ export default function ProjectDetailPage() {
                     <p className="text-sm text-text-secondary">
                       Select an asset to view comments
                     </p>
-                    {/* §224 — on a phone the selection happens on the
-                        Assets tab, so say where to go rather than leaving
-                        a dead end. */}
-                    <button
-                      onClick={() => setPhoneTab("assets")}
-                      className="mt-3 min-h-11 rounded-lg border border-border px-4 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary md:hidden"
-                    >
-                      Go to Assets
-                    </button>
+                    {/* §227 — §224's "Go to Assets" button is gone with
+                        the phone Comments tab it pointed back from: this
+                        panel is `md`+ only now, where the grid is beside
+                        it and there is nowhere to go. */}
                   </div>
                 </div>
               )}
@@ -2062,32 +1991,49 @@ export default function ProjectDetailPage() {
         </div>
       </div>
 
-      {/* ─── Phone: the Settings pane ────────────────────────────────────── */}
-      {/* §224 — the third tab. `md:hidden` because at `md`+ these controls
-          are back in the toolbar's two popovers, which render the SAME
-          components this does. */}
+      {/* ─── Phone: the view-settings pane ───────────────────────────────── */}
+      {/* §224's third tab, §227's cogwheel pane. `md:hidden` because at
+          `md`+ every one of these controls is back in the toolbar's two
+          popovers, which render the SAME components this does — there is
+          no second copy of a setting and no second store.
+
+          `z-40`, above the sticky header (z-20): it is a full-screen pane
+          and the cogwheel that opened it would otherwise show through at
+          the top. Below the nav drawer's scrim (z-45) and the drawer
+          itself (z-50), so the hamburger still wins — tapping it over this
+          pane opens the nav, which is the one thing that should outrank a
+          view setting. */}
       <div
         data-testid="project-settings-pane"
         className={cn(
           "flex-col bg-bg-primary",
-          "max-md:fixed max-md:inset-0 max-md:z-30",
-          "max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]",
-          phoneTab === "settings" ? "max-md:flex" : "max-md:hidden",
+          "max-md:fixed max-md:inset-0 max-md:z-40",
+          // Its own home-indicator inset now, not the tab bar's: the pane
+          // reaches the bottom edge of the screen, so without this the
+          // last sort option sits under the indicator.
+          "max-md:pb-[env(safe-area-inset-bottom)]",
+          mobileSettingsOpen ? "max-md:flex" : "max-md:hidden",
           "md:hidden",
         )}
       >
-        <div className="flex h-12 shrink-0 items-center border-b border-border px-4">
+        {/* The way out. §224 had the tab bar for this — tapping Assets
+            took you back — so the pane itself needed no control; opened
+            from the header it covers the cogwheel, and a full-screen pane
+            with no close button is a trap. 44px, at the top left where a
+            back control belongs. */}
+        <div className="flex h-12 shrink-0 items-center gap-1 border-b border-border px-2">
+          <button
+            data-testid="close-view-settings"
+            onClick={() => setMobileSettingsOpen(false)}
+            aria-label="Close view settings"
+            className="-ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </button>
           <h1 className="text-[15px] font-semibold text-text-primary">View settings</h1>
         </div>
         <MobileViewSettings />
       </div>
-
-      {/* ─── Phone: the tab bar ──────────────────────────────────────────── */}
-      <MobileTabBar
-        value={phoneTab}
-        onChange={setPhoneTab}
-        commentBadge={selectedAsset !== null}
-      />
 
       {/* Create folder dialog */}
       <NameDialog

@@ -547,11 +547,21 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
       ? (findPath(folderTree, asset.folder_id, []) ?? [])
       : []
 
-    setExtraCrumbs([
+    // §227 — written against THIS pathname. Unscoped, this folder path
+    // plus the asset name was appended to the Header's crumbs on every
+    // page the user visited afterwards, Settings included.
+    setExtraCrumbs(pathname, [
       ...folderPath.map((f) => ({ label: f.name, href: `/projects/${projectId}?folder=${f.id}` })),
       { label: asset.name }, // asset name — no href (current page)
     ])
-  }, [asset?.id, asset?.name, asset?.folder_id, folderTree, setExtraCrumbs])
+  }, [asset?.id, asset?.name, asset?.folder_id, folderTree, pathname, projectId, setExtraCrumbs])
+
+  // The second layer (§227): drop them on the way out, guarded by pathname
+  // so the unmount cannot wipe what the next page has already written.
+  useEffect(
+    () => () => useBreadcrumbStore.getState().clear(pathname),
+    [pathname],
+  )
 
   // Fetch project info for breadcrumb + register project name as label
   const { data: project } = useSWR<Project>(
@@ -559,8 +569,8 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     () => api.get<Project>(`/projects/${projectId}`),
   )
   useEffect(() => {
-    if (project?.name) setLabel(projectId, project.name)
-  }, [project?.name, projectId, setLabel])
+    if (project?.name) setLabel(pathname, projectId, project.name)
+  }, [project?.name, projectId, pathname, setLabel])
 
   // Role-based permissions
   const { data: members } = useSWR<ProjectMember[]>(

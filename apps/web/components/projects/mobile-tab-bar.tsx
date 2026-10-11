@@ -4,7 +4,7 @@ import * as React from 'react'
 import { LayoutGrid, MessageSquare, SlidersHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-/** Which of the three phone panes is on screen (§224). */
+/** Which of the three phone panes is on screen (§224; §228 revives it). */
 export type PhoneTab = 'assets' | 'panel' | 'settings'
 
 const TABS: { value: PhoneTab; label: string; icon: React.ElementType }[] = [
@@ -15,6 +15,21 @@ const TABS: { value: PhoneTab; label: string; icon: React.ElementType }[] = [
 
 /**
  * The phone bottom tab bar (§224).
+ *
+ * NOT MOUNTED ANYWHERE as of §227. The project (Assets/Folders) view was
+ * its only caller, and the owner's decision there is that Assets /
+ * Comments / Settings only make sense INSIDE an asset: on the project view
+ * there are no comments to read and the view settings are now a cogwheel
+ * in the header, so a three-tab bar was switching between one real pane
+ * and two that did not belong. The grid got its height back instead.
+ *
+ * Kept, deliberately and by instruction, because §228 builds the asset
+ * viewer on a phone and these three tabs are exactly that screen's panes.
+ * The §224b z-index relationship — the nav drawer and its scrim must paint
+ * ABOVE this bar, or the drawer's foot is hidden behind it — is still
+ * asserted against this file by
+ * components/layout/__tests__/sidebar-user-block.test.tsx, so the fix
+ * cannot be lost while the bar is out of the tree.
  *
  * Phones only (`md:hidden`): at `md`+ the right panel is a drawer opened by
  * the toolbar's existing toggle and the view settings are back in the
