@@ -15,7 +15,9 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -31,6 +33,13 @@ except ImportError:  # pragma: no cover - alembic's import path
 class ZipExportStatus(str, PyEnum):
     pending = "pending"
     building = "building"
+    #: §217 — the manifest is frozen but one or more entries do not yet know
+    #: their CRC-32, so the archive's byte layout is not determinable and no
+    #: `Range` can be answered. Nothing is being WRITTEN anywhere in this
+    #: state; the work is reading objects through `zlib.crc32`, once per
+    #: object, forever (see models/object_checksum.py). A streamed export
+    #: goes `preparing` -> `ready` and never visits `building`.
+    preparing = "preparing"
     ready = "ready"
     failed = "failed"
 
@@ -145,6 +154,37 @@ class ZipExport(Base):
     #: derived value cannot tell that apart from an upload in flight — which
     #: is exactly the distinction the logs and the UI needed and lacked.
     phase: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+
+    # ── §217 — streamed, never built ────────────────────────────────────
+
+    #: True for a row whose archive is STREAMED from the manifest on every
+    #: request and has no object in storage at all. False for every row
+    #: created before §217, which has a real `zip-exports/…` archive that
+    #: must keep downloading until its TTL.
+    #:
+    #: Explicit rather than inferred from `archive_size IS NOT NULL`: the
+    #: two differ for a streamed export still `preparing`, and the download
+    #: URL has to be built from one answer or the other, never from a guess.
+    is_streamed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    #: Exactly what `Content-Length` says for a full download, computed from
+    #: the frozen manifest by `services/zip_stream.layout` once every entry
+    #: knows its size and CRC. NULL while `preparing`.
+    #:
+    #: Separate from `total_bytes`, which the build path used for "size of
+    #: the archive we just wrote to disk" and the UI reads as a progress
+    #: denominator. Reusing it would make a streamed export look like a
+    #: finished build to every existing reader.
+    archive_size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
+    #: Strong ETag over the ordered manifest (paths, sizes, CRCs,
+    #: timestamps, keys) — `services/zip_stream.archive_etag`. It is what
+    #: `If-Range` is checked against, so a client that resumes against a
+    #: manifest that has since changed gets a full 200 instead of a 206 it
+    #: would splice into a different archive.
+    etag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     #: Three days, or until the link is deactivated — whichever comes first.

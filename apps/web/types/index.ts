@@ -612,7 +612,11 @@ export interface ZipExportFile {
 
 export interface ZipExportStatusResponse {
   export_id: string
-  status: 'pending' | 'building' | 'ready' | 'failed'
+  /** §217 — `preparing` is new and belongs to a STREAMED export: the
+   *  manifest is frozen but some entries' CRC-32 is still being read, which
+   *  is what makes the archive's byte layout computable. `pending` and
+   *  `building` now only ever appear on a row created before §217. */
+  status: 'pending' | 'building' | 'preparing' | 'ready' | 'failed'
   /** True when an identical earlier request already built this archive. */
   reused: boolean
   ready: boolean
@@ -627,6 +631,33 @@ export interface ZipExportStatusResponse {
   bytes_done?: number
   error?: string | null
   files: ZipExportFile[]
+
+  // ── §217 — a zip that is never built, only streamed ───────────────────
+  //
+  // All optional and all additive; nothing in the UI reads them yet. Added
+  // here anyway because this file is the half that silently drifts from the
+  // backend schema (CLAUDE.md's own rule), and the §217b download manager
+  // is what consumes them.
+
+  /** True when the download is served by streaming the frozen manifest —
+   *  resumable by byte offset, no archive in storage. False for a row
+   *  created before §217, whose real archive keeps downloading until its
+   *  own TTL. */
+  streamed?: boolean
+  /** Exactly what a full download's `Content-Length` will be. Null while
+   *  `status === 'preparing'`. */
+  archive_size?: number | null
+  /** The strong validator a resume must be checked against. A client
+   *  holding a different one has to restart from zero rather than append to
+   *  a different archive. */
+  etag?: string | null
+  /** How far the freeze has got. Both a file count and a byte estimate,
+   *  because neither alone is honest: "8 of 9 files" tells a reassuring lie
+   *  when the ninth is a 105 GB original. */
+  files_prepared?: number
+  files_total?: number
+  bytes_prepared?: number
+  bytes_total?: number
 }
 
 export interface FolderShareAssetsResponse {

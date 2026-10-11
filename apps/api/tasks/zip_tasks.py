@@ -15,6 +15,40 @@ its own pass with its own per-task ceilings to choose.
 One real divergence: a zip is built to a temp FILE and uploaded whole
 (§143.4), not streamed to the client. Streaming would mean no cache, no
 resume, no progress, and a request that dies if the connection blinks.
+
+────────────────────────────────────────────────────────────────────────
+§217 — `build_zip_export` IS NO LONGER DISPATCHED. READ THIS FIRST.
+────────────────────────────────────────────────────────────────────────
+
+The paragraph above was wrong about streaming, and the reason is worth
+keeping rather than deleting: it assumed a streamed archive could not be
+resumed. A `ZIP_STORED` archive's layout is a pure function of its entry
+list, so every byte of it — including the headers no file supplies — is
+determinable up front, which makes `Range` requests and therefore resume
+possible without any build at all. See `services/zip_stream.py`.
+
+`_start_or_reuse_zip` now freezes a manifest and creates an export with
+`is_streamed=True`, and `routers/zip_stream.py` serves it. Nothing calls
+`build_zip_export` any more.
+
+WHAT STAYS HERE, AND WHY — this is the §217 "say what remains" answer:
+
+  * `build_zip_export` and `_upload_archive` are DEAD CODE as of §217 and
+    are kept only so this module's history reads honestly for one release.
+    Nothing dispatches them: no route, no beat entry, no `send_task_safe`
+    call. They can be deleted outright once the last pre-§217 row has
+    expired — i.e. three days (`ZIP_TTL_SECONDS`) after the deploy — and
+    deleting them earlier is also safe, because an unexpired row's
+    download reads the already-uploaded object and never re-runs a build.
+  * `delete_zip_export`, `purge_share_link_zips` and `sweep_zip_exports`
+    MUST STAY. Rows created before §217 have a real archive in
+    `zip-exports/` with three days left on it, and these three are the
+    only things that ever delete one. Both the purge and the sweep now
+    skip the S3 delete for a streamed row — there is no object at its
+    `s3_key` — while still deleting the row, because the row IS the
+    authorisation for a streamed download.
+  * The `ZIP_PREFIX` guards stay for the same reason: they are what stops
+    a malformed row pointing a delete at `raw/`.
 """
 import logging
 import os
@@ -517,6 +551,14 @@ def purge_share_link_zips(share_link_id: str):
             ZipExport.share_link_id == uuid.UUID(share_link_id)
         ).all()
         for row in rows:
+            # §217 — a STREAMED export has no object at `s3_key`; that
+            # column is now only the name the download is served under.
+            # The row itself still has to go: it is the frozen manifest
+            # that authorises the download, so deactivating the link must
+            # destroy it exactly as it destroyed the archive before.
+            if getattr(row, "is_streamed", False):
+                db.delete(row)
+                continue
             if not row.s3_key.startswith(ZIP_PREFIX):
                 logger.error("Refusing to delete non-zip-export key: %s", row.s3_key)
                 continue
@@ -550,6 +592,9 @@ def sweep_zip_exports():
     try:
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(seconds=ZIP_TTL_SECONDS)
+        streamed_cutoff = now - timedelta(
+            seconds=zip_export_service.STREAMED_ZIP_TTL_SECONDS
+        )
         rows = db.query(ZipExport).all()
 
         # §146 — resolve wedged builds for anyone NOT polling. The status
@@ -566,10 +611,23 @@ def sweep_zip_exports():
             logger.warning("Marked %s wedged zip export(s) failed", stuck)
 
         for row in rows:
+            streamed = bool(getattr(row, "is_streamed", False))
+            # §217 — a streamed row with no `expires_at` yet is still
+            # PREPARING, and its fallback cutoff is the streamed TTL (30
+            # days), not the archive's three. Sweeping it on the old cutoff
+            # would delete the frozen manifest of a download still in
+            # flight — which is the exact failure this feature exists to
+            # remove.
+            fallback = streamed_cutoff if streamed else cutoff
             expired = (row.expires_at and row.expires_at <= now) or (
-                row.expires_at is None and row.created_at and row.created_at <= cutoff
+                row.expires_at is None and row.created_at and row.created_at <= fallback
             )
             if not expired:
+                continue
+            if streamed:
+                # No object was ever written for this row.
+                db.delete(row)
+                deleted += 1
                 continue
             if not row.s3_key.startswith(ZIP_PREFIX):
                 logger.error("Refusing to delete non-zip-export key: %s", row.s3_key)

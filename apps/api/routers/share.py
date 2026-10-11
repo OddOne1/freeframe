@@ -34,6 +34,7 @@ from ..models.comment import Comment
 from ..services.asset_visibility import usable_asset_filter
 from ..models.zip_export import ZipExport, ZipExportStatus
 from ..services import zip_export_service as zx
+from ..services import zip_download, zip_stream
 from ..schemas.share import (
     DEFAULT_ZIP_SCOPE,
     DirectShareCreate,
@@ -1703,7 +1704,16 @@ def get_share_stream_url(
         if download:
             s3_key = media_file.s3_key_raw or media_file.s3_key_processed
             filename = build_download_filename(asset.name, media_file.original_filename or s3_key)
-            url = proxy_url_for(s3_key, download_filename=filename)
+            url = proxy_url_for(
+                s3_key,
+                # §217 — DOWNLOAD_LINK_HOURS (72), not proxy_url_for's
+                # 24 h default. This is an ORIGINAL: at the owner's
+                # sizes one is a multi-hour resumable transfer, and a
+                # link that dies mid-download cannot be resumed at all.
+                # Playback URLs below keep the 24 h default.
+                expires_hours=settings.download_link_hours,
+                download_filename=filename,
+            )
         else:
             # Route through /stream/hls so S3 can stay private (#51)
             hls_token = create_hls_token(media_file.s3_key_processed)
@@ -1718,7 +1728,16 @@ def get_share_stream_url(
             # filename claiming otherwise.
             s3_key = media_file.s3_key_raw or media_file.s3_key_processed
             filename = build_download_filename(asset.name, media_file.original_filename or s3_key)
-            url = proxy_url_for(s3_key, download_filename=filename)
+            url = proxy_url_for(
+                s3_key,
+                # §217 — DOWNLOAD_LINK_HOURS (72), not proxy_url_for's
+                # 24 h default. This is an ORIGINAL: at the owner's
+                # sizes one is a multi-hour resumable transfer, and a
+                # link that dies mid-download cannot be resumed at all.
+                # Playback URLs below keep the 24 h default.
+                expires_hours=settings.download_link_hours,
+                download_filename=filename,
+            )
         else:
             # Viewing still prefers the processed derivative — that is what it
             # exists for.
@@ -1966,7 +1985,14 @@ def _resolve_zip_selection(db, *, items, variant, link, root_folder_id, allowed_
             applied_lut_id=str(asset.applied_lut_id) if asset.applied_lut_id else None,
         )
         resolved.files.append(rf)
-        plan.append(zx.build_manifest_entry(rf, media_file, asset.name))
+        # §217 — the ASSET's created_at, so the DOS timestamp frozen into
+        # every header is the same on every request and every resume. "Now"
+        # is the one input guaranteed to differ between them, and two bytes
+        # of difference inside a header is enough to make a spliced
+        # download extract to garbage.
+        plan.append(
+            zx.build_manifest_entry(rf, media_file, asset.name, asset.created_at)
+        )
 
     return resolved, plan
 
@@ -2041,8 +2067,99 @@ def _zip_download_name(db, export: ZipExport) -> str:
     )
 
 
+def _advance_preparation(db: Session, export: ZipExport) -> None:
+    """Move a streamed export's freeze forward, in the DATABASE (§217).
+
+    Called on creation and again on every status poll, which is the same
+    instinct as `_resolve_if_stale`: the poller is the one who needs the
+    answer NOW, and the write is what matters — this RESOLVES the row
+    rather than changing what one request happens to say.
+
+    Three things happen here, in order:
+
+      1. CRCs and verified sizes that have arrived since the last look are
+         copied out of `object_checksums` into the manifest, and an entry
+         whose object has given up being readable is marked `skipped` with
+         the store's reason — so one missing file cannot hold the other
+         ninety-nine at `preparing` forever.
+      2. Anything still missing is RE-DISPATCHED. Deliberate, not
+         belt-and-braces: a CRC task lost to the worker restart that every
+         deploy performs would otherwise leave the export at `preparing`
+         with nothing running and no way to notice. `compute_object_crc32`
+         is idempotent and lease-capped, so asking again is cheap.
+      3. Once every entry is settled, the layout is computed and the row
+         becomes `ready` with its `archive_size` and `etag`. `ready` here
+         means "the archive's bytes are determinable", NOT that a file was
+         written anywhere.
+    """
+    if not export.is_streamed or export.status not in (
+        ZipExportStatus.preparing,
+        ZipExportStatus.pending,
+    ):
+        return
+
+    from ..services import checksum_service
+    from ..tasks.crc_tasks import compute_object_crc32
+
+    keys = [
+        e["s3_key"]
+        for e in (export.manifest or [])
+        if e.get("s3_key") and e.get("path") and not e.get("needs_render")
+    ]
+    checksums = checksum_service.get_checksums(db, keys)
+    manifest, changed = zx.apply_checksums(
+        export.manifest, checksums, given_up=checksum_service.has_given_up
+    )
+    if changed:
+        export.manifest = manifest
+        export.progress_at = datetime.now(timezone.utc)
+
+    if zx.manifest_is_complete(manifest):
+        entries = zx.streamable_entries(manifest)
+        if not entries:
+            export.status = ZipExportStatus.failed
+            export.error = "None of these files could be read."
+        else:
+            layout = zip_stream.layout(entries)
+            export.archive_size = layout.total_size
+            export.etag = zip_stream.archive_etag(entries)
+            export.total_bytes = layout.total_size
+            export.files_done = len(entries)
+            export.status = ZipExportStatus.ready
+            export.phase = None
+            export.expires_at = datetime.now(timezone.utc) + timedelta(
+                seconds=zx.STREAMED_ZIP_TTL_SECONDS
+            )
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("could not finalise zip export %s", export.id)
+        return
+
+    export.status = ZipExportStatus.preparing
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("could not record preparation progress for %s", export.id)
+
+    sizes = {
+        e["s3_key"]: e.get("declared_size")
+        for e in (manifest or [])
+        if e.get("s3_key")
+    }
+    try:
+        for key in checksum_service.needs_checksum(db, keys):
+            send_task_safe(compute_object_crc32, key, int(sizes.get(key) or 0))
+    except Exception:
+        # A dispatch failure must never fail the poll that is only
+        # reporting progress; the next poll asks again.
+        logger.warning("could not dispatch CRC work for %s", export.id, exc_info=True)
+
+
 def _zip_status_payload(
-    db, export: ZipExport, *, reused: bool = False
+    db, export: ZipExport, *, reused: bool = False, share_session: Optional[str] = None
 ) -> ZipExportStatusResponse:
     files = [
         ZipExportFile(
@@ -2059,11 +2176,28 @@ def _zip_status_payload(
     ready = export.status == ZipExportStatus.ready
     url = None
     if ready:
-        url = proxy_url_for(
-            export.s3_key,
-            expires_hours=1,
-            download_filename=_zip_download_name(db, export),
-        )
+        if getattr(export, "is_streamed", False):
+            # §217 — the streamed route. One export id, re-authorised on
+            # every request, valid for DOWNLOAD_LINK_HOURS rather than the
+            # hour the built archive's link used to get: the thing it now
+            # has to outlive is a resumable multi-hour transfer, not a
+            # click.
+            url = zip_download.download_url_for(
+                export,
+                filename=_zip_download_name(db, export),
+                share_session=share_session,
+            )
+        else:
+            # A pre-§217 row, whose real archive in `zip-exports/` keeps
+            # downloading until its own 3-day TTL. Still an hour, because
+            # that is what this object's link has always been and nothing
+            # about an already-built archive changed.
+            url = proxy_url_for(
+                export.s3_key,
+                expires_hours=1,
+                download_filename=_zip_download_name(db, export),
+            )
+    progress = zx.freeze_progress(export.manifest)
     return ZipExportStatusResponse(
         export_id=export.id,
         status=export.status.value if hasattr(export.status, "value") else str(export.status),
@@ -2077,6 +2211,16 @@ def _zip_status_payload(
         bytes_done=export.bytes_done,
         error=export.error,
         files=files,
+        # §217 — so a `preparing` export can say "preparing, 3 of 9 files"
+        # with a byte-based estimate beside it, instead of looking hung
+        # while a 105 GB original is read through zlib.crc32.
+        streamed=bool(getattr(export, "is_streamed", False)),
+        archive_size=export.archive_size,
+        etag=export.etag,
+        files_prepared=progress["files_prepared"],
+        files_total=progress["files_total"],
+        bytes_prepared=progress["bytes_prepared"],
+        bytes_total=progress["bytes_total"],
     )
 
 
@@ -2096,7 +2240,17 @@ def _start_or_reuse_zip(
         db.query(ZipExport)
         .filter(
             ZipExport.cache_key == cache_key,
-            ZipExport.status.in_([ZipExportStatus.pending, ZipExportStatus.building, ZipExportStatus.ready]),
+            ZipExport.status.in_([
+                ZipExportStatus.pending,
+                ZipExportStatus.building,
+                # §217 — `preparing` is reusable, and this is the state most
+                # second requests now land on. Two viewers asking for the
+                # same selection must share one frozen manifest and one set
+                # of CRC reads; leaving it out would freeze a second
+                # identical manifest and queue the same 105 GB read again.
+                ZipExportStatus.preparing,
+                ZipExportStatus.ready,
+            ]),
         )
         .order_by(ZipExport.created_at.desc())
         .first()
@@ -2130,8 +2284,17 @@ def _start_or_reuse_zip(
         share_link_id=share_link_id,
         project_id=project_id,
         created_by=created_by,
+        # §217 — still written, and now purely a NAME. No object is ever
+        # put at this key for a streamed export; `_zip_download_name` reads
+        # it through `build_download_filename` to settle the extension, and
+        # keeping it means the sweep, the purge and their prefix guards all
+        # keep working unchanged for the rows that do have an archive.
         s3_key=zx.zip_object_key(str(project_id), scope_kind, str(scope_id), str(export_id)),
-        status=ZipExportStatus.pending,
+        # `preparing`, not `pending`: nothing is queued to BUILD this.
+        # What it is waiting for is the CRC of each entry, which is what
+        # makes the archive's byte layout computable at all.
+        status=ZipExportStatus.preparing,
+        is_streamed=True,
         file_count=len(plan),
         files_done=0,
         manifest=plan,
@@ -2145,11 +2308,21 @@ def _start_or_reuse_zip(
     db.add(export)
     db.commit()
     db.refresh(export)
-    logger.info("zip export cache MISS for %s — building %s", cache_key[:12], export.id)
+    logger.info("zip export cache MISS for %s — freezing %s", cache_key[:12], export.id)
 
-    from ..tasks.zip_tasks import build_zip_export
-
-    send_task_safe(build_zip_export, str(export.id))
+    # §217 — NO BUILD IS DISPATCHED. `build_zip_export` copied every
+    # selected object to the worker's temp disk, wrote the archive there and
+    # uploaded it back; at the owner's sizes that could not finish (21-minute
+    # ceiling, 641 GiB selections) and it needed the archive's own size in
+    # free temp disk plus a second copy in the bucket for three days. The
+    # task is kept — rows created before this still have archives that must
+    # keep downloading and being swept — but nothing reaches it any more.
+    #
+    # Instead the freeze is advanced immediately: anything whose CRC is
+    # already known is filled in on the spot, so a selection of
+    # already-checksummed files goes straight to `ready` inside this
+    # request, and the rest asks for the reads it needs.
+    _advance_preparation(db, export)
     return export, False
 
 
@@ -2252,7 +2425,7 @@ def request_share_zip(
         actor_email=current_user.email if current_user else "anonymous",
         actor_name=current_user.name if current_user else None,
     )
-    return _zip_status_payload(db, export, reused=reused)
+    return _zip_status_payload(db, export, reused=reused, share_session=share_session)
 
 
 @router.get("/share/{token}/zip/{export_id}", response_model=ZipExportStatusResponse)
@@ -2279,7 +2452,11 @@ def get_share_zip_status(
     if not export or export.share_link_id != link.id:
         raise HTTPException(status_code=404, detail="Export not found")
     _resolve_if_stale(db, export)
-    return _zip_status_payload(db, export)
+    # §217 — the poll is where a streamed export's freeze moves forward:
+    # CRCs that have arrived are folded in, missing ones are re-asked for,
+    # and the row becomes `ready` the moment the layout is computable.
+    _advance_preparation(db, export)
+    return _zip_status_payload(db, export, share_session=share_session)
 
 
 @router.get("/share/{token}/fields/{asset_id}", response_model=ShareFieldsResponse)

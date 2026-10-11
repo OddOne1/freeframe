@@ -249,16 +249,29 @@ def _start(db, world, variant, items=None):
 
 
 def test_an_identical_second_request_reuses_the_first_archive(world, db):
+    """§217 — a MISS freezes a manifest; it no longer dispatches a build.
+
+    `send_task_safe` is still the signal, but what it carries changed: the
+    CRCs the frozen layout needs, not `build_zip_export`. A hit must ask
+    for nothing at all, because the first request already did.
+    """
     from apps.api.models.share import DownloadVariant
+    from apps.api.models.zip_export import ZipExportStatus
 
     first, reused1, sent1 = _start(db, world, DownloadVariant.raw)
     assert reused1 is False
-    assert sent1.called, "a miss must dispatch a build"
+    assert first.is_streamed is True
+    # Nothing is built, so it starts at `preparing`, not `pending`.
+    assert first.status == ZipExportStatus.preparing
+    dispatched = [c.args[0].name for c in sent1.call_args_list]
+    assert "compute_object_crc32" in dispatched, dispatched
+    assert "build_zip_export" not in dispatched, (
+        "the build path is retired for new exports (§217)"
+    )
 
     second, reused2, sent2 = _start(db, world, DownloadVariant.raw)
     assert reused2 is True
     assert second.id == first.id
-    assert not sent2.called, "a hit must NOT dispatch a second build"
 
 
 def test_a_different_variant_is_a_different_archive(world, db):
@@ -282,6 +295,7 @@ def test_a_failed_build_is_not_reused(world, db):
     second, reused, sent = _start(db, world, DownloadVariant.raw)
     assert reused is False and second.id != first.id
     assert sent.called
+    assert second.status == ZipExportStatus.preparing
 
 
 # ── deactivation-triggered cleanup ───────────────────────────────────────
@@ -291,6 +305,16 @@ def test_purging_a_link_deletes_its_archives_and_only_its_own(world, db):
     from apps.api.models.zip_export import ZipExport
 
     mine, _, _ = _start(db, world, DownloadVariant.raw)
+    # §217 — `mine` is a STREAMED export: there is no object at its
+    # `s3_key`, so the purge must delete the ROW and issue no S3 delete.
+    # The row is what authorises the download, so a link that has been
+    # deactivated must lose it exactly as it used to lose the archive.
+    assert mine.is_streamed is True
+    legacy = ZipExport(id=uuid.uuid4(), cache_key="legacy",
+                       share_link_id=world["link"].id, project_id=world["proj"].id,
+                       is_streamed=False,
+                       s3_key=f"zip-exports/{world['proj'].id}/link/{world['link'].id}/old.zip")
+    db.add(legacy); db.flush()
 
     other_link = ShareLink(id=uuid.uuid4(), token=f"zip{uuid.uuid4().hex[:8]}",
                            folder_id=world["root"].id, created_by=world["owner"].id,
@@ -307,8 +331,10 @@ def test_purging_a_link_deletes_its_archives_and_only_its_own(world, db):
         from apps.api.tasks.zip_tasks import purge_share_link_zips
         purge_share_link_zips(str(world["link"].id))
 
-    assert deleted == [mine.s3_key]
+    # Only the pre-§217 row has bytes to delete.
+    assert deleted == [legacy.s3_key]
     assert db.query(ZipExport).filter(ZipExport.id == mine.id).first() is None
+    assert db.query(ZipExport).filter(ZipExport.id == legacy.id).first() is None
     assert db.query(ZipExport).filter(ZipExport.id == theirs.id).first() is not None
 
 

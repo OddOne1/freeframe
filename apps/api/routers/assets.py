@@ -376,7 +376,16 @@ def get_stream_url(
             # For video downloads, use the raw file (original upload) so user gets a single file
             s3_key = media_file.s3_key_raw or media_file.s3_key_processed
             filename = build_download_filename(asset.name, media_file.original_filename or s3_key)
-            url = proxy_url_for(s3_key, download_filename=filename)
+            url = proxy_url_for(
+                s3_key,
+                # §217 — DOWNLOAD_LINK_HOURS (72), not proxy_url_for's
+                # 24 h default. This is an ORIGINAL: at the owner's
+                # sizes one is a multi-hour resumable transfer, and a
+                # link that dies mid-download cannot be resumed at all.
+                # Playback URLs below keep the 24 h default.
+                expires_hours=settings.download_link_hours,
+                download_filename=filename,
+            )
         else:
             # Route through the media proxy so the master playlist, variant
             # playlists, and .ts segments are all served through this API
@@ -392,7 +401,16 @@ def get_stream_url(
             # re-encoded file under a filename claiming to be their upload.
             s3_key = media_file.s3_key_raw or media_file.s3_key_processed
             filename = build_download_filename(asset.name, media_file.original_filename or s3_key)
-            url = proxy_url_for(s3_key, download_filename=filename)
+            url = proxy_url_for(
+                s3_key,
+                # §217 — DOWNLOAD_LINK_HOURS (72), not proxy_url_for's
+                # 24 h default. This is an ORIGINAL: at the owner's
+                # sizes one is a multi-hour resumable transfer, and a
+                # link that dies mid-download cannot be resumed at all.
+                # Playback URLs below keep the 24 h default.
+                expires_hours=settings.download_link_hours,
+                download_filename=filename,
+            )
         else:
             # Viewing still prefers the processed derivative.
             s3_key = media_file.s3_key_processed or media_file.s3_key_raw
@@ -520,7 +538,7 @@ def get_project_zip_status(
     if not member and not is_public_project(db, project_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    from .share import _resolve_if_stale, _zip_status_payload
+    from .share import _advance_preparation, _resolve_if_stale, _zip_status_payload
 
     export = db.query(ZipExport).filter(ZipExport.id == export_id).first()
     # Scoped to the requester, not just the project: another member's
@@ -528,6 +546,8 @@ def get_project_zip_status(
     if not export or export.project_id != project_id or export.created_by != current_user.id:
         raise HTTPException(status_code=404, detail="Export not found")
     _resolve_if_stale(db, export)
+    # §217 — same as the share poll: this is where the freeze advances.
+    _advance_preparation(db, export)
     return _zip_status_payload(db, export)
 
 

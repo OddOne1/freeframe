@@ -91,7 +91,10 @@ def test_a_title_containing_a_path_separator_cannot_produce_a_path():
 
 # ─── what the endpoint actually serves ───────────────────────────────────────
 
-def _export(*, scope="all", share_link_id=None, project_id=None, folder_name=None):
+def _export(
+    *, scope="all", share_link_id=None, project_id=None, folder_name=None,
+    streamed=True,
+):
     export = MagicMock()
     export.id = uuid.uuid4()
     export.status = ZipExportStatus.ready
@@ -107,6 +110,15 @@ def _export(*, scope="all", share_link_id=None, project_id=None, folder_name=Non
     export.bytes_done = 10
     export.phase = None
     export.error = None
+    # §217 — explicit for the same reason conftest's 2FA fields are: every
+    # MagicMock attribute is a truthy object, and these three now reach
+    # Pydantic validation, so leaving them unset fails serialisation rather
+    # than exercising anything. `streamed` defaults to True because that is
+    # what every NEW export is; the legacy shape is covered by its own test
+    # below, since the naming rule has to hold for both.
+    export.is_streamed = streamed
+    export.archive_size = 1234 if streamed else None
+    export.etag = "a" * 32 if streamed else None
     return export
 
 
@@ -502,3 +514,73 @@ def test_the_scope_column_fits_the_longest_value():
     width = ZipExport.__table__.c.scope.type.length
     assert width >= len("multiple_folders")
     assert width > 16, "no headroom is how the next value gets truncated"
+
+
+# ─── §217 — two URL shapes, one naming rule ──────────────────────────────────
+#
+# A row created before §217 has a real archive in `zip-exports/` and keeps
+# downloading through the media proxy until its three-day TTL. A row created
+# after it has no object at all and is served by streaming its frozen
+# manifest. The NAME has to be identical either way — that is the §175/§177
+# rule, and it must not have quietly become a property of one code path.
+
+def _payload(db, export):
+    from apps.api.routers.share import _zip_status_payload
+
+    return _zip_status_payload(db, export)
+
+
+def test_a_streamed_export_is_served_by_the_streaming_route():
+    export = _export(share_link_id=uuid.uuid4(), streamed=True)
+    payload = _payload(_db(link_title="Autumn Campaign"), export)
+    assert payload.url.startswith(f"/stream/zip/{export.id}/download?")
+    assert payload.streamed is True
+    assert payload.etag == export.etag
+    assert payload.archive_size == export.archive_size
+
+
+def test_a_pre_217_export_still_downloads_through_the_media_proxy():
+    """The row whose archive already exists. Deleting this path would break
+    every batch download requested in the three days before the deploy."""
+    export = _export(share_link_id=uuid.uuid4(), streamed=False)
+    payload = _payload(_db(link_title="Autumn Campaign"), export)
+    assert payload.url.startswith("/stream/hls/")
+    assert payload.streamed is False
+
+
+@pytest.mark.parametrize("streamed", [True, False])
+def test_the_name_is_the_same_whichever_route_serves_it(streamed):
+    from urllib.parse import parse_qs, urlparse
+
+    export = _export(share_link_id=uuid.uuid4(), scope="selected", streamed=streamed)
+    url = _payload(_db(link_title="Autumn Campaign"), export).url
+    got = parse_qs(urlparse(url).query)["download"][0]
+    assert got == expected("Autumn Campaign_Selected")
+
+
+def test_the_streamed_link_lives_for_the_download_link_setting():
+    """§217 item 5. The old zip link was one hour, against 24 h for a single
+    original — so a slow or interrupted batch download could not be resumed
+    once the token died. Read from the setting rather than asserted as 72, so
+    an operator lowering it lowers what this checks."""
+    from datetime import datetime, timezone
+    from urllib.parse import parse_qs, urlparse
+
+    from jose import jwt
+
+    from apps.api.config import settings
+
+    export = _export(share_link_id=uuid.uuid4(), streamed=True)
+    url = _payload(_db(link_title="Autumn Campaign"), export).url
+    token = parse_qs(urlparse(url).query)["token"][0]
+    claims = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+
+    lifetime_hours = (
+        datetime.fromtimestamp(claims["exp"], timezone.utc) - datetime.now(timezone.utc)
+    ).total_seconds() / 3600
+    assert settings.download_link_hours - 0.1 < lifetime_hours <= settings.download_link_hours
+    assert settings.download_link_hours > 1, "the point of the setting is that it is not an hour"
+    # And it is scoped to THIS export, not to an S3 prefix the way
+    # proxy_url_for's token is.
+    assert claims["exp_id"] == str(export.id)
+    assert "pfx" not in claims
