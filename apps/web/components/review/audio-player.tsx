@@ -11,12 +11,14 @@ import {
   Repeat,
   ChevronUp,
   Check,
+  Settings,
 } from 'lucide-react'
 import { cn, formatFrames, formatTime, formatTimecode, resolveStreamUrl } from '@/lib/utils'
 import { api } from '@/lib/api'
 import { useReviewStore, type TimeFormat } from '@/stores/review-store'
 import { useReview } from '@/components/review/review-provider'
 import { ProgressBar } from './progress-bar'
+import { PlayerSettingsSheet } from './player-settings-sheet'
 import type { Asset, AssetVersion, Comment } from '@/types'
 
 interface StreamResponse {
@@ -35,9 +37,19 @@ interface AudioPlayerProps {
   version: AssetVersion | null
   comments?: Comment[]
   className?: string
+  /**
+   * §228 — the phone transport row: play/pause and the timecode, with
+   * speed and loop behind a `⚙` sheet and the mute toggle dropped (the
+   * hardware buttons own volume on a touch device).
+   *
+   * The untouched row below overflowed a 390px screen by ~30px: four
+   * controls, a timecode readout and a `w-[140px]` spacer added up to more
+   * than the width, and the spacer existed only to centre the readout.
+   */
+  compactControls?: boolean
 }
 
-export function AudioPlayer({ asset, version, comments = [], className }: AudioPlayerProps) {
+export function AudioPlayer({ asset, version, comments = [], className, compactControls }: AudioPlayerProps) {
   const { setPlayheadTime, seekTarget, timeFormat, setTimeFormat } = useReviewStore()
   const [timeFormatOpen, setTimeFormatOpen] = React.useState(false)
   const timeFormatRef = React.useRef<HTMLDivElement>(null)
@@ -66,6 +78,7 @@ export function AudioPlayer({ asset, version, comments = [], className }: AudioP
   const [speed, setSpeed] = React.useState<number>(1)
   const [loop, setLoop] = React.useState(false)
   const [audioUrl, setAudioUrl] = React.useState<string | null>(null)
+  const [settingsOpen, setSettingsOpen] = React.useState(false)
 
   // Access share context for share-mode stream fetching
   let shareToken: string | undefined
@@ -241,6 +254,54 @@ export function AudioPlayer({ asset, version, comments = [], className }: AudioP
     }
   }
 
+  /**
+   * The timecode readout and its format picker — one instance, rendered by
+   * both the untouched desktop row and the compact phone row (§228).
+   */
+  const timecodeControl = (
+        <div className="relative" ref={timeFormatRef}>
+          <button
+            onClick={() => setTimeFormatOpen((p) => !p)}
+            // §228 — `hover-none:h-11`: on a phone this is the one readout
+            // in the compact row and it opens the format menu, so it has to
+            // be a real target. A mouse sees the 28px control unchanged.
+            className="flex items-center gap-1.5 rounded-md bg-bg-tertiary px-3 py-1 hover-none:h-11 hover:bg-bg-hover transition-colors"
+          >
+            <span className="font-mono text-sm text-text-primary tabular-nums tracking-wide">
+              {timeFormat === 'timecode'
+                ? displayTime(currentTime)
+                : <>{displayTime(currentTime)} <span className="text-text-tertiary">/</span> {displayTime(duration)}</>
+              }
+            </span>
+            <ChevronUp className={cn('h-3 w-3 text-text-tertiary transition-transform', timeFormatOpen && 'rotate-180')} />
+          </button>
+          {timeFormatOpen && (
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-48 rounded-xl border border-white/10 bg-[#2a2a30] shadow-2xl py-1.5 animate-in fade-in zoom-in-95 duration-100">
+              <div className="px-3 py-2 text-[11px] text-text-tertiary uppercase tracking-wider font-medium">
+                Time Format
+              </div>
+              {([
+                { id: 'frames' as TimeFormat, label: 'Frames' },
+                { id: 'standard' as TimeFormat, label: 'Standard' },
+                { id: 'timecode' as TimeFormat, label: 'Timecode' },
+              ] as const).map((item) => (
+                <button
+                  key={item.id}
+                  className={cn(
+                    'flex w-full items-center justify-between px-3 py-2 hover-none:min-h-11 text-[13px] transition-colors',
+                    timeFormat === item.id ? 'text-text-primary' : 'text-text-secondary hover:bg-white/5',
+                  )}
+                  onClick={() => { setTimeFormat(item.id); setTimeFormatOpen(false) }}
+                >
+                  {item.label}
+                  {timeFormat === item.id && <Check className="h-4 w-4 text-accent" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+  )
+
   return (
     <div className={cn('flex flex-col h-full w-full', className)}>
       {/* Main waveform area — fills available space */}
@@ -280,14 +341,42 @@ export function AudioPlayer({ asset, version, comments = [], className }: AudioP
         />
       </div>
 
-      {/* Bottom transport bar */}
+      {/* ─── Bottom transport bar ─────────────────────────────────────── */}
+      {compactControls ? (
+        <div
+          data-testid="audio-transport-compact"
+          className="flex items-center justify-between h-14 px-2 bg-bg-secondary/80 border-t border-border shrink-0"
+        >
+          <button
+            onClick={handlePlayPause}
+            disabled={!isReady}
+            className="flex h-11 w-11 items-center justify-center rounded-md text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-40 shrink-0"
+            aria-label={isPlaying ? 'Pause' : 'Play'}
+          >
+            {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+          </button>
+
+          {timecodeControl}
+
+          <button
+            onClick={() => setSettingsOpen(true)}
+            aria-label="Player settings"
+            aria-haspopup="dialog"
+            aria-expanded={settingsOpen}
+            data-testid="player-settings-button"
+            className="flex h-11 w-11 items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
+          >
+            <Settings className="h-5 w-5" />
+          </button>
+        </div>
+      ) : (
       <div className="flex items-center justify-between h-12 px-4 bg-bg-secondary/80 border-t border-border shrink-0">
         {/* Left: Play, Loop, Speed, Volume */}
         <div className="flex items-center gap-2">
           <button
             onClick={handlePlayPause}
             disabled={!isReady}
-            className="flex h-7 w-7 items-center justify-center rounded text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-40"
+            className="flex h-7 w-7 hover-none:h-11 hover-none:w-11 items-center justify-center rounded text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-40"
             title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
           >
             {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
@@ -296,7 +385,7 @@ export function AudioPlayer({ asset, version, comments = [], className }: AudioP
           <button
             onClick={() => setLoop(!loop)}
             className={cn(
-              'flex h-7 w-7 items-center justify-center rounded transition-colors',
+              'flex h-7 w-7 hover-none:h-11 hover-none:w-11 items-center justify-center rounded transition-colors',
               loop ? 'text-accent bg-accent/10' : 'text-text-tertiary hover:text-text-secondary hover:bg-bg-hover',
             )}
             title="Loop"
@@ -311,7 +400,7 @@ export function AudioPlayer({ asset, version, comments = [], className }: AudioP
               setSpeed(next)
             }}
             disabled={!isReady}
-            className="flex h-7 items-center justify-center rounded px-1.5 text-xs font-medium text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors tabular-nums disabled:opacity-40"
+            className="flex h-7 hover-none:h-11 hover-none:min-w-11 items-center justify-center rounded px-1.5 text-xs font-medium text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors tabular-nums disabled:opacity-40"
             title="Playback speed"
           >
             {speed}x
@@ -319,7 +408,7 @@ export function AudioPlayer({ asset, version, comments = [], className }: AudioP
 
           <button
             onClick={() => setMuted(!muted)}
-            className="flex h-7 w-7 items-center justify-center rounded text-text-tertiary hover:text-text-secondary hover:bg-bg-hover transition-colors"
+            className="flex h-7 w-7 hover-none:h-11 hover-none:w-11 items-center justify-center rounded text-text-tertiary hover:text-text-secondary hover:bg-bg-hover transition-colors"
             title={muted ? 'Unmute' : 'Mute'}
           >
             {muted || volume === 0 ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
@@ -327,48 +416,24 @@ export function AudioPlayer({ asset, version, comments = [], className }: AudioP
         </div>
 
         {/* Center: Timecode display with format picker */}
-        <div className="relative" ref={timeFormatRef}>
-          <button
-            onClick={() => setTimeFormatOpen((p) => !p)}
-            className="flex items-center gap-1.5 rounded-md bg-bg-tertiary px-3 py-1 hover:bg-bg-hover transition-colors"
-          >
-            <span className="font-mono text-sm text-text-primary tabular-nums tracking-wide">
-              {timeFormat === 'timecode'
-                ? displayTime(currentTime)
-                : <>{displayTime(currentTime)} <span className="text-text-tertiary">/</span> {displayTime(duration)}</>
-              }
-            </span>
-            <ChevronUp className={cn('h-3 w-3 text-text-tertiary transition-transform', timeFormatOpen && 'rotate-180')} />
-          </button>
-          {timeFormatOpen && (
-            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-48 rounded-xl border border-white/10 bg-[#2a2a30] shadow-2xl py-1.5 animate-in fade-in zoom-in-95 duration-100">
-              <div className="px-3 py-2 text-[11px] text-text-tertiary uppercase tracking-wider font-medium">
-                Time Format
-              </div>
-              {([
-                { id: 'frames' as TimeFormat, label: 'Frames' },
-                { id: 'standard' as TimeFormat, label: 'Standard' },
-                { id: 'timecode' as TimeFormat, label: 'Timecode' },
-              ] as const).map((item) => (
-                <button
-                  key={item.id}
-                  className={cn(
-                    'flex w-full items-center justify-between px-3 py-2 text-[13px] transition-colors',
-                    timeFormat === item.id ? 'text-text-primary' : 'text-text-secondary hover:bg-white/5',
-                  )}
-                  onClick={() => { setTimeFormat(item.id); setTimeFormatOpen(false) }}
-                >
-                  {item.label}
-                  {timeFormat === item.id && <Check className="h-4 w-4 text-accent" />}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        {timecodeControl}
 
         {/* Right: spacer for symmetry */}
         <div className="w-[140px]" />
       </div>
+      )}
+
+      {compactControls && (
+        <PlayerSettingsSheet
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          playbackRate={speed}
+          speedOptions={SPEED_OPTIONS}
+          onPlaybackRate={setSpeed}
+          loop={loop}
+          onToggleLoop={() => setLoop((p) => !p)}
+        />
+      )}
     </div>
   )
 }

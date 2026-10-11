@@ -25,7 +25,7 @@ export function CustomFieldInput({
         type="text"
         value={(value as string) ?? ''}
         onChange={(e) => onChange(e.target.value)}
-        className="flex h-8 w-full rounded-md border border-border bg-bg-secondary px-3 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
+        className="flex h-8 hover-none:h-11 w-full rounded-md border border-border bg-bg-secondary px-3 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
         placeholder={`Enter ${field.name.toLowerCase()}`}
       />
     )
@@ -37,7 +37,7 @@ export function CustomFieldInput({
         type="number"
         value={(value as number) ?? ''}
         onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
-        className="flex h-8 w-full rounded-md border border-border bg-bg-secondary px-3 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
+        className="flex h-8 hover-none:h-11 w-full rounded-md border border-border bg-bg-secondary px-3 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
         placeholder="0"
       />
     )
@@ -49,7 +49,7 @@ export function CustomFieldInput({
         type="date"
         value={(value as string) ?? ''}
         onChange={(e) => onChange(e.target.value || null)}
-        className="flex h-8 w-full rounded-md border border-border bg-bg-secondary px-3 text-sm text-text-primary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
+        className="flex h-8 hover-none:h-11 w-full rounded-md border border-border bg-bg-secondary px-3 text-sm text-text-primary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
       />
     )
   }
@@ -59,7 +59,7 @@ export function CustomFieldInput({
     const current = (value as string) ?? ''
     return (
       <Select.Root value={current} onValueChange={onChange}>
-        <Select.Trigger className="inline-flex items-center justify-between gap-2 rounded-md border border-border bg-bg-secondary px-3 h-8 text-sm text-text-primary hover:bg-bg-tertiary transition-colors focus:outline-none focus:ring-1 focus:ring-border-focus w-full">
+        <Select.Trigger className="inline-flex items-center justify-between gap-2 rounded-md border border-border bg-bg-secondary px-3 h-8 hover-none:h-11 text-sm text-text-primary hover:bg-bg-tertiary transition-colors focus:outline-none focus:ring-1 focus:ring-border-focus w-full">
           <Select.Value placeholder={`Select ${field.name}`} />
           <ChevronDown className="h-3.5 w-3.5 text-text-tertiary shrink-0" />
         </Select.Trigger>

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useRef, type ElementType, type ReactNode } from 'react'
+import { useState, useEffect, useMemo, useRef, type CSSProperties, type ElementType, type ReactNode } from 'react'
 import { useRouter, useSearchParams, usePathname } from 'next/navigation'
 import useSWR from 'swr'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
@@ -62,10 +62,13 @@ import {
   CalendarDays,
   X,
   GitCompareArrows,
+  MoreHorizontal,
+  Share2,
 } from 'lucide-react'
 import Link from 'next/link'
 import { cn, formatRelativeTime, formatTime, resolveApiMediaUrl } from '@/lib/utils'
-import { viewportIsXlUp } from '@/hooks/use-media-query'
+import { viewportIsXlUp, useIsPhone } from '@/hooks/use-media-query'
+import { useKeyboardInset } from '@/hooks/use-keyboard-inset'
 import { useFormatBytes } from '@/hooks/use-byte-units'
 import { triggerBrowserDownload } from '@/lib/download'
 import { usePageTitle } from '@/hooks/use-page-title'
@@ -139,7 +142,7 @@ function VoteBreakdown({ voters }: { voters: VoteEntry[] }) {
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
-        <button className="mt-1.5 w-full flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors">
+        <button className="mt-1.5 w-full flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5 hover-none:min-h-11 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors">
           <span>Show all {voters.length} ratings</span>
           <ChevronDown className="h-3.5 w-3.5" />
         </button>
@@ -184,7 +187,7 @@ function AssigneePicker({
       <DropdownMenu.Trigger asChild>
         <button
           type="button"
-          className="flex items-center gap-1.5 min-w-0 rounded-md border border-border h-7 px-2 text-2xs text-text-primary hover:bg-bg-hover transition-colors"
+          className="flex items-center gap-1.5 min-w-0 rounded-md border border-border h-7 hover-none:h-11 px-2 text-2xs text-text-primary hover:bg-bg-hover transition-colors"
         >
           {current ? (
             <>
@@ -205,7 +208,7 @@ function AssigneePicker({
         >
           <DropdownMenu.Item
             onSelect={() => onChange(null)}
-            className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-text-secondary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
+            className="flex items-center gap-2 px-2.5 py-1.5 hover-none:min-h-11 text-xs text-text-secondary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
           >
             Unassigned
           </DropdownMenu.Item>
@@ -213,7 +216,7 @@ function AssigneePicker({
             <DropdownMenu.Item
               key={u.id}
               onSelect={() => onChange(u.id)}
-              className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
+              className="flex items-center gap-2 px-2.5 py-1.5 hover-none:min-h-11 text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
             >
               <Avatar src={u.avatar_url} name={u.name} size="sm" className="h-5 w-5" />
               <span className="truncate">{u.name}</span>
@@ -290,7 +293,10 @@ function EditableAssetName({
       type="button"
       disabled={!canEdit}
       onClick={() => canEdit && setEditing(true)}
-      className={cn('group flex items-center gap-1.5 min-w-0 text-left', canEdit && 'cursor-text')}
+      className={cn(
+        'group flex items-center gap-1.5 min-w-0 text-left hover-none:min-h-11',
+        canEdit && 'cursor-text',
+      )}
     >
       <span className="text-sm font-medium text-text-primary truncate">{name}</span>
       {canEdit && (
@@ -365,6 +371,34 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const [annotationData, setAnnotationData] = useState<Record<string, unknown> | null>(null)
   const [activeTab, setActiveTab] = useState<'comments' | 'fields' | 'transcript'>('comments')
   const [sidebarOpen, setSidebarOpen] = useState(true)
+
+  /**
+   * §228 — the ONE JavaScript breakpoint on this page.
+   *
+   * Below `md` the viewer is a single screen (player on top, the
+   * Comments/Fields switch under it, the list below, the input pinned to
+   * the bottom) rather than a player with a drawer over it. That is a
+   * different TREE, which no media query can express: the comments panel
+   * moves from a `fixed` overlay to a flex child, the version/status/
+   * rating controls move from the top bar into the Fields tab, and the
+   * player's extra controls move into a sheet that only exists there.
+   *
+   * Everything that is merely about SIZE — which top-bar controls are
+   * labelled, which collapse into the `⋯` menu, when the asset nav takes a
+   * row of its own — is a container query in globals.css instead.
+   *
+   * Starts `false` (= the existing desktop tree) and resolves in a layout
+   * effect before paint, so the server and the first client render agree.
+   */
+  const isPhone = useIsPhone()
+
+  // The band of the layout viewport that iOS Safari's keyboard covers;
+  // 0 everywhere else. Only read on a phone, where the input is pinned.
+  const keyboardInset = useKeyboardInset(isPhone)
+
+  // One ShareDialog instance, opened either by its own inline trigger or by
+  // the `⋯` menu — not two mounted copies of the share panel.
+  const [shareOpen, setShareOpen] = useState(false)
   // §224 — below `xl` the comments pane is a drawer over the player rather
   // than a 360px column beside it, so it starts closed: on a phone that
   // column left the video about 30px wide. Once per mount, not on resize.
@@ -475,13 +509,31 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   // than opening a dropdown. The list itself lives in its own column beside
   // the frame (rendered further down), so it cannot overlap the nav and has
   // room for group headers and full LUT names.
-  const lutPicker = lut.supported && asset ? (
+  const lutSelectedName = lut.luts.find((l) => l.id === lut.selectedId)?.name ?? null
+
+  // §228 — NOT on a phone. The toggle opens a 260px column beside the
+  // frame, which on a 390px screen leaves the frame 130px wide. There the
+  // same list is a sub-page of the player's settings sheet instead
+  // (`lutSheetContent` below) — same component, same `useLut` state.
+  const lutPicker = lut.supported && asset && !isPhone ? (
     <LutSidebarToggle
       open={lutSidebarOpen}
       onToggle={toggleLutSidebar}
-      selectedName={lut.luts.find((l) => l.id === lut.selectedId)?.name ?? null}
+      selectedName={lutSelectedName}
       isLoading={lut.isLoading || lut.isLoadingCube}
       className="shrink-0"
+    />
+  ) : null
+
+  const lutSheetContent = lut.supported && asset && isPhone ? (
+    <LutSidebar
+      luts={lut.luts}
+      selectedId={lut.selectedId}
+      onSelect={(id) => lut.select(id)}
+      // No `onClose`: the sheet's own back button is the way out of this
+      // sub-page, so the panel's header is not rendered here.
+      isLoading={lut.isLoading || lut.isLoadingCube}
+      className="w-full border-r-0 bg-transparent animate-none"
     />
   ) : null
 
@@ -1010,6 +1062,9 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             captionsLanguage={transcript?.language ?? null}
             cube={lut.cube}
             lutPicker={lutPicker}
+            compactControls={isPhone}
+            lutSheetContent={lutSheetContent}
+            lutLabel={lutSelectedName}
             overlay={
               <>
                 <AnnotationOverlay key={focusedCommentId ?? 'none'} />
@@ -1029,12 +1084,13 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             version={currentVersion}
             comments={comments}
             className="flex-1"
+            compactControls={isPhone}
           />
         )
       case 'image':
       case 'image_carousel':
         return (
-          <div className="relative flex-1 flex items-center justify-center p-4 overflow-hidden">
+          <div className="relative flex-1 flex items-center justify-center p-2 md:p-4 overflow-hidden">
             <ImageViewer
               asset={asset}
               version={currentVersion as any}
@@ -1058,12 +1114,517 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     }
   }
 
+
+  /**
+   * ─── The Comments / Fields / Transcript panel, in three pieces ────────
+   *
+   * §228 — lifted out of the drawer so the phone layout and the drawer
+   * render the SAME nodes rather than two copies of a 300-line panel that
+   * can drift. On a phone they are stacked into the lower half of one
+   * screen; at `md`+ they go back inside the drawer in exactly the order
+   * and nesting they were in before, which is what keeps that layout
+   * pixel-identical.
+   */
+
+  /** The pill switch. On a phone it also carries a status chip, so the
+   *  file's state is readable without leaving the Comments tab. */
+  const panelTabs = (
+    <div
+      data-testid="viewer-panel-tabs"
+      className={cn(
+        'shrink-0',
+        isPhone
+          // Directly under the player's transport row, with the status chip
+          // beside it: one 44px-tall band, not two.
+          ? 'flex flex-wrap items-center gap-2 border-b border-border px-3 py-2'
+          : 'px-4 pt-3 pb-2',
+      )}
+    >
+      <div
+        className={cn(
+          'flex items-center bg-bg-tertiary rounded-lg p-0.5',
+          // `basis-[200px]` is what decides whether the status chip fits
+          // beside the switch or takes a line under it: at 390px the two
+          // come to 339 of 366 and sit together; at 320px they come to 339
+          // of 296, the chip wraps, and the three pills get the full width
+          // rather than being squeezed to min-content (measured: "Fields"
+          // was 36px wide before this).
+          isPhone && 'min-w-0 flex-1 basis-[200px]',
+        )}
+      >
+        <button
+          onClick={() => setActiveTab('comments')}
+          className={cn(
+            'flex-1 py-1.5 text-[13px] font-medium rounded-md transition-all',
+            // §228 — on a phone this switch is the only way between the
+            // two panes at that width, so it is a real target.
+            isPhone && 'min-h-11',
+            activeTab === 'comments'
+              ? 'bg-bg-hover text-text-primary shadow-sm'
+              : 'text-text-tertiary hover:text-text-secondary',
+          )}
+        >
+          Comments
+        </button>
+        <button
+          onClick={() => setActiveTab('fields')}
+          className={cn(
+            'flex-1 py-1.5 text-[13px] font-medium rounded-md transition-all',
+            // §228 — on a phone this switch is the only way between the
+            // two panes at that width, so it is a real target.
+            isPhone && 'min-h-11',
+            activeTab === 'fields'
+              ? 'bg-bg-hover text-text-primary shadow-sm'
+              : 'text-text-tertiary hover:text-text-secondary',
+          )}
+        >
+          Fields
+        </button>
+        {supportsTranscript && (
+          <button
+            onClick={() => setActiveTab('transcript')}
+            className={cn(
+              'flex-1 py-1.5 text-[13px] font-medium rounded-md transition-all',
+              isPhone && 'min-h-11',
+            // §228 — on a phone this switch is the only way between the
+            // two panes at that width, so it is a real target.
+            isPhone && 'min-h-11',
+              activeTab === 'transcript'
+                ? 'bg-bg-hover text-text-primary shadow-sm'
+                : 'text-text-tertiary hover:text-text-secondary',
+            )}
+          >
+            Transcript
+          </button>
+        )}
+      </div>
+      {/* §228 — the chip. The owner asked for version/status/voting to
+          move to the Fields tab, and they have; this is so that moving
+          them does not make the state invisible from the tab you are
+          actually reading. It is the SAME `StatusDropdown` with the same
+          handler and the same `canEditStatus` gating — not a read-only
+          copy — so a tap both shows the state and changes it. */}
+      {isPhone && activeTab === 'comments' && displayStatus && (
+        <div data-testid="viewer-comments-status-chip" className="ml-auto shrink-0">
+          <StatusDropdown
+            status={displayStatus}
+            onChange={canEditStatus ? handleStatusChange : undefined}
+            readOnly={!canEditStatus}
+            canArchive={canArchive}
+            className="h-8 px-2"
+          />
+        </div>
+      )}
+    </div>
+  )
+
+  /** The active tab's body, WITHOUT the comment composer: on a phone that
+   *  is pinned to the bottom of the screen rather than scrolling with the
+   *  list, so it cannot be part of this. */
+  const panelBody =
+    activeTab === 'comments' ? (
+      <CommentPanel
+        comments={comments as any}
+        currentUserId={user?.id}
+        onResolve={resolveComment}
+        onDelete={deleteComment}
+        onAddReaction={addReaction}
+        onRemoveReaction={removeReaction}
+        onReply={() => {}}
+        onSubmitReply={handleSubmitReply}
+      />
+    ) : activeTab === 'transcript' ? (
+        <TranscriptPanel
+          transcript={transcript}
+          isLoading={transcriptLoading}
+          currentTime={playheadTime}
+          onSeek={(seconds) => seekTo(seconds, false)}
+          onToggle={canEditStatus ? handleTranscriptionToggle : undefined}
+          toggleBusy={transcriptionBusy}
+        />
+      ) : (
+        <div className="flex-1 overflow-y-auto p-4">
+          <div>
+            <div className="pb-3 mb-1 border-b border-border/60">
+              <div className="flex items-center gap-2">
+                <FileText className="h-3.5 w-3.5 text-text-tertiary shrink-0" />
+                <EditableAssetName
+                  name={displayName ?? ''}
+                  canEdit={canEditStatus}
+                  onSave={handleRenameAsset}
+                />
+              </div>
+              {summaryParts.length > 0 && (
+                <p className="mt-1 pl-5 text-2xs text-text-tertiary">{summaryParts.join(' · ')}</p>
+              )}
+            </div>
+
+            {/* ─── Phones: version, status and rating, at the top ──────────
+                §228 A3 — "the buttons up top for version, draft, voting
+                etc. should move to the comments/fields tab in mobile
+                view", and "users can still vote and change the state of a
+                file on the go" through this tab.
+
+                The SAME components with the SAME handlers and the SAME
+                gating the top bar used (`canEditStatus`, `canVote`,
+                `canArchive`) — no copies and no second piece of state. The
+                equivalent rows further down are rendered only when this
+                block is not, so each control exists exactly once. */}
+            {isPhone && (
+              <div data-testid="viewer-fields-phone-controls">
+                {versions.length > 0 && (
+                  <div
+                    data-testid="viewer-fields-version"
+                    className="flex items-center justify-between gap-3 py-2 border-b border-border/60"
+                  >
+                    <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
+                      <GitBranch className="h-3.5 w-3.5" />
+                      Version
+                    </span>
+                    <VersionSwitcher versions={versions} />
+                  </div>
+                )}
+                {displayStatus && (
+                  <div
+                    data-testid="viewer-fields-status"
+                    className="flex items-center justify-between gap-3 py-2 border-b border-border/60"
+                  >
+                    <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
+                      <CircleDot className="h-3.5 w-3.5" />
+                      Status
+                    </span>
+                    <StatusDropdown
+                      status={displayStatus}
+                      onChange={canEditStatus ? handleStatusChange : undefined}
+                      readOnly={!canEditStatus}
+                      canArchive={canArchive}
+                      className="h-8 px-2"
+                    />
+                  </div>
+                )}
+                {(canVote || ratingCount > 0) && (
+                  <div
+                    data-testid="viewer-fields-rating"
+                    className="py-2 border-b border-border/60"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
+                        <Star className="h-3.5 w-3.5" />
+                        Rating
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <StarRating
+                          value={myRating}
+                          onChange={canVote ? handleRate : undefined}
+                          readOnly={!canVote}
+                          size="md"
+                        />
+                        {ratingCount > 0 && (
+                          <span className="text-xs text-text-secondary tabular-nums">{avgRating?.toFixed(1)}</span>
+                        )}
+                      </div>
+                    </div>
+                    {ratingCount > 0 && <VoteBreakdown voters={voters ?? []} />}
+                  </div>
+                )}
+              </div>
+            )}
+            <FieldRow icon={Tag} label="Type">
+              <span className="capitalize">{asset.asset_type.replace('_', ' ')}</span>
+            </FieldRow>
+
+            {/* Status — same control as the toolbar, compact.
+                §228 — not rendered on a phone; the block above is. */}
+            {!isPhone && (
+            <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60">
+              <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
+              <CircleDot className="h-3.5 w-3.5" />
+                Status
+            </span>
+              {displayStatus && (
+                <StatusDropdown
+                  status={displayStatus}
+                  onChange={canEditStatus ? handleStatusChange : undefined}
+                  readOnly={!canEditStatus}
+                  canArchive={canArchive}
+                  className={canEditStatus ? 'h-7 px-2 text-2xs bg-transparent border-border' : 'h-6 px-2'}
+                />
+            )}
+            </div>
+            )}
+
+            {/* Rating + per-voter breakdown — hidden entirely for users
+              with no access at all (e.g. viewers); reviewers still
+              see their own vote (canVote) but never the aggregate,
+              which stays gated behind ratingCount from the backend.
+              §228 — not on a phone; the block at the top of this tab is. */}
+            {!isPhone && (canVote || ratingCount > 0) && (
+              <div className="py-2 border-b border-border/60">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
+                  <Star className="h-3.5 w-3.5" />
+                    Rating
+                </span>
+                  <div className="flex items-center gap-1.5">
+                    <StarRating
+                      value={myRating}
+                      onChange={canVote ? handleRate : undefined}
+                    readOnly={!canVote}
+                    size="sm"
+                  />
+                    {ratingCount > 0 && (
+                      <span className="text-xs text-text-secondary tabular-nums">{avgRating?.toFixed(1)}</span>
+                  )}
+                </div>
+                </div>
+              {ratingCount > 0 && <VoteBreakdown voters={voters ?? []} />}
+            </div>
+            )}
+
+            {/* Assignee */}
+            <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60">
+              <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
+                <UserIcon className="h-3.5 w-3.5" />
+                Assignee
+              </span>
+              <AssigneePicker
+                users={memberUsers ?? []}
+                value={displayAssigneeId}
+                onChange={handleAssigneeChange}
+                disabled={!canEditStatus}
+              />
+            </div>
+
+            {/* Due date */}
+            <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60">
+              <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
+                <CalendarDays className="h-3.5 w-3.5" />
+                Due Date
+              </span>
+              {canEditStatus ? (
+                <input
+                  type="date"
+                  value={displayDueDate ? displayDueDate.slice(0, 10) : ''}
+                  onChange={(e) => handleDueDateChange(e.target.value)}
+                  className="h-7 hover-none:h-11 rounded-md border border-border bg-transparent px-2 text-2xs text-text-primary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
+                />
+              ) : (
+                <span className="text-xs text-text-primary font-medium">
+                  {displayDueDate ? new Date(displayDueDate).toLocaleDateString() : '—'}
+                </span>
+              )}
+            </div>
+
+            {/* Keywords */}
+            <div className="py-2 border-b border-border/60">
+              <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0 mb-1.5">
+                <Tag className="h-3.5 w-3.5" />
+                Keywords
+              </span>
+              <div className="flex flex-wrap gap-1.5 mb-1.5">
+                {displayKeywords.length === 0 && (
+                  <span className="text-xs text-text-primary">—</span>
+                )}
+                {displayKeywords.map((kw) => (
+                  <span
+                    key={kw}
+                    className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary border border-border px-2 py-0.5 text-2xs text-text-secondary"
+                  >
+                    {kw}
+                    {canEditStatus && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveKeyword(kw)}
+                        // §227b's hit-area utility: a 44px target around a
+                        // 12px ✕ without growing the chip it sits in.
+                        className="tap-target-44 relative text-text-tertiary hover:text-text-primary transition-colors"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </span>
+                ))}
+              </div>
+              {canEditStatus && (
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    value={keywordInput}
+                    onChange={(e) => setKeywordInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        handleAddKeyword()
+                      }
+                    }}
+                    placeholder="Add keyword..."
+                    className="flex h-7 hover-none:h-11 flex-1 min-w-0 rounded-md border border-border bg-transparent px-2 text-2xs text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddKeyword}
+                    className="h-7 hover-none:h-11 px-2 rounded-md border border-border text-2xs text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
+                  >
+                    Add
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* §228 — the real VersionSwitcher is at the top of this tab
+                on a phone, so this read-only duplicate is not rendered
+                there: two version controls in one list read as a bug. */}
+            {!isPhone && currentVersion && (
+              <FieldRow icon={GitBranch} label="Version">v{currentVersion.version_number}</FieldRow>
+            )}
+            {currentVersion && (
+              <FieldRow icon={Activity} label="Processing">
+                <span className={cn(
+                  'capitalize',
+                  currentVersion.processing_status === 'ready' && 'text-status-success',
+                  currentVersion.processing_status === 'processing' && 'text-status-warning',
+                  currentVersion.processing_status === 'failed' && 'text-status-error',
+                currentVersion.processing_status === 'uploading' && 'text-text-tertiary',
+              )}>
+                  {currentVersion.processing_status === 'ready' ? 'DONE' : currentVersion.processing_status}
+              </span>
+              </FieldRow>
+            )}
+            <FieldRow icon={MessageSquare} label="Comments">{commentCount}</FieldRow>
+            <FieldRow icon={Clock} label="Uploaded">{formatRelativeTime(asset.created_at)}</FieldRow>
+            <FieldRow icon={UserIcon} label="Uploaded by">{uploaderName ?? '—'}</FieldRow>
+            {totalFileSize > 0 && (
+              <FieldRow icon={HardDrive} label="File size">{formatBytes(totalFileSize)}</FieldRow>
+            )}
+            {primaryFile?.duration_seconds != null && (
+              <FieldRow icon={Timer} label="Duration">{formatTime(primaryFile.duration_seconds)}</FieldRow>
+            )}
+            {primaryFile?.fps != null && (
+              <FieldRow icon={Gauge} label="Frame rate">{primaryFile.fps} fps</FieldRow>
+            )}
+            {primaryFile?.original_filename && (
+              <FieldRow icon={FileIcon} label="Source filename">{primaryFile.original_filename}</FieldRow>
+            )}
+
+            {primaryFile?.technical_metadata &&
+              Object.values(primaryFile.technical_metadata).some((v) => v !== undefined && v !== null) && (
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowAllFields((v) => !v)}
+                    className="w-full flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5 hover-none:min-h-11 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors"
+                  >
+                    <span>{showAllFields ? 'Hide' : 'Show'} all fields</span>
+                    <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', showAllFields && 'rotate-180')} />
+                  </button>
+                  {showAllFields && <TechnicalMetadataList metadata={primaryFile.technical_metadata} />}
+                </div>
+              )}
+
+            {/* Sidecar-derived metadata. Kept visually separate from
+                the block above: that is derived from the file itself,
+                this is user-supplied. */}
+            {/* canEdit was `canEditStatus || currentRole === 'admin'`
+                — a local patch for the omission now fixed at the
+                source, which TS flags as dead once canEditStatus
+                covers admin itself. */}
+            {asset && (
+              <SidecarMetadata
+                assetId={asset.id}
+                canEdit={canEditStatus}
+              />
+            )}
+
+            {/* Custom project-defined fields */}
+            {metadataFields && metadataFields.length > 0 && (
+              <div className="pt-3 mt-2 border-t border-border">
+                <p className="text-2xs font-medium text-text-tertiary uppercase tracking-wide mb-2">
+                  Custom Fields
+                </p>
+                <div className="space-y-3">
+                  {metadataFields.map((field) => (
+                    <div key={field.id} className="flex flex-col gap-1.5">
+                      <label className="text-xs text-text-secondary flex items-center gap-1">
+                        {field.name}
+                        {field.required && <span className="text-status-error">*</span>}
+                      </label>
+                      {canEditStatus ? (
+                        <CustomFieldInput
+                          field={field}
+                          value={customValues[field.id]}
+                          onChange={(v) => handleCustomFieldChange(field.id, v)}
+                        />
+                      ) : (
+                        <span className="text-xs text-text-primary">
+                          {formatCustomFieldValue(customValues[field.id])}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )
+
+  /**
+   * The composer. Focusing it pauses the video and stamps the playhead
+   * timecode into the field (comment-input.tsx) — the owner's "play to a
+   * certain point, hit comment and the video automatically stops at that
+   * point and gives the user that timecode".
+   */
+  const commentInputNode =
+    activeTab === 'comments' && canComment ? (
+      <CommentInput
+        assetId={asset.id}
+        projectId={asset.project_id}
+        assetType={asset.asset_type}
+        onSubmit={handleSubmitComment}
+        annotationData={annotationData}
+      />
+    ) : null
+
   return (
     <div className="absolute inset-0 flex flex-col overflow-hidden">
-      {/* ─── Top bar (Frame.io style) ──────────────────────────────────── */}
-      <div className="flex items-center justify-between border-b border-border px-3 h-12 bg-bg-secondary shrink-0">
-        {/* Left: back + breadcrumb */}
-        <div className="flex items-center gap-1 min-w-0 flex-1">
+      {/* ─── Top bar ────────────────────────────────────────────────────
+          §228 — two clearly separated jobs on the left and right, and the
+          asset navigation nowhere near the back button.
+
+          What the owner reported from a 390px iPhone: "once inside an
+          asset on mobile the only way out is the browser's Back, because
+          the back button is at the same location as the
+          switch-between-items buttons". He was right about the cause and
+          understating the effect — the right-hand group (version, compare,
+          new version, status, rating, share, download, panel toggle) is
+          ~700px wide, so at 390px the asset name was squeezed to zero and
+          the back arrow and the previous-asset chevron ended up adjacent,
+          reading as one "‹‹" control. The panel toggle was the LAST item
+          of that overflowing row, which means the Comments/Fields panel
+          could not be opened at all.
+
+          How it degrades is a CONTAINER query on this bar
+          (`.viewer-topbar`, globals.css), not a window breakpoint: what
+          decides is how wide THIS bar is, and that depends on the sidebar
+          rail as well as the window. Order: labels drop, then the
+          secondary actions fold into the `⋯` menu, then the asset nav
+          takes a row of its own, then (at `md`+ only) the right group
+          does too. `flex-wrap` is the floor under all of it — if a band is
+          a pixel short something wraps rather than going out of reach. */}
+      <div
+        data-testid="viewer-top-bar"
+        // `flex-wrap` at EVERY width, with no `md:flex-nowrap` to undo it:
+        // the container query's last two steps work by giving a group
+        // `flex-basis: 100%`, and on a nowrap row that does not wrap it —
+        // it makes the group 100% wide and pushes the next one past the
+        // right edge. Measured: with `md:flex-nowrap` the prev/next group
+        // landed at x=1032 on a 768px touch tablet, i.e. 264px off-screen.
+        // Wrapping changes nothing at 1280/1440, where everything fits on
+        // one line; it is only the floor under the steps below.
+        className="viewer-topbar flex flex-wrap items-center justify-between gap-y-1 border-b border-border px-3 min-h-[48px] bg-bg-secondary shrink-0"
+      >
+        {/* Left: leave this asset, then which asset it is */}
+        <div className="vbar-left flex items-center gap-1 min-w-0 flex-1">
           {/* Back to the folder this asset lives in, not the project root
               (§179). Built from `asset.folder_id` rather than
               `router.back()`: history only holds the right entry when the
@@ -1075,13 +1636,20 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               Same `?folder=` shape the header breadcrumb above already
               builds from the same field, and the project page derives
               `currentFolderId` from that param on every render, so landing
-              on it cold renders the folder and its full crumb trail. */}
+              on it cold renders the folder and its full crumb trail.
+
+              §228 — below `md` it also says the word "Back". An arrow on
+              its own, four pixels from a prev-asset chevron, is what the
+              owner read as one control; at `md`+ the word is hidden and
+              the 28px icon button is exactly what it was. */}
           <Link
             href={`/projects/${asset.project_id}${asset.folder_id ? `?folder=${asset.folder_id}` : ''}`}
             aria-label="Back to folder"
-            className="flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
+            data-testid="viewer-back"
+            className="viewer-tap flex items-center justify-center gap-1.5 h-7 w-7 max-md:w-auto max-md:px-2.5 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft className="h-4 w-4 shrink-0" />
+            <span className="md:hidden text-[13px] font-medium">Back</span>
           </Link>
 
           {/* Asset name only */}
@@ -1090,13 +1658,20 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
           </span>
         </div>
 
-        {/* Center: asset navigation */}
+        {/* Asset navigation. Its own group, and at narrow widths its own
+            ROW (`.vbar-nav`, ordered last so it wraps below the bar rather
+            than between the name and the actions). */}
         {totalAssets > 1 && (
-          <div className="flex items-center gap-1 shrink-0">
+          <div
+            data-testid="viewer-asset-nav"
+            className="vbar-nav flex items-center gap-1 shrink-0"
+          >
             <button
               onClick={() => prevAsset && navigateAsset(prevAsset.id)}
               disabled={!prevAsset}
-              className="flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              data-testid="viewer-prev-asset"
+              aria-label="Previous asset"
+              className="viewer-tap flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               title="Previous asset (←)"
             >
               <ChevronLeft className="h-4 w-4" />
@@ -1107,7 +1682,9 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             <button
               onClick={() => nextAsset && navigateAsset(nextAsset.id)}
               disabled={!nextAsset}
-              className="flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              data-testid="viewer-next-asset"
+              aria-label="Next asset"
+              className="viewer-tap flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               title="Next asset (→)"
             >
               <ChevronRight className="h-4 w-4" />
@@ -1116,7 +1693,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
         )}
 
         {/* Right: version, share, sidebar toggle */}
-        <div className="flex items-center gap-2 shrink-0 flex-1 justify-end">
+        <div className="vbar-right flex items-center gap-2 shrink-0 flex-1 justify-end">
           {/* Hidden file input for new version upload */}
           <input
             ref={versionFileInputRef}
@@ -1132,26 +1709,30 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               setTimeout(() => refetchVersions(), 800)
             }}
           />
-          <VersionSwitcher versions={versions} />
+          {/* §228 — on a phone these three live at the top of the Fields
+              tab instead (same components, same handlers, same gating):
+              "the buttons up top for version, draft, voting etc. should
+              move to the comments/fields tab in mobile view". */}
+          {!isPhone && <VersionSwitcher versions={versions} />}
           {asset && canCompare(asset.asset_type, versions) && (
             <button
               onClick={openCompare}
-              className="inline-flex items-center gap-1.5 rounded-md px-2.5 h-8 text-xs font-medium border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
+              className="vbar-inline inline-flex items-center gap-1.5 rounded-md px-2.5 h-8 text-xs font-medium border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
               title="Compare versions"
             >
               <GitCompareArrows className="h-3.5 w-3.5" />
-              Compare
+              <span className="vbar-label">Compare</span>
             </button>
           )}
           <button
             onClick={() => versionFileInputRef.current?.click()}
-            className="inline-flex items-center gap-1.5 rounded-md px-2.5 h-8 text-xs font-medium border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
+            className="vbar-inline inline-flex items-center gap-1.5 rounded-md px-2.5 h-8 text-xs font-medium border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
             title="Upload new version"
           >
             <Upload className="h-3.5 w-3.5" />
-            New Version
+            <span className="vbar-label">New Version</span>
           </button>
-          {displayStatus && (
+          {!isPhone && displayStatus && (
             <StatusDropdown
               status={displayStatus}
               onChange={canEditStatus ? handleStatusChange : undefined}
@@ -1164,7 +1745,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               }
             />
           )}
-          {(canVote || ratingCount > 0) && (
+          {!isPhone && (canVote || ratingCount > 0) && (
             <div className="inline-flex items-center gap-1.5 rounded-md px-2.5 h-8 border border-border">
               <StarRating
                 value={myRating}
@@ -1177,7 +1758,19 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               )}
             </div>
           )}
-          <ShareDialog assetId={asset.id} assetName={asset.name} projectId={projectId} asset={asset} />
+          {/* ONE instance, controlled. Its inline trigger hides when the
+              bar runs out of room; the `⋯` menu then opens this same
+              panel, which stays anchored to the bar's right edge because
+              the (now zero-width) wrapper is still in the row. */}
+          <ShareDialog
+            assetId={asset.id}
+            assetName={asset.name}
+            projectId={projectId}
+            asset={asset}
+            open={shareOpen}
+            onOpenChange={setShareOpen}
+            triggerClassName="vbar-inline"
+          />
           {/* One button, not two: a plain click when there's nothing to grade,
               a dropdown ("Download" / "Download with <LUT name>") the moment
               a LUT is actually selected on this (video) asset. Video only —
@@ -1188,7 +1781,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                 <button
                   type="button"
                   disabled={exporting}
-                  className="flex items-center justify-center h-8 w-8 rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-60"
+                  className="vbar-inline viewer-tap flex items-center justify-center h-8 w-8 rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-60"
                   title={exportError ?? 'Download'}
                 >
                   {exporting ? (
@@ -1222,24 +1815,108 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
           ) : (
             <button
               onClick={handlePlainDownload}
-              className="flex items-center justify-center h-8 w-8 rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+              className="vbar-inline viewer-tap flex items-center justify-center h-8 w-8 rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
               title="Download"
             >
               <Download className="h-4 w-4" />
             </button>
           )}
-          <button
-            onClick={() => setSidebarOpen((p) => !p)}
-            className={cn(
-              'flex items-center justify-center h-8 w-8 rounded-md transition-colors',
-              sidebarOpen
-                ? 'bg-bg-hover text-text-primary'
-                : 'text-text-tertiary hover:text-text-primary hover:bg-bg-hover',
-            )}
-            title="Toggle sidebar"
-          >
-            <Columns2 className="h-4 w-4" />
-          </button>
+
+          {/* ─── The `⋯` overflow menu ───────────────────────────────────
+              Hidden by default; shown by the container query once the
+              inline actions above have been hidden, so each action is in
+              exactly one place at any given width and every one of them
+              calls the SAME handler the inline button does. */}
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <button
+                type="button"
+                data-testid="viewer-overflow-trigger"
+                aria-label="More actions"
+                title="More actions"
+                className="vbar-more viewer-tap shrink-0 items-center justify-center h-8 w-8 rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+              >
+                <MoreHorizontal className="h-5 w-5" />
+              </button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content
+                data-testid="viewer-overflow-menu"
+                align="end"
+                sideOffset={6}
+                collisionPadding={8}
+                className="z-[100] w-60 rounded-xl border border-border bg-bg-elevated shadow-2xl py-1.5"
+              >
+                <DropdownMenu.Item
+                  onSelect={() => setShareOpen(true)}
+                  className="flex min-h-11 items-center gap-2.5 mx-1 px-2.5 rounded-lg text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
+                >
+                  <Share2 className="h-4 w-4 text-text-tertiary" />
+                  Share
+                </DropdownMenu.Item>
+                <DropdownMenu.Item
+                  onSelect={handlePlainDownload}
+                  className="flex min-h-11 items-center gap-2.5 mx-1 px-2.5 rounded-lg text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
+                >
+                  <Download className="h-4 w-4 text-text-tertiary" />
+                  Download
+                </DropdownMenu.Item>
+                {/* The graded variant appears on exactly the same condition
+                    the inline dropdown's second item does. */}
+                {lut.supported && lut.selectedId && asset.asset_type === 'video' && (
+                  <DropdownMenu.Item
+                    onSelect={handleGradedDownload}
+                    disabled={exporting}
+                    className="flex min-h-11 items-center gap-2.5 mx-1 px-2.5 rounded-lg text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer data-[disabled]:opacity-50"
+                  >
+                    {exporting ? (
+                      <Loader2 className="h-4 w-4 animate-spin text-text-tertiary" />
+                    ) : (
+                      <Download className="h-4 w-4 text-text-tertiary" />
+                    )}
+                    Download with currently displayed LUT
+                  </DropdownMenu.Item>
+                )}
+                {asset && canCompare(asset.asset_type, versions) && (
+                  <DropdownMenu.Item
+                    onSelect={openCompare}
+                    className="flex min-h-11 items-center gap-2.5 mx-1 px-2.5 rounded-lg text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
+                  >
+                    <GitCompareArrows className="h-4 w-4 text-text-tertiary" />
+                    Compare
+                  </DropdownMenu.Item>
+                )}
+                <DropdownMenu.Item
+                  onSelect={() => versionFileInputRef.current?.click()}
+                  className="flex min-h-11 items-center gap-2.5 mx-1 px-2.5 rounded-lg text-xs text-text-primary outline-none data-[highlighted]:bg-bg-hover cursor-pointer"
+                >
+                  <Upload className="h-4 w-4 text-text-tertiary" />
+                  New Version
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+
+          {/* The panel toggle. NOT in the `⋯` menu and never hidden: it was
+              the last item of an overflowing row, which is how it ended up
+              off-screen on a phone with the panel unopenable. Not rendered
+              at all below `md`, where there is no drawer to toggle — the
+              panel is simply the lower half of the screen. */}
+          {!isPhone && (
+            <button
+              onClick={() => setSidebarOpen((p) => !p)}
+              data-testid="viewer-panel-toggle"
+              className={cn(
+                'viewer-tap flex items-center justify-center h-8 w-8 rounded-md transition-colors',
+                sidebarOpen
+                  ? 'bg-bg-hover text-text-primary'
+                  : 'text-text-tertiary hover:text-text-primary hover:bg-bg-hover',
+              )}
+              title="Toggle sidebar"
+            >
+              <Columns2 className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -1256,6 +1933,56 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
           onClose={closeCompare}
           canComment={canComment}
         />
+      ) : (
+        isPhone ? (
+        /* ─── Phones: one screen, no drawer ──────────────────────────────
+           §228 A1, the layout the owner asked for by name: "show the
+           comments and fields tabs underneath the player like Frame.io
+           does". Player pinned at the top at the media's own aspect ratio
+           and capped so there is always a list below it, the tab switch
+           directly under the transport row, the active tab scrolling in
+           what is left, and the composer pinned to the bottom.
+
+           No drawer, no toggle, no scrim, no bottom tab bar — there is
+           nothing to switch between at this width, so the panel is simply
+           the lower half of the page.
+
+           `paddingBottom` is the band iOS Safari's keyboard covers, which
+           the layout viewport does not report (see use-keyboard-inset).
+           Without it the composer sits behind the keyboard the moment it
+           is focused — which is every time it is used. */
+        <div
+          data-testid="viewer-phone-layout"
+          data-keyboard={keyboardInset > 0 ? 'open' : 'closed'}
+          className="flex flex-1 flex-col overflow-hidden min-h-0"
+          // `--kb` as well as the padding: the padding is what lifts the
+          // composer clear of the keyboard, and `--kb` is what tells the
+          // player above to give up the height that costs. Without the
+          // second half the player (which is `shrink-0`, so it keeps its
+          // aspect ratio) simply overflowed the shortened box and pushed
+          // the composer back under the keyboard.
+          style={
+            keyboardInset > 0
+              ? ({ paddingBottom: keyboardInset, '--kb': `${keyboardInset}px` } as CSSProperties)
+              : undefined
+          }
+        >
+          <div
+            data-testid="viewer-phone-media"
+            data-media={asset.asset_type}
+            className="viewer-phone-media flex shrink-0 flex-col bg-bg-primary overflow-hidden"
+          >
+            {renderMediaViewer()}
+          </div>
+
+          {panelTabs}
+
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            {panelBody}
+          </div>
+
+          {commentInputNode}
+        </div>
       ) : (
       <div className="flex flex-1 overflow-hidden min-h-0">
         {/* Far left: LUT panel. Its own column between the nav and the frame,
@@ -1295,334 +2022,25 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             same in-flow 360px column at `xl`+. It used to be in flow at
             every width, so on a 768px tablet the player got 408px and on a
             390px phone it got 30px. The toggle in the top bar was always
-            visible and always worked; what it did below `xl` was unusable. */}
+            visible and always worked; what it did below `xl` was unusable.
+            §228 — below `md` this element is not rendered at all; the
+            phone branch above is that width's whole answer. */}
         {sidebarOpen && (
           <div
             data-testid="viewer-right-panel"
             className="fixed inset-y-0 right-0 z-40 flex w-[360px] max-w-[90vw] flex-col overflow-hidden border-l border-border bg-bg-secondary shadow-2xl animate-in slide-in-from-right-2 duration-150 xl:static xl:z-auto xl:w-[360px] xl:max-w-none xl:shrink-0 xl:shadow-none">
             {/* Tabs (Frame.io pill style) */}
-            <div className="px-4 pt-3 pb-2 shrink-0">
-              <div className="flex items-center bg-bg-tertiary rounded-lg p-0.5">
-                <button
-                  onClick={() => setActiveTab('comments')}
-                  className={cn(
-                    'flex-1 py-1.5 text-[13px] font-medium rounded-md transition-all',
-                    activeTab === 'comments'
-                      ? 'bg-bg-hover text-text-primary shadow-sm'
-                      : 'text-text-tertiary hover:text-text-secondary',
-                  )}
-                >
-                  Comments
-                </button>
-                <button
-                  onClick={() => setActiveTab('fields')}
-                  className={cn(
-                    'flex-1 py-1.5 text-[13px] font-medium rounded-md transition-all',
-                    activeTab === 'fields'
-                      ? 'bg-bg-hover text-text-primary shadow-sm'
-                      : 'text-text-tertiary hover:text-text-secondary',
-                  )}
-                >
-                  Fields
-                </button>
-                {supportsTranscript && (
-                  <button
-                    onClick={() => setActiveTab('transcript')}
-                    className={cn(
-                      'flex-1 py-1.5 text-[13px] font-medium rounded-md transition-all',
-                      activeTab === 'transcript'
-                        ? 'bg-bg-hover text-text-primary shadow-sm'
-                        : 'text-text-tertiary hover:text-text-secondary',
-                    )}
-                  >
-                    Transcript
-                  </button>
-                )}
-              </div>
-            </div>
+            {panelTabs}
 
             {/* Content */}
             <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-              {activeTab === 'comments' ? (
-                <>
-                  <CommentPanel
-                    comments={comments as any}
-                    currentUserId={user?.id}
-                    onResolve={resolveComment}
-                    onDelete={deleteComment}
-                    onAddReaction={addReaction}
-                    onRemoveReaction={removeReaction}
-                    onReply={() => {}}
-                    onSubmitReply={handleSubmitReply}
-                  />
-                  {canComment && (
-                    <CommentInput
-                      assetId={asset.id}
-                      projectId={asset.project_id}
-                      assetType={asset.asset_type}
-                      onSubmit={handleSubmitComment}
-                      annotationData={annotationData}
-                  />
-                  )}
-                </>
-              ) : activeTab === 'transcript' ? (
-                <TranscriptPanel
-                  transcript={transcript}
-                  isLoading={transcriptLoading}
-                  currentTime={playheadTime}
-                  onSeek={(seconds) => seekTo(seconds, false)}
-                  onToggle={canEditStatus ? handleTranscriptionToggle : undefined}
-                  toggleBusy={transcriptionBusy}
-                />
-              ) : (
-                <div className="flex-1 overflow-y-auto p-4">
-                  <div>
-                    <div className="pb-3 mb-1 border-b border-border/60">
-                      <div className="flex items-center gap-2">
-                        <FileText className="h-3.5 w-3.5 text-text-tertiary shrink-0" />
-                        <EditableAssetName
-                          name={displayName ?? ''}
-                          canEdit={canEditStatus}
-                          onSave={handleRenameAsset}
-                        />
-                      </div>
-                      {summaryParts.length > 0 && (
-                        <p className="mt-1 pl-5 text-2xs text-text-tertiary">{summaryParts.join(' · ')}</p>
-                      )}
-                    </div>
-                    <FieldRow icon={Tag} label="Type">
-                      <span className="capitalize">{asset.asset_type.replace('_', ' ')}</span>
-                    </FieldRow>
-
-                    {/* Status — same control as the toolbar, compact */}
-                    <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60">
-                      <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
-                      <CircleDot className="h-3.5 w-3.5" />
-                        Status
-                    </span>
-                      {displayStatus && (
-                        <StatusDropdown
-                          status={displayStatus}
-                          onChange={canEditStatus ? handleStatusChange : undefined}
-                          readOnly={!canEditStatus}
-                          canArchive={canArchive}
-                          className={canEditStatus ? 'h-7 px-2 text-2xs bg-transparent border-border' : 'h-6 px-2'}
-                        />
-                    )}
-                    </div>
-
-                    {/* Rating + per-voter breakdown — hidden entirely for users
-                      with no access at all (e.g. viewers); reviewers still
-                      see their own vote (canVote) but never the aggregate,
-                      which stays gated behind ratingCount from the backend. */}
-                    {(canVote || ratingCount > 0) && (
-                      <div className="py-2 border-b border-border/60">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
-                          <Star className="h-3.5 w-3.5" />
-                            Rating
-                        </span>
-                          <div className="flex items-center gap-1.5">
-                            <StarRating
-                              value={myRating}
-                              onChange={canVote ? handleRate : undefined}
-                            readOnly={!canVote}
-                            size="sm"
-                          />
-                            {ratingCount > 0 && (
-                              <span className="text-xs text-text-secondary tabular-nums">{avgRating?.toFixed(1)}</span>
-                          )}
-                        </div>
-                        </div>
-                      {ratingCount > 0 && <VoteBreakdown voters={voters ?? []} />}
-                    </div>
-                    )}
-
-                    {/* Assignee */}
-                    <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60">
-                      <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
-                        <UserIcon className="h-3.5 w-3.5" />
-                        Assignee
-                      </span>
-                      <AssigneePicker
-                        users={memberUsers ?? []}
-                        value={displayAssigneeId}
-                        onChange={handleAssigneeChange}
-                        disabled={!canEditStatus}
-                      />
-                    </div>
-
-                    {/* Due date */}
-                    <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60">
-                      <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
-                        <CalendarDays className="h-3.5 w-3.5" />
-                        Due Date
-                      </span>
-                      {canEditStatus ? (
-                        <input
-                          type="date"
-                          value={displayDueDate ? displayDueDate.slice(0, 10) : ''}
-                          onChange={(e) => handleDueDateChange(e.target.value)}
-                          className="h-7 rounded-md border border-border bg-transparent px-2 text-2xs text-text-primary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
-                        />
-                      ) : (
-                        <span className="text-xs text-text-primary font-medium">
-                          {displayDueDate ? new Date(displayDueDate).toLocaleDateString() : '—'}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Keywords */}
-                    <div className="py-2 border-b border-border/60">
-                      <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0 mb-1.5">
-                        <Tag className="h-3.5 w-3.5" />
-                        Keywords
-                      </span>
-                      <div className="flex flex-wrap gap-1.5 mb-1.5">
-                        {displayKeywords.length === 0 && (
-                          <span className="text-xs text-text-primary">—</span>
-                        )}
-                        {displayKeywords.map((kw) => (
-                          <span
-                            key={kw}
-                            className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary border border-border px-2 py-0.5 text-2xs text-text-secondary"
-                          >
-                            {kw}
-                            {canEditStatus && (
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveKeyword(kw)}
-                                className="text-text-tertiary hover:text-text-primary transition-colors"
-                              >
-                                <X className="h-3 w-3" />
-                              </button>
-                            )}
-                          </span>
-                        ))}
-                      </div>
-                      {canEditStatus && (
-                        <div className="flex gap-1.5">
-                          <input
-                            type="text"
-                            value={keywordInput}
-                            onChange={(e) => setKeywordInput(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault()
-                                handleAddKeyword()
-                              }
-                            }}
-                            placeholder="Add keyword..."
-                            className="flex h-7 flex-1 min-w-0 rounded-md border border-border bg-transparent px-2 text-2xs text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
-                          />
-                          <button
-                            type="button"
-                            onClick={handleAddKeyword}
-                            className="h-7 px-2 rounded-md border border-border text-2xs text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
-                          >
-                            Add
-                          </button>
-                        </div>
-                      )}
-                    </div>
-
-                    {currentVersion && (
-                      <FieldRow icon={GitBranch} label="Version">v{currentVersion.version_number}</FieldRow>
-                    )}
-                    {currentVersion && (
-                      <FieldRow icon={Activity} label="Processing">
-                        <span className={cn(
-                          'capitalize',
-                          currentVersion.processing_status === 'ready' && 'text-status-success',
-                          currentVersion.processing_status === 'processing' && 'text-status-warning',
-                          currentVersion.processing_status === 'failed' && 'text-status-error',
-                        currentVersion.processing_status === 'uploading' && 'text-text-tertiary',
-                      )}>
-                          {currentVersion.processing_status === 'ready' ? 'DONE' : currentVersion.processing_status}
-                      </span>
-                      </FieldRow>
-                    )}
-                    <FieldRow icon={MessageSquare} label="Comments">{commentCount}</FieldRow>
-                    <FieldRow icon={Clock} label="Uploaded">{formatRelativeTime(asset.created_at)}</FieldRow>
-                    <FieldRow icon={UserIcon} label="Uploaded by">{uploaderName ?? '—'}</FieldRow>
-                    {totalFileSize > 0 && (
-                      <FieldRow icon={HardDrive} label="File size">{formatBytes(totalFileSize)}</FieldRow>
-                    )}
-                    {primaryFile?.duration_seconds != null && (
-                      <FieldRow icon={Timer} label="Duration">{formatTime(primaryFile.duration_seconds)}</FieldRow>
-                    )}
-                    {primaryFile?.fps != null && (
-                      <FieldRow icon={Gauge} label="Frame rate">{primaryFile.fps} fps</FieldRow>
-                    )}
-                    {primaryFile?.original_filename && (
-                      <FieldRow icon={FileIcon} label="Source filename">{primaryFile.original_filename}</FieldRow>
-                    )}
-
-                    {primaryFile?.technical_metadata &&
-                      Object.values(primaryFile.technical_metadata).some((v) => v !== undefined && v !== null) && (
-                        <div className="pt-2">
-                          <button
-                            type="button"
-                            onClick={() => setShowAllFields((v) => !v)}
-                            className="w-full flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors"
-                          >
-                            <span>{showAllFields ? 'Hide' : 'Show'} all fields</span>
-                            <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', showAllFields && 'rotate-180')} />
-                          </button>
-                          {showAllFields && <TechnicalMetadataList metadata={primaryFile.technical_metadata} />}
-                        </div>
-                      )}
-
-                    {/* Sidecar-derived metadata. Kept visually separate from
-                        the block above: that is derived from the file itself,
-                        this is user-supplied. */}
-                    {/* canEdit was `canEditStatus || currentRole === 'admin'`
-                        — a local patch for the omission now fixed at the
-                        source, which TS flags as dead once canEditStatus
-                        covers admin itself. */}
-                    {asset && (
-                      <SidecarMetadata
-                        assetId={asset.id}
-                        canEdit={canEditStatus}
-                      />
-                    )}
-
-                    {/* Custom project-defined fields */}
-                    {metadataFields && metadataFields.length > 0 && (
-                      <div className="pt-3 mt-2 border-t border-border">
-                        <p className="text-2xs font-medium text-text-tertiary uppercase tracking-wide mb-2">
-                          Custom Fields
-                        </p>
-                        <div className="space-y-3">
-                          {metadataFields.map((field) => (
-                            <div key={field.id} className="flex flex-col gap-1.5">
-                              <label className="text-xs text-text-secondary flex items-center gap-1">
-                                {field.name}
-                                {field.required && <span className="text-status-error">*</span>}
-                              </label>
-                              {canEditStatus ? (
-                                <CustomFieldInput
-                                  field={field}
-                                  value={customValues[field.id]}
-                                  onChange={(v) => handleCustomFieldChange(field.id, v)}
-                                />
-                              ) : (
-                                <span className="text-xs text-text-primary">
-                                  {formatCustomFieldValue(customValues[field.id])}
-                                </span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
+              {panelBody}
+              {commentInputNode}
             </div>
           </div>
         )}
       </div>
+      )
       )}
     </div>
   )

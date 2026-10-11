@@ -259,3 +259,225 @@
     }
   }
 }
+
+/* ─── Asset viewer: the top bar degrades with ITS OWN width (§228) ────────
+ *
+ * The bar holds two separate jobs — "leave this asset" on the left and the
+ * asset's actions on the right — plus the previous/next navigation. With
+ * every control labelled the right-hand group alone is ~700px, so on the
+ * owner's 390px iPhone the asset name was squeezed to zero width, the back
+ * arrow ended up four pixels from the previous-asset chevron (which is
+ * what he read as a single "‹‹" control), and the panel toggle — the LAST
+ * item of the row — was off-screen, which is why the Comments/Fields panel
+ * could not be opened at all.
+ *
+ * A CONTAINER query, not a window breakpoint, and the same mechanism and
+ * the same reason as §50 and §224b: what decides is how wide THIS bar is,
+ * and that is the window MINUS the sidebar rail (52px collapsed, 192px
+ * expanded) minus its own padding. A 768px window with the sidebar
+ * expanded gives the bar 552px; a window breakpoint cannot see that.
+ * Raw CSS because `@container` needs a Tailwind plugin, and a dependency
+ * added to apps/web is what left the production image unbuildable for
+ * eleven days (CLAUDE.md §13c).
+ *
+ * The thresholds are measured in Chromium against the real bar with every
+ * control present (6 versions, a selected LUT, a rating), not guessed:
+ *
+ *   >= 905px   one row, every label drawn — pixel-identical to before.
+ *              1280px and 1440px windows give the bar 1204/1364px, and a
+ *              1024px window gives it 948px, so all three are untouched.
+ *   765-904    Compare and New Version keep their icons, drop their words.
+ *   625-764    ...and Compare / New Version / Share / Download fold into
+ *              the `⋯` menu, which appears in their place.
+ *   505-624    ...and the previous/next group takes a row of its own, so
+ *              it is nowhere near the Back button (the owner's item 1).
+ *   < 505      ...and, at `md`+ only, so does the action group. Below `md`
+ *              the phone layout has already emptied that group down to
+ *              the `⋯` button, which belongs beside the name.
+ *
+ * `flex-wrap` on the bar is the floor under all of it: if any band is a
+ * pixel short something wraps rather than going out of reach.
+ */
+.viewer-topbar {
+  container-type: inline-size;
+  container-name: viewerbar;
+}
+
+/* Shown only once the container query asks for it. Declared here rather
+ * than with a Tailwind `hidden` class so the query can simply turn it on;
+ * this file is emitted after `@tailwind utilities`, so it wins. */
+.vbar-more { display: none; }
+
+/* `display: contents`, not nothing: the label used to be a bare text node
+ * inside the button, which the flex layout treats as an anonymous item.
+ * Wrapping it in a real <span> so a query can hide it made it a block-level
+ * flex item with a different min-content width, and at 1280px — where the
+ * action group is already over-full and every flexible child gives a
+ * little — that redistributed 7px across five controls. `display: contents`
+ * takes the span back out of the box tree, so the text is the same
+ * anonymous flex item it always was, and the query below still hides it. */
+.vbar-label { display: contents; }
+
+@container viewerbar (max-width: 904px) {
+  /* The buttons keep their `title`, so the name survives on hover and for
+   * a screen reader — only the drawn text goes. */
+  .vbar-label { display: none; }
+}
+
+@container viewerbar (max-width: 764px) {
+  .vbar-inline { display: none; }
+  .vbar-more { display: flex; }
+}
+
+@container viewerbar (max-width: 624px) {
+  /* `order: 3` and not just `flex-basis: 100%`: the nav group sits between
+   * the name and the actions in the DOM, so wrapping it where it stands
+   * would push the actions onto a third row. Ordered last, it wraps BELOW
+   * a row that still holds the name and the `⋯` menu. */
+  .vbar-nav {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: center;
+  }
+}
+
+@container viewerbar (max-width: 504px) {
+  @media (min-width: 768px) {
+    /* Last resort, and the one rule that must hold whatever else fails: a
+     * whole row to itself rather than a control pushed out of reach.
+     * Both groups, for the reason spelled out in the touch block below. */
+    .vbar-left {
+      flex-basis: 100%;
+    }
+    .vbar-right {
+      order: 2;
+      flex-basis: 100%;
+      justify-content: flex-end;
+    }
+  }
+}
+
+/* ─── The same four steps, moved up, on a touch device ───────────────────
+ *
+ * Measured, not guessed, and the reason the numbers above are not enough:
+ * every icon control in this bar is 44px rather than 28-32px under
+ * `hover: none` (`.viewer-tap`, plus the `hover-none:` variants on the
+ * version chip, the status control and the five rating stars), which is
+ * ~190px more content in the same box. At a 768px touch tablet the bar has
+ * 692px and the unmoved steps left the left-hand group — the asset's NAME —
+ * squeezed to zero width again, with the back arrow landing exactly on top
+ * of the previous-asset chevron. That is the owner's original complaint,
+ * reproduced on an iPad instead of an iPhone, so the steps have to key off
+ * the content's real size.
+ *
+ * Nothing here can reach a mouse, so every desktop screenshot is unaffected.
+ */
+@media (hover: none) {
+  @container viewerbar (max-width: 1100px) {
+    .vbar-label { display: none; }
+  }
+  @container viewerbar (max-width: 1000px) {
+    .vbar-inline { display: none; }
+    .vbar-more { display: flex; }
+  }
+  @container viewerbar (max-width: 900px) {
+    .vbar-nav {
+      order: 3;
+      flex-basis: 100%;
+      justify-content: center;
+    }
+  }
+  @container viewerbar (max-width: 760px) {
+    /* `md`+ only, as above: below `md` the right group holds nothing but
+     * the `⋯` button, which belongs beside the name rather than alone on
+     * a row of its own.
+     *
+     * BOTH groups get `flex-basis: 100%`, not just the one being moved:
+     * the left group is `flex: 1 1 0%`, so a line holding it plus a 100%
+     * right group is exactly full and never wraps — it just shrinks the
+     * left group to nothing, which is the zero-width asset name all over
+     * again (measured at 768px touch: left group 0px wide). Giving the
+     * left group a full basis too is what forces the break. */
+    @media (min-width: 768px) {
+      .vbar-left {
+        flex-basis: 100%;
+      }
+      .vbar-right {
+        order: 2;
+        flex-basis: 100%;
+        justify-content: flex-end;
+      }
+    }
+  }
+}
+
+/* ─── A 44px minimum for the viewer's icon controls (§228) ────────────────
+ *
+ * `min-height`/`min-width` rather than fixed sizes, so a control that is
+ * already bigger is left alone, and REMOVED again at `md`+ on a device
+ * with a real mouse — which is what keeps the desktop bar pixel-identical
+ * while the same markup is a 44px target on every phone and every touch
+ * screen, whatever its width. (A touch laptop at 1440px therefore gets the
+ * larger targets; that is deliberate, it has fingers too.)
+ */
+.viewer-tap {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
+  .viewer-tap {
+    min-height: 0;
+    min-width: 0;
+  }
+}
+
+/* ─── Asset viewer, phones: how tall the player is (§228 A1) ──────────────
+ *
+ * "Player pinned at the top, use the video's aspect ratio, capped at about
+ * 40dvh so there is always room below."
+ *
+ * `dvh`, not `vh`: on iOS Safari `100vh` is the height the viewport has
+ * with the toolbars HIDDEN, so a `vh` cap is taller than the visible area
+ * and eats the comment list it exists to protect (§224).
+ *
+ * Per media type, because the box holds different things:
+ *  - video: 16:9 of the full width plus the scrubber (~36px) and the
+ *    compact transport row (56px), capped at 40dvh. At 390px that is
+ *    311px, so the frame gets exactly 219px = 16:9, with no letterbox.
+ *    16:9 is an assumption: the intrinsic ratio is not known until
+ *    `loadedmetadata`, and a player that changes height a second after
+ *    the page settles is worse than a letterbox on the rare 4:3 clip,
+ *    which `object-contain` handles correctly either way.
+ *  - audio: the waveform is a fixed 160px; 160 + 36 + 56 = 252.
+ *  - image: no transport row at all, so it takes the whole 40dvh.
+ */
+.viewer-phone-media {
+  height: min(40dvh, var(--viewer-media-cap));
+  min-height: 120px;
+}
+
+.viewer-phone-media[data-media='video'] {
+  height: min(40dvh, calc(100vw * 0.5625 + 92px), var(--viewer-media-cap));
+}
+
+.viewer-phone-media[data-media='audio'] {
+  height: min(40dvh, 252px, var(--viewer-media-cap));
+}
+
+/* What has to survive BELOW the player whatever else happens: the tab
+ * switch (49px), the composer (~115px) and enough list to read a comment.
+ * `--kb` is the band the on-screen keyboard covers, set from
+ * `visualViewport` by the page (0 when there is no keyboard, which is
+ * every desktop and every untouched phone).
+ *
+ * Without this the player kept its aspect-ratio height — it is `shrink-0`,
+ * deliberately, so the frame does not squash — and simply overflowed the
+ * shortened box, putting the composer back under the keyboard it had just
+ * been lifted clear of. Measured in Chromium at 390x844 with a simulated
+ * 336px keyboard: the composer's bottom edge was 510px against a 508px
+ * visual viewport before this rule, and 459px after it.
+ */
+.viewer-phone-media {
+  --viewer-media-cap: calc(100dvh - var(--kb, 0px) - 350px);
+}

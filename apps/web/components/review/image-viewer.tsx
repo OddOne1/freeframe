@@ -46,28 +46,28 @@ function ZoomControls() {
     <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-1">
       <button
         onClick={() => zoomIn()}
-        className="flex h-8 w-8 items-center justify-center rounded bg-bg-elevated/90 text-text-secondary backdrop-blur-sm transition-colors hover:bg-bg-hover hover:text-text-primary border border-border"
+        className="flex h-8 w-8 hover-none:h-11 hover-none:w-11 items-center justify-center rounded bg-bg-elevated/90 text-text-secondary backdrop-blur-sm transition-colors hover:bg-bg-hover hover:text-text-primary border border-border"
         title="Zoom in"
       >
         <ZoomIn className="h-4 w-4" />
       </button>
       <button
         onClick={() => zoomOut()}
-        className="flex h-8 w-8 items-center justify-center rounded bg-bg-elevated/90 text-text-secondary backdrop-blur-sm transition-colors hover:bg-bg-hover hover:text-text-primary border border-border"
+        className="flex h-8 w-8 hover-none:h-11 hover-none:w-11 items-center justify-center rounded bg-bg-elevated/90 text-text-secondary backdrop-blur-sm transition-colors hover:bg-bg-hover hover:text-text-primary border border-border"
         title="Zoom out"
       >
         <ZoomOut className="h-4 w-4" />
       </button>
       <button
         onClick={() => centerView(1)}
-        className="flex h-8 w-8 items-center justify-center rounded bg-bg-elevated/90 text-text-secondary backdrop-blur-sm transition-colors hover:bg-bg-hover hover:text-text-primary border border-border"
+        className="flex h-8 w-8 hover-none:h-11 hover-none:w-11 items-center justify-center rounded bg-bg-elevated/90 text-text-secondary backdrop-blur-sm transition-colors hover:bg-bg-hover hover:text-text-primary border border-border"
         title="Actual size"
       >
         <Scan className="h-4 w-4" />
       </button>
       <button
         onClick={() => resetTransform()}
-        className="flex h-8 w-8 items-center justify-center rounded bg-bg-elevated/90 text-text-secondary backdrop-blur-sm transition-colors hover:bg-bg-hover hover:text-text-primary border border-border"
+        className="flex h-8 w-8 hover-none:h-11 hover-none:w-11 items-center justify-center rounded bg-bg-elevated/90 text-text-secondary backdrop-blur-sm transition-colors hover:bg-bg-hover hover:text-text-primary border border-border"
         title="Fit to screen"
       >
         <Maximize2 className="h-4 w-4" />
@@ -380,7 +380,7 @@ export function ImageViewer({ asset, version, className, annotationCanvas, cube,
             size="sm"
             onClick={handlePrev}
             disabled={carouselIndex === 0}
-            className="h-7 w-7 p-0"
+            className="h-7 w-7 hover-none:h-11 hover-none:w-11 p-0"
           >
             <ChevronLeft className="h-4 w-4" />
           </Button>
@@ -394,7 +394,7 @@ export function ImageViewer({ asset, version, className, annotationCanvas, cube,
             size="sm"
             onClick={handleNext}
             disabled={carouselIndex === totalImages - 1}
-            className="h-7 w-7 p-0"
+            className="h-7 w-7 hover-none:h-11 hover-none:w-11 p-0"
           >
             <ChevronRight className="h-4 w-4" />
           </Button>

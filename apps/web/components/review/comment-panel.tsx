@@ -180,7 +180,7 @@ function CommentMenu({
     <div className="relative">
       <button
         onClick={() => setOpen((p) => !p)}
-        className="h-7 w-7 flex items-center justify-center rounded-full text-text-tertiary hover:text-text-secondary hover:bg-bg-tertiary transition-colors"
+        className="h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-full text-text-tertiary hover:text-text-secondary hover:bg-bg-tertiary transition-colors"
       >
         <MoreHorizontal className="h-4 w-4" />
       </button>
@@ -312,13 +312,13 @@ function InlineReplyInput({
       />
       <div className="flex items-center justify-between mt-2">
         <div className="flex items-center gap-1">
-          <button className="h-7 w-7 flex items-center justify-center rounded-md text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary transition-colors">
+          <button className="h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary transition-colors">
             <Paperclip className="h-4 w-4" />
           </button>
           <div className="relative" ref={emojiRef}>
             <button
               onClick={() => setEmojiOpen((p) => !p)}
-              className="h-7 w-7 flex items-center justify-center rounded-md text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary transition-colors"
+              className="h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary transition-colors"
               title="Add emoji"
             >
               <Smile className="h-4 w-4" />
@@ -329,7 +329,7 @@ function InlineReplyInput({
                   {REPLY_EMOJIS.map((e) => (
                     <button
                       key={e}
-                      className="h-6 w-6 rounded flex items-center justify-center text-sm hover:bg-bg-hover transition-colors"
+                      className="h-6 w-6 hover-none:h-11 hover-none:w-11 rounded flex items-center justify-center text-sm hover:bg-bg-hover transition-colors"
                       onClick={() => {
                         setBody((prev) => prev + e);
                         setEmojiOpen(false);
@@ -365,7 +365,7 @@ function InlineReplyInput({
                   ? "Write a reply first"
                   : "Send reply"
             }
-            className="h-7 w-7 flex items-center justify-center rounded-full bg-accent text-accent-foreground hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-full bg-accent text-accent-foreground hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <Send className="h-3.5 w-3.5" />
           </button>
@@ -558,7 +558,7 @@ function CommentItem({
             {comment.timecode_start !== null &&
               comment.timecode_start !== undefined && (
                 <button
-                  className="inline-flex items-center gap-1 rounded-md bg-accent/15 px-1.5 py-0.5 text-[11px] font-mono text-accent hover:bg-accent/25 transition-colors"
+                  className="inline-flex items-center justify-center gap-1 rounded-md bg-accent/15 px-1.5 py-0.5 hover-none:min-h-11 hover-none:px-3 text-[11px] font-mono text-accent hover:bg-accent/25 transition-colors"
                   onClick={() => {
                     seekTo(comment.timecode_start!, true);
                     setFocusedCommentId(comment.id);
@@ -578,7 +578,7 @@ function CommentItem({
               )}
             {comment.annotation && (
               <button
-                className="inline-flex items-center justify-center h-5 w-5 rounded text-purple-400/70 hover:text-purple-400 hover:bg-purple-500/15 transition-colors"
+                className="inline-flex items-center justify-center h-5 w-5 hover-none:h-11 hover-none:w-11 rounded text-purple-400/70 hover:text-purple-400 hover:bg-purple-500/15 transition-colors"
                 onClick={() => {
                   setActiveAnnotation(comment.annotation!.drawing_data);
                   setFocusedCommentId(comment.id);
@@ -662,7 +662,7 @@ function CommentItem({
           <div className="mt-1.5 flex items-center gap-2">
             {depth === 0 && (
               <button
-                className="text-[13px] font-medium text-text-tertiary hover:text-text-secondary transition-colors"
+                className="inline-flex items-center text-[13px] font-medium text-text-tertiary hover:text-text-secondary transition-colors hover-none:min-h-11 hover-none:px-2"
                 onClick={() => onReply(comment.id)}
               >
                 Reply
@@ -673,7 +673,7 @@ function CommentItem({
               {/* Emoji — hover only */}
               <div className="relative opacity-0 group-hover/comment:opacity-100 hover-none:opacity-100 transition-opacity">
                 <button
-                  className="h-7 w-7 flex items-center justify-center rounded-full text-text-tertiary hover:text-text-secondary hover:bg-bg-tertiary transition-colors"
+                  className="h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-full text-text-tertiary hover:text-text-secondary hover:bg-bg-tertiary transition-colors"
                   onClick={() => setShowEmojiPicker((p) => !p)}
                   title="Add reaction"
                 >
@@ -684,7 +684,7 @@ function CommentItem({
                     {QUICK_EMOJIS.map((e) => (
                       <button
                         key={e}
-                        className="h-8 w-8 rounded-lg text-base hover:bg-bg-hover transition-colors"
+                        className="h-8 w-8 hover-none:h-11 hover-none:w-11 rounded-lg text-base hover:bg-bg-hover transition-colors"
                         onClick={() => handleQuickEmoji(e)}
                       >
                         {e}
@@ -708,7 +708,7 @@ function CommentItem({
               {/* Resolve — green filled when resolved (clickable to unresolve), outline on hover when unresolved */}
               {comment.resolved ? (
                 <button
-                  className="h-6 w-6 flex items-center justify-center rounded-full bg-emerald-500 text-text-inverse hover:bg-emerald-600 transition-colors disabled:opacity-50"
+                  className="h-6 w-6 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-full bg-emerald-500 text-text-inverse hover:bg-emerald-600 transition-colors disabled:opacity-50"
                   onClick={handleResolve}
                   disabled={resolving}
                   title="Unresolve"
@@ -717,7 +717,7 @@ function CommentItem({
                 </button>
               ) : (
                 <button
-                  className="h-6 w-6 flex items-center justify-center rounded-full text-text-tertiary hover:text-emerald-400 hover:bg-bg-tertiary transition-colors disabled:opacity-50 opacity-0 group-hover/comment:opacity-100 hover-none:opacity-100"
+                  className="h-6 w-6 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-full text-text-tertiary hover:text-emerald-400 hover:bg-bg-tertiary transition-colors disabled:opacity-50 opacity-0 group-hover/comment:opacity-100 hover-none:opacity-100"
                   onClick={handleResolve}
                   disabled={resolving}
                   title="Resolve"
@@ -942,7 +942,7 @@ export function CommentPanel({
         <div className="relative">
           <button
             className={cn(
-              "flex items-center gap-1.5 text-[13px] font-medium transition-colors rounded-md px-2 py-1",
+              "flex items-center gap-1.5 text-[13px] font-medium transition-colors rounded-md px-2 py-1 hover-none:min-h-11",
               visOpen
                 ? "bg-bg-tertiary text-text-primary"
                 : "text-text-secondary hover:text-text-primary",
@@ -1006,7 +1006,7 @@ export function CommentPanel({
           <div className="relative">
             <button
               className={cn(
-                "h-7 w-7 flex items-center justify-center rounded-md transition-colors",
+                "h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md transition-colors",
                 filterOpen || hasActiveFilters
                   ? "text-accent bg-accent/10"
                   : "text-text-tertiary hover:text-text-secondary hover:bg-bg-tertiary",
@@ -1109,7 +1109,7 @@ export function CommentPanel({
           <div className="relative">
             <button
               className={cn(
-                "h-7 w-7 flex items-center justify-center rounded-md transition-colors",
+                "h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md transition-colors",
                 sortOpen
                   ? "text-accent bg-accent/10"
                   : "text-text-tertiary hover:text-text-secondary hover:bg-bg-tertiary",
@@ -1163,7 +1163,7 @@ export function CommentPanel({
           {/* Search */}
           <button
             className={cn(
-              "h-7 w-7 flex items-center justify-center rounded-md transition-colors",
+              "h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md transition-colors",
               searchOpen
                 ? "text-accent bg-accent/10"
                 : "text-text-tertiary hover:text-text-secondary hover:bg-bg-tertiary",

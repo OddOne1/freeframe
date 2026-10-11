@@ -12,6 +12,7 @@ import {
   Check,
   Repeat,
   Captions,
+  Settings,
 } from "lucide-react";
 import {
   cn,
@@ -26,6 +27,7 @@ import { useVideoPlayer } from "@/hooks/use-video-player";
 import { useReview } from "./review-provider";
 import { ProgressBar } from "./progress-bar";
 import { LutCanvas } from "./lut-canvas";
+import { PlayerSettingsSheet } from "./player-settings-sheet";
 import type { ParsedCube } from "@/lib/lut/cube-parser";
 import type { Comment } from "@/types";
 
@@ -67,6 +69,27 @@ interface VideoPlayerProps {
   cube?: ParsedCube | null;
   /** Picker element rendered into the transport bar. */
   lutPicker?: React.ReactNode;
+  /**
+   * §228 — the phone transport row: play/pause, the timecode, the scrubber
+   * (which is its own row above) and fullscreen, with loop, speed,
+   * captions, quality and the LUT moved into a `⚙` bottom sheet.
+   *
+   * A PROP, not a media query inside this component, for one reason: the
+   * public share viewer (`components/share/share-player.tsx`) mounts this
+   * same player and is explicitly out of §228's scope. It passes nothing,
+   * so it keeps today's row at every width. The dashboard asset page
+   * passes `useIsPhone()`.
+   */
+  compactControls?: boolean;
+  /**
+   * The LUT library, rendered as a sub-page of the settings sheet when
+   * `compactControls` is set. On a phone the desktop's 260px LUT column
+   * would leave the frame 130px wide, so the picker goes in the sheet and
+   * `lutPicker` is left unset. Same `useLut` state either way.
+   */
+  lutSheetContent?: React.ReactNode;
+  /** Name of the selected LUT, for the sheet's LUT row. */
+  lutLabel?: string | null;
 }
 
 // ─── Video frame constraint ──────────────────────────────────────────────────
@@ -186,12 +209,16 @@ export function VideoPlayer({
   captionsLanguage,
   cube,
   lutPicker,
+  compactControls,
+  lutSheetContent,
+  lutLabel,
 }: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [loop, setLoop] = useState(false);
   const [captionsOn, setCaptionsOn] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const { isDrawingMode, timeFormat, setTimeFormat, setPlayheadTime, currentVersion } =
     useReviewStore();
@@ -424,6 +451,77 @@ export function VideoPlayer({
     setPlaybackRate(next);
   }, [playbackRate, setPlaybackRate]);
 
+  /**
+   * The timecode readout and its format picker.
+   *
+   * Lifted into a variable in §228 so the compact phone row and the
+   * unchanged desktop row render the SAME control rather than two copies
+   * that can drift — the markup below is character-for-character what the
+   * desktop row held before, which is what keeps that row pixel-identical.
+   */
+  const timecodeControl = (
+    <div className="relative" ref={timeFormatRef}>
+      <button
+        onClick={() => setTimeFormatOpen((p) => !p)}
+        // §228 — `hover-none:h-11`: on a phone this is the one readout in
+        // the compact row and it opens the format menu, so it has to be a
+        // real target. A mouse sees the 28px control unchanged.
+        className="flex items-center gap-1.5 rounded-md bg-bg-tertiary px-3 py-1 hover-none:h-11 hover:bg-bg-hover transition-colors"
+      >
+        <span className="font-mono text-sm text-text-primary tabular-nums tracking-wide">
+          {timeFormat === "timecode" ? (
+            displayTime(currentTime)
+          ) : (
+            <>
+              {displayTime(currentTime)}{" "}
+              <span className="text-text-tertiary">/</span>{" "}
+              {displayTime(duration)}
+            </>
+          )}
+        </span>
+        <ChevronUp
+          className={cn(
+            "h-3 w-3 text-text-tertiary transition-transform",
+            timeFormatOpen && "rotate-180",
+          )}
+        />
+      </button>
+      {timeFormatOpen && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-48 rounded-xl border border-white/10 bg-[#2a2a30] shadow-2xl py-1.5 animate-in fade-in zoom-in-95 duration-100">
+          <div className="px-3 py-2 text-[11px] text-text-tertiary uppercase tracking-wider font-medium">
+            Time Format
+          </div>
+          {(
+            [
+              { id: "frames" as TimeFormat, label: "Frames" },
+              { id: "standard" as TimeFormat, label: "Standard" },
+              { id: "timecode" as TimeFormat, label: "Timecode" },
+            ] as const
+          ).map((item) => (
+            <button
+              key={item.id}
+              className={cn(
+                "flex w-full items-center justify-between px-3 py-2 hover-none:min-h-11 text-[13px] transition-colors",
+                timeFormat === item.id
+                  ? "text-text-primary"
+                  : "text-text-secondary hover:bg-white/5",
+              )}
+              onClick={() => {
+                setTimeFormat(item.id);
+                setTimeFormatOpen(false);
+              }}
+            >
+              {item.label}
+              {timeFormat === item.id && (
+                <Check className="h-4 w-4 text-accent" />
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div
       ref={containerRef}
@@ -450,6 +548,14 @@ export function VideoPlayer({
           )}
           playsInline
           preload="metadata"
+          // §228 — the `loop` state existed and the Loop button toggled it,
+          // but NOTHING ever applied it to the element: the control has been
+          // decorative since it was added (the audio player's equivalent is
+          // wired, through its `finish` handler). Found while moving Loop
+          // into the settings sheet, where a row that does nothing would be
+          // worse than the obscure icon it replaces. Default is `false`, so
+          // this changes nothing for anyone who never pressed it.
+          loop={loop}
           // Deliberately not cleared once playback starts: the browser drops
           // the poster itself on the first decoded frame, and keeping it lets
           // the same image return if the element is re-seeked to an
@@ -519,13 +625,63 @@ export function VideoPlayer({
         />
       </div>
 
-      {/* Bottom transport bar (matches audio player style) */}
+      {/* ─── Bottom transport bar ───────────────────────────────────────
+          §228 — two rows, chosen by the `compactControls` prop, not by a
+          media query in here: the public share viewer mounts this same
+          player and is out of scope, so it keeps the desktop row at every
+          width. The desktop row below is untouched. */}
+      {compactControls ? (
+        <div
+          data-testid="video-transport-compact"
+          // h-14, not h-12: every control in it is a 44px touch target, and
+          // 44px does not fit in 48px with any padding at all.
+          className="flex items-center justify-between h-14 px-2 bg-bg-secondary/80 border-t border-border shrink-0"
+        >
+          <button
+            onClick={togglePlay}
+            className="flex h-11 w-11 items-center justify-center rounded-md text-text-primary hover:bg-bg-hover transition-colors shrink-0"
+            aria-label={isPlaying ? "Pause" : "Play"}
+          >
+            {isPlaying ? (
+              <Pause className="h-5 w-5" />
+            ) : (
+              <Play className="h-5 w-5" />
+            )}
+          </button>
+
+          {timecodeControl}
+
+          <div className="flex items-center shrink-0">
+            <button
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Player settings"
+              aria-haspopup="dialog"
+              aria-expanded={settingsOpen}
+              data-testid="player-settings-button"
+              className="flex h-11 w-11 items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+            >
+              <Settings className="h-5 w-5" />
+            </button>
+            <button
+              onClick={handleFullscreen}
+              className="flex h-11 w-11 items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+              aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+            >
+              {isFullscreen ? (
+                <Minimize className="h-5 w-5" />
+              ) : (
+                <Maximize className="h-5 w-5" />
+              )}
+            </button>
+          </div>
+        </div>
+      ) : (
       <div className="flex items-center justify-between h-12 px-4 bg-bg-secondary/80 border-t border-border shrink-0">
         {/* Left: Play, Loop, Speed, Volume */}
         <div className="flex items-center gap-2">
           <button
             onClick={togglePlay}
-            className="flex h-7 w-7 items-center justify-center rounded text-text-primary hover:bg-bg-hover transition-colors"
+            className="flex h-7 w-7 hover-none:h-11 hover-none:w-11 items-center justify-center rounded text-text-primary hover:bg-bg-hover transition-colors"
             aria-label={isPlaying ? "Pause" : "Play"}
           >
             {isPlaying ? (
@@ -538,7 +694,7 @@ export function VideoPlayer({
           <button
             onClick={() => setLoop((p) => !p)}
             className={cn(
-              "flex h-7 w-7 items-center justify-center rounded transition-colors",
+              "flex h-7 w-7 hover-none:h-11 hover-none:w-11 items-center justify-center rounded transition-colors",
               loop
                 ? "text-accent bg-accent/10"
                 : "text-text-tertiary hover:text-text-secondary hover:bg-bg-hover",
@@ -550,7 +706,7 @@ export function VideoPlayer({
 
           <button
             onClick={handleSpeedCycle}
-            className="flex h-7 items-center justify-center rounded px-1.5 text-xs font-medium text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors tabular-nums"
+            className="flex h-7 hover-none:h-11 hover-none:min-w-11 items-center justify-center rounded px-1.5 text-xs font-medium text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors tabular-nums"
             aria-label="Playback speed"
           >
             {playbackRate}x
@@ -558,7 +714,12 @@ export function VideoPlayer({
 
           <button
             onClick={toggleMute}
-            className="flex h-7 w-7 items-center justify-center rounded text-text-tertiary hover:text-text-secondary hover:bg-bg-hover transition-colors"
+            // §228 — `hover-none:hidden`: on a touch device the hardware
+            // volume buttons own this, and the row needs the room more than
+            // it needs a mute toggle. A media feature, not a width
+            // breakpoint, so a mouse at any size still sees it exactly as
+            // before and the desktop row stays pixel-identical.
+            className="flex h-7 w-7 hover-none:h-11 hover-none:w-11 items-center justify-center rounded text-text-tertiary hover:text-text-secondary hover:bg-bg-hover transition-colors hover-none:hidden"
             aria-label={isMuted ? "Unmute" : "Mute"}
           >
             {isMuted || volume === 0 ? (
@@ -570,63 +731,7 @@ export function VideoPlayer({
         </div>
 
         {/* Center: Timecode display with format picker */}
-        <div className="relative" ref={timeFormatRef}>
-          <button
-            onClick={() => setTimeFormatOpen((p) => !p)}
-            className="flex items-center gap-1.5 rounded-md bg-bg-tertiary px-3 py-1 hover:bg-bg-hover transition-colors"
-          >
-            <span className="font-mono text-sm text-text-primary tabular-nums tracking-wide">
-              {timeFormat === "timecode" ? (
-                displayTime(currentTime)
-              ) : (
-                <>
-                  {displayTime(currentTime)}{" "}
-                  <span className="text-text-tertiary">/</span>{" "}
-                  {displayTime(duration)}
-                </>
-              )}
-            </span>
-            <ChevronUp
-              className={cn(
-                "h-3 w-3 text-text-tertiary transition-transform",
-                timeFormatOpen && "rotate-180",
-              )}
-            />
-          </button>
-          {timeFormatOpen && (
-            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-48 rounded-xl border border-white/10 bg-[#2a2a30] shadow-2xl py-1.5 animate-in fade-in zoom-in-95 duration-100">
-              <div className="px-3 py-2 text-[11px] text-text-tertiary uppercase tracking-wider font-medium">
-                Time Format
-              </div>
-              {(
-                [
-                  { id: "frames" as TimeFormat, label: "Frames" },
-                  { id: "standard" as TimeFormat, label: "Standard" },
-                  { id: "timecode" as TimeFormat, label: "Timecode" },
-                ] as const
-              ).map((item) => (
-                <button
-                  key={item.id}
-                  className={cn(
-                    "flex w-full items-center justify-between px-3 py-2 text-[13px] transition-colors",
-                    timeFormat === item.id
-                      ? "text-text-primary"
-                      : "text-text-secondary hover:bg-white/5",
-                  )}
-                  onClick={() => {
-                    setTimeFormat(item.id);
-                    setTimeFormatOpen(false);
-                  }}
-                >
-                  {item.label}
-                  {timeFormat === item.id && (
-                    <Check className="h-4 w-4 text-accent" />
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        {timecodeControl}
 
         {/* Right: LUT, Captions, Quality, Fullscreen */}
         <div className="flex items-center gap-2">
@@ -642,7 +747,7 @@ export function VideoPlayer({
                 // together before: LUT, Captions, Quality, Fullscreen. The
                 // row's own gap-2 is left alone so the spacing between all
                 // four stays uniform; it is the buttons that give ground.
-                "flex h-7 items-center justify-center rounded px-1 text-xs font-medium border transition-colors shrink-0",
+                "flex h-7 hover-none:h-11 hover-none:min-w-11 items-center justify-center rounded px-1 text-xs font-medium border transition-colors shrink-0",
                 captionsOn
                   ? "border-accent text-accent"
                   : "border-border text-text-tertiary hover:text-text-primary hover:bg-bg-hover",
@@ -664,7 +769,7 @@ export function VideoPlayer({
             <select
               value={currentQuality}
               onChange={(e) => setQuality(parseInt(e.target.value, 10))}
-              className="bg-transparent text-text-secondary text-xs border border-border rounded px-1.5 py-1 cursor-pointer shrink-0 hover:text-text-primary transition-colors"
+              className="bg-transparent text-text-secondary text-xs border border-border rounded px-1.5 py-1 hover-none:h-11 cursor-pointer shrink-0 hover:text-text-primary transition-colors"
               aria-label="Quality"
             >
               <option value={-1} className="bg-bg-secondary">
@@ -685,7 +790,7 @@ export function VideoPlayer({
           {/* Fullscreen */}
           <button
             onClick={handleFullscreen}
-            className="flex h-7 w-7 items-center justify-center rounded text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+            className="flex h-7 w-7 hover-none:h-11 hover-none:w-11 items-center justify-center rounded text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
             aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
           >
             {isFullscreen ? (
@@ -696,6 +801,33 @@ export function VideoPlayer({
           </button>
         </div>
       </div>
+      )}
+
+      {/* The phone settings sheet. Mounted here because this component owns
+          every piece of state it edits — loop, captionsOn, playbackRate and
+          the HLS quality level — so nothing is lifted or duplicated. */}
+      {compactControls && (
+        <PlayerSettingsSheet
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          playbackRate={playbackRate}
+          speedOptions={SPEED_OPTIONS}
+          onPlaybackRate={setPlaybackRate}
+          loop={loop}
+          onToggleLoop={() => setLoop((p) => !p)}
+          captionsAvailable={Boolean(captionsUrl)}
+          captionsOn={captionsOn}
+          onToggleCaptions={() => setCaptionsOn((on) => !on)}
+          captionsLanguageLabel={
+            captionsLanguage ? languageLabel(captionsLanguage) : null
+          }
+          qualityLevels={qualityLevels}
+          currentQuality={currentQuality}
+          onQuality={setQuality}
+          lutSubPage={lutSheetContent}
+          lutLabel={lutLabel ?? null}
+        />
+      )}
     </div>
   );
 }

@@ -361,7 +361,7 @@ export function SidecarMetadata({
             <button
               onClick={() => fileRef.current?.click()}
               disabled={uploading}
-              className="flex items-center gap-1 text-2xs text-text-tertiary hover:text-text-primary transition-colors disabled:opacity-60"
+              className="flex items-center gap-1 hover-none:min-h-11 text-2xs text-text-tertiary hover:text-text-primary transition-colors disabled:opacity-60"
             >
               {uploading ? (
                 <Loader2 className="h-3 w-3 animate-spin" />

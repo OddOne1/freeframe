@@ -443,19 +443,38 @@ export function CommentInput({
           <div className="flex items-start gap-0 rounded-lg border border-border bg-bg-tertiary focus-within:border-accent/50 focus-within:ring-1 focus-within:ring-accent/20">
             {/* Inline timecode badge — show when timecode attached (normal mode) or in drawing mode */}
             {hasTimecode && (timecodeAttached || drawingActive) && (
-              <span className="shrink-0 ml-2.5 mt-[9px] rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[11px] text-amber-400 leading-none select-none">
+              <span
+                data-testid="comment-timecode-stamp"
+                className="shrink-0 ml-2.5 mt-[9px] rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[11px] text-amber-400 leading-none select-none"
+              >
                 {displayTime(playheadTime)}
               </span>
             )}
             <textarea
               ref={textareaRef}
-              className="flex-1 resize-none bg-transparent px-2.5 py-2.5 text-[13px] text-text-primary placeholder:text-text-tertiary focus:outline-none min-h-[38px] max-h-[120px]"
+              className="flex-1 resize-none bg-transparent px-2.5 py-2.5 text-[13px] text-text-primary placeholder:text-text-tertiary focus:outline-none min-h-[38px] hover-none:min-h-11 max-h-[120px]"
               placeholder={
                 replyToId ? "Write a reply..." : "Leave your comment..."
               }
               value={body}
               onChange={handleTextChange}
               onKeyDown={handleKeyDown}
+              // §228 — on FOCUS as well as on click. The owner's flow is
+              // "play to a certain point, hit comment, and the video stops
+              // there and gives me that timecode": on a phone the tap that
+              // focuses this field IS the click, but a Tab, a programmatic
+              // focus or Safari's own focus-on-keyboard-open never fired
+              // `onClick` and left the video running — which moved the
+              // timecode out from under the comment being written.
+              //
+              // `pauseVideo` is the review provider's registered pause
+              // handler (the player registers its own `pause`), and the
+              // stamp below is the store's `playheadTime`, which that same
+              // player writes. One timecode source, not a second one.
+              onFocus={() => {
+                pauseVideo();
+                onPauseVideo?.();
+              }}
               onClick={() => {
                 pauseVideo();
                 onPauseVideo?.();
@@ -487,7 +506,7 @@ export function CommentInput({
           <div className="flex items-center gap-1">
             <button
               onClick={() => exitDrawingMode()}
-              className="h-7 w-7 flex items-center justify-center rounded-md text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary transition-colors"
+              className="h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary transition-colors"
               title="Exit drawing"
             >
               <ChevronLeft className="h-4 w-4" />
@@ -503,7 +522,7 @@ export function CommentInput({
                   onClick={() => setDrawingTool(tool.id as DrawingTool)}
                   title={tool.label}
                   className={cn(
-                    "h-7 w-7 flex items-center justify-center rounded-md transition-colors",
+                    "h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md transition-colors",
                     drawingTool === tool.id
                       ? "bg-accent/15 text-accent"
                       : "text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary",
@@ -521,7 +540,7 @@ export function CommentInput({
                 key={color}
                 onClick={() => setDrawingColor(color)}
                 className={cn(
-                  "w-5 h-5 rounded-full transition-all shrink-0",
+                  "w-5 h-5 hover-none:w-11 hover-none:h-11 rounded-full transition-all shrink-0",
                   drawingColor === color
                     ? "ring-2 ring-accent ring-offset-1 ring-offset-bg-secondary"
                     : "hover:scale-110",
@@ -534,14 +553,14 @@ export function CommentInput({
 
             <button
               onClick={undo}
-              className="h-7 w-7 flex items-center justify-center rounded-md text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary transition-colors"
+              className="h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary transition-colors"
               title="Undo"
             >
               <RotateCcw className="h-3.5 w-3.5" />
             </button>
             <button
               onClick={clear}
-              className="h-7 w-7 flex items-center justify-center rounded-md text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary transition-colors"
+              className="h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary transition-colors"
               title="Clear"
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -554,8 +573,17 @@ export function CommentInput({
               {/* Timecode attach toggle — for video/audio */}
               {hasTimecode && (
                 <button
+                  data-testid="comment-timecode-toggle"
+                  aria-pressed={timecodeAttached}
+                  aria-label={
+                    timecodeAttached ? "Detach timecode" : "Attach timecode"
+                  }
                   className={cn(
-                    "h-7 w-7 flex items-center justify-center rounded-md transition-colors",
+                    // §228 — `hover-none:h-11 hover-none:w-11`: this is how
+                    // the stamp is REMOVED, so on a phone it has to be
+                    // hittable. Same media-feature variant header.tsx
+                    // already uses; a mouse sees the 28px button unchanged.
+                    "h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md transition-colors hover-none:h-11 hover-none:w-11",
                     timecodeAttached
                       ? "text-amber-400 bg-amber-400/10"
                       : "text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary",
@@ -573,7 +601,7 @@ export function CommentInput({
               {canAnnotate && (
                 <button
                   className={cn(
-                    "h-7 w-7 flex items-center justify-center rounded-md transition-colors",
+                    "h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md transition-colors",
                     hasAnnotation
                       ? "text-accent bg-accent/10"
                       : "text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary",
@@ -588,7 +616,7 @@ export function CommentInput({
               {/* Emoji */}
               <div className="relative" ref={emojiRef}>
                 <button
-                  className="h-7 w-7 flex items-center justify-center rounded-md text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary transition-colors"
+                  className="h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary transition-colors"
                   title="Add emoji"
                   onClick={() => setEmojiOpen((p) => !p)}
                 >
@@ -600,7 +628,7 @@ export function CommentInput({
                       {EMOJIS.map((e) => (
                         <button
                           key={e}
-                          className="h-6 w-6 rounded flex items-center justify-center text-sm hover:bg-bg-hover transition-colors"
+                          className="h-6 w-6 hover-none:h-11 hover-none:w-11 rounded flex items-center justify-center text-sm hover:bg-bg-hover transition-colors"
                           onClick={() => {
                             setBody((prev) => prev + e);
                             setEmojiOpen(false);
@@ -622,7 +650,7 @@ export function CommentInput({
                 <button
                   onClick={() => setVisDropdownOpen((p) => !p)}
                   className={cn(
-                    "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[12px] transition-colors border",
+                    "inline-flex items-center gap-1.5 h-7 hover-none:h-11 px-2.5 rounded-md text-[12px] transition-colors border",
                     commentVisibility === "internal"
                       ? "text-amber-400 border-amber-400/30 bg-amber-400/10"
                       : "text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary border-border",
@@ -676,7 +704,7 @@ export function CommentInput({
               <button
                 onClick={handleSubmit}
                 disabled={!body.trim() || submitting}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-accent text-text-primary hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="inline-flex h-7 w-7 hover-none:h-11 hover-none:w-11 items-center justify-center rounded-full bg-accent text-text-primary hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 title="Send (Enter)"
               >
                 {submitting ? (

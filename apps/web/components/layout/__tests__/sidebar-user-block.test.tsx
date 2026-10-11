@@ -261,15 +261,18 @@ describe('§227 — the §224b fixes that stay', () => {
   })
 })
 
-describe('§227 — the drawer still paints above the tab bar', () => {
+describe('§228 — the drawer still out-ranks every pane it covers', () => {
   /**
    * The z-index of the one `fixed` root element in a component.
    *
-   * Kept from §224b: `mobile-tab-bar.tsx` is no longer mounted by the
-   * project view (§227 item 3), but it survives for §228's asset viewer,
-   * and the drawer has to win against it there too. Read out of both files
-   * and compared, because the bug is the RELATIONSHIP — a test pinning
-   * `z-50` would still pass if someone raised the tab bar to z-60.
+   * §224b pinned this against `components/projects/mobile-tab-bar.tsx`,
+   * which §228 DELETED: §227 had already taken it out of the project view,
+   * and §228's asset viewer is one screen with a Comments/Fields switch
+   * under the player rather than a bottom tab bar, so nothing was left to
+   * mount it. What survives is the relationship the §224b bug was actually
+   * about — the nav drawer and its scrim paint above the page beneath them
+   * — read out of both files and compared, because a test pinning `z-50`
+   * would still pass if someone raised the thing underneath.
    */
   function fixedZ(file: string, marker: RegExp): number {
     const src = fs.readFileSync(path.join(process.cwd(), file), 'utf8')
@@ -280,19 +283,30 @@ describe('§227 — the drawer still paints above the tab bar', () => {
     return Number(m[1])
   }
 
-  const tabBarZ = () =>
-    fixedZ('components/projects/mobile-tab-bar.tsx', /fixed inset-x-0 bottom-0/)
   const drawerZ = () =>
     fixedZ('components/layout/sidebar.tsx', /'fixed left-0 top-0 z-/)
   const scrimZ = () =>
     fixedZ('components/layout/sidebar.tsx', /fixed inset-0 z-.*bg-black/)
+  /** The asset viewer's comments drawer — the widest fixed pane the nav
+   *  drawer has to cover now that the tab bar is gone (§228). */
+  const viewerPanelZ = () =>
+    fixedZ(
+      'app/(dashboard)/projects/[id]/assets/[assetId]/page.tsx',
+      /fixed inset-y-0 right-0 z-/,
+    )
 
-  it('the drawer paints above it', () => {
-    expect(drawerZ()).toBeGreaterThan(tabBarZ())
+  it('paints above its own scrim', () => {
+    expect(drawerZ()).toBeGreaterThan(scrimZ())
   })
 
-  it('and so does the scrim', () => {
-    expect(scrimZ()).toBeGreaterThan(tabBarZ())
-    expect(drawerZ()).toBeGreaterThan(scrimZ())
+  it('and both paint above the asset viewer comments drawer', () => {
+    expect(scrimZ()).toBeGreaterThan(viewerPanelZ())
+    expect(drawerZ()).toBeGreaterThan(viewerPanelZ())
+  })
+
+  it('and the tab bar it used to be measured against is gone', () => {
+    expect(
+      fs.existsSync(path.join(process.cwd(), 'components/projects/mobile-tab-bar.tsx')),
+    ).toBe(false)
   })
 })

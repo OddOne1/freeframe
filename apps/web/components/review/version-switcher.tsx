@@ -54,7 +54,7 @@ export function VersionSwitcher({ versions, className }: VersionSwitcherProps) {
       <span className="text-xs text-text-tertiary shrink-0">Version:</span>
       <DropdownMenu.Root>
         <DropdownMenu.Trigger asChild>
-          <button className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 bg-accent text-white text-xs font-medium hover:bg-accent/90 transition-colors outline-none">
+          <button className="inline-flex items-center justify-center gap-1 rounded-md px-2.5 py-1 hover-none:min-h-11 hover-none:px-4 bg-accent text-white text-xs font-medium hover:bg-accent/90 transition-colors outline-none">
             v{currentVersion?.version_number ?? sorted[sorted.length - 1].version_number}
             {sorted.length > 1 && <ChevronDown className="h-3 w-3 opacity-70" />}
           </button>

@@ -60,3 +60,32 @@ export function viewportIsXlUp(): boolean {
  * default for a decision that only ever ADDS a narrow-screen affordance.
  */
 export const MD_UP = '(min-width: 768px)'
+
+/**
+ * Below Tailwind's `md` — the phone range the asset viewer rebuilds (§228).
+ *
+ * Phrased as a `max-width`, unlike `MD_UP` above, and deliberately so: the
+ * hook starts `false`, so `false` has to mean "not known to be a phone",
+ * which is the EXISTING desktop/drawer layout. That is the server-safe
+ * default — the server renders the same tree the first client render does,
+ * and `useMediaQuery` resolves in a layout effect, before paint, so a real
+ * phone never shows a frame of the desktop tree.
+ *
+ * `MD_UP` cannot be reused here: `!useMediaQuery(MD_UP)` starts `true`,
+ * which would mount the phone tree on every desktop load.
+ */
+export const BELOW_MD = '(max-width: 767px)'
+
+/**
+ * Is this a phone-width viewport? (§228)
+ *
+ * The ONE JavaScript breakpoint in the asset viewer. Everything purely
+ * visual about the top bar is a container query in globals.css; this exists
+ * only where a DIFFERENT TREE has to mount — the single-screen phone layout
+ * versus the drawer, where version/status/rating render, and whether the
+ * player shows its compact transport row. CSS cannot move a component from
+ * one parent to another.
+ */
+export function useIsPhone(): boolean {
+  return useMediaQuery(BELOW_MD)
+}

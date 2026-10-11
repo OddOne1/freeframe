@@ -87,6 +87,9 @@ export function LutSidebarToggle({
         // rather than by widening the row's gap, so the spacing between
         // every control in that cluster stays uniform.
         'flex h-7 shrink-0 items-center gap-1 rounded border px-1.5 text-xs',
+        // §228 — a real target on a touch screen; a mouse keeps the 28px
+        // control §184 trimmed to fit beside Quality.
+        'hover-none:h-11 hover-none:px-3',
         'bg-black/40 backdrop-blur-sm transition-colors',
         selectedName || open
           ? 'border-accent text-accent'
@@ -110,10 +113,24 @@ interface LutSidebarProps {
   luts: Lut[]
   selectedId: string | null
   onSelect: (id: string | null) => void
-  onClose: () => void
+  /**
+   * Omit it and the panel's own "LUTs ✕" header is not rendered at all
+   * (§228): inside the player's settings sheet the sheet already carries a
+   * header with a back button, and a second close button that closes
+   * something different is worse than no button.
+   */
+  onClose?: () => void
   isLoading?: boolean
   /** Called after a successful inline upload so the list can revalidate. */
   onUploaded?: (lut: Lut) => void
+  /**
+   * §228 — overrides on the root, so the SAME component can be the 260px
+   * desktop column and the LUT sub-page of the phone settings sheet. The
+   * sheet passes `w-full border-r-0`; `cn` is tailwind-merge, so those
+   * replace the defaults rather than fighting them. No second picker, no
+   * second copy of the selection state.
+   */
+  className?: string
 }
 
 /**
@@ -135,6 +152,7 @@ export function LutSidebar({
   onClose,
   isLoading,
   onUploaded,
+  className,
 }: LutSidebarProps) {
   const fileRef = React.useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = React.useState(false)
@@ -274,19 +292,24 @@ export function LutSidebar({
   return (
     <div
       data-testid="lut-sidebar"
-      className="flex w-[260px] shrink-0 flex-col border-r border-border bg-bg-secondary animate-in slide-in-from-left-2 duration-150"
+      className={cn(
+        'flex w-[260px] shrink-0 flex-col border-r border-border bg-bg-secondary animate-in slide-in-from-left-2 duration-150',
+        className,
+      )}
     >
-      <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
-        <span className="text-xs font-medium text-text-primary">LUTs</span>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close LUT panel"
-          className="flex h-6 w-6 items-center justify-center rounded text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      </div>
+      {onClose && (
+        <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
+          <span className="text-xs font-medium text-text-primary">LUTs</span>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close LUT panel"
+            className="flex h-6 w-6 items-center justify-center rounded text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
         <button

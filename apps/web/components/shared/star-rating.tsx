@@ -40,8 +40,14 @@ export function StarRating({ value, onChange, readOnly = false, size = 'md', cla
               if (!readOnly) onChange?.(star)
             }}
             className={cn(
-              'transition-colors',
-              readOnly ? 'cursor-default' : 'cursor-pointer',
+              'flex items-center justify-center transition-colors',
+              readOnly
+                ? 'cursor-default'
+                // §228 — a 14px star is not a touch target. Only when the
+                // rating is EDITABLE: a read-only row of stars is a
+                // display, and growing those would push the voter
+                // breakdown rows apart for no gain.
+                : 'cursor-pointer hover-none:h-11 hover-none:w-11',
             )}
           >
             <Star

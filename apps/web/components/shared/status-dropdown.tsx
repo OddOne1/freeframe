@@ -32,7 +32,9 @@ export function StatusDropdown({
       <DropdownMenu.Trigger asChild>
         <button
           className={cn(
-            'inline-flex items-center gap-1.5 rounded-md border border-border bg-bg-tertiary px-2.5 h-8 outline-none hover:bg-bg-hover transition-colors',
+            // §228 — 44px on a touch device; `hover-none` so a mouse keeps the
+            // 32px control this app draws everywhere else.
+            'inline-flex items-center gap-1.5 rounded-md border border-border bg-bg-tertiary px-2.5 h-8 hover-none:h-11 outline-none hover:bg-bg-hover transition-colors',
             className,
           )}
         >
@@ -50,7 +52,7 @@ export function StatusDropdown({
             <DropdownMenu.Item
               key={s}
               onSelect={() => onChange(s)}
-              className="flex items-center justify-between gap-2.5 mx-1 px-2.5 py-1.5 rounded-lg cursor-pointer outline-none hover:bg-bg-hover transition-colors"
+              className="flex items-center justify-between gap-2.5 mx-1 px-2.5 py-1.5 hover-none:min-h-11 rounded-lg cursor-pointer outline-none hover:bg-bg-hover transition-colors"
             >
               <Badge status={s} />
               {status === s && <Check className="h-3.5 w-3.5 text-accent shrink-0" />}

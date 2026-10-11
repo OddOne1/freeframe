@@ -572,6 +572,20 @@ interface ShareDialogProps {
   assetName?: string;
   projectId?: string;
   asset?: AssetResponse | null;
+  /**
+   * §228 — optional controlled open, so the viewer's `⋯` overflow menu can
+   * open THIS instance instead of a second one. Omit both and the
+   * component is exactly as uncontrolled as it was.
+   */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /**
+   * §228 — classes for the inline trigger. The viewer's top bar hides it
+   * with a container query once there is no room for it, at which point the
+   * `⋯` menu is the way in; the (zero-width) wrapper stays in the row, so
+   * the panel still anchors to the right edge of the bar.
+   */
+  triggerClassName?: string;
 }
 
 export function ShareDialog({
@@ -579,8 +593,19 @@ export function ShareDialog({
   assetName,
   projectId,
   asset,
+  open: controlledOpen,
+  onOpenChange,
+  triggerClassName,
 }: ShareDialogProps) {
-  const [dropdownOpen, setDropdownOpen] = React.useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(false);
+  const dropdownOpen = controlledOpen ?? uncontrolledOpen;
+  const setDropdownOpen = React.useCallback(
+    (next: boolean) => {
+      if (controlledOpen === undefined) setUncontrolledOpen(next);
+      onOpenChange?.(next);
+    },
+    [controlledOpen, onOpenChange],
+  );
   const [search, setSearch] = React.useState("");
   const [addingToToken, setAddingToToken] = React.useState<string | null>(null);
   const [addedToToken, setAddedToToken] = React.useState<string | null>(null);
@@ -669,6 +694,7 @@ export function ShareDialog({
           onClick={() => setDropdownOpen(!dropdownOpen)}
           className={cn(
             dropdownOpen && "bg-bg-hover",
+            triggerClassName,
           )}
         >
           <Share2 className="h-4 w-4" />
