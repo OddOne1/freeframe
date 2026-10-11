@@ -84,6 +84,36 @@
   .text-balance {
     text-wrap: balance;
   }
+
+  /* ─── A 44px hit area around a smaller visible control (§227b) ─────────
+   *
+   * The selection checkbox on an asset card, a folder card and both list
+   * rows is a 20px or 40px box. On a phone it is now the ONLY way to start
+   * a multi-selection — a tap on the card itself opens the item — so it
+   * has to be hittable with a finger, which means 44 CSS px.
+   *
+   * A centred ::before rather than padding: padding would grow the visible
+   * box (these are coloured, bordered squares) and, on the list rows, move
+   * the thumbnail it overlays. This changes NOTHING that paints — the
+   * pseudo-element has no background — and nothing about layout: it is
+   * absolutely positioned, so it is out of flow, and `max()` leaves a
+   * control that is already ≥44px exactly as it was.
+   *
+   * It deliberately declares no `position` of its own: every user of it is
+   * already `absolute`, which makes the control itself the containing
+   * block. A statically-positioned user would anchor the box to an
+   * ancestor instead, so `absolute` (or `relative`) is part of the
+   * contract and is asserted in the tests.
+   */
+  .tap-target-44::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+  }
 }
 
 /* ─── Asset card: its own container, for the version badge (§111) ─────────

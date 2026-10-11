@@ -16,6 +16,7 @@ import { AppearancePopover } from './appearance-popover'
 import { SortPopover } from './sort-popover'
 import { MoveToDialog } from './move-to-dialog'
 import { useViewStore } from '@/stores/view-store'
+import { usePointerGesture } from '@/hooks/use-pointer-gesture'
 import type { Asset, AssetStatus, User, Folder, FolderTreeNode } from '@/types'
 
 const assetTypeIcons: Record<string, React.ElementType> = {
@@ -146,6 +147,15 @@ export function AssetGrid({
   onAssetVote,
 }: AssetGridProps) {
   const formatBytes = useFormatBytes()
+  /**
+   * §227b — one tap opens, one click selects, decided per gesture.
+   *
+   * ONE instance for every card and row this grid renders: the recorded
+   * pointer type belongs to the gesture in flight, and there is only ever
+   * one of those. See hooks/use-pointer-gesture.ts for why the type cannot
+   * be read off the click itself.
+   */
+  const gesture = usePointerGesture()
   const [selectedAssetIds, setSelectedAssetIds] = React.useState<Set<string>>(new Set())
   const [selectedFolderIds, setSelectedFolderIds] = React.useState<Set<string>>(new Set())
   const [moveDialogOpen, setMoveDialogOpen] = React.useState(false)
@@ -273,6 +283,24 @@ export function AssetGrid({
   }
 
   const totalSelected = selectedAssetIds.size + selectedFolderIds.size
+
+  /**
+   * §227b — once anything is selected, a TAP toggles instead of opening.
+   *
+   * The standard multi-select rule, and on a phone the only one that makes
+   * a second selected item reachable at all: the checkbox starts a
+   * selection, and from then on the whole card is the toggle, until the
+   * selection is cleared.
+   *
+   * Share mode counts as a selection for assets — it is a selection mode,
+   * and a tap that navigated into the viewer would make picking what to
+   * share impossible. For FOLDERS it does not, because in share mode the
+   * wrapper below already owns the folder toggle; counting it twice would
+   * toggle and untoggle in one tap.
+   */
+  const tapTogglesAssets = shareMode || totalSelected > 0
+  const tapTogglesFolders = !shareMode && totalSelected > 0
+
   const selectedTotalSize = Array.from(selectedAssetIds).reduce((sum, id) => sum + (fileSizes[id] ?? 0), 0)
 
   const filtered = React.useMemo(() => {
@@ -579,8 +607,13 @@ export function AssetGrid({
                   onClick={shareMode ? (e) => { e.stopPropagation(); toggleFolderSelect(folder.id) } : undefined}
                 >
                   <button
+                    // §227b — the folder card's checkbox gets the asset
+                    // card's treatment: a name, so a test and a screen
+                    // reader can both find it, and a 44px hit area around
+                    // the 20px box.
+                    aria-label={isFolderSelected ? `Deselect ${folder.name}` : `Select ${folder.name}`}
                     className={cn(
-                      'absolute top-2 left-2 z-10 h-5 w-5 rounded border flex items-center justify-center transition-all',
+                      'tap-target-44 absolute top-2 left-2 z-10 h-5 w-5 rounded border flex items-center justify-center transition-all',
                       isFolderSelected
                         ? 'bg-accent border-accent text-white opacity-100'
                         : 'bg-black/40 border-white/30 text-transparent opacity-0 group-hover/folder:opacity-100 hover-none:opacity-100',
@@ -592,6 +625,14 @@ export function AssetGrid({
                   <FolderCard
                     folder={folder}
                     onOpen={shareMode ? () => {} : onFolderOpen!}
+                    // §227b — a tap opens a folder card the way it opens
+                    // an asset card. The card itself decides, because the
+                    // gesture lands on IT; `onSelect` is deliberately not
+                    // passed, so a plain MOUSE click on a folder card does
+                    // exactly what it does today (nothing — the checkbox
+                    // and the double-click are the mouse's two controls).
+                    selectionActive={tapTogglesFolders}
+                    onToggleSelect={shareMode ? undefined : () => toggleFolderSelect(folder.id)}
                     onRename={shareMode ? undefined : onFolderRename}
                     onDelete={shareMode ? undefined : onFolderDelete}
                     onShare={shareMode ? undefined : onFolderShare}
@@ -639,8 +680,17 @@ export function AssetGrid({
                 'rounded-lg transition-all cursor-pointer',
                 selectedAssetId === asset.id && 'ring-2 ring-accent ring-offset-1 ring-offset-bg-primary',
               )}
-              onClick={(e) => handleCardClick(asset, e)}
-              onDoubleClick={() => onAssetOpen?.(asset)}
+              // §227b — a tap opens the asset; a mouse click still only
+              // selects and a mouse double-click still opens. The pointer
+              // type is recorded here and read by the click that follows.
+              onPointerDown={gesture.onPointerDown}
+              onClick={(e) => {
+                const intent = gesture.tapIntent({ selectionActive: tapTogglesAssets })
+                if (intent === 'open') { onAssetOpen?.(asset); return }
+                if (intent === 'toggle') { handleCheckboxClick(asset, e); return }
+                handleCardClick(asset, e)
+              }}
+              onDoubleClick={() => { if (gesture.doubleOpens()) onAssetOpen?.(asset) }}
             >
               <AssetCard
                 asset={asset}
@@ -701,20 +751,39 @@ export function AssetGrid({
             return (
               <div
                 key={folder.id}
+                // A handle for the tests. The grid's own right-click
+                // handler keys off `data-folder-card`, which this row has
+                // never carried; that is left exactly as it is.
+                data-folder-row={folder.id}
                 className={cn(
                   'group flex items-center gap-4 px-3 py-2.5 transition-colors hover:bg-bg-hover cursor-pointer',
                   i !== folders!.length - 1 || filtered.length > 0 ? 'border-b border-border' : '',
                   isFolderSelected && 'bg-accent/5',
                 )}
-                onClick={() => onFolderOpen?.(folder)}
-                onDoubleClick={() => onFolderOpen?.(folder)}
+                // §227b — the one surface where a plain mouse click
+                // ALREADY opens, so `mouseClickOpens`: "mouse behaviour
+                // unchanged" outranks making the four surfaces agree.
+                // What is new is the touch half — a tap toggles instead
+                // of opening once a selection exists.
+                onPointerDown={gesture.onPointerDown}
+                onClick={() => {
+                  if (gesture.tapIntent({ selectionActive: tapTogglesFolders, mouseClickOpens: true }) === 'toggle') {
+                    toggleFolderSelect(folder.id)
+                    return
+                  }
+                  onFolderOpen?.(folder)
+                }}
+                onDoubleClick={() => { if (gesture.doubleOpens()) onFolderOpen?.(folder) }}
               >
                 {/* Folder icon with checkbox overlay — aligned with asset thumbnail */}
                 <div className="relative h-10 w-10 shrink-0 rounded-md bg-bg-tertiary flex items-center justify-center overflow-hidden">
                   <FolderIcon className="h-5 w-5 text-text-tertiary/60" />
                   <button
+                    // §227b — named and finger-sized, like the asset
+                    // row's. 40px of thumbnail is not 44.
+                    aria-label={isFolderSelected ? `Deselect ${folder.name}` : `Select ${folder.name}`}
                     className={cn(
-                      'absolute inset-0 flex items-center justify-center transition-all',
+                      'tap-target-44 absolute inset-0 flex items-center justify-center transition-all',
                       isFolderSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 hover-none:opacity-100',
                     )}
                     onClick={(e) => { e.stopPropagation(); toggleFolderSelect(folder.id) }}
@@ -815,8 +884,15 @@ export function AssetGrid({
             return (
               <div
                 key={asset.id}
-                onClick={(e) => handleCardClick(asset, e)}
-                onDoubleClick={() => onAssetOpen?.(asset)}
+                data-asset-row={asset.id}
+                onPointerDown={gesture.onPointerDown}
+                onClick={(e) => {
+                  const intent = gesture.tapIntent({ selectionActive: tapTogglesAssets })
+                  if (intent === 'open') { onAssetOpen?.(asset); return }
+                  if (intent === 'toggle') { handleCheckboxClick(asset, e); return }
+                  handleCardClick(asset, e)
+                }}
+                onDoubleClick={() => { if (gesture.doubleOpens()) onAssetOpen?.(asset) }}
                 className={cn(
                   'group flex items-center gap-4 px-3 py-2 transition-colors hover:bg-bg-hover cursor-pointer',
                   i !== filtered.length - 1 && 'border-b border-border',
@@ -840,7 +916,7 @@ export function AssetGrid({
                     aria-label={selectedAssetIds.has(asset.id)
                       ? `Deselect ${asset.name}` : `Select ${asset.name}`}
                     className={cn(
-                      'absolute inset-0 flex items-center justify-center transition-all',
+                      'tap-target-44 absolute inset-0 flex items-center justify-center transition-all',
                       selectedAssetIds.has(asset.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 hover-none:opacity-100',
                     )}
                     onClick={(e) => { e.stopPropagation(); handleCheckboxClick(asset, e) }}

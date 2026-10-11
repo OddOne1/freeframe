@@ -7,6 +7,7 @@ import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { dragCarriesFiles } from '@/hooks/use-file-drop-zone'
 import { useFormatBytes } from '@/hooks/use-byte-units'
 import { api } from '@/lib/api'
+import { usePointerGesture } from '@/hooks/use-pointer-gesture'
 import { NameDialog } from './name-dialog'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { Folder as FolderType, AssetResponse } from '@/types'
@@ -84,6 +85,15 @@ interface FolderCardProps {
   selected?: boolean
   onOpen: (folder: FolderType) => void
   onSelect?: (e: React.MouseEvent) => void
+  /**
+   * §227b — a TAP's two meanings. `selectionActive` says something is
+   * already selected, so a tap toggles this folder rather than opening it;
+   * `onToggleSelect` is how it does that. Both are touch-only: a mouse
+   * click goes to `onSelect` exactly as before, and a mouse double-click
+   * opens exactly as before.
+   */
+  selectionActive?: boolean
+  onToggleSelect?: () => void
   onRename?: (folderId: string, name: string) => Promise<void>
   onDelete?: (folderId: string) => Promise<void>
   onShare?: (folderId: string, folderName: string) => void
@@ -96,6 +106,8 @@ export function FolderCard({
   selected,
   onOpen,
   onSelect,
+  selectionActive = false,
+  onToggleSelect,
   onRename,
   onDelete,
   onShare,
@@ -103,6 +115,15 @@ export function FolderCard({
   className,
 }: FolderCardProps) {
   const formatBytes = useFormatBytes()
+  /**
+   * §227b — a single TAP opens a folder, the way a single tap opens an
+   * asset. Before this, `onDoubleClick` was the only way in from the grid
+   * layout — which is the layout a phone uses — so on a touch screen a
+   * folder card could not be opened by the gesture a touch screen has.
+   *
+   * The same hook the grid uses, not a copy of its reasoning.
+   */
+  const gesture = usePointerGesture()
   const [menuOpen, setMenuOpen] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
@@ -181,8 +202,14 @@ export function FolderCard({
         onDragOver={handleDragOver}
         onDragLeave={() => setIsDragOver(false)}
         onDrop={handleDrop}
-        onDoubleClick={() => onOpen(folder)}
-        onClick={onSelect}
+        onPointerDown={gesture.onPointerDown}
+        onDoubleClick={() => { if (gesture.doubleOpens()) onOpen(folder) }}
+        onClick={(e) => {
+          const intent = gesture.tapIntent({ selectionActive })
+          if (intent === 'open') { onOpen(folder); return }
+          if (intent === 'toggle') { onToggleSelect?.(); return }
+          onSelect?.(e)
+        }}
       >
         {/* Folder thumbnail preview */}
         <FolderThumbnails projectId={folder.project_id} folderId={folder.id} itemCount={folder.item_count} />

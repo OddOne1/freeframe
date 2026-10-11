@@ -151,10 +151,17 @@ export function AssetCard({
             aria-label={selected ? `Deselect ${asset.name}` : `Select ${asset.name}`}
             onClick={(e) => { e.stopPropagation(); onSelect(e) }}
             className={cn(
-              'absolute top-2 left-2 h-5 w-5 rounded flex items-center justify-center transition-all',
+              // §227b — `tap-target-44` gives the 20px box a 44px hit
+              // area without moving it or growing what paints, and
+              // `hover-none:text-white/60` makes the tick outline visible
+              // where there is no hover to reveal it. The BOX was always
+              // visible (bg-black/40); the mark inside it was not, so on a
+              // phone the one control that can start a multi-selection
+              // read as an empty square.
+              'tap-target-44 absolute top-2 left-2 h-5 w-5 rounded flex items-center justify-center transition-all',
               selected
                 ? 'bg-accent text-white'
-                : 'bg-black/40 text-transparent group-hover:text-white/60 backdrop-blur-sm',
+                : 'bg-black/40 text-transparent group-hover:text-white/60 hover-none:text-white/60 backdrop-blur-sm',
             )}
           >
             <Check className="h-3.5 w-3.5" />
