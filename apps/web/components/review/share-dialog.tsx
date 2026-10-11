@@ -641,7 +641,7 @@ export function ShareDialog({
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
-  }, [dropdownOpen]);
+  }, [dropdownOpen, setDropdownOpen]);
 
   // Close dropdown on Escape
   React.useEffect(() => {
@@ -651,7 +651,7 @@ export function ShareDialog({
     }
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, [dropdownOpen]);
+  }, [dropdownOpen, setDropdownOpen]);
 
   const filteredLinks = React.useMemo(() => {
     if (!search.trim()) return shareLinks;

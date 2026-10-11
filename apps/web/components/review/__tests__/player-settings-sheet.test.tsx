@@ -312,7 +312,7 @@ describe('§228 — focusing the composer pauses and stamps', () => {
 
   it('a detached stamp is not submitted', async () => {
     useReviewStore.setState({ playheadTime: 12.5 })
-    const onSubmit = vi.fn(async () => {})
+    const onSubmit = vi.fn(async (_body: string, _tc?: number) => {})
     render(
       <CommentInput assetId="a1" projectId="p1" assetType="video" onSubmit={onSubmit} />,
     )
@@ -325,7 +325,7 @@ describe('§228 — focusing the composer pauses and stamps', () => {
 
   it('an attached one is', async () => {
     useReviewStore.setState({ playheadTime: 12.5 })
-    const onSubmit = vi.fn(async () => {})
+    const onSubmit = vi.fn(async (_body: string, _tc?: number) => {})
     render(
       <CommentInput assetId="a1" projectId="p1" assetType="video" onSubmit={onSubmit} />,
     )
