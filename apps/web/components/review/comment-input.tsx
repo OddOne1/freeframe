@@ -24,6 +24,7 @@ import { resolveSubmitTimecode } from "@/lib/resolve-submit-timecode";
 import { useReviewStore } from "@/stores/review-store";
 import { useReview } from "./review-provider";
 import { useDrawing } from "@/hooks/use-drawing";
+import { useIsPhone } from "@/hooks/use-media-query";
 import { api } from "@/lib/api";
 import type { User } from "@/types";
 
@@ -222,6 +223,22 @@ export function CommentInput({
 
   const { clear, undo, getJSON } = useDrawing();
 
+  /**
+   * §228b items 3e and 3f — the composer on a phone.
+   *
+   * The owner, on his iPhone: "the timecode display has the correct
+   * distance to the top, but the bottom needs the same distance to it. The
+   * text should be centered", and the whole thing has to be thinner. He
+   * also asked for the emoji button to go: the iOS keyboard has an emoji
+   * key of its own, so the button spends a 44px slot on a duplicate.
+   *
+   * A phone, not `hover: none`: this component also renders inside §228's
+   * drawer at 768px+, where a touch tablet has to stay pixel-identical.
+   * `useIsPhone` starts `false`, so the server renders the desktop
+   * composer and so does the first client render.
+   */
+  const isPhone = useIsPhone();
+
   // §107 — compare mode drives all three of these per-pane. Each falls back to
   // the global store when its prop is absent, which is the normal viewer, so
   // behaviour there is unchanged by construction.
@@ -419,6 +436,7 @@ export function CommentInput({
 
   return (
     <div
+      data-testid="comment-composer"
       className={cn(
         "border-t border-border bg-bg-secondary shrink-0",
         className,
@@ -438,21 +456,51 @@ export function CommentInput({
       )}
 
       {/* Input area */}
-      <div className="px-4 pt-3 pb-2">
+      <div className={cn(isPhone ? "px-3 pt-1.5 pb-1" : "px-4 pt-3 pb-2")}>
         <div className="relative">
-          <div className="flex items-start gap-0 rounded-lg border border-border bg-bg-tertiary focus-within:border-accent/50 focus-within:ring-1 focus-within:ring-accent/20">
+          <div
+            data-testid="comment-input-field"
+            className={cn(
+              "flex gap-0 rounded-lg border border-border bg-bg-tertiary focus-within:border-accent/50 focus-within:ring-1 focus-within:ring-accent/20",
+              // item 3e — `items-center`, not `items-start`: with the chip
+              // and the one-line textarea centred, the space above the
+              // timecode chip IS the space below it, which is what the
+              // owner asked for. `items-start` is what made it 9px above
+              // and 17px below.
+              isPhone ? "items-center" : "items-start",
+            )}
+          >
             {/* Inline timecode badge — show when timecode attached (normal mode) or in drawing mode */}
             {hasTimecode && (timecodeAttached || drawingActive) && (
               <span
                 data-testid="comment-timecode-stamp"
-                className="shrink-0 ml-2.5 mt-[9px] rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[11px] text-amber-400 leading-none select-none"
+                className={cn(
+                  "shrink-0 rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[11px] text-amber-400 leading-none select-none",
+                  // No `mt` on a phone: the row centres it.
+                  isPhone ? "ml-2" : "ml-2.5 mt-[9px]",
+                )}
               >
                 {displayTime(playheadTime)}
               </span>
             )}
             <textarea
               ref={textareaRef}
-              className="flex-1 resize-none bg-transparent px-2.5 py-2.5 text-[13px] text-text-primary placeholder:text-text-tertiary focus:outline-none min-h-[38px] hover-none:min-h-11 max-h-[120px]"
+              className={cn(
+                "flex-1 resize-none bg-transparent px-2.5 text-[13px] text-text-primary placeholder:text-text-tertiary focus:outline-none max-h-[120px]",
+                // item 3e — a 36px field: one 20px line box with 8px above
+                // and 8px below it, so the text sits in the middle of the
+                // box whatever its font-size. `leading-[20px]` and not a
+                // ratio: the global 16px rule (item 2) changes the font on
+                // a real phone and a ratio would move the centring with
+                // it. 38px with the border, against 46px before.
+                //
+                // 36 and not 34: the field is a tap target too, and item
+                // 3g's floor is 36. 34 was the one thing the Chromium
+                // audit at 390/360/320 flagged.
+                isPhone
+                  ? "py-2 h-9 min-h-0 leading-[20px]"
+                  : "py-2.5 min-h-[38px] hover-none:min-h-11",
+              )}
               placeholder={
                 replyToId ? "Write a reply..." : "Leave your comment..."
               }
@@ -500,7 +548,7 @@ export function CommentInput({
       </div>
 
       {/* Bottom toolbar */}
-      <div className="px-4 pb-3">
+      <div className={cn(isPhone ? "px-3 pb-1.5" : "px-4 pb-3")}>
         {canAnnotate && drawingActive ? (
           /* ─── Drawing toolbar ─── */
           <div className="flex items-center gap-1">
@@ -583,7 +631,13 @@ export function CommentInput({
                     // the stamp is REMOVED, so on a phone it has to be
                     // hittable. Same media-feature variant header.tsx
                     // already uses; a mouse sees the 28px button unchanged.
-                    "h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md transition-colors hover-none:h-11 hover-none:w-11",
+                    // §228b item 3g — on a PHONE that drops to the 36px
+                    // floor: this is a secondary control, and the 8px it
+                    // gives back is 8px of comment list.
+                    "flex items-center justify-center rounded-md transition-colors",
+                    isPhone
+                      ? "h-9 w-9"
+                      : "h-7 w-7 hover-none:h-11 hover-none:w-11",
                     timecodeAttached
                       ? "text-amber-400 bg-amber-400/10"
                       : "text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary",
@@ -601,7 +655,10 @@ export function CommentInput({
               {canAnnotate && (
                 <button
                   className={cn(
-                    "h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md transition-colors",
+                    "flex items-center justify-center rounded-md transition-colors",
+                    isPhone
+                      ? "h-9 w-9"
+                      : "h-7 w-7 hover-none:h-11 hover-none:w-11",
                     hasAnnotation
                       ? "text-accent bg-accent/10"
                       : "text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary",
@@ -613,9 +670,17 @@ export function CommentInput({
                 </button>
               )}
 
-              {/* Emoji */}
+              {/* Emoji.
+                  §228b item 3f — not on a phone. "Remove the emoji button
+                  in mobile view" — the iOS keyboard has its own emoji key,
+                  so this button spends a 44px slot of a 390px row on a
+                  duplicate of something the keyboard already offers. Not
+                  rendered at all rather than hidden with CSS, so there is
+                  no invisible target left behind it. Desktop keeps it. */}
+              {!isPhone && (
               <div className="relative" ref={emojiRef}>
                 <button
+                  data-testid="comment-emoji-button"
                   className="h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary transition-colors"
                   title="Add emoji"
                   onClick={() => setEmojiOpen((p) => !p)}
@@ -642,6 +707,7 @@ export function CommentInput({
                   </div>
                 )}
               </div>
+              )}
             </div>
 
             <div className="flex items-center gap-2">
@@ -650,7 +716,10 @@ export function CommentInput({
                 <button
                   onClick={() => setVisDropdownOpen((p) => !p)}
                   className={cn(
-                    "inline-flex items-center gap-1.5 h-7 hover-none:h-11 px-2.5 rounded-md text-[12px] transition-colors border",
+                    "inline-flex items-center gap-1.5 px-2.5 rounded-md text-[12px] transition-colors border",
+                    // item 3g — the 36px floor on a phone; 44 elsewhere on
+                    // touch, 28 on a mouse.
+                    isPhone ? "h-9" : "h-7 hover-none:h-11",
                     commentVisibility === "internal"
                       ? "text-amber-400 border-amber-400/30 bg-amber-400/10"
                       : "text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary border-border",
@@ -704,7 +773,14 @@ export function CommentInput({
               <button
                 onClick={handleSubmit}
                 disabled={!body.trim() || submitting}
-                className="inline-flex h-7 w-7 hover-none:h-11 hover-none:w-11 items-center justify-center rounded-full bg-accent text-text-primary hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                data-testid="comment-submit"
+                // item 3g — Send is on the PRIMARY list: 44x44 on a phone,
+                // unchanged. It is also what sets the action row's height,
+                // which is why that row is 44px and not 36px.
+                className={cn(
+                  "inline-flex items-center justify-center rounded-full bg-accent text-text-primary hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors",
+                  isPhone ? "h-11 w-11" : "h-7 w-7 hover-none:h-11 hover-none:w-11",
+                )}
                 title="Send (Enter)"
               >
                 {submitting ? (

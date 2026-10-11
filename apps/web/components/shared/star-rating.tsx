@@ -9,6 +9,21 @@ interface StarRatingProps {
   onChange?: (star: number) => void
   readOnly?: boolean
   size?: 'sm' | 'md'
+  /**
+   * Grow every star to a 44px hit area under `hover: none` (§228).
+   *
+   * On by default, because the place this component is editable and matters
+   * is the viewer's Fields tab, where voting is the point and a 14px star
+   * is not something a finger can hit.
+   *
+   * §228b item 1 — the asset card passes `false`. Five 44px stars is a
+   * 220px bar, and the card's chip is anchored over the top of a thumbnail
+   * that is 82-354px wide with the selection checkbox in the opposite
+   * corner: it covered the one control that starts a multi-selection on a
+   * phone. The card's rating is a DISPLAY on touch (`readOnly` as well as
+   * this), and voting happens in the viewer.
+   */
+  touchTargets?: boolean
   className?: string
 }
 
@@ -17,7 +32,14 @@ const sizeClasses: Record<NonNullable<StarRatingProps['size']>, string> = {
   md: 'h-5 w-5',
 }
 
-export function StarRating({ value, onChange, readOnly = false, size = 'md', className }: StarRatingProps) {
+export function StarRating({
+  value,
+  onChange,
+  readOnly = false,
+  size = 'md',
+  touchTargets = true,
+  className,
+}: StarRatingProps) {
   const [hovered, setHovered] = React.useState<number | null>(null)
   const displayValue = hovered ?? value ?? 0
   const starSize = sizeClasses[size]
@@ -46,8 +68,11 @@ export function StarRating({ value, onChange, readOnly = false, size = 'md', cla
                 // §228 — a 14px star is not a touch target. Only when the
                 // rating is EDITABLE: a read-only row of stars is a
                 // display, and growing those would push the voter
-                // breakdown rows apart for no gain.
-                : 'cursor-pointer hover-none:h-11 hover-none:w-11',
+                // breakdown rows apart for no gain. §228b — and only when
+                // the caller wants the target at all; see `touchTargets`.
+                : touchTargets
+                  ? 'cursor-pointer hover-none:h-11 hover-none:w-11'
+                  : 'cursor-pointer',
             )}
           >
             <Star

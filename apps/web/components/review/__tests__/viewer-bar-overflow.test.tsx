@@ -153,11 +153,21 @@ describe('§228 — the 44px minimum is removed again for a mouse at md+', () =>
   })
 
   it('and it is on the controls that were too small', () => {
-    for (const id of ['viewer-back', 'viewer-prev-asset', 'viewer-next-asset', 'viewer-overflow-trigger', 'viewer-panel-toggle']) {
+    // §228b item 3g split this list in two. Back and the panel toggle are
+    // on the PRIMARY list and keep `viewer-tap` (44). The navigation and
+    // the `⋯` trigger moved to `viewer-tap-36`, which is 36 below `md`,
+    // 44 on a touch tablet and nothing at all for a mouse — see the
+    // §228b block at the bottom of this file.
+    for (const id of ['viewer-back', 'viewer-panel-toggle']) {
       const i = PAGE.indexOf(`data-testid="${id}"`)
       expect(i, id).toBeGreaterThan(0)
       // the className sits within a few lines of the testid
-      expect(PAGE.slice(Math.max(0, i - 600), i + 600)).toContain('viewer-tap')
+      expect(PAGE.slice(Math.max(0, i - 600), i + 600)).toMatch(/viewer-tap(?!-)/)
+    }
+    for (const id of ['viewer-prev-asset', 'viewer-next-asset', 'viewer-overflow-trigger']) {
+      const i = PAGE.indexOf(`data-testid="${id}"`)
+      expect(i, id).toBeGreaterThan(0)
+      expect(PAGE.slice(Math.max(0, i - 600), i + 600)).toContain('viewer-tap-36')
     }
   })
 })
@@ -185,7 +195,9 @@ describe('§228 — the phone player height always leaves room below it', () => 
   it('is capped at 40dvh, per media type', () => {
     expect(CSS).toMatch(/\.viewer-phone-media \{[\s\S]*?height: min\(40dvh/)
     expect(CSS).toMatch(/\.viewer-phone-media\[data-media='video'\][\s\S]*?100vw \* 0\.5625/)
-    expect(CSS).toMatch(/\.viewer-phone-media\[data-media='audio'\][\s\S]*?252px/)
+    // §228b item 3c — 240, not 252: the compact transport row is 44px
+    // rather than 56px, so 160 (waveform) + 36 (scrubber) + 44.
+    expect(CSS).toMatch(/\.viewer-phone-media\[data-media='audio'\][\s\S]*?240px/)
   })
 
   it('and yields further to the on-screen keyboard', () => {
@@ -196,5 +208,118 @@ describe('§228 — the phone player height always leaves room below it', () => 
   it('`dvh`, never `vh` — iOS reports 100vh without its toolbars', () => {
     const block = CSS.slice(CSS.indexOf('.viewer-phone-media {'))
     expect(block).not.toMatch(/\b\d+vh\b/)
+  })
+})
+
+// ─── §228b — the compact phone rows, and the floor under their targets ──
+
+const VIDEO = fs.readFileSync(
+  path.join(process.cwd(), 'components/review/video-player.tsx'),
+  'utf8',
+)
+const AUDIO = fs.readFileSync(
+  path.join(process.cwd(), 'components/review/audio-player.tsx'),
+  'utf8',
+)
+
+describe('§228b item 3g — a 36px floor beside the 44px one', () => {
+  it('`viewer-tap-36` is 36 below md, 44 on a touch tablet and nothing for a mouse', () => {
+    expect(CSS).toMatch(/\.viewer-tap-36 \{\s*min-height: 36px;\s*min-width: 36px;\s*\}/)
+    // A 768px touch tablet keeps exactly what §228 gave it, which is what
+    // item 3i's "the tablet is pixel-identical" means for these controls.
+    expect(CSS).toMatch(
+      /@media \(min-width: 768px\) \{\s*\.viewer-tap-36 \{\s*min-height: 44px;\s*min-width: 44px;/,
+    )
+    expect(CSS).toMatch(
+      /@media \(min-width: 768px\) and \(hover: hover\) and \(pointer: fine\) \{\s*\.viewer-tap-36 \{\s*min-height: 0;\s*min-width: 0;/,
+    )
+  })
+
+  it('and 36 is never larger than 44, so the primary list is never the smaller one', () => {
+    const floor = (cls: string) =>
+      Number(new RegExp(`\\.${cls} \\{\\s*min-height: (\\d+)px`).exec(CSS)![1])
+    expect(floor('viewer-tap-36')).toBeLessThan(floor('viewer-tap'))
+  })
+})
+
+describe('§228b item 3a — the one-row phone bar', () => {
+  it('the nav only takes a row of its own at md+', () => {
+    // Below `md` the owner wants ONE bar. Both ladders — the mouse one and
+    // the `hover: none` one — have to agree, or a narrow desktop window
+    // and a phone would disagree about the same width.
+    for (const width of [624, 900]) {
+      const body = steps().filter((s) => s.width === width).map((s) => s.body).join('\n')
+      expect(body, String(width)).toMatch(/\.vbar-nav/)
+      const i = body.indexOf('.vbar-nav')
+      expect(body.slice(0, i), String(width)).toMatch(/@media \(min-width: 768px\)/)
+    }
+  })
+
+  it('and the bar still wraps, which is the floor under every step', () => {
+    const cls = /className="(viewer-topbar[^"]*)"/.exec(PAGE)?.[1] ?? ''
+    expect(cls).toContain('flex-wrap')
+    expect(cls).toContain('max-md:min-h-11')
+  })
+})
+
+describe('§228b item 3c — the compact transport row', () => {
+  it('is 44px tall, not 56, in both players', () => {
+    for (const [name, src] of [['video', VIDEO], ['audio', AUDIO]] as const) {
+      const i = src.indexOf(`data-testid="${name}-transport-compact"`)
+      expect(i, name).toBeGreaterThan(0)
+      const cls = /className="([^"]*)"/.exec(src.slice(i, i + 900))![1]
+      expect(cls, name).toContain('h-11')
+      expect(cls, name).not.toContain('h-14')
+    }
+  })
+
+  it('play/pause keeps 44x44 — it is on the primary list', () => {
+    for (const [name, src] of [['video', VIDEO], ['audio', AUDIO]] as const) {
+      const i = src.indexOf('data-testid="player-play-pause"')
+      expect(i, name).toBeGreaterThan(0)
+      const cls = /className=(?:"([^"]*)"|\{[^}]*\})/.exec(src.slice(i, i + 600))![1] ?? ''
+      expect(cls, name).toContain('h-11')
+      expect(cls, name).toContain('w-11')
+    }
+  })
+
+  it('settings and fullscreen drop to 36 wide', () => {
+    for (const [name, src] of [['video', VIDEO], ['audio', AUDIO]] as const) {
+      const i = src.indexOf('data-testid="player-settings-button"')
+      const cls = /className="([^"]*)"/.exec(src.slice(i, i + 600))![1]
+      expect(cls, name).toContain('w-9')
+      expect(cls, name).toContain('h-11')
+    }
+  })
+
+  it('and the timecode chip is a 28px box inside a 44px hit area', () => {
+    for (const [name, src] of [['video', VIDEO], ['audio', AUDIO]] as const) {
+      const i = src.indexOf('data-testid="player-timecode"')
+      const chunk = src.slice(i, i + 700)
+      expect(chunk, name).toContain('flex h-11 items-center')
+      expect(chunk, name).toContain('h-7 items-center gap-1 rounded-md bg-bg-tertiary px-2')
+    }
+  })
+
+  it('while the desktop row below it is untouched', () => {
+    // Its own 48px band, its own 28px controls, `hover-none:` variants and
+    // all — the public share viewer mounts this player and is out of scope.
+    expect(VIDEO).toContain(
+      'flex items-center justify-between h-12 px-4 bg-bg-secondary/80 border-t border-border shrink-0',
+    )
+    expect(AUDIO).toContain(
+      'flex items-center justify-between h-12 px-4 bg-bg-secondary/80 border-t border-border shrink-0',
+    )
+  })
+})
+
+describe('§228b item 3c — the player cap follows the shorter row', () => {
+  it('video: 16:9 plus the scrubber plus the 44px row', () => {
+    expect(CSS).toMatch(/100vw \* 0\.5625 \+ 80px/)
+    expect(CSS).not.toMatch(/100vw \* 0\.5625 \+ 92px/)
+  })
+
+  it('audio: the 160px waveform plus the scrubber plus the 44px row', () => {
+    expect(CSS).toMatch(/\.viewer-phone-media\[data-media='audio'\][\s\S]*?240px/)
   })
 })

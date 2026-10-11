@@ -333,11 +333,20 @@
   /* `order: 3` and not just `flex-basis: 100%`: the nav group sits between
    * the name and the actions in the DOM, so wrapping it where it stands
    * would push the actions onto a third row. Ordered last, it wraps BELOW
-   * a row that still holds the name and the `⋯` menu. */
-  .vbar-nav {
-    order: 3;
-    flex-basis: 100%;
-    justify-content: center;
+   * a row that still holds the name and the `⋯` menu.
+   *
+   * §228b item 3a — `md`+ only now. Below `md` the owner wants ONE bar,
+   * not two thin ones, and there is room for one: with the counter written
+   * `n/N` and the nav and `⋯` buttons on the 36px floor instead of 44, the
+   * asset name still keeps 102px at 360px wide (measured; the threshold he
+   * set was ~96px). `flex-wrap` is still on the bar, so if a future
+   * control ever makes the row too long it wraps rather than clipping. */
+  @media (min-width: 768px) {
+    .vbar-nav {
+      order: 3;
+      flex-basis: 100%;
+      justify-content: center;
+    }
   }
 }
 
@@ -381,10 +390,15 @@
     .vbar-more { display: flex; }
   }
   @container viewerbar (max-width: 900px) {
-    .vbar-nav {
-      order: 3;
-      flex-basis: 100%;
-      justify-content: center;
+    /* §228b item 3a — `md`+ only, as in the mouse ladder above: below `md`
+     * the phone bar is one row. A 768px touch tablet still gets the second
+     * row §228 gave it. */
+    @media (min-width: 768px) {
+      .vbar-nav {
+        order: 3;
+        flex-basis: 100%;
+        justify-content: center;
+      }
     }
   }
   @container viewerbar (max-width: 760px) {
@@ -443,14 +457,17 @@
  *
  * Per media type, because the box holds different things:
  *  - video: 16:9 of the full width plus the scrubber (~36px) and the
- *    compact transport row (56px), capped at 40dvh. At 390px that is
- *    311px, so the frame gets exactly 219px = 16:9, with no letterbox.
+ *    compact transport row, capped at 40dvh. At 390px that is 299px, so
+ *    the frame gets exactly 219px = 16:9, with no letterbox.
  *    16:9 is an assumption: the intrinsic ratio is not known until
  *    `loadedmetadata`, and a player that changes height a second after
  *    the page settles is worse than a letterbox on the rare 4:3 clip,
  *    which `object-contain` handles correctly either way.
- *  - audio: the waveform is a fixed 160px; 160 + 36 + 56 = 252.
+ *  - audio: the waveform is a fixed 160px; 160 + 36 + 44 = 240.
  *  - image: no transport row at all, so it takes the whole 40dvh.
+ *
+ * §228b item 3c — the compact transport row is 44px, not the 56px §228
+ * gave it, so both constants above come down by 12.
  */
 .viewer-phone-media {
   height: min(40dvh, var(--viewer-media-cap));
@@ -458,15 +475,18 @@
 }
 
 .viewer-phone-media[data-media='video'] {
-  height: min(40dvh, calc(100vw * 0.5625 + 92px), var(--viewer-media-cap));
+  height: min(40dvh, calc(100vw * 0.5625 + 80px), var(--viewer-media-cap));
 }
 
 .viewer-phone-media[data-media='audio'] {
-  height: min(40dvh, 252px, var(--viewer-media-cap));
+  height: min(40dvh, 240px, var(--viewer-media-cap));
 }
 
 /* What has to survive BELOW the player whatever else happens: the tab
- * switch (49px), the composer (~115px) and enough list to read a comment.
+ * switch (37px after §228b item 3b), the composer (~94px after item 3e)
+ * and enough list to read a comment. The 350 is deliberately NOT reduced
+ * by the 33px those two gave back: that slack is the comment list's, which
+ * is the whole point of item 3.
  * `--kb` is the band the on-screen keyboard covers, set from
  * `visualViewport` by the page (0 when there is no keyboard, which is
  * every desktop and every untouched phone).
@@ -480,4 +500,127 @@
  */
 .viewer-phone-media {
   --viewer-media-cap: calc(100dvh - var(--kb, 0px) - 350px);
+}
+
+/* ─── No iOS zoom on focus: 16px text in every field a finger can reach
+ *     (§228b item 2) ────────────────────────────────────────────────────
+ *
+ * The owner, on an iPhone: focusing "Leave your comment…" zooms the whole
+ * page in and scrolls it sideways, so he cannot see what he is commenting
+ * on. That is not a FreeFrame behaviour — iOS Safari auto-zooms any
+ * focused `input`, `textarea` or `select` whose COMPUTED font-size is
+ * below 16px, and the composer's textarea was `text-[13px]`. The same
+ * applies to the comment edit box, both search fields, every Fields-tab
+ * input, the command palette and the login and settings forms, all of
+ * which are 12-13px.
+ *
+ * ONE rule rather than a `hover-none:text-base` on every field: there are
+ * ~60 of them across the app, a new one is added most weeks, and the
+ * failure is silent — nothing looks wrong until a finger touches it on an
+ * iPhone. Scoped to `(hover: none) and (pointer: coarse)`, which is the
+ * narrowest honest description of "a device whose browser does this": a
+ * mouse never matches it, so every desktop pixel is untouched, and it is
+ * not a width breakpoint because a 1024px tablet zooms exactly like a
+ * 390px phone.
+ *
+ * `:root` is there for SPECIFICITY, not for scope. Tailwind's `text-[13px]`
+ * is a class selector (0,1,0) and a bare `input` is (0,0,1), so the
+ * utility would win every time; `:root input` is (0,1,1) and wins by one
+ * notch, without `!important` and without touching anything that sets a
+ * LARGER size (there is nothing above 16px on a field in this app — the
+ * biggest is the 2FA code input's `text-base`, which is exactly 16).
+ *
+ * The excluded types are the ones whose box is not text and whose rendered
+ * size can move with the font: a checkbox, a radio, a range thumb, a
+ * colour swatch, a file button. None of them triggers the zoom.
+ *
+ * NOT `maximum-scale=1` or `user-scalable=no`, which would also "fix" this:
+ * both disable pinch-zoom for everyone, which is an accessibility
+ * regression, and neither is needed once the text is 16px.
+ */
+@media (hover: none) and (pointer: coarse) {
+  :root input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']),
+  :root textarea,
+  :root select {
+    font-size: 16px;
+  }
+}
+
+/* ─── The card's rating must never cover its selection checkbox
+ *     (§228b item 1) ─────────────────────────────────────────────────────
+ *
+ * The owner, on an iPhone: "when one or multiple videos/photos are in view
+ * the star voting is so big it doesn't allow the multi-selector field to
+ * appear." §228 gave every EDITABLE star a 44px hit area, which turned the
+ * card's five-star chip into a ~220px bar; anchored at `top-2 right-2` on
+ * a 177px card it reached past the left edge and straight over the
+ * selection checkbox, which is the only way to start a multi-selection on
+ * a phone.
+ *
+ * Three things keep them apart, and all three are needed:
+ *  1. The card's rating is display-only on touch (`touchTargets={false}`
+ *     plus `readOnly`), so the chip is the pre-§228 ~112px again.
+ *  2. `pointer-events: none` on it under `hover: none`, so even where it
+ *     does overlap something it cannot take a tap — and a tap on a star
+ *     opens the asset, exactly as a tap anywhere else on the card does.
+ *  3. This rule, for the card sizes where even 108px does not fit beside
+ *     a 44px checkbox: the chip is hidden rather than drawn over the one
+ *     control the owner was reaching for. The threshold is measured in
+ *     Chromium against the real card, not guessed, and it is a CONTAINER
+ *     query because what decides is the width of one CARD — the same grid
+ *     holds 75px cards at XS and 346px cards at L.
+ *
+ *     The arithmetic: the chip is 108px wide and sits 8px from the right
+ *     edge, so its left edge is at `width - 116`. The checkbox's 44px hit
+ *     area reaches 40px in from the left edge. 116 + 40 = 156, so a card
+ *     narrower than that cannot hold both; 158 is that number with the
+ *     cushion rounded outward. Measured at 390px: XS cards are 75px and S
+ *     cards 105px (chip hidden), M cards 165px (chip shown, 9px of
+ *     clearance) and L cards 346px (190px of clearance).
+ *
+ * `hover: none` only: on a mouse this chip is unchanged, which is what
+ * keeps every desktop screenshot byte-identical.
+ */
+@media (hover: none) {
+  @container assetcard (max-width: 158px) {
+    .asset-card-rating { display: none; }
+  }
+}
+
+/* ─── A 36px floor for the viewer's compact phone rows (§228b item 3g) ────
+ *
+ * The owner asked for the phone viewer's bars to be "noticeably slimmer",
+ * which means the controls in them stop being 44px boxes. The policy this
+ * change states for him: the VISUAL control shrinks, the HIT AREA holds at
+ * 36x36 CSS px (WCAG 2.2 AA asks 24, Apple recommends 44), and the primary
+ * actions — send, play/pause, the card checkbox, Back — keep the full 44.
+ * 36 rather than 44 for the rest because a 44px hit area inside a 36px row
+ * necessarily overlaps its neighbour above or below, and an overlapping
+ * target is worse than a slightly smaller one: it means taps landing on
+ * the wrong control, which is how the §228 bar got into trouble.
+ *
+ * Three bands, for the same reason `.viewer-tap` has them:
+ *   < 768px            36px — the phone rows this change compacts.
+ *   >= 768px, touch    44px — a touch tablet keeps exactly what §228 gave
+ *                      it, which is what "the tablet is pixel-identical"
+ *                      means.
+ *   >= 768px, mouse    no floor at all — the desktop bar is untouched.
+ */
+.viewer-tap-36 {
+  min-height: 36px;
+  min-width: 36px;
+}
+
+@media (min-width: 768px) {
+  .viewer-tap-36 {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
+  .viewer-tap-36 {
+    min-height: 0;
+    min-width: 0;
+  }
 }

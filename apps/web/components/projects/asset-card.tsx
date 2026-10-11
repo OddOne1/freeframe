@@ -158,7 +158,12 @@ export function AssetCard({
               // visible (bg-black/40); the mark inside it was not, so on a
               // phone the one control that can start a multi-selection
               // read as an empty square.
-              'tap-target-44 absolute top-2 left-2 h-5 w-5 rounded flex items-center justify-center transition-all',
+              // §228b item 1 — `z-20`, above the rating chip's `z-10`:
+              // whatever else is painted over the top of the thumbnail,
+              // the checkbox is the element a tap at its own centre point
+              // lands on. Asserted with `elementFromPoint` in Chromium,
+              // which is the only thing that can actually answer it.
+              'tap-target-44 absolute top-2 left-2 z-20 h-5 w-5 rounded flex items-center justify-center transition-all',
               selected
                 ? 'bg-accent text-white'
                 : 'bg-black/40 text-transparent group-hover:text-white/60 hover-none:text-white/60 backdrop-blur-sm',
@@ -168,17 +173,34 @@ export function AssetCard({
           </button>
         )}
 
-        {/* Rating — top-right */}
+        {/* Rating — top-right.
+            §228b item 1 — on touch this is a DISPLAY, not a control: the
+            pre-§228 14px stars (`touchTargets={false}`) and
+            `pointer-events: none`, so nothing here can be tapped and a tap
+            on a star opens the asset exactly as a tap anywhere else on
+            the card does. The owner's report: five 44px stars came to a
+            220px bar over the top of the card and buried the selection
+            checkbox, which is the only way to start a multi-selection on
+            a phone. Voting on a phone is in the viewer's Fields tab
+            (§228 A3).
+
+            `hover-none:` and not a width breakpoint, and `z-10` under the
+            checkbox's `z-20`: on a mouse this chip is exactly what it was,
+            which is what keeps the desktop cards byte-identical — a
+            keyboard user on a desktop can still focus a star and vote with
+            Enter, which is the one route the media query deliberately
+            leaves open. */}
         {(canVote || (asset.rating_count ?? 0) > 0) && (
           <div
             onClick={(e) => e.stopPropagation()}
-            className="absolute top-2 right-2 inline-flex items-center gap-1 rounded bg-black/40 px-1.5 py-0.5 backdrop-blur-sm"
+            className="asset-card-rating absolute top-2 right-2 z-10 inline-flex items-center gap-1 rounded bg-black/40 px-1.5 py-0.5 backdrop-blur-sm hover-none:pointer-events-none"
           >
             <StarRating
               value={asset.my_rating ?? null}
               onChange={canVote ? (stars) => onVote?.(stars) : undefined}
               readOnly={!canVote}
               size="sm"
+              touchTargets={false}
             />
             {(asset.rating_count ?? 0) > 0 && (
               <span className="text-2xs font-medium text-white/80 tabular-nums">

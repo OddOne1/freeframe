@@ -459,25 +459,58 @@ export function VideoPlayer({
    * that can drift — the markup below is character-for-character what the
    * desktop row held before, which is what keeps that row pixel-identical.
    */
+  const timeReadout = (
+    <>
+      {timeFormat === "timecode" ? (
+        displayTime(currentTime)
+      ) : (
+        <>
+          {displayTime(currentTime)}{" "}
+          <span className="text-text-tertiary">/</span>{" "}
+          {displayTime(duration)}
+        </>
+      )}
+    </>
+  );
+
   const timecodeControl = (
     <div className="relative" ref={timeFormatRef}>
+      {compactControls ? (
+        /* §228b item 3c — "the timecode box (text and padding) smaller".
+           The BUTTON is the full 44px height of the compact row, so its
+           hit area overlaps neither the scrubber above nor the tab switch
+           below; the chip it paints is 28px tall with 12px text and half
+           the horizontal padding. Measured at 390px: 138x44 before,
+           100x28 painted after. */
+        <button
+          onClick={() => setTimeFormatOpen((p) => !p)}
+          data-testid="player-timecode"
+          aria-label="Time format"
+          className="flex h-11 items-center"
+        >
+          <span className="flex h-7 items-center gap-1 rounded-md bg-bg-tertiary px-2">
+            <span className="font-mono text-xs text-text-primary tabular-nums tracking-wide">
+              {timeReadout}
+            </span>
+            <ChevronUp
+              className={cn(
+                "h-3 w-3 text-text-tertiary transition-transform",
+                timeFormatOpen && "rotate-180",
+              )}
+            />
+          </span>
+        </button>
+      ) : (
       <button
         onClick={() => setTimeFormatOpen((p) => !p)}
+        data-testid="player-timecode"
         // §228 — `hover-none:h-11`: on a phone this is the one readout in
         // the compact row and it opens the format menu, so it has to be a
         // real target. A mouse sees the 28px control unchanged.
         className="flex items-center gap-1.5 rounded-md bg-bg-tertiary px-3 py-1 hover-none:h-11 hover:bg-bg-hover transition-colors"
       >
         <span className="font-mono text-sm text-text-primary tabular-nums tracking-wide">
-          {timeFormat === "timecode" ? (
-            displayTime(currentTime)
-          ) : (
-            <>
-              {displayTime(currentTime)}{" "}
-              <span className="text-text-tertiary">/</span>{" "}
-              {displayTime(duration)}
-            </>
-          )}
+          {timeReadout}
         </span>
         <ChevronUp
           className={cn(
@@ -486,6 +519,7 @@ export function VideoPlayer({
           )}
         />
       </button>
+      )}
       {timeFormatOpen && (
         <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-48 rounded-xl border border-white/10 bg-[#2a2a30] shadow-2xl py-1.5 animate-in fade-in zoom-in-95 duration-100">
           <div className="px-3 py-2 text-[11px] text-text-tertiary uppercase tracking-wider font-medium">
@@ -633,44 +667,56 @@ export function VideoPlayer({
       {compactControls ? (
         <div
           data-testid="video-transport-compact"
-          // h-14, not h-12: every control in it is a 44px touch target, and
-          // 44px does not fit in 48px with any padding at all.
-          className="flex items-center justify-between h-14 px-2 bg-bg-secondary/80 border-t border-border shrink-0"
+          // §228b item 3c — h-11 (44px), down from h-14 (56px), and the
+          // icons down from 20px to 16px. 44 and not the ~32 the owner
+          // asked for: play/pause is on the primary list and keeps 44x44,
+          // and a 44px hit area inside a 32px row has to take 6px from the
+          // scrubber above (itself a seek target) or from the tab switch
+          // below. Everything that CAN shrink has: the icons, the timecode
+          // chip (28px painted) and the row's padding.
+          className="flex items-center justify-between h-11 px-1 bg-bg-secondary/80 border-t border-border shrink-0"
         >
           <button
             onClick={togglePlay}
+            data-testid="player-play-pause"
+            // Primary: 44x44, unchanged.
             className="flex h-11 w-11 items-center justify-center rounded-md text-text-primary hover:bg-bg-hover transition-colors shrink-0"
             aria-label={isPlaying ? "Pause" : "Play"}
           >
             {isPlaying ? (
-              <Pause className="h-5 w-5" />
+              <Pause className="h-4 w-4" />
             ) : (
-              <Play className="h-5 w-5" />
+              <Play className="h-4 w-4" />
             )}
           </button>
 
           {timecodeControl}
 
           <div className="flex items-center shrink-0">
+            {/* 36x44, not 44x44: secondary controls on the 36px floor
+                (item 3g). They sit side by side, so the width is where the
+                room comes from and neither one's hit area reaches the
+                other's. */}
             <button
               onClick={() => setSettingsOpen(true)}
               aria-label="Player settings"
               aria-haspopup="dialog"
               aria-expanded={settingsOpen}
               data-testid="player-settings-button"
-              className="flex h-11 w-11 items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+              className="flex h-11 w-9 items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
             >
-              <Settings className="h-5 w-5" />
+              <Settings className="h-4 w-4" />
             </button>
             <button
               onClick={handleFullscreen}
-              className="flex h-11 w-11 items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+              data-testid="player-fullscreen"
+              className="flex h-11 w-9 items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
               aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
             >
               {isFullscreen ? (
-                <Minimize className="h-5 w-5" />
+                <Minimize className="h-4 w-4" />
               ) : (
-                <Maximize className="h-5 w-5" />
+                <Maximize className="h-4 w-4" />
               )}
             </button>
           </div>

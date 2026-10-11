@@ -1126,95 +1126,92 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
    * pixel-identical.
    */
 
-  /** The pill switch. On a phone it also carries a status chip, so the
-   *  file's state is readable without leaving the Comments tab. */
+  /**
+   * One tab. Two shapes, chosen by `isPhone`:
+   *
+   *  - at `md`+, exactly the markup §228 had — a `flex-1 py-1.5` button
+   *    that paints its own pill. Not touched, so the drawer is unchanged.
+   *  - on a phone (§228b item 3b), a 36px-tall button holding a 28px-tall
+   *    pill. The owner asked for "about half" of the row's 45px and
+   *    "28-32px of visual height"; 28 is what the PILL is, and 36 is what
+   *    the BUTTON is, because 36 is the hit-area floor item 3g sets and
+   *    anything smaller would have to steal those pixels from the
+   *    transport row above or the comment toolbar below.
+   */
+  const tabButton = (id: 'comments' | 'fields' | 'transcript', label: string) => {
+    const active = activeTab === id
+    if (isPhone) {
+      return (
+        <button
+          key={id}
+          data-testid={`viewer-tab-${id}`}
+          data-active={active ? 'true' : 'false'}
+          onClick={() => setActiveTab(id)}
+          className="flex h-9 flex-1 items-center justify-center"
+        >
+          <span
+            className={cn(
+              'flex h-7 w-full items-center justify-center rounded-md text-[13px] font-medium transition-all',
+              active
+                ? 'bg-bg-hover text-text-primary shadow-sm'
+                : 'text-text-tertiary',
+            )}
+          >
+            {label}
+          </span>
+        </button>
+      )
+    }
+    return (
+      <button
+        key={id}
+        data-testid={`viewer-tab-${id}`}
+        data-active={active ? 'true' : 'false'}
+        onClick={() => setActiveTab(id)}
+        className={cn(
+          'flex-1 py-1.5 text-[13px] font-medium rounded-md transition-all',
+          active
+            ? 'bg-bg-hover text-text-primary shadow-sm'
+            : 'text-text-tertiary hover:text-text-secondary',
+        )}
+      >
+        {label}
+      </button>
+    )
+  }
+
+  /** The pill switch.
+   *
+   *  §228b item 3b — on a phone the three tabs now take the FULL width and
+   *  the status chip is gone from this row. The chip was the advisor's way
+   *  of keeping the file's state readable from the Comments tab; the owner
+   *  decided against paying a row for it, and status is one tap away in
+   *  the Fields tab, where §228 put every other piece of file state. What
+   *  that buys: the row stops being a 44px band with a `flex-wrap` that
+   *  could become two bands at 320px, and becomes one 36px row that cannot
+   *  wrap at all. */
   const panelTabs = (
     <div
       data-testid="viewer-panel-tabs"
       className={cn(
         'shrink-0',
         isPhone
-          // Directly under the player's transport row, with the status chip
-          // beside it: one 44px-tall band, not two.
-          ? 'flex flex-wrap items-center gap-2 border-b border-border px-3 py-2'
+          ? 'flex items-center border-b border-border px-2'
           : 'px-4 pt-3 pb-2',
       )}
     >
       <div
         className={cn(
-          'flex items-center bg-bg-tertiary rounded-lg p-0.5',
-          // `basis-[200px]` is what decides whether the status chip fits
-          // beside the switch or takes a line under it: at 390px the two
-          // come to 339 of 366 and sit together; at 320px they come to 339
-          // of 296, the chip wraps, and the three pills get the full width
-          // rather than being squeezed to min-content (measured: "Fields"
-          // was 36px wide before this).
-          isPhone && 'min-w-0 flex-1 basis-[200px]',
+          'flex items-center bg-bg-tertiary rounded-lg',
+          // No padding of its own on a phone: the 36px button IS the row,
+          // and the 4px a `p-0.5` would add is 4px of the comment list.
+          isPhone ? 'w-full min-w-0' : 'p-0.5',
         )}
       >
-        <button
-          onClick={() => setActiveTab('comments')}
-          className={cn(
-            'flex-1 py-1.5 text-[13px] font-medium rounded-md transition-all',
-            // §228 — on a phone this switch is the only way between the
-            // two panes at that width, so it is a real target.
-            isPhone && 'min-h-11',
-            activeTab === 'comments'
-              ? 'bg-bg-hover text-text-primary shadow-sm'
-              : 'text-text-tertiary hover:text-text-secondary',
-          )}
-        >
-          Comments
-        </button>
-        <button
-          onClick={() => setActiveTab('fields')}
-          className={cn(
-            'flex-1 py-1.5 text-[13px] font-medium rounded-md transition-all',
-            // §228 — on a phone this switch is the only way between the
-            // two panes at that width, so it is a real target.
-            isPhone && 'min-h-11',
-            activeTab === 'fields'
-              ? 'bg-bg-hover text-text-primary shadow-sm'
-              : 'text-text-tertiary hover:text-text-secondary',
-          )}
-        >
-          Fields
-        </button>
-        {supportsTranscript && (
-          <button
-            onClick={() => setActiveTab('transcript')}
-            className={cn(
-              'flex-1 py-1.5 text-[13px] font-medium rounded-md transition-all',
-              isPhone && 'min-h-11',
-            // §228 — on a phone this switch is the only way between the
-            // two panes at that width, so it is a real target.
-            isPhone && 'min-h-11',
-              activeTab === 'transcript'
-                ? 'bg-bg-hover text-text-primary shadow-sm'
-                : 'text-text-tertiary hover:text-text-secondary',
-            )}
-          >
-            Transcript
-          </button>
-        )}
+        {tabButton('comments', 'Comments')}
+        {tabButton('fields', 'Fields')}
+        {supportsTranscript && tabButton('transcript', 'Transcript')}
       </div>
-      {/* §228 — the chip. The owner asked for version/status/voting to
-          move to the Fields tab, and they have; this is so that moving
-          them does not make the state invisible from the tab you are
-          actually reading. It is the SAME `StatusDropdown` with the same
-          handler and the same `canEditStatus` gating — not a read-only
-          copy — so a tap both shows the state and changes it. */}
-      {isPhone && activeTab === 'comments' && displayStatus && (
-        <div data-testid="viewer-comments-status-chip" className="ml-auto shrink-0">
-          <StatusDropdown
-            status={displayStatus}
-            onChange={canEditStatus ? handleStatusChange : undefined}
-            readOnly={!canEditStatus}
-            canArchive={canArchive}
-            className="h-8 px-2"
-          />
-        </div>
-      )}
     </div>
   )
 
@@ -1621,7 +1618,12 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
         // landed at x=1032 on a 768px touch tablet, i.e. 264px off-screen.
         // Wrapping changes nothing at 1280/1440, where everything fits on
         // one line; it is only the floor under the steps below.
-        className="viewer-topbar flex flex-wrap items-center justify-between gap-y-1 border-b border-border px-3 min-h-[48px] bg-bg-secondary shrink-0"
+        // §228b item 3a — `max-md:min-h-11 max-md:px-2`: below `md` this is
+        // ONE 44px row ([Back][name…][‹ n/N ›][⋯]) rather than a 48px row
+        // plus a second 44px row for the navigation, which is 92px of a
+        // 844px screen gone before the player starts. `min-h-11` and not a
+        // fixed height: Back keeps its 44px hit area and sets the row.
+        className="viewer-topbar flex flex-wrap items-center justify-between gap-y-1 border-b border-border px-3 max-md:px-2 min-h-[48px] max-md:min-h-11 bg-bg-secondary shrink-0"
       >
         {/* Left: leave this asset, then which asset it is */}
         <div className="vbar-left flex items-center gap-1 min-w-0 flex-1">
@@ -1646,7 +1648,11 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             href={`/projects/${asset.project_id}${asset.folder_id ? `?folder=${asset.folder_id}` : ''}`}
             aria-label="Back to folder"
             data-testid="viewer-back"
-            className="viewer-tap flex items-center justify-center gap-1.5 h-7 w-7 max-md:w-auto max-md:px-2.5 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
+            // §228b item 3g — Back is on the PRIMARY list and keeps 44x44
+            // (`viewer-tap`); only its horizontal padding gives, to buy
+            // width for the asset name now that the navigation shares the
+            // row.
+            className="viewer-tap flex items-center justify-center gap-1.5 h-7 w-7 max-md:w-auto max-md:px-2.5 max-md:pl-1.5 max-md:pr-2 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
           >
             <ArrowLeft className="h-4 w-4 shrink-0" />
             <span className="md:hidden text-[13px] font-medium">Back</span>
@@ -1666,25 +1672,45 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             data-testid="viewer-asset-nav"
             className="vbar-nav flex items-center gap-1 shrink-0"
           >
+            {/* §228b item 3g — `viewer-tap-36`, not `viewer-tap`: these
+                are not on the primary list, so below `md` they are 36px
+                hit areas rather than 44px ones. That is the 16px that lets
+                the navigation share the Back row at all. A 768px touch
+                tablet still gets 44, and a mouse still gets 28. */}
             <button
               onClick={() => prevAsset && navigateAsset(prevAsset.id)}
               disabled={!prevAsset}
               data-testid="viewer-prev-asset"
               aria-label="Previous asset"
-              className="viewer-tap flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              className="viewer-tap-36 flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               title="Previous asset (←)"
             >
               <ChevronLeft className="h-4 w-4" />
             </button>
-            <span className="text-xs text-text-secondary tabular-nums px-1">
-              {currentIndex + 1} of {totalAssets}
+            {/* §228b item 3a — "53 of 53" is wider than "53/53", and that
+                difference is what buys the asset name its width now that
+                the navigation shares the row. The owner's own sketch for
+                this row writes it `‹ n/N ›`.
+
+                The `md`+ branch is a FRAGMENT holding the same three
+                children the span had before — `{n}`, the literal " of ",
+                `{N}` — and not one interpolated string. Collapsing them
+                into a single text node moved the glyphs by a subpixel and
+                showed up as an 85px antialiasing diff in the 1280 and
+                1024 desktop screenshots, which is above the 32px
+                same-build noise floor. */}
+            <span
+              data-testid="viewer-asset-counter"
+              className="text-xs text-text-secondary tabular-nums px-1 max-md:px-0.5"
+            >
+              {isPhone ? `${currentIndex + 1}/${totalAssets}` : <>{currentIndex + 1} of {totalAssets}</>}
             </span>
             <button
               onClick={() => nextAsset && navigateAsset(nextAsset.id)}
               disabled={!nextAsset}
               data-testid="viewer-next-asset"
               aria-label="Next asset"
-              className="viewer-tap flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              className="viewer-tap-36 flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               title="Next asset (→)"
             >
               <ChevronRight className="h-4 w-4" />
@@ -1692,8 +1718,16 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
           </div>
         )}
 
-        {/* Right: version, share, sidebar toggle */}
-        <div className="vbar-right flex items-center gap-2 shrink-0 flex-1 justify-end">
+        {/* Right: version, share, sidebar toggle.
+            §228b item 3a — `max-md:flex-none`: below `md` this group holds
+            nothing but the 36px `⋯` button, and `flex-1` was handing it an
+            equal share of the bar's free space with the group holding the
+            asset NAME. Measured at 360px: the name had 49px with `flex-1`
+            and 131px without it, against the ~96px the owner set as the
+            condition for putting the navigation in this same row. At `md`+
+            the group is full of controls and keeps `flex-1`, so the
+            desktop bar is untouched. */}
+        <div className="vbar-right flex items-center gap-2 shrink-0 flex-1 max-md:flex-none justify-end">
           {/* Hidden file input for new version upload */}
           <input
             ref={versionFileInputRef}
@@ -1834,7 +1868,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                 data-testid="viewer-overflow-trigger"
                 aria-label="More actions"
                 title="More actions"
-                className="vbar-more viewer-tap shrink-0 items-center justify-center h-8 w-8 rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+                className="vbar-more viewer-tap-36 shrink-0 items-center justify-center h-8 w-8 rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
               >
                 <MoreHorizontal className="h-5 w-5" />
               </button>

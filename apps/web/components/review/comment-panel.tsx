@@ -28,6 +28,7 @@ import {
   Lock,
 } from "lucide-react";
 import { cn, formatTime, formatRelativeTime } from "@/lib/utils";
+import { useIsPhone } from "@/hooks/use-media-query";
 import { useReviewStore } from "@/stores/review-store";
 import type { CommentWithReplies } from "@/hooks/use-comments";
 
@@ -825,6 +826,27 @@ export function CommentPanel({
   const setFocusedCommentId = useReviewStore((s) => s.setFocusedCommentId);
   const setActiveAnnotation = useReviewStore((s) => s.setActiveAnnotation);
 
+  /**
+   * §228b item 3d — "the 'All comments' row closer to the top and the
+   * first comment closer to it: cut the space above that row and between
+   * it and the list by about half."
+   *
+   * Keyed on a PHONE, not on `hover: none`: a 768px touch tablet still
+   * renders this panel inside §228's drawer and has to stay
+   * pixel-identical, and `useIsPhone` is the one breakpoint this codebase
+   * already uses for "a different tree, not just different paint" (§228).
+   * It starts `false`, so the server and the first client render both emit
+   * the desktop spacing and nothing on a desktop hydrates differently.
+   */
+  const isPhone = useIsPhone();
+
+  /** The three icon buttons in the toolbar (filter, sort, search). On a
+   *  phone they drop from a 44px box to the 36px floor item 3g sets; they
+   *  sit side by side, so no hit area reaches its neighbour's. */
+  const toolbarIconCls = isPhone
+    ? "h-9 w-9 flex items-center justify-center rounded-md transition-colors"
+    : "h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md transition-colors";
+
   // Toolbar state
   const [visibility, setVisibility] = React.useState<CommentVisibility>("all");
   const [visOpen, setVisOpen] = React.useState(false);
@@ -937,12 +959,19 @@ export function CommentPanel({
   return (
     <div className={cn("flex flex-col flex-1 min-h-0", className)}>
       {/* ─── Toolbar ──────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-4 py-2.5 shrink-0">
+      <div
+        data-testid="comment-panel-toolbar"
+        className={cn(
+          "flex items-center justify-between shrink-0",
+          isPhone ? "px-3 py-0.5" : "px-4 py-2.5",
+        )}
+      >
         {/* Visibility dropdown */}
         <div className="relative">
           <button
             className={cn(
-              "flex items-center gap-1.5 text-[13px] font-medium transition-colors rounded-md px-2 py-1 hover-none:min-h-11",
+              "flex items-center gap-1.5 text-[13px] font-medium transition-colors rounded-md px-2 py-1",
+              isPhone ? "min-h-9" : "hover-none:min-h-11",
               visOpen
                 ? "bg-bg-tertiary text-text-primary"
                 : "text-text-secondary hover:text-text-primary",
@@ -1006,7 +1035,7 @@ export function CommentPanel({
           <div className="relative">
             <button
               className={cn(
-                "h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md transition-colors",
+                toolbarIconCls,
                 filterOpen || hasActiveFilters
                   ? "text-accent bg-accent/10"
                   : "text-text-tertiary hover:text-text-secondary hover:bg-bg-tertiary",
@@ -1109,7 +1138,7 @@ export function CommentPanel({
           <div className="relative">
             <button
               className={cn(
-                "h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md transition-colors",
+                toolbarIconCls,
                 sortOpen
                   ? "text-accent bg-accent/10"
                   : "text-text-tertiary hover:text-text-secondary hover:bg-bg-tertiary",
@@ -1163,7 +1192,7 @@ export function CommentPanel({
           {/* Search */}
           <button
             className={cn(
-              "h-7 w-7 hover-none:h-11 hover-none:w-11 flex items-center justify-center rounded-md transition-colors",
+              toolbarIconCls,
               searchOpen
                 ? "text-accent bg-accent/10"
                 : "text-text-tertiary hover:text-text-secondary hover:bg-bg-tertiary",
@@ -1238,7 +1267,15 @@ export function CommentPanel({
 
         {!isLoading &&
           sorted.map((comment, index) => (
-            <div key={comment.id} className="px-3 pt-2 first:pt-3">
+            <div
+              key={comment.id}
+              className={cn(
+                "px-3",
+                // item 3d — half the gap above the first comment, and
+                // between comments.
+                isPhone ? "pt-1" : "pt-2 first:pt-3",
+              )}
+            >
               <CommentItem
                 onSeekToTimecode={onSeekToTimecode}
                 onShowAnnotation={onShowAnnotation}

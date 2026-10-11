@@ -258,23 +258,47 @@ export function AudioPlayer({ asset, version, comments = [], className, compactC
    * The timecode readout and its format picker — one instance, rendered by
    * both the untouched desktop row and the compact phone row (§228).
    */
+  const timeReadout = (
+    timeFormat === 'timecode'
+      ? displayTime(currentTime)
+      : <>{displayTime(currentTime)} <span className="text-text-tertiary">/</span> {displayTime(duration)}</>
+  )
+
   const timecodeControl = (
         <div className="relative" ref={timeFormatRef}>
+          {compactControls ? (
+            /* §228b item 3c — the same compact chip the video player's
+               row uses: a 44px-tall hit area (the row's own height, so it
+               overlaps nothing above or below) around a 28px chip with
+               12px text. */
+            <button
+              onClick={() => setTimeFormatOpen((p) => !p)}
+              data-testid="player-timecode"
+              aria-label="Time format"
+              className="flex h-11 items-center"
+            >
+              <span className="flex h-7 items-center gap-1 rounded-md bg-bg-tertiary px-2">
+                <span className="font-mono text-xs text-text-primary tabular-nums tracking-wide">
+                  {timeReadout}
+                </span>
+                <ChevronUp className={cn('h-3 w-3 text-text-tertiary transition-transform', timeFormatOpen && 'rotate-180')} />
+              </span>
+            </button>
+          ) : (
           <button
             onClick={() => setTimeFormatOpen((p) => !p)}
+            data-testid="player-timecode"
             // §228 — `hover-none:h-11`: on a phone this is the one readout
             // in the compact row and it opens the format menu, so it has to
             // be a real target. A mouse sees the 28px control unchanged.
             className="flex items-center gap-1.5 rounded-md bg-bg-tertiary px-3 py-1 hover-none:h-11 hover:bg-bg-hover transition-colors"
           >
             <span className="font-mono text-sm text-text-primary tabular-nums tracking-wide">
-              {timeFormat === 'timecode'
-                ? displayTime(currentTime)
-                : <>{displayTime(currentTime)} <span className="text-text-tertiary">/</span> {displayTime(duration)}</>
-              }
+              {timeReadout}
             </span>
             <ChevronUp className={cn('h-3 w-3 text-text-tertiary transition-transform', timeFormatOpen && 'rotate-180')} />
           </button>
+          )}
           {timeFormatOpen && (
             <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-48 rounded-xl border border-white/10 bg-[#2a2a30] shadow-2xl py-1.5 animate-in fade-in zoom-in-95 duration-100">
               <div className="px-3 py-2 text-[11px] text-text-tertiary uppercase tracking-wider font-medium">
@@ -345,15 +369,17 @@ export function AudioPlayer({ asset, version, comments = [], className, compactC
       {compactControls ? (
         <div
           data-testid="audio-transport-compact"
-          className="flex items-center justify-between h-14 px-2 bg-bg-secondary/80 border-t border-border shrink-0"
+          // §228b item 3c — h-11 (44px) from h-14, 16px icons from 20px.
+          className="flex items-center justify-between h-11 px-1 bg-bg-secondary/80 border-t border-border shrink-0"
         >
           <button
             onClick={handlePlayPause}
             disabled={!isReady}
+            data-testid="player-play-pause"
             className="flex h-11 w-11 items-center justify-center rounded-md text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-40 shrink-0"
             aria-label={isPlaying ? 'Pause' : 'Play'}
           >
-            {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+            {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
           </button>
 
           {timecodeControl}
@@ -364,9 +390,9 @@ export function AudioPlayer({ asset, version, comments = [], className, compactC
             aria-haspopup="dialog"
             aria-expanded={settingsOpen}
             data-testid="player-settings-button"
-            className="flex h-11 w-11 items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
+            className="flex h-11 w-9 items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
           >
-            <Settings className="h-5 w-5" />
+            <Settings className="h-4 w-4" />
           </button>
         </div>
       ) : (

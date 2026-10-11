@@ -323,9 +323,35 @@ describe('§228 — version, status and rating on a phone', () => {
     await waitFor(() => expect(apiPost).toHaveBeenCalled())
   })
 
-  it('and the Comments tab still shows the state, without switching tabs', () => {
+  /** §228b item 3b — the chip is GONE from the tab row on a phone.
+   *
+   *  §228 put it there so the file's state stayed readable from the
+   *  Comments tab; the owner's answer after using it on an iPhone was that
+   *  the tab row is not worth 44px for a second copy of something the
+   *  Fields tab already holds. Status is one tap away, where version and
+   *  rating already live. */
+  it('and the status chip is NOT in the tab row any more (§228b item 3b)', () => {
     renderViewer()
-    expect(screen.getByTestId('viewer-comments-status-chip')).toHaveTextContent(/needs review/i)
+    expect(screen.queryByTestId('viewer-comments-status-chip')).toBeNull()
+    expect(screen.getByTestId('viewer-panel-tabs')).not.toHaveTextContent(/needs review/i)
+  })
+
+  it('but status is still editable, in the Fields tab (§228b item 3b)', async () => {
+    renderViewer()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: 'Fields' }))
+    const status = screen.getByTestId('viewer-fields-status')
+    expect(status).toHaveTextContent(/needs review/i)
+    openDropdown(within(status).getByRole('button'))
+    expect(await screen.findByText('Approved')).toBeTruthy()
+  })
+
+  it('and the tab row holds nothing but the three tabs (§228b item 3b)', () => {
+    renderViewer()
+    const tabs = screen.getByTestId('viewer-panel-tabs')
+    expect(within(tabs).getAllByRole('button').map((b) => b.textContent)).toEqual([
+      'Comments', 'Fields', 'Transcript',
+    ])
   })
 })
 
@@ -334,12 +360,14 @@ describe('§228 — the permission gating is the gating the top bar had', () => 
     role = 'viewer'
     asset = { ...asset, rating_count: 0, my_rating: null }
     renderViewer()
-    await waitFor(() => {
-      const chip = screen.getByTestId('viewer-comments-status-chip')
-      // readOnly renders a plain <Badge>, not a dropdown trigger.
-      expect(within(chip).queryByRole('button')).toBeNull()
-    })
     fireEvent.click(screen.getByRole('button', { name: 'Fields' }))
+    // §228b — read off the Fields tab's row rather than the tab-row chip,
+    // which item 3b removed. Same control, same gating; `readOnly` renders
+    // a plain <Badge>, not a dropdown trigger.
+    await waitFor(() => {
+      const status = screen.getByTestId('viewer-fields-status')
+      expect(within(status).queryByRole('button')).toBeNull()
+    })
     // canVote is false and nobody has voted, so the row is absent entirely
     // — exactly what the top bar did with `(canVote || ratingCount > 0)`.
     expect(screen.queryByTestId('viewer-fields-rating')).toBeNull()
@@ -546,5 +574,137 @@ describe('§228 — the LUT on a phone', () => {
     // `lutSidebarOpen` is false in this mock either way; what matters is
     // that the phone branch has no column slot at all.
     expect(screen.getByTestId('viewer-phone-layout').querySelector('[data-testid="lut-sidebar"]')).toBeNull()
+  })
+})
+
+// ─── 8. §228b item 3 — the phone viewer is compacted ────────────────────
+//
+// The owner's §228b note: "the viewer is still too tall on a phone".
+// What these pin is the SHAPE; the heights are measured in Chromium at
+// 390/360/320 (harness/measure.mjs) and are in the §228b report:
+//
+//                   §228   §228b
+//   top bar(s)        93      45   (two rows → one)
+//   transport row     56      44
+//   tab switch        65      37   (117 at 360/320, where the chip wrapped)
+//   "All comments"    64      40
+//   composer         123      99
+//   comment list     188     324   at 390x844, video
+
+describe('§228b item 3a — the top bar is one row on a phone', () => {
+  it('the navigation is in the same row as Back, not under it', async () => {
+    renderViewer()
+    const nav = await screen.findByTestId('viewer-asset-nav')
+    const bar = topBar()
+    const back = screen.getByTestId('viewer-back')
+    expect(bar.contains(nav)).toBe(true)
+    expect(bar.contains(back)).toBe(true)
+    // Still two separate controls in two separate groups — the §228 rule
+    // the owner's original complaint set, which one row must not undo.
+    expect(nav.contains(back)).toBe(false)
+  })
+
+  it('and the asset name stands between them', async () => {
+    renderViewer()
+    const nav = await screen.findByTestId('viewer-asset-nav')
+    const kids = Array.from(topBar().children)
+    const left = kids.find((k) => k.classList.contains('vbar-left'))!
+    expect(left.contains(screen.getByTestId('viewer-back'))).toBe(true)
+    expect(left.textContent).toContain('A010C030')
+    // Document order: Back + name, then the navigation.
+    expect(left.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('the counter is written `n/N`, which is what buys the name its width', async () => {
+    renderViewer()
+    expect(await screen.findByTestId('viewer-asset-counter')).toHaveTextContent('1/2')
+  })
+
+  it('and `n of N` again at md+', async () => {
+    setPhone(false)
+    renderViewer()
+    expect(await screen.findByTestId('viewer-asset-counter')).toHaveTextContent('1 of 2')
+  })
+
+  it('the bar itself is shorter below md', () => {
+    renderViewer()
+    expect(topBar().className).toContain('max-md:min-h-11')
+    expect(topBar().className).toContain('min-h-[48px]')
+  })
+
+  it('and the action group stops competing with the name for the free space', () => {
+    // `flex-1` on a group holding one 36px button took an equal share of
+    // the slack: the name had 49px at 360px with it and 124px without.
+    renderViewer()
+    const right = topBar().querySelector('.vbar-right') as HTMLElement
+    expect(right.className).toContain('max-md:flex-none')
+    expect(right.className).toContain('flex-1')
+  })
+})
+
+describe('§228b item 3g — which controls keep 44 and which drop to 36', () => {
+  it('Back keeps the full 44 (`viewer-tap`)', () => {
+    renderViewer()
+    const cls = screen.getByTestId('viewer-back').className
+    expect(cls).toMatch(/\bviewer-tap\b/)
+    expect(cls).not.toContain('viewer-tap-36')
+  })
+
+  it('prev, next and the ⋯ trigger drop to 36 (`viewer-tap-36`)', async () => {
+    renderViewer()
+    await screen.findByTestId('viewer-asset-nav')
+    for (const id of ['viewer-prev-asset', 'viewer-next-asset', 'viewer-overflow-trigger']) {
+      expect(screen.getByTestId(id).className, id).toContain('viewer-tap-36')
+    }
+  })
+})
+
+describe('§228b item 3b — the tab switch', () => {
+  it('is three tabs and nothing else', () => {
+    renderViewer()
+    const tabs = screen.getByTestId('viewer-panel-tabs')
+    expect(within(tabs).getAllByRole('button')).toHaveLength(3)
+    expect(screen.queryByTestId('viewer-comments-status-chip')).toBeNull()
+  })
+
+  it('each tab is a 36px button around a 28px pill', () => {
+    renderViewer()
+    for (const id of ['viewer-tab-comments', 'viewer-tab-fields', 'viewer-tab-transcript']) {
+      const b = screen.getByTestId(id)
+      expect(b.className, id).toContain('h-9')
+      const pill = b.firstElementChild as HTMLElement
+      expect(pill.className, id).toContain('h-7')
+    }
+  })
+
+  it('and they take the full width, with no `flex-wrap` left to make a second row', () => {
+    renderViewer()
+    const row = screen.getByTestId('viewer-panel-tabs')
+    expect(row.className).not.toContain('flex-wrap')
+    const pillRow = row.firstElementChild as HTMLElement
+    expect(pillRow.className).toContain('w-full')
+    // `basis-[200px]` was what let the status chip share the line; with the
+    // chip gone the tabs simply take the row.
+    expect(pillRow.className).not.toContain('basis-[200px]')
+  })
+
+  it('switching tabs still works', () => {
+    renderViewer()
+    expect(screen.getByTestId('viewer-tab-comments').dataset.active).toBe('true')
+    fireEvent.click(screen.getByTestId('viewer-tab-fields'))
+    expect(screen.getByTestId('viewer-tab-fields').dataset.active).toBe('true')
+    expect(screen.getByTestId('viewer-tab-comments').dataset.active).toBe('false')
+  })
+
+  it('and at md+ the switch is the §228 one, padding and all', () => {
+    setPhone(false)
+    renderViewer()
+    const row = screen.getByTestId('viewer-panel-tabs')
+    expect(row.className).toContain('px-4 pt-3 pb-2')
+    const tab = screen.getByTestId('viewer-tab-fields')
+    expect(tab.className).toContain('py-1.5')
+    expect(tab.className).not.toContain('h-9')
+    // The pill is painted by the button itself, as before — no inner span.
+    expect(tab.firstElementChild).toBeNull()
   })
 })
