@@ -110,7 +110,15 @@ vi.mock('@/hooks/use-comments', () => ({
 }))
 
 // jsdom has no codecs, no WebGL and no Fabric canvas.
-vi.mock('@/components/review/video-player', () => ({ VideoPlayer: () => <div data-testid="video-player" /> }))
+/** Records what the page hands the player, so the LUT wiring and the
+ *  compact-controls switch can be asserted without a codec. */
+const videoProps: Record<string, unknown> = {}
+vi.mock('@/components/review/video-player', () => ({
+  VideoPlayer: (props: Record<string, unknown>) => {
+    Object.assign(videoProps, props)
+    return <div data-testid="video-player" />
+  },
+}))
 vi.mock('@/components/review/audio-player', () => ({ AudioPlayer: () => <div data-testid="audio-player" /> }))
 vi.mock('@/components/review/image-viewer', () => ({ ImageViewer: () => <div data-testid="image-viewer" /> }))
 vi.mock('@/components/review/compare/compare-overlay', () => ({ CompareOverlay: () => null }))
@@ -197,6 +205,7 @@ beforeEach(() => {
   ] as AssetVersion[]
   lutState.selectedId = null
   role = 'owner'
+  for (const k of Object.keys(videoProps)) delete videoProps[k]
   // The REAL review store, not a mock of it: which version is current is
   // what decides whether a player mounts at all.
   useReviewStore.getState().setCurrentVersion(versions[1])
@@ -503,5 +512,39 @@ describe('§228 — the breakpoint hook', () => {
     // `false` means "not known to be a phone", so the EXISTING layout is
     // what the server emits and what the first client render agrees with.
     expect(screen.queryByTestId('viewer-phone-layout')).toBeNull()
+  })
+})
+
+// ─── 7. Where the LUT picker lives ──────────────────────────────────────
+
+describe('§228 — the LUT on a phone', () => {
+  it('is handed to the player as a sheet sub-page, not as a transport-row toggle', () => {
+    renderViewer()
+    // The desktop toggle opens a 260px column beside the frame, which on a
+    // 390px screen would leave the frame 130px wide.
+    expect(videoProps.lutPicker).toBeNull()
+    expect(videoProps.lutSheetContent).toBeTruthy()
+    expect(videoProps.compactControls).toBe(true)
+  })
+
+  it('and the sub-page is the real LutSidebar, driven by the same useLut state', () => {
+    renderViewer()
+    render(<>{videoProps.lutSheetContent as React.ReactNode}</>)
+    expect(screen.getByTestId('lut-sidebar')).toBeTruthy()
+  })
+
+  it('while at md+ it is the transport-row toggle and there is no sheet', () => {
+    setPhone(false)
+    renderViewer()
+    expect(videoProps.lutPicker).toBeTruthy()
+    expect(videoProps.lutSheetContent).toBeNull()
+    expect(videoProps.compactControls).toBe(false)
+  })
+
+  it('and the desktop LUT column is not mounted on a phone', () => {
+    renderViewer()
+    // `lutSidebarOpen` is false in this mock either way; what matters is
+    // that the phone branch has no column slot at all.
+    expect(screen.getByTestId('viewer-phone-layout').querySelector('[data-testid="lut-sidebar"]')).toBeNull()
   })
 })
