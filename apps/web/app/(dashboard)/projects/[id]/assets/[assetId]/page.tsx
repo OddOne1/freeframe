@@ -1463,7 +1463,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                   <button
                     type="button"
                     onClick={handleAddKeyword}
-                    className="h-7 hover-none:h-11 px-2 rounded-md border border-border text-2xs text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
+                    className="h-7 hover-none:h-11 px-2 hover-none:px-4 rounded-md border border-border text-2xs text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
                   >
                     Add
                   </button>

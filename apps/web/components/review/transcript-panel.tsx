@@ -64,7 +64,11 @@ function TranscriptionToggle({
         disabled={busy}
         aria-label="Transcribe this file"
         className={cn(
-          'relative h-5 w-9 shrink-0 rounded-full transition-colors outline-none disabled:opacity-50',
+          // §228 — `tap-target-44` (§227b): a 44px hit area around the
+          // 20x36 switch without changing a pixel of the switch itself,
+          // which is coloured and sits in a tight header row. The phone
+          // viewer makes this tab one of three panes you can land on.
+          'tap-target-44 relative h-5 w-9 shrink-0 rounded-full transition-colors outline-none disabled:opacity-50',
           enabled ? 'bg-accent' : 'bg-bg-tertiary',
         )}
       >
@@ -216,7 +220,9 @@ export function TranscriptPanel({
               key={seg.id}
               onClick={() => onSeek(seg.start)}
               className={cn(
-                'flex w-full gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors',
+                // A transcript segment is a seek target; on a phone it has
+                // to be one a finger can hit.
+                'flex w-full gap-2.5 rounded-md px-2 py-1.5 hover-none:min-h-11 text-left transition-colors',
                 isActive
                   ? 'bg-bg-hover'
                   : 'hover:bg-bg-hover/60',
