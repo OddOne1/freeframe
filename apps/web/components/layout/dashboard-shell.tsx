@@ -14,6 +14,7 @@ import {
   accountSetupOutstanding,
 } from "@/components/auth/account-setup-gate";
 import { useRightPanelViewportDefault } from "@/hooks/use-right-panel-viewport-default";
+import { useCompactLandscape } from "@/hooks/use-media-query";
 import { cn } from "@/lib/utils";
 
 /**
@@ -48,6 +49,28 @@ export function DashboardShell({
 
   // Hide header on asset viewer pages — the viewer has its own top bar
   const isAssetViewer = /\/projects\/[^/]+\/assets\/[^/]+/.test(pathname);
+
+  /**
+   * §228c item 6 — the viewer takes the WHOLE screen on a phone lying on
+   * its side, app chrome included.
+   *
+   * What is hidden, and only here: the project sidebar — the 52px rail at
+   * `md`+, which 844px of landscape qualifies for — and the 52px of left
+   * margin `main` reserves for it. That is 13% of the width of the screen
+   * spent on one column of icons, next to a two-column layout that needs
+   * every pixel of the other 87%.
+   *
+   * Nothing else goes: the `⋯` menu, the settings sheet, the command
+   * palette and the uploads panel are all still mounted and still open,
+   * and the viewer's own Back button — which is a real `<Link>` to the
+   * folder, not `router.back()` — is the way out, exactly as it is in
+   * portrait. The header is already not rendered on this route.
+   *
+   * Decided by the SAME hook the viewer's layout reads, so the rail and
+   * the two-column screen can never disagree about which mode this is.
+   */
+  const compactLandscape = useCompactLandscape();
+  const viewerOwnsScreen = isAssetViewer && compactLandscape;
 
   React.useEffect(() => {
     fetchUser();
@@ -103,12 +126,14 @@ export function DashboardShell({
     // visible area and its bottom — which is where §224 puts the phone tab
     // bar — sits under the browser chrome (§224).
     <div className="flex h-dvh overflow-hidden bg-bg-primary">
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed((c) => !c)}
-        mobileOpen={mobileNavOpen}
-        onMobileClose={() => setMobileNavOpen(false)}
-      />
+      {!viewerOwnsScreen && (
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed((c) => !c)}
+          mobileOpen={mobileNavOpen}
+          onMobileClose={() => setMobileNavOpen(false)}
+        />
+      )}
 
       {/* Main content area */}
       <main
@@ -118,7 +143,14 @@ export function DashboardShell({
           // there, so reserving a rail's width would leave a permanent
           // empty gutter. At `md`+ the margin is exactly what it was.
           "ml-0",
-          sidebarCollapsed ? "md:ml-[52px]" : "md:ml-[192px]",
+          // §228c item 6 — and no margin at all where the rail is not
+          // rendered: a reserved gutter with nothing in it is the same
+          // 52px of a 844px screen, just emptier.
+          viewerOwnsScreen
+            ? "md:ml-0"
+            : sidebarCollapsed
+              ? "md:ml-[52px]"
+              : "md:ml-[192px]",
         )}
       >
         {!isAssetViewer && (

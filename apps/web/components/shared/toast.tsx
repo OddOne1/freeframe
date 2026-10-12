@@ -87,6 +87,27 @@ export function useToast(): Omit<ToastContextValue, 'toasts'> & {
   )
 }
 
+/**
+ * `toast()` where a provider is not guaranteed (§228c item 5).
+ *
+ * `useToast` throws without one, which is right for a settings form that
+ * cannot report success any other way. The video player is the other case:
+ * it is mounted by the viewer, by the public share page, by both compare
+ * panes and by a dozen tests that render it on its own, and one warning
+ * about a LUT not being visible in the iPhone's fullscreen player is not
+ * worth making any of those a provider.
+ *
+ * Returns a no-op when there is no provider, so the caller never branches.
+ */
+export function useOptionalToast(): ToastContextValue['toast'] {
+  const ctx = React.useContext(ToastContext)
+  const toast = ctx?.toast
+  return React.useMemo(
+    () => toast ?? (() => {}),
+    [toast],
+  )
+}
+
 // ─── Visual config ────────────────────────────────────────────────────────────
 
 const TOAST_CONFIG: Record<

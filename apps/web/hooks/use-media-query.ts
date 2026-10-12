@@ -89,3 +89,77 @@ export const BELOW_MD = '(max-width: 767px)'
 export function useIsPhone(): boolean {
   return useMediaQuery(BELOW_MD)
 }
+
+/**
+ * A short touch screen in landscape — "compact landscape" (§228c item 6).
+ *
+ * The owner, with an iPhone on its side: "if flipped on the side the view
+ * is really messy." He is looking at the DESKTOP viewer: the phone layout
+ * is chosen by `BELOW_MD`, and an iPhone in landscape is 844px wide, so it
+ * gets the layout built for a 1440px monitor — the full desktop top bar,
+ * the project rail, the desktop transport row, and no comments panel at
+ * all, in 390px of height that Safari's own chrome then cuts to ~280.
+ *
+ * Width cannot describe this screen, which is why this query does not use
+ * it. What makes it different is a CAPABILITY and a SHAPE:
+ *
+ *   (hover: none) and (pointer: coarse)   a finger, not a mouse
+ *   (max-height: 500px)                   and almost no vertical room
+ *
+ * Why each half is needed, measured against the devices this has to get
+ * right:
+ *
+ *   iPhone 14 Pro landscape     844x390   matches — the owner's screen
+ *   iPhone 16 Pro Max landscape 932x430   matches
+ *   iPhone SE landscape         667x375   matches, and is BELOW md, so
+ *                                         the width breakpoint alone would
+ *                                         have given it the portrait
+ *                                         single-screen layout stacked
+ *                                         into 375px of height
+ *   small Android landscape     740x360   matches
+ *   foldable inner screen       884x1104  does NOT match (1104 > 500) —
+ *                                         a tablet-shaped screen that
+ *                                         happens to be touch-only
+ *   iPad landscape             1024x768   does NOT match
+ *   iPad Pro landscape         1180x820   does NOT match
+ *   phone portrait              390x844   does NOT match; `useIsPhone`
+ *                                         still owns that screen
+ *   any desktop window, however short     does NOT match (hover: hover)
+ *
+ * 500px rather than a round 400 or 600: the tallest phone landscape in the
+ * list is 430 and the shortest tablet landscape is 768, so the boundary
+ * sits in a 338px gap with nothing in it. `pointer: coarse` on its own
+ * would also catch a touch LAPTOP with a short window; a touch laptop has
+ * a mouse too and reports `hover: hover`.
+ */
+export const COMPACT_LANDSCAPE =
+  '(hover: none) and (pointer: coarse) and (max-height: 500px)'
+
+/** Is this a short touch screen in landscape? (§228c item 6) */
+export function useCompactLandscape(): boolean {
+  return useMediaQuery(COMPACT_LANDSCAPE)
+}
+
+/**
+ * Does the viewer's chrome take its PHONE shape? (§228c item 6)
+ *
+ * The one question every compact control on this page actually asks: a
+ * phone in portrait (`useIsPhone`) and a phone on its side (compact
+ * landscape) both want the one-row top bar, the slim transport, the 36px
+ * hit-area floor, the settings sheet instead of the LUT column, and
+ * version/status/rating in the Fields tab rather than in the bar.
+ *
+ * What they do NOT share is the LAYOUT — portrait stacks the panel under
+ * the player, landscape puts it beside it — so the layout branch asks
+ * `useCompactLandscape()` and `useIsPhone()` separately, and in that
+ * order: at 667x375 BOTH are true, and the landscape answer is the one
+ * that has to win.
+ *
+ * Starts `false`, like both hooks it reads, so the server and the first
+ * client render still emit the desktop tree.
+ */
+export function usePhoneChrome(): boolean {
+  const isPhone = useIsPhone()
+  const compactLandscape = useCompactLandscape()
+  return isPhone || compactLandscape
+}

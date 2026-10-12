@@ -28,7 +28,7 @@ import {
   Lock,
 } from "lucide-react";
 import { cn, formatTime, formatRelativeTime } from "@/lib/utils";
-import { useIsPhone } from "@/hooks/use-media-query";
+import { usePhoneChrome } from "@/hooks/use-media-query";
 import { useReviewStore } from "@/stores/review-store";
 import type { CommentWithReplies } from "@/hooks/use-comments";
 
@@ -837,8 +837,13 @@ export function CommentPanel({
    * already uses for "a different tree, not just different paint" (§228).
    * It starts `false`, so the server and the first client render both emit
    * the desktop spacing and nothing on a desktop hydrates differently.
+   *
+   * §228c item 6 — `usePhoneChrome`, not `useIsPhone`: a phone on its SIDE
+   * is 844px wide and would otherwise have taken the drawer's spacing in a
+   * column 300px wide. It is the same panel whichever way the phone is
+   * held, so it is the same question.
    */
-  const isPhone = useIsPhone();
+  const isPhone = usePhoneChrome();
 
   /** The three icon buttons in the toolbar (filter, sort, search). On a
    *  phone they drop from a 44px box to the 36px floor item 3g sets; they

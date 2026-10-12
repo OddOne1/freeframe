@@ -67,7 +67,12 @@ import {
 } from 'lucide-react'
 import Link from 'next/link'
 import { cn, formatRelativeTime, formatTime, resolveApiMediaUrl } from '@/lib/utils'
-import { viewportIsXlUp, useIsPhone } from '@/hooks/use-media-query'
+import {
+  viewportIsXlUp,
+  useIsPhone,
+  useCompactLandscape,
+  usePhoneChrome,
+} from '@/hooks/use-media-query'
 import { useKeyboardInset } from '@/hooks/use-keyboard-inset'
 import { useFormatBytes } from '@/hooks/use-byte-units'
 import { triggerBrowserDownload } from '@/lib/download'
@@ -106,7 +111,7 @@ function FieldRow({
   children: ReactNode
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60 last:border-0">
+    <div className="viewer-field-row flex items-center justify-between gap-3 py-2 border-b border-border/60 last:border-0">
       <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
         <Icon className="h-3.5 w-3.5" />
         {label}
@@ -187,7 +192,7 @@ function AssigneePicker({
       <DropdownMenu.Trigger asChild>
         <button
           type="button"
-          className="flex items-center gap-1.5 min-w-0 rounded-md border border-border h-7 hover-none:h-11 px-2 text-2xs text-text-primary hover:bg-bg-hover transition-colors"
+          className="viewer-field-control flex items-center gap-1.5 min-w-0 rounded-md border border-border h-7 hover-none:h-11 px-2 text-2xs text-text-primary hover:bg-bg-hover transition-colors"
         >
           {current ? (
             <>
@@ -373,28 +378,41 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
   /**
-   * §228 — the ONE JavaScript breakpoint on this page.
+   * §228 / §228c — the TWO JavaScript breakpoints on this page.
    *
-   * Below `md` the viewer is a single screen (player on top, the
-   * Comments/Fields switch under it, the list below, the input pinned to
-   * the bottom) rather than a player with a drawer over it. That is a
-   * different TREE, which no media query can express: the comments panel
-   * moves from a `fixed` overlay to a flex child, the version/status/
-   * rating controls move from the top bar into the Fields tab, and the
-   * player's extra controls move into a sheet that only exists there.
+   * `phoneChrome` is the compact, touch-first CHROME: the one-row top bar,
+   * the slim transport, version/status/rating inside the Fields tab, the
+   * LUT sheet instead of the LUT column. That is a different TREE, which
+   * no media query can express — the comments panel moves from a `fixed`
+   * overlay to a flex child, and controls move from one parent to another.
+   *
+   * `compactLandscape` is the LAYOUT: beside the player rather than under
+   * it. A phone on its side wants the same chrome as a phone upright and
+   * the opposite layout, so the two questions are asked separately.
+   *
+   * Order matters at 667x375 (an iPhone SE on its side), where BOTH
+   * `useIsPhone()` and `useCompactLandscape()` are true: the layout branch
+   * below tests `compactLandscape` FIRST, because stacking a player, a tab
+   * row, a list and a composer into 375px of height is the problem, not
+   * the answer.
    *
    * Everything that is merely about SIZE — which top-bar controls are
-   * labelled, which collapse into the `⋯` menu, when the asset nav takes a
-   * row of its own — is a container query in globals.css instead.
+   * labelled, which collapse into the `⋯` menu, how tall a Fields row is —
+   * is a container or media query in globals.css instead.
    *
-   * Starts `false` (= the existing desktop tree) and resolves in a layout
-   * effect before paint, so the server and the first client render agree.
+   * Both start `false` (= the existing desktop tree) and resolve in a
+   * layout effect before paint, so the server and the first client render
+   * agree.
    */
-  const isPhone = useIsPhone()
+  const compactLandscape = useCompactLandscape()
+  const phoneChrome = usePhoneChrome()
+  /** The §228 single-screen STACK: a phone held upright. A phone on its
+   *  side is `compactLandscape` instead, and gets the two-column screen. */
+  const portraitPhone = useIsPhone() && !compactLandscape
 
   // The band of the layout viewport that iOS Safari's keyboard covers;
   // 0 everywhere else. Only read on a phone, where the input is pinned.
-  const keyboardInset = useKeyboardInset(isPhone)
+  const keyboardInset = useKeyboardInset(phoneChrome)
 
   // One ShareDialog instance, opened either by its own inline trigger or by
   // the `⋯` menu — not two mounted copies of the share panel.
@@ -515,7 +533,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   // frame, which on a 390px screen leaves the frame 130px wide. There the
   // same list is a sub-page of the player's settings sheet instead
   // (`lutSheetContent` below) — same component, same `useLut` state.
-  const lutPicker = lut.supported && asset && !isPhone ? (
+  const lutPicker = lut.supported && asset && !phoneChrome ? (
     <LutSidebarToggle
       open={lutSidebarOpen}
       onToggle={toggleLutSidebar}
@@ -525,7 +543,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     />
   ) : null
 
-  const lutSheetContent = lut.supported && asset && isPhone ? (
+  const lutSheetContent = lut.supported && asset && phoneChrome ? (
     <LutSidebar
       luts={lut.luts}
       selectedId={lut.selectedId}
@@ -1062,7 +1080,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             captionsLanguage={transcript?.language ?? null}
             cube={lut.cube}
             lutPicker={lutPicker}
-            compactControls={isPhone}
+            compactControls={phoneChrome}
             lutSheetContent={lutSheetContent}
             lutLabel={lutSelectedName}
             overlay={
@@ -1084,7 +1102,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             version={currentVersion}
             comments={comments}
             className="flex-1"
-            compactControls={isPhone}
+            compactControls={phoneChrome}
           />
         )
       case 'image':
@@ -1127,7 +1145,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
    */
 
   /**
-   * One tab. Two shapes, chosen by `isPhone`:
+   * One tab. Two shapes, chosen by `phoneChrome`:
    *
    *  - at `md`+, exactly the markup §228 had — a `flex-1 py-1.5` button
    *    that paints its own pill. Not touched, so the drawer is unchanged.
@@ -1140,7 +1158,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
    */
   const tabButton = (id: 'comments' | 'fields' | 'transcript', label: string) => {
     const active = activeTab === id
-    if (isPhone) {
+    if (phoneChrome) {
       return (
         <button
           key={id}
@@ -1195,17 +1213,46 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
       data-testid="viewer-panel-tabs"
       className={cn(
         'shrink-0',
-        isPhone
-          ? 'flex items-center border-b border-border px-2'
+        phoneChrome
+          // §228c item 1 — `mt-1 mb-0.5`. The owner: "the Comment section
+          // as a whole is now overlaying the buttons above slightly. A few
+          // pixels down are needed." Measured at 390x844 before this
+          // change, the five rects in this column touched EXACTLY: the
+          // transport row ended at y=344.4 and this row started at y=344.4,
+          // so the pill strip's own background sat against the transport
+          // row's bottom border with nothing between them, and the comment
+          // toolbar sat against this row's border in turn. Nothing
+          // overlapped in the arithmetic sense — §228b left no negative
+          // margin — but three solid bands with zero separation read as one
+          // band lying on another, which is what he saw.
+          //
+          // 4px above and 2px below, 6px in all, which is the budget this
+          // item allows against the 33px §228b won back; it comes out of
+          // the comment list (the player is `shrink-0` and keeps its
+          // aspect ratio), so the list goes 324 -> 318 at 390x844.
+          ? 'flex items-center border-b border-border px-2 mt-1 mb-0.5'
           : 'px-4 pt-3 pb-2',
       )}
     >
       <div
+        data-testid="viewer-tab-strip"
         className={cn(
           'flex items-center bg-bg-tertiary rounded-lg',
-          // No padding of its own on a phone: the 36px button IS the row,
-          // and the 4px a `p-0.5` would add is 4px of the comment list.
-          isPhone ? 'w-full min-w-0' : 'p-0.5',
+          // §228c item 2 — `px-0.5`, which is the whole fix for "if the
+          // buttons are selected left or right, the selection goes outside
+          // the overall button area". The strip is `rounded-lg` (8px) and
+          // the active pill `rounded-md` (6px); with no padding the first
+          // and last pill's edges were flush with the strip's (measured:
+          // both at x=8 and x=382 against a strip of 8→382), so at the
+          // four corners a 6px arc sat inside an 8px arc and the pill's
+          // square shoulders painted over the strip's rounding.
+          //
+          // HORIZONTAL padding only, so this costs no height: the pill is
+          // already inset 4px top and bottom (a 28px pill centred in a
+          // 36px button). 2px of inset against an 8px container radius is
+          // exactly the 6px the pill already has — container radius minus
+          // inset — so nothing else has to change.
+          phoneChrome ? 'w-full min-w-0 px-0.5' : 'p-0.5',
         )}
       >
         {tabButton('comments', 'Comments')}
@@ -1240,9 +1287,9 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
           toggleBusy={transcriptionBusy}
         />
       ) : (
-        <div className="flex-1 overflow-y-auto p-4">
+        <div data-testid="viewer-fields" className="viewer-fields flex-1 overflow-y-auto p-4">
           <div>
-            <div className="pb-3 mb-1 border-b border-border/60">
+            <div data-testid="viewer-fields-name" className="viewer-fields-name pb-3 mb-1 border-b border-border/60">
               <div className="flex items-center gap-2">
                 <FileText className="h-3.5 w-3.5 text-text-tertiary shrink-0" />
                 <EditableAssetName
@@ -1267,24 +1314,24 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                 `canArchive`) — no copies and no second piece of state. The
                 equivalent rows further down are rendered only when this
                 block is not, so each control exists exactly once. */}
-            {isPhone && (
+            {phoneChrome && (
               <div data-testid="viewer-fields-phone-controls">
                 {versions.length > 0 && (
                   <div
                     data-testid="viewer-fields-version"
-                    className="flex items-center justify-between gap-3 py-2 border-b border-border/60"
+                    className="viewer-field-row flex items-center justify-between gap-3 py-2 border-b border-border/60"
                   >
                     <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
                       <GitBranch className="h-3.5 w-3.5" />
                       Version
                     </span>
-                    <VersionSwitcher versions={versions} />
+                    <VersionSwitcher versions={versions} className="viewer-field-version" />
                   </div>
                 )}
                 {displayStatus && (
                   <div
                     data-testid="viewer-fields-status"
-                    className="flex items-center justify-between gap-3 py-2 border-b border-border/60"
+                    className="viewer-field-row flex items-center justify-between gap-3 py-2 border-b border-border/60"
                   >
                     <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
                       <CircleDot className="h-3.5 w-3.5" />
@@ -1295,14 +1342,14 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                       onChange={canEditStatus ? handleStatusChange : undefined}
                       readOnly={!canEditStatus}
                       canArchive={canArchive}
-                      className="h-8 px-2"
+                      className="viewer-field-control h-8 px-2"
                     />
                   </div>
                 )}
                 {(canVote || ratingCount > 0) && (
                   <div
                     data-testid="viewer-fields-rating"
-                    className="py-2 border-b border-border/60"
+                    className="viewer-field-row py-2 border-b border-border/60"
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
@@ -1315,6 +1362,9 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                           onChange={canVote ? handleRate : undefined}
                           readOnly={!canVote}
                           size="md"
+                          // §228c item 3 — the hook the phone rule in
+                          // globals.css shrinks these five targets with.
+                          className="viewer-stars"
                         />
                         {ratingCount > 0 && (
                           <span className="text-xs text-text-secondary tabular-nums">{avgRating?.toFixed(1)}</span>
@@ -1332,7 +1382,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
 
             {/* Status — same control as the toolbar, compact.
                 §228 — not rendered on a phone; the block above is. */}
-            {!isPhone && (
+            {!phoneChrome && (
             <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60">
               <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
               <CircleDot className="h-3.5 w-3.5" />
@@ -1355,7 +1405,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               see their own vote (canVote) but never the aggregate,
               which stays gated behind ratingCount from the backend.
               §228 — not on a phone; the block at the top of this tab is. */}
-            {!isPhone && (canVote || ratingCount > 0) && (
+            {!phoneChrome && (canVote || ratingCount > 0) && (
               <div className="py-2 border-b border-border/60">
                 <div className="flex items-center justify-between gap-3">
                   <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
@@ -1379,7 +1429,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             )}
 
             {/* Assignee */}
-            <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60">
+            <div data-testid="viewer-fields-assignee" className="viewer-field-row flex items-center justify-between gap-3 py-2 border-b border-border/60">
               <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
                 <UserIcon className="h-3.5 w-3.5" />
                 Assignee
@@ -1393,7 +1443,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             </div>
 
             {/* Due date */}
-            <div className="flex items-center justify-between gap-3 py-2 border-b border-border/60">
+            <div data-testid="viewer-fields-due" className="viewer-field-row flex items-center justify-between gap-3 py-2 border-b border-border/60">
               <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0">
                 <CalendarDays className="h-3.5 w-3.5" />
                 Due Date
@@ -1403,7 +1453,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                   type="date"
                   value={displayDueDate ? displayDueDate.slice(0, 10) : ''}
                   onChange={(e) => handleDueDateChange(e.target.value)}
-                  className="h-7 hover-none:h-11 rounded-md border border-border bg-transparent px-2 text-2xs text-text-primary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
+                  className="viewer-field-control h-7 hover-none:h-11 rounded-md border border-border bg-transparent px-2 text-2xs text-text-primary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
                 />
               ) : (
                 <span className="text-xs text-text-primary font-medium">
@@ -1413,7 +1463,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             </div>
 
             {/* Keywords */}
-            <div className="py-2 border-b border-border/60">
+            <div data-testid="viewer-fields-keywords" className="viewer-field-row py-2 border-b border-border/60">
               <span className="flex items-center gap-2 text-xs text-text-tertiary shrink-0 mb-1.5">
                 <Tag className="h-3.5 w-3.5" />
                 Keywords
@@ -1455,12 +1505,12 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                       }
                     }}
                     placeholder="Add keyword..."
-                    className="flex h-7 hover-none:h-11 flex-1 min-w-0 rounded-md border border-border bg-transparent px-2 text-2xs text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
+                    className="viewer-field-control flex h-7 hover-none:h-11 flex-1 min-w-0 rounded-md border border-border bg-transparent px-2 text-2xs text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus transition-colors"
                   />
                   <button
                     type="button"
                     onClick={handleAddKeyword}
-                    className="h-7 hover-none:h-11 px-2 hover-none:px-4 rounded-md border border-border text-2xs text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
+                    className="viewer-field-control h-7 hover-none:h-11 px-2 hover-none:px-4 rounded-md border border-border text-2xs text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
                   >
                     Add
                   </button>
@@ -1471,7 +1521,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             {/* §228 — the real VersionSwitcher is at the top of this tab
                 on a phone, so this read-only duplicate is not rendered
                 there: two version controls in one list read as a bug. */}
-            {!isPhone && currentVersion && (
+            {!phoneChrome && currentVersion && (
               <FieldRow icon={GitBranch} label="Version">v{currentVersion.version_number}</FieldRow>
             )}
             {currentVersion && (
@@ -1509,7 +1559,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                   <button
                     type="button"
                     onClick={() => setShowAllFields((v) => !v)}
-                    className="w-full flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5 hover-none:min-h-11 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors"
+                    className="viewer-field-control w-full flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5 hover-none:min-h-11 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors"
                   >
                     <span>{showAllFields ? 'Hide' : 'Show'} all fields</span>
                     <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', showAllFields && 'rotate-180')} />
@@ -1655,7 +1705,10 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             className="viewer-tap flex items-center justify-center gap-1.5 h-7 w-7 max-md:w-auto max-md:px-2.5 max-md:pl-1.5 max-md:pr-2 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors shrink-0"
           >
             <ArrowLeft className="h-4 w-4 shrink-0" />
-            <span className="md:hidden text-[13px] font-medium">Back</span>
+            {/* §228c item 6 — `vbar-back-label` is the hook that brings
+                the word back at 844px wide on a phone lying on its side,
+                where `md:hidden` would have hidden it (globals.css). */}
+            <span className="vbar-back-label md:hidden text-[13px] font-medium">Back</span>
           </Link>
 
           {/* Asset name only */}
@@ -1703,7 +1756,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               data-testid="viewer-asset-counter"
               className="text-xs text-text-secondary tabular-nums px-1 max-md:px-0.5"
             >
-              {isPhone ? `${currentIndex + 1}/${totalAssets}` : <>{currentIndex + 1} of {totalAssets}</>}
+              {phoneChrome ? `${currentIndex + 1}/${totalAssets}` : <>{currentIndex + 1} of {totalAssets}</>}
             </span>
             <button
               onClick={() => nextAsset && navigateAsset(nextAsset.id)}
@@ -1747,7 +1800,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               tab instead (same components, same handlers, same gating):
               "the buttons up top for version, draft, voting etc. should
               move to the comments/fields tab in mobile view". */}
-          {!isPhone && <VersionSwitcher versions={versions} />}
+          {!phoneChrome && <VersionSwitcher versions={versions} />}
           {asset && canCompare(asset.asset_type, versions) && (
             <button
               onClick={openCompare}
@@ -1766,7 +1819,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             <Upload className="h-3.5 w-3.5" />
             <span className="vbar-label">New Version</span>
           </button>
-          {!isPhone && displayStatus && (
+          {!phoneChrome && displayStatus && (
             <StatusDropdown
               status={displayStatus}
               onChange={canEditStatus ? handleStatusChange : undefined}
@@ -1779,7 +1832,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               }
             />
           )}
-          {!isPhone && (canVote || ratingCount > 0) && (
+          {!phoneChrome && (canVote || ratingCount > 0) && (
             <div className="inline-flex items-center gap-1.5 rounded-md px-2.5 h-8 border border-border">
               <StarRating
                 value={myRating}
@@ -1936,7 +1989,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               off-screen on a phone with the panel unopenable. Not rendered
               at all below `md`, where there is no drawer to toggle — the
               panel is simply the lower half of the screen. */}
-          {!isPhone && (
+          {!phoneChrome && (
             <button
               onClick={() => setSidebarOpen((p) => !p)}
               data-testid="viewer-panel-toggle"
@@ -1968,7 +2021,76 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
           canComment={canComment}
         />
       ) : (
-        isPhone ? (
+        compactLandscape ? (
+        /* ─── A phone on its side: two columns ──────────────────────
+           §228c item 6. The owner: "if flipped on the side the view is
+           really messy. I don't know how to fix this though."
+
+           What he was looking at is the DESKTOP viewer: 844px wide is
+           above `md`, so landscape fell through to the layout built for a
+           monitor — and that layout spends height it does not have. In
+           390px (≈280 once Safari's own bars are drawn) it gave the video
+           ~320px of letterbox, the full desktop transport row, and no
+           comments panel at all.
+
+           Landscape has the opposite problem from portrait: plenty of
+           width, almost no height. So the panel goes BESIDE the player
+           rather than under it, and nothing stacks:
+
+             │ ← Back   name       ‹ 26/53 ›   ⋯ │  ≤ 40px
+             │                      │               │
+             │   player, 100% of     │  Comments │   │  tabs
+             │   what is left        │  …list…       │
+             │  [▶ 0:04 ⚙ ⛶]          │  [composer]    │
+
+           No drawer, no toggle, no bottom sheet: both columns are always
+           on screen, which is the whole point of using the width.
+
+           `min-w-[300px]` on the panel and `flex-1` on the player, not a
+           40/60 split: at 667px (an iPhone SE on its side) 40% is 267px,
+           which is too narrow for a comment with an avatar and a
+           timecode. 300 is measured against this app's own comment row.
+
+           `env(safe-area-inset-*)`: in landscape the notch and the home
+           indicator are on the LEFT and RIGHT edges, exactly where this
+           layout puts the Back button and the composer. UNTESTED —
+           Chromium's emulation reports 0 for every inset (see the report).
+        */
+        <div
+          data-testid="viewer-landscape-layout"
+          data-keyboard={keyboardInset > 0 ? 'open' : 'closed'}
+          className="viewer-landscape flex flex-1 overflow-hidden min-h-0"
+        >
+          <div
+            data-testid="viewer-landscape-media"
+            className="flex min-w-0 flex-1 flex-col bg-bg-primary overflow-hidden"
+          >
+            {renderMediaViewer()}
+          </div>
+
+          {/* The panel. `w-[40%]` with a 300px floor, and `shrink-0` so a
+              long comment cannot squeeze it — or the player — anywhere. */}
+          <div
+            data-testid="viewer-landscape-panel"
+            className="flex w-[40%] min-w-[300px] shrink-0 flex-col overflow-hidden border-l border-border bg-bg-secondary"
+            // The keyboard covers most of 390px. The panel keeps the
+            // composer at its own bottom edge and lets the LIST scroll in
+            // what is left, rather than pushing the composer off-screen.
+            style={
+              keyboardInset > 0
+                ? ({ paddingBottom: keyboardInset } as CSSProperties)
+                : undefined
+            }
+          >
+            {panelTabs}
+            <div data-testid="viewer-landscape-body" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              {panelBody}
+            </div>
+            {commentInputNode}
+          </div>
+        </div>
+      ) : (
+        portraitPhone ? (
         /* ─── Phones: one screen, no drawer ──────────────────────────────
            §228 A1, the layout the owner asked for by name: "show the
            comments and fields tabs underneath the player like Frame.io
@@ -2011,7 +2133,10 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
 
           {panelTabs}
 
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div
+            data-testid="viewer-phone-panel"
+            className="flex min-h-0 flex-1 flex-col overflow-hidden"
+          >
             {panelBody}
           </div>
 
@@ -2074,6 +2199,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
           </div>
         )}
       </div>
+      )
       )
       )}
     </div>

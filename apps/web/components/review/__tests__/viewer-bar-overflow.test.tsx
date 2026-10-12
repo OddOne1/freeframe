@@ -182,7 +182,9 @@ describe('§228 — the panel toggle is never in the overflow menu', () => {
     )
     expect(menu).not.toContain('Toggle sidebar')
     expect(menu).not.toContain('Columns2')
-    expect(PAGE).toMatch(/\{!isPhone && \(\s*<button\s+onClick=\{\(\) => setSidebarOpen/)
+    // §228c — the flag is `phoneChrome` now (`useIsPhone` OR a phone on
+    // its side); the toggle is absent in both, for the same reason.
+    expect(PAGE).toMatch(/\{!phoneChrome && \(\s*<button\s+onClick=\{\(\) => setSidebarOpen/)
   })
 
   it('and it carries no `vbar-inline`, so no step can hide it', () => {
@@ -227,8 +229,11 @@ describe('§228b item 3g — a 36px floor beside the 44px one', () => {
     expect(CSS).toMatch(/\.viewer-tap-36 \{\s*min-height: 36px;\s*min-width: 36px;\s*\}/)
     // A 768px touch tablet keeps exactly what §228 gave it, which is what
     // item 3i's "the tablet is pixel-identical" means for these controls.
+    // §228c item 6 — `and (min-height: 501px)`: a phone on its side is
+    // also 768px+ wide, and it keeps the 36px floor, because its bar is
+    // 40px tall.
     expect(CSS).toMatch(
-      /@media \(min-width: 768px\) \{\s*\.viewer-tap-36 \{\s*min-height: 44px;\s*min-width: 44px;/,
+      /@media \(min-width: 768px\) and \(min-height: 501px\) \{\s*\.viewer-tap-36 \{\s*min-height: 44px;\s*min-width: 44px;/,
     )
     expect(CSS).toMatch(
       /@media \(min-width: 768px\) and \(hover: hover\) and \(pointer: fine\) \{\s*\.viewer-tap-36 \{\s*min-height: 0;\s*min-width: 0;/,

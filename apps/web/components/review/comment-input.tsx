@@ -24,7 +24,7 @@ import { resolveSubmitTimecode } from "@/lib/resolve-submit-timecode";
 import { useReviewStore } from "@/stores/review-store";
 import { useReview } from "./review-provider";
 import { useDrawing } from "@/hooks/use-drawing";
-import { useIsPhone } from "@/hooks/use-media-query";
+import { usePhoneChrome } from "@/hooks/use-media-query";
 import { api } from "@/lib/api";
 import type { User } from "@/types";
 
@@ -234,10 +234,13 @@ export function CommentInput({
    *
    * A phone, not `hover: none`: this component also renders inside §228's
    * drawer at 768px+, where a touch tablet has to stay pixel-identical.
-   * `useIsPhone` starts `false`, so the server renders the desktop
+   * `usePhoneChrome` starts `false`, so the server renders the desktop
    * composer and so does the first client render.
+   *
+   * §228c item 6 — and a phone on its SIDE gets the compact composer too,
+   * which `useIsPhone` alone would have missed: landscape is 844px wide.
    */
-  const isPhone = useIsPhone();
+  const isPhone = usePhoneChrome();
 
   // §107 — compare mode drives all three of these per-pane. Each falls back to
   // the global store when its prop is absent, which is the normal viewer, so

@@ -28,6 +28,7 @@ import { useReview } from "./review-provider";
 import { ProgressBar } from "./progress-bar";
 import { LutCanvas } from "./lut-canvas";
 import { PlayerSettingsSheet } from "./player-settings-sheet";
+import { useOptionalToast } from "@/components/shared/toast";
 import type { ParsedCube } from "@/lib/lut/cube-parser";
 import type { Comment } from "@/types";
 
@@ -327,6 +328,7 @@ export function VideoPlayer({
     currentQuality,
     isLoading,
     isFullscreen,
+    fullscreenMode,
     error,
     pause,
     togglePlay,
@@ -399,11 +401,31 @@ export function VideoPlayer({
     }
   }, [togglePlay, isDrawingMode]);
 
+  /**
+   * §228c item 5 — fullscreen, and what it costs on an iPhone.
+   *
+   * `toggleFullscreen` returns the API it used. 'video-native' is the
+   * iPhone: iOS takes the <video> into its OWN player, which draws none of
+   * this component — no transport row, no timestamped comments, no
+   * annotation overlay, and no graded preview, because the LUT is a WebGL
+   * canvas painted OVER the video and the native player shows the video.
+   *
+   * With HLS that is the only part that changes: hls.js stays attached to
+   * the same element, so the same stream keeps playing from the same
+   * position at the same quality, and coming back out of the native player
+   * returns to our controls with the playhead where iOS left it.
+   *
+   * So rather than silently dropping the grade, say so. Only when a LUT is
+   * actually selected (`cube`), and only on the path where it is true.
+   */
+  const toast = useOptionalToast();
   const handleFullscreen = useCallback(() => {
-    if (containerRef.current) {
-      toggleFullscreen(containerRef.current);
+    if (!containerRef.current) return;
+    const used = toggleFullscreen(containerRef.current);
+    if (used === "video-native" && cube) {
+      toast("LUT not shown in iPhone fullscreen", "info", 4000);
     }
-  }, [toggleFullscreen]);
+  }, [toggleFullscreen, cube, toast]);
 
   // The canvas needs the video's intrinsic size, and reading videoRef in
   // JSX would never re-render when it populates. Tracked in state instead,
@@ -561,7 +583,13 @@ export function VideoPlayer({
       ref={containerRef}
       className={cn(
         "flex flex-col h-full w-full",
-        isFullscreen && "fixed inset-0 z-50",
+        // §228c item 5 — NOT on the iPhone's path. `fixed inset-0 z-50`
+        // assumes THIS element is the one the browser blew up to fill the
+        // screen; on iOS it never is — the <video> is, inside a player
+        // drawn by the system on top of the page. Pinning this container
+        // over the whole page while that happens leaves it covering the
+        // viewer underneath once iOS's player closes over it.
+        isFullscreen && fullscreenMode !== "video-native" && "fixed inset-0 z-50",
         className,
       )}
     >
@@ -707,18 +735,23 @@ export function VideoPlayer({
             >
               <Settings className="h-4 w-4" />
             </button>
-            <button
-              onClick={handleFullscreen}
-              data-testid="player-fullscreen"
-              className="flex h-11 w-9 items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
-              aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-            >
-              {isFullscreen ? (
-                <Minimize className="h-4 w-4" />
-              ) : (
-                <Maximize className="h-4 w-4" />
-              )}
-            </button>
+            {/* §228c item 5 — not drawn at all where there is no API to
+                call. A button that cannot work is worse than a missing
+                one: the owner pressed this one and nothing happened. */}
+            {fullscreenMode !== "none" && (
+              <button
+                onClick={handleFullscreen}
+                data-testid="player-fullscreen"
+                className="flex h-11 w-9 items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+                aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              >
+                {isFullscreen ? (
+                  <Minimize className="h-4 w-4" />
+                ) : (
+                  <Maximize className="h-4 w-4" />
+                )}
+              </button>
+            )}
           </div>
         </div>
       ) : (
@@ -833,18 +866,22 @@ export function VideoPlayer({
             </select>
           )}
 
-          {/* Fullscreen */}
-          <button
-            onClick={handleFullscreen}
-            className="flex h-7 w-7 hover-none:h-11 hover-none:w-11 items-center justify-center rounded text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
-            aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-          >
-            {isFullscreen ? (
-              <Minimize className="h-4 w-4" />
-            ) : (
-              <Maximize className="h-4 w-4" />
-            )}
-          </button>
+          {/* Fullscreen. §228c item 5 — same rule as the compact row: no
+              API, no button. */}
+          {fullscreenMode !== "none" && (
+            <button
+              onClick={handleFullscreen}
+              data-testid="player-fullscreen-wide"
+              className="flex h-7 w-7 hover-none:h-11 hover-none:w-11 items-center justify-center rounded text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+              aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+            >
+              {isFullscreen ? (
+                <Minimize className="h-4 w-4" />
+              ) : (
+                <Maximize className="h-4 w-4" />
+              )}
+            </button>
+          )}
         </div>
       </div>
       )}

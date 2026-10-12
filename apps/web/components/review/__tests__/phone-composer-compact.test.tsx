@@ -52,12 +52,22 @@ vi.mock('@/stores/review-store', () => ({
 import { CommentInput } from '../comment-input'
 import { CommentPanel } from '../comment-panel'
 
-/** jsdom has no media queries; this is what `useIsPhone` reads. */
-function setPhone(isPhone: boolean) {
+/**
+ * jsdom has no media queries; this is what `usePhoneChrome` reads.
+ *
+ * §228c — `(max-height: 500px)` is answered explicitly: it is the phone-
+ * on-its-side query, and the old `!isPhone` fall-through turned every
+ * `md`+ assertion below into a landscape phone.
+ */
+function setPhone(isPhone: boolean, compactLandscape = false) {
   vi.stubGlobal(
     'matchMedia',
     vi.fn((q: string) => ({
-      matches: q.includes('max-width: 767px') ? isPhone : !isPhone,
+      matches: q.includes('max-height: 500px')
+        ? compactLandscape
+        : q.includes('max-width: 767px')
+          ? isPhone
+          : !isPhone,
       media: q,
       addEventListener: () => {},
       removeEventListener: () => {},

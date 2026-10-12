@@ -392,8 +392,15 @@
   @container viewerbar (max-width: 900px) {
     /* §228b item 3a — `md`+ only, as in the mouse ladder above: below `md`
      * the phone bar is one row. A 768px touch tablet still gets the second
-     * row §228 gave it. */
-    @media (min-width: 768px) {
+     * row §228 gave it.
+     *
+     * §228c item 6 — `and (min-height: 501px)`, i.e. not on a phone lying
+     * on its side. That screen is 844px wide and would take this step, and
+     * a second bar row is 40 of the ~280px of height it has. It gets the
+     * one-row phone bar instead (see the compact-landscape block below).
+     * The guard is inside the `hover: none` ladder, so no mouse — however
+     * short its window — can reach it. */
+    @media (min-width: 768px) and (min-height: 501px) {
       .vbar-nav {
         order: 3;
         flex-basis: 100%;
@@ -412,7 +419,7 @@
      * left group to nothing, which is the zero-width asset name all over
      * again (measured at 768px touch: left group 0px wide). Giving the
      * left group a full basis too is what forces the break. */
-    @media (min-width: 768px) {
+    @media (min-width: 768px) and (min-height: 501px) {
       .vbar-left {
         flex-basis: 100%;
       }
@@ -611,7 +618,11 @@
   min-width: 36px;
 }
 
-@media (min-width: 768px) {
+/* §228c item 6 — `and (min-height: 501px)`: a phone on its side is 844px
+ * wide and would take the tablet's 44px here, which does not fit the 40px
+ * bar that layout gets. A mouse is unaffected either way — the rule below
+ * removes the floor for it regardless. */
+@media (min-width: 768px) and (min-height: 501px) {
   .viewer-tap-36 {
     min-height: 44px;
     min-width: 44px;
@@ -622,5 +633,275 @@
   .viewer-tap-36 {
     min-height: 0;
     min-width: 0;
+  }
+}
+
+/* ─── Fields tab, phones: the rows sit closer together (§228c item 3) ────
+ *
+ * The owner, on an iPhone: everything from the asset name down to Keywords
+ * "has far too much vertical space; make them smaller so they sit closer
+ * together" — and, for the group of basic fields, "to fit the 'Basic'
+ * closer together".
+ *
+ * Measured at 390x844 before this block, on the video asset: the rows that
+ * hold a CONTROL were 61-64px (assignee 61, due date 61, and inside the
+ * phone block version/status ~62 each), against 33px for the read-only
+ * `label → value` rows. The 61 is arithmetic, not decoration: §228 gave
+ * every control in this tab a 44px hit area under `hover: none`, and
+ * 44 + 8 + 8 of the row's own `py-2` is 60.
+ *
+ * So the rows are not padded apart — they are 44px tall boxes in 16px of
+ * padding. This block takes the control to the 36px floor §228b's target
+ * policy sets for everything that is not a primary action, and the row's
+ * padding to 4px: 4 + 36 + 4 = 44, the top of the band this item asks for,
+ * with no hit area smaller than 36 and none overlapping its neighbour.
+ *
+ * Phones only — `max-width: 767px`, the same line `useIsPhone` draws. A
+ * 768px touch tablet still renders this tab inside §228's drawer and keeps
+ * the 44px controls §228 gave it, and every desktop pixel is untouched
+ * because the whole block is inside the query.
+ *
+ * The selectors are descendant pairs (`.viewer-fields .viewer-field-row`,
+ * specificity 0,2,0) rather than bare classes, deliberately: they have to
+ * beat Tailwind's own `h-11`/`py-2` utilities, and relying on this file
+ * coming after `@tailwind utilities` would be enough only while the class
+ * order in the markup never changes. Two classes beat one.
+ *
+ * What this does NOT touch, and why:
+ *  - the 33px read-only rows. They are already below the 40-44px band this
+ *    item asks for, they hold no control and no hit area, and taking them
+ *    to 25px would make the tab read as two different lists.
+ *  - what any control DOES, or which fields exist. Nothing is removed.
+ */
+@media (max-width: 767px) {
+  /* 12px of padding rather than 16: 8px of the 16 back, top and bottom. */
+  .viewer-fields {
+    padding: 0.75rem;
+  }
+
+  /* The name header: `pb-3 mb-1` (12 + 4) is 16px of air under one line of
+   * text before the first field. 6 + 0 instead. */
+  .viewer-fields .viewer-fields-name {
+    padding-bottom: 0.375rem;
+    margin-bottom: 0;
+  }
+
+  .viewer-fields .viewer-field-row {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+
+  /* Every control that was a 44px box: the status dropdown, the assignee
+   * picker, the due-date field, the keyword field and its Add button, the
+   * "Show all fields" toggle. 36 is the floor, not a target — it is what
+   * §228b's policy keeps for a control that is not a primary action, and
+   * 36 inside a 44px row cannot reach the row above or below. */
+  .viewer-fields .viewer-field-control {
+    height: 2.25rem;
+    min-height: 2.25rem;
+  }
+
+  /* The version chip is inside a shared component with no className of its
+   * own on the button, so the row it sits in is the hook. */
+  .viewer-fields .viewer-field-version button {
+    min-height: 2.25rem;
+    height: 2.25rem;
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+
+  /* The five rating stars. The owner's screenshot shows them "spread
+   * across the row", which they were: five 44px targets with a 2px gap is
+   * a 228px bar on a 390px screen, and the stars it paints are 20px. At 36
+   * the bar is 188px — 40px tighter — and every target is still above the
+   * floor. `> button` (0,3,0 with the two classes) so the per-voter
+   * breakdown underneath, whose stars are a 14px DISPLAY, is left alone. */
+  .viewer-fields .viewer-stars > button {
+    height: 2.25rem;
+    width: 2.25rem;
+  }
+}
+
+/* ─── Transcript, phones: one line per line (§228c item 4) ───────────────
+ *
+ * The owner: "the Transcripts are also slightly too high per row."
+ * Measured at 390x844: 44px for a row holding one short sentence, which is
+ * `hover-none:min-h-11` — §228's touch floor — and not padding: the row's
+ * own box is 6 + 18 + 6 = 30px.
+ *
+ * 36px here instead, with 8px of vertical padding, which is what this item
+ * asks for and what the rest of the phone viewer already uses as its
+ * floor. A sentence that needs two lines still gets them: `min-height`
+ * grows, it does not clip, and nothing reserves a second line for the
+ * active row — the active row differs from its neighbours by a background
+ * colour and nothing else, before and after.
+ *
+ * The two header rows above the list — the Transcription switch and
+ * "Detected: English" — were 47 and 41px, i.e. 88px of header above three
+ * 44px rows. They come to 32 and 26 and read as one block.
+ */
+@media (max-width: 767px) {
+  /* Two classes (0,2,0) so this beats `hover-none:min-h-11` whatever order
+   * the two land in — the same reasoning as the Fields block above. */
+  .viewer-transcript-list .viewer-transcript-row {
+    min-height: 2.25rem;
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+
+  .viewer-transcript-head {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+
+  /* One block, not two bands: the switch row keeps the language line under
+   * it with nothing drawn between them. */
+  .viewer-transcript-head-first {
+    border-bottom-width: 0;
+  }
+
+  /* The switch is the one control in this block, and it is not primary: 36,
+   * not the 44 `tap-target-44` paints for it everywhere else. `height` and
+   * `width`, not the `min-*` pair — that utility sets `max(100%, 44px)` on
+   * both, which a minimum cannot bring down. */
+  .viewer-transcript-head .tap-target-44::before {
+    width: max(100%, 2.25rem);
+    height: max(100%, 2.25rem);
+  }
+}
+
+/* ─── A phone on its side: compact landscape (§228c item 6) ──────────────
+ *
+ * The capability query is justified in full in `hooks/use-media-query.ts`
+ * (`COMPACT_LANDSCAPE`) — the hook and this block are the same decision
+ * and must stay written the same way:
+ *
+ *     (hover: none) and (pointer: coarse) and (max-height: 500px)
+ *
+ * The LAYOUT — player left, panel right — is React, because it is a
+ * different tree. What is left here is what is purely about size, exactly
+ * as §228 split it: how tall the top bar is, and what it is allowed to do
+ * with the height it has.
+ *
+ * THE ONE DEVIATION FROM §228b's TARGET POLICY, stated plainly because it
+ * is a real trade and not an oversight: the policy keeps Back and
+ * play/pause at a full 44x44. This block takes the bar's own controls to
+ * 40px TALL (the width is untouched, so Back is 44 wide and more). A 44px
+ * target in a 40px bar has to overflow it, and what sits under this bar is
+ * the video — whose own surface is a tap target, tap-to-play — so the
+ * overflow would be two controls sharing 4px of screen. 40px of height in
+ * a screen that has ~280 of it after Safari draws its own bars is worth
+ * more than the last 4px of a target that is already 10px above the WCAG
+ * 2.2 AA minimum of 24.
+ */
+@media (hover: none) and (pointer: coarse) and (max-height: 500px) {
+  /* 40px exactly: the 1px bottom border is inside it (`border-box`, from
+   * Tailwind's preflight), and the floor below keeps the bar's own controls
+   * at 36 so nothing in it can set it taller than that.
+   *
+   * `:root .viewer-topbar`, NOT a bare class, and this is a correction to
+   * what the §228b comment above assumes. MEASURED in the production
+   * bundle: Tailwind emits its VARIANT utilities (`max-md:`, `hover-none:`,
+   * `md:`) after everything in this file — `.max-md\:min-h-11` lands at
+   * byte 58815 of the built stylesheet and this block at 46495 — so an
+   * override of a variant utility cannot win on order, whatever the order
+   * in the source. It has to win on specificity. `:root` is (0,1,1)
+   * against the utility's (0,1,0), which is the same trick and the same
+   * one-notch margin §228b's no-zoom rule uses for `:root input`.
+   * Measured before the `:root`: the bar was 44px at 667x375, because
+   * `max-md:min-h-11` was still the last word.
+   *
+   * The safe-area padding is a `max()` rather than a plain 8px because in
+   * LANDSCAPE the notch and the home indicator are on the left and right
+   * edges — exactly where this bar puts Back and the `⋯` menu. UNTESTED on
+   * a real device: Chromium reports 0 for every inset. */
+  :root .viewer-topbar {
+    min-height: 40px;
+    padding-left: max(0.5rem, env(safe-area-inset-left));
+    padding-right: max(0.5rem, env(safe-area-inset-right));
+  }
+
+  /* Back says the word "Back" here as well as in portrait: `md:hidden`
+   * would hide it at 844px wide, and the arrow on its own four pixels from
+   * a chevron is what §228 was reported for. `:root` for the same reason
+   * as above — `md:hidden` is a variant utility and comes last. */
+  :root .vbar-back-label {
+    display: inline;
+  }
+
+  /* ...and the box has to grow to hold the word. At `md`+ the Back link is
+   * a fixed 28px square (`h-7 w-7`), because at `md`+ the word is hidden —
+   * so simply un-hiding it at 844px wide left "Back" overflowing a 28px
+   * box and painting straight onto the asset name beside it (seen in the
+   * first landscape screenshot: "BackA010C030_250101_R1AB…"). These are
+   * the same three values the portrait bar uses (`max-md:w-auto
+   * max-md:pl-1.5 max-md:pr-2`), which do not apply here because 844px is
+   * above `md`. */
+  :root .viewer-topbar [data-testid='viewer-back'] {
+    width: auto;
+    padding-left: 0.375rem;
+    padding-right: 0.5rem;
+  }
+
+  /* 36 inside the bar — see the deviation above. Both floors together, so
+   * neither kind of control can set the row taller than the other: a 40px
+   * bar has a 39px content box, and a 44px target in it would overflow
+   * onto the video, whose own surface is a tap target (tap to play). */
+  :root .viewer-topbar .viewer-tap,
+  :root .viewer-topbar .viewer-tap-36 {
+    min-height: 36px;
+  }
+
+  /* The player's own transport row, the one §228b sized at 44 for
+   * portrait: 40px here, with its controls at 36 so they fit inside it.
+   * Before this rule they were still 44 and hung 4px BELOW the bottom of
+   * the viewport — measured at 844x390: the timecode chip's box ran to
+   * y=393 against a 390px viewport. */
+  :root .viewer-landscape [data-testid='video-transport-compact'] {
+    height: 40px;
+  }
+
+  :root .viewer-landscape [data-testid='video-transport-compact'] button {
+    height: 36px;
+    min-height: 36px;
+  }
+
+  /* ── With the keyboard open, the "All comments" row goes ──────────────
+   *
+   * MEASURED at 844x390 with a simulated 200px keyboard: the visible
+   * height is 190px, and the panel's fixed parts are the 40px bar, the
+   * 43px tab row and the 99px composer — 182 of it. The comment toolbar
+   * (`shrink-0`, 40px, holding the filter, sort and search buttons) does
+   * not fit in the 8px that leaves, so it overflowed its own container:
+   * its box ran from y=83 to y=123 while the composer started at 91, a
+   * 32px overlap, with the row itself clipped to an 8px sliver by the
+   * container's `overflow-hidden`. A clipped row of buttons is the §228c
+   * item 1 complaint all over again, in the one state where there is
+   * genuinely not enough height for everything.
+   *
+   * So the row that goes is the one nobody needs mid-sentence: filter,
+   * sort and search. The tab switch stays (it is the way out of the
+   * composer), the list keeps whatever is left and scrolls, the composer
+   * stays whole — and in landscape the VIDEO is in the other column, so
+   * unlike portrait it is still fully visible while typing, which is the
+   * thing this was all for.
+   *
+   * It comes back the moment the keyboard closes: `data-keyboard` is set
+   * from `visualViewport` by the page, and is `closed` whenever the inset
+   * is 0 — which is every desktop, every tablet and every phone that is
+   * not being typed on. */
+  :root
+    [data-testid='viewer-landscape-layout'][data-keyboard='open']
+    [data-testid='comment-panel-toolbar'] {
+    display: none;
+  }
+
+  /* The panel's edges follow the safe area too: the composer's Send button
+   * is at the right edge of the screen in landscape, and the list's text
+   * at the left. */
+  .viewer-landscape {
+    padding-left: max(0px, env(safe-area-inset-left));
+    padding-right: max(0px, env(safe-area-inset-right));
+    padding-bottom: max(0px, env(safe-area-inset-bottom));
   }
 }

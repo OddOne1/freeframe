@@ -1,7 +1,7 @@
 'use client'
 
 import Hls, { type Level } from 'hls.js'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useReviewStore } from '@/stores/review-store'
 import { parseHlsMasterPlaylist } from '@/lib/hls-master-playlist'
 
@@ -18,6 +18,56 @@ export interface QualityLevel {
   url?: string
 }
 
+/**
+ * Which fullscreen API this browser actually has (§228c item 5).
+ *
+ *  'element'        `Element.requestFullscreen` — desktop, Android, iPad.
+ *  'element-webkit' the prefixed one, on older Safari and WebViews.
+ *  'video-native'   NO element fullscreen, only `webkitEnterFullscreen`
+ *                   on the <video> itself. This is the iPhone, and it
+ *                   hands playback to iOS's own player: our transport row,
+ *                   the timestamped comments, the annotation overlay and
+ *                   the WebGL LUT are all gone for as long as it lasts.
+ *  'none'           nothing at all. The button is not drawn.
+ */
+export type FullscreenMode = 'element' | 'element-webkit' | 'video-native' | 'none'
+
+/** The prefixed halves of the Fullscreen API, which TS does not declare. */
+interface WebkitFullscreenElement extends HTMLElement {
+  webkitRequestFullscreen?: () => void | Promise<void>
+}
+interface WebkitFullscreenVideo extends HTMLVideoElement {
+  webkitEnterFullscreen?: () => void
+  webkitExitFullscreen?: () => void
+  webkitDisplayingFullscreen?: boolean
+}
+interface WebkitFullscreenDocument extends Document {
+  webkitFullscreenElement?: Element | null
+  webkitExitFullscreen?: () => void | Promise<void>
+}
+
+/**
+ * What this browser can do, asked of the document rather than of one
+ * element: `requestFullscreen` lives on `Element.prototype`, so whether it
+ * exists is a property of the BROWSER, and the only per-element question —
+ * `webkitEnterFullscreen`, which exists on <video> and nothing else —
+ * takes the video.
+ *
+ * Exported because it is also what the tests drive: the four API shapes
+ * are the four return values.
+ */
+export function detectFullscreenMode(
+  video: HTMLVideoElement | null,
+): FullscreenMode {
+  if (typeof document === 'undefined') return 'none'
+  const root = document.documentElement as WebkitFullscreenElement
+  if (typeof root.requestFullscreen === 'function') return 'element'
+  if (typeof root.webkitRequestFullscreen === 'function') return 'element-webkit'
+  const v = video as WebkitFullscreenVideo | null
+  if (v && typeof v.webkitEnterFullscreen === 'function') return 'video-native'
+  return 'none'
+}
+
 export interface VideoPlayerControls {
   play: () => void
   pause: () => void
@@ -27,7 +77,9 @@ export interface VideoPlayerControls {
   setQuality: (levelIndex: number) => void
   setVolume: (volume: number) => void
   toggleMute: () => void
-  toggleFullscreen: (containerEl: HTMLElement) => void
+  /** Returns the API it used, so the caller can say what just happened —
+   *  the LUT warning on the iPhone's native player (§228c item 5). */
+  toggleFullscreen: (containerEl: HTMLElement) => FullscreenMode
 }
 
 export interface VideoPlayerState {
@@ -42,6 +94,8 @@ export interface VideoPlayerState {
   currentQuality: number
   isLoading: boolean
   isFullscreen: boolean
+  /** §228c item 5 — 'none' means: do not draw the button. */
+  fullscreenMode: FullscreenMode
   error: string | null
 }
 
@@ -133,6 +187,18 @@ export function useVideoPlayer(
   const [currentQuality, setCurrentQuality] = useState(-1) // -1 = auto
   const [isLoading, setIsLoading] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  /**
+   * §228c item 5 — starts at 'element', the API every desktop browser has,
+   * and is resolved for real in a layout effect below.
+   *
+   * A CONSTANT initial value, not `detectFullscreenMode()` called during
+   * render: this tree renders on the server too, and a first client render
+   * that disagreed with the server's HTML about whether the fullscreen
+   * button exists is a hydration mismatch. 'element' rather than 'none' so
+   * the one screen that changes is the one that has to — on an iPhone the
+   * button goes before paint, and everywhere else it was always right.
+   */
+  const [fullscreenMode, setFullscreenMode] = useState<FullscreenMode>('element')
   const [error, setError] = useState<string | null>(null)
 
   // Sync playhead to store at ~4fps to avoid excessive re-renders
@@ -185,13 +251,49 @@ export function useVideoPlayer(
     }
   }, [seekTarget, detached])
 
-  // Fullscreen change listener
+  /**
+   * §228c item 5 — resolve which fullscreen API exists, once, before paint.
+   *
+   * A layout effect and not `useEffect`: on an iPhone this is what takes
+   * the button away, and a button that is painted and then removed a frame
+   * later is a button someone can press in that frame.
+   */
+  useLayoutEffect(() => {
+    setFullscreenMode(detectFullscreenMode(videoRef.current))
+  }, [])
+
+  /**
+   * Fullscreen state, from all three ways it can change (§228c item 5).
+   *
+   * `fullscreenchange` alone was wrong on two of them. The prefixed event
+   * is what older Safari fires. And on the iPhone neither fires at all,
+   * because the iPhone never puts an ELEMENT in fullscreen: the <video>
+   * goes into iOS's own player and reports it with
+   * `webkitbegin/endfullscreen` on the element itself.
+   *
+   * Escape, the browser's own exit button, the swipe-down out of the iOS
+   * player and a second press of ours all arrive here, which is what keeps
+   * `isFullscreen` honest rather than optimistic.
+   */
   useEffect(() => {
-    const handleFsChange = () => {
-      setIsFullscreen(!!document.fullscreenElement)
+    const doc = document as WebkitFullscreenDocument
+    const syncFromDocument = () => {
+      setIsFullscreen(!!(doc.fullscreenElement ?? doc.webkitFullscreenElement))
     }
-    document.addEventListener('fullscreenchange', handleFsChange)
-    return () => document.removeEventListener('fullscreenchange', handleFsChange)
+    const enteredNative = () => setIsFullscreen(true)
+    const leftNative = () => setIsFullscreen(false)
+
+    doc.addEventListener('fullscreenchange', syncFromDocument)
+    doc.addEventListener('webkitfullscreenchange', syncFromDocument)
+    const video = videoRef.current
+    video?.addEventListener('webkitbeginfullscreen', enteredNative)
+    video?.addEventListener('webkitendfullscreen', leftNative)
+    return () => {
+      doc.removeEventListener('fullscreenchange', syncFromDocument)
+      doc.removeEventListener('webkitfullscreenchange', syncFromDocument)
+      video?.removeEventListener('webkitbeginfullscreen', enteredNative)
+      video?.removeEventListener('webkitendfullscreen', leftNative)
+    }
   }, [])
 
   // HLS + video element setup
@@ -517,12 +619,56 @@ export function useVideoPlayer(
     video.muted = !video.muted
   }, [])
 
-  const toggleFullscreen = useCallback((containerEl: HTMLElement) => {
-    if (!document.fullscreenElement) {
-      containerEl.requestFullscreen().catch(() => {})
-    } else {
-      document.exitFullscreen().catch(() => {})
+  /**
+   * Enter or leave fullscreen, by whichever API exists (§228c item 5).
+   *
+   * What this replaces, and why the owner reported "in mobile view the
+   * Fullscreen button isn't working": it was one unguarded line,
+   * `containerEl.requestFullscreen().catch(() => {})`. On an iPhone
+   * `Element.prototype.requestFullscreen` does not exist, so that line
+   * threw a TypeError on the way to `.catch` — synchronously, before any
+   * promise existed to reject — and the throw went nowhere, because it was
+   * a click handler. A dead button that logged nothing.
+   *
+   * Three paths and never a throw. The return value says which one ran, so
+   * the caller can tell the user what the iPhone's own player will not be
+   * showing them (the LUT).
+   */
+  const toggleFullscreen = useCallback((containerEl: HTMLElement): FullscreenMode => {
+    const doc = document as WebkitFullscreenDocument
+    const el = containerEl as WebkitFullscreenElement
+    const video = videoRef.current as WebkitFullscreenVideo | null
+    const mode = detectFullscreenMode(video)
+    try {
+      if (mode === 'element' || mode === 'element-webkit') {
+        const active = doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null
+        if (!active) {
+          const request =
+            mode === 'element' ? el.requestFullscreen : el.webkitRequestFullscreen
+          // `Promise.resolve` around it: the unprefixed API returns a
+          // promise and the prefixed one returns undefined, and this has to
+          // swallow a rejection from the first without assuming either.
+          void Promise.resolve(request?.call(el)).catch(() => {})
+        } else {
+          const exit =
+            typeof doc.exitFullscreen === 'function'
+              ? doc.exitFullscreen
+              : doc.webkitExitFullscreen
+          void Promise.resolve(exit?.call(doc)).catch(() => {})
+        }
+      } else if (mode === 'video-native' && video) {
+        // iOS: the <video> itself, and its own exit. `webkitExitFullscreen`
+        // is on the ELEMENT here, not on the document.
+        if (video.webkitDisplayingFullscreen) video.webkitExitFullscreen?.()
+        else video.webkitEnterFullscreen?.()
+      }
+    } catch {
+      // A fullscreen request is a nice-to-have on a review page. Whatever
+      // this browser's reason for refusing — an iframe without
+      // `allowfullscreen`, a gesture requirement, a missing prefix nobody
+      // has heard of — it must not take the click handler down with it.
     }
+    return mode
   }, [])
 
   return {
@@ -540,6 +686,7 @@ export function useVideoPlayer(
     currentQuality,
     isLoading,
     isFullscreen,
+    fullscreenMode,
     error,
     // controls
     play,

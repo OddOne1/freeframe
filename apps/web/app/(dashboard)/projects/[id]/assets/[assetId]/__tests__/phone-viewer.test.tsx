@@ -152,14 +152,28 @@ function openDropdown(trigger: HTMLElement) {
   fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
 }
 
-/** jsdom has no media queries; this is what `useIsPhone` actually reads. */
-function setPhone(isPhone: boolean) {
+/**
+ * jsdom has no media queries; this is what the viewer's two breakpoints
+ * actually read.
+ *
+ * §228c — the second argument is `useCompactLandscape`: a short touch
+ * screen in landscape. It has to be answered explicitly rather than by the
+ * `!isPhone` fall-through this stub used to give every other query,
+ * because that fall-through made every `md`+ test a landscape phone.
+ */
+function setPhone(isPhone: boolean, compactLandscape = false) {
   vi.stubGlobal(
     'matchMedia',
     vi.fn((q: string) => ({
-      // `useIsPhone` asks for `(max-width: 767px)`; `viewportIsXlUp` asks
-      // for `(min-width: 1280px)`. A phone is neither wide nor xl.
-      matches: q.includes('max-width: 767px') ? isPhone : !isPhone,
+      // `useIsPhone` asks for `(max-width: 767px)`; `useCompactLandscape`
+      // for `(max-height: 500px)` with the touch features;
+      // `viewportIsXlUp` for `(min-width: 1280px)`. A phone upright is
+      // none of wide, xl or landscape.
+      matches: q.includes('max-height: 500px')
+        ? compactLandscape
+        : q.includes('max-width: 767px')
+          ? isPhone
+          : !isPhone,
       media: q,
       addEventListener: () => {},
       removeEventListener: () => {},
@@ -706,5 +720,196 @@ describe('§228b item 3b — the tab switch', () => {
     expect(tab.className).not.toContain('h-9')
     // The pill is painted by the button itself, as before — no inner span.
     expect(tab.firstElementChild).toBeNull()
+  })
+})
+
+// ─── §228c item 6 — a phone on its SIDE ─────────────────────────────────
+
+describe('§228c item 6 — compact landscape is two columns, not a stack', () => {
+  it('replaces the stack with a player column and a panel column', async () => {
+    // 844x390: above `md` by width, which is exactly why this screen used
+    // to get the desktop layout. The decision is the height and the
+    // pointer, not the width.
+    setPhone(false, true)
+    renderViewer()
+    await ready()
+    expect(screen.getByTestId('viewer-landscape-layout')).toBeTruthy()
+    expect(screen.queryByTestId('viewer-phone-layout')).toBeNull()
+    expect(screen.getByTestId('viewer-landscape-media')).toBeTruthy()
+    expect(screen.getByTestId('viewer-landscape-panel')).toBeTruthy()
+  })
+
+  it('and still no drawer, no scrim and no toggle', async () => {
+    setPhone(false, true)
+    renderViewer()
+    await ready()
+    expect(screen.queryByTestId('viewer-right-panel')).toBeNull()
+    expect(screen.queryByTestId('viewer-panel-scrim')).toBeNull()
+    expect(screen.queryByTestId('viewer-panel-toggle')).toBeNull()
+  })
+
+  it('keeps the panel at 40% with a 300px floor', async () => {
+    setPhone(false, true)
+    renderViewer()
+    await ready()
+    const panel = screen.getByTestId('viewer-landscape-panel')
+    expect(panel.className).toContain('w-[40%]')
+    expect(panel.className).toContain('min-w-[300px]')
+    // `shrink-0`: a long comment must not be able to narrow the panel —
+    // or, worse, the player beside it.
+    expect(panel.className).toContain('shrink-0')
+  })
+
+  it('holds the tabs, the list and the composer, in that order', async () => {
+    setPhone(false, true)
+    renderViewer()
+    await ready()
+    const panel = screen.getByTestId('viewer-landscape-panel')
+    const order = ['viewer-panel-tabs', 'comment-panel', 'comment-input']
+    const seen = Array.from(panel.querySelectorAll('[data-testid]'))
+    const positions = order.map((id) =>
+      seen.indexOf(panel.querySelector(`[data-testid="${id}"]`) as Element),
+    )
+    expect(positions.every((p) => p >= 0)).toBe(true)
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions)
+  })
+
+  it('takes the PHONE chrome with it: one-row bar, no bar controls', async () => {
+    setPhone(false, true)
+    renderViewer()
+    await ready()
+    // The counter is the phone's `n/N`, not the desktop's "n of N" — the
+    // same flag that decides this also moves version/status/rating out of
+    // the bar and into the Fields tab.
+    expect(screen.getByTestId('viewer-asset-counter').textContent).toBe('1/2')
+    const bar = topBar()
+    expect(within(bar).queryByText('Version:')).toBeNull()
+    expect(within(bar).queryByText(/needs review/i)).toBeNull()
+    // Back is the way out of this mode: the app's own sidebar rail is not
+    // rendered here (dashboard-shell), and there is no header on this
+    // route at any width.
+    expect(within(bar).getByTestId('viewer-back')).toBeTruthy()
+  })
+
+  it('and puts version, status and rating in the Fields tab', async () => {
+    setPhone(false, true)
+    renderViewer()
+    await ready()
+    fireEvent.click(screen.getByTestId('viewer-tab-fields'))
+    expect(screen.getByTestId('viewer-fields-phone-controls')).toBeTruthy()
+    expect(screen.getByTestId('viewer-fields-version')).toBeTruthy()
+    expect(screen.getByTestId('viewer-fields-status')).toBeTruthy()
+    expect(screen.getByTestId('viewer-fields-rating')).toBeTruthy()
+  })
+
+  it('wins over the portrait stack where BOTH queries match (667x375)', async () => {
+    // An iPhone SE on its side is 667px wide — below `md`, so `useIsPhone`
+    // is true as well. Stacking a player, a tab row, a list and a composer
+    // into 375px of height is the problem, so landscape has to win.
+    setPhone(true, true)
+    renderViewer()
+    await ready()
+    expect(screen.getByTestId('viewer-landscape-layout')).toBeTruthy()
+    expect(screen.queryByTestId('viewer-phone-layout')).toBeNull()
+  })
+
+  it('and a portrait phone still gets the stack', async () => {
+    setPhone(true, false)
+    renderViewer()
+    await ready()
+    expect(screen.getByTestId('viewer-phone-layout')).toBeTruthy()
+    expect(screen.queryByTestId('viewer-landscape-layout')).toBeNull()
+  })
+
+  it('a tall touch tablet is not compact landscape and keeps the drawer', async () => {
+    // 1024x768 and 1180x820 are both taller than 500px.
+    setPhone(false, false)
+    renderViewer()
+    await ready()
+    expect(screen.queryByTestId('viewer-landscape-layout')).toBeNull()
+    expect(screen.queryByTestId('viewer-phone-layout')).toBeNull()
+  })
+})
+
+// ─── §228c items 1 and 2 — the tab row's own geometry ───────────────────
+
+describe('§228c item 1 — the comment section sits below the transport row', () => {
+  it('the phone tab row carries the 4px above and 2px below', () => {
+    renderViewer()
+    const row = screen.getByTestId('viewer-panel-tabs')
+    // Measured before this change at 390x844: transport bottom 344.4, tab
+    // row top 344.4 — touching exactly. The gap is what the owner asked
+    // for ("a few pixels down are needed").
+    expect(row.className).toContain('mt-1')
+    expect(row.className).toContain('mb-0.5')
+  })
+
+  it('and the drawer at md+ has neither', () => {
+    setPhone(false)
+    renderViewer()
+    const row = screen.getByTestId('viewer-panel-tabs')
+    expect(row.className).toContain('px-4 pt-3 pb-2')
+    expect(row.className).not.toContain('mt-1')
+    expect(row.className).not.toContain('mb-0.5')
+  })
+})
+
+describe('§228c item 2 — the active pill stays inside its container', () => {
+  it('the strip is padded, so the first and last pill are inset', () => {
+    renderViewer()
+    const strip = screen.getByTestId('viewer-tab-strip')
+    expect(strip.className).toContain('px-0.5')
+    // 8px container radius, 2px inset, 6px pill radius: container radius
+    // minus inset, which is what makes the corners concentric.
+    expect(strip.className).toContain('rounded-lg')
+    const pill = screen.getByTestId('viewer-tab-comments').firstElementChild
+    expect(pill?.className).toContain('rounded-md')
+  })
+
+  it('every tab paints its pill the same way, first and last included', () => {
+    renderViewer()
+    for (const id of ['comments', 'fields', 'transcript']) {
+      const tab = screen.queryByTestId(`viewer-tab-${id}`)
+      if (!tab) continue
+      expect(tab.firstElementChild?.className).toContain('rounded-md')
+    }
+  })
+
+  it('and in compact landscape too — it is the same strip', async () => {
+    setPhone(false, true)
+    renderViewer()
+    await ready()
+    expect(screen.getByTestId('viewer-tab-strip').className).toContain('px-0.5')
+  })
+})
+
+// ─── §228c item 3 — the Fields rows carry the density hooks ─────────────
+
+describe('§228c item 3 — the Fields tab is marked up for the phone rule', () => {
+  it('the scroller, the name block and every row that holds a control', async () => {
+    renderViewer()
+    await ready()
+    fireEvent.click(screen.getByTestId('viewer-tab-fields'))
+    expect(screen.getByTestId('viewer-fields').className).toContain('viewer-fields')
+    expect(screen.getByTestId('viewer-fields-name').className).toContain('viewer-fields-name')
+    for (const id of [
+      'viewer-fields-version',
+      'viewer-fields-status',
+      'viewer-fields-rating',
+      'viewer-fields-assignee',
+      'viewer-fields-due',
+      'viewer-fields-keywords',
+    ]) {
+      expect(screen.getByTestId(id).className).toContain('viewer-field-row')
+    }
+  })
+
+  it('and nothing is removed: every field is still rendered', async () => {
+    renderViewer()
+    await ready()
+    fireEvent.click(screen.getByTestId('viewer-tab-fields'))
+    for (const label of ['Type', 'Status', 'Rating', 'Assignee', 'Due Date', 'Keywords']) {
+      expect(screen.getAllByText(label).length).toBeGreaterThan(0)
+    }
   })
 })

@@ -39,7 +39,13 @@ function TranscriptionToggle({
   onToggle: (enabled: boolean) => void
 }) {
   return (
-    <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/60 px-4 py-2">
+    <div
+      data-testid="transcript-toggle-row"
+      // §228c item 4 — the phone rule in globals.css slims this block and
+      // drops the border between it and the language line below, so the
+      // two read as one header rather than two bands.
+      className="viewer-transcript-head viewer-transcript-head-first flex shrink-0 items-center justify-between gap-3 border-b border-border/60 px-4 py-2"
+    >
       <div className="min-w-0">
         <p className="text-xs font-medium text-text-primary">Transcription</p>
         <p className="text-2xs text-text-tertiary">
@@ -205,24 +211,38 @@ export function TranscriptPanel({
     <div className="flex-1 flex flex-col min-h-0">
       {header}
       {transcript?.language && (
-        <div className="px-4 py-2 border-b border-border/60 shrink-0">
+        <div
+          data-testid="transcript-language-row"
+          className="viewer-transcript-head px-4 py-2 border-b border-border/60 shrink-0"
+        >
           <span className="text-xs text-text-tertiary">
             Detected: {languageLabel(transcript.language)}
           </span>
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto px-2 py-2">
+      <div
+        data-testid="transcript-list"
+        className="viewer-transcript-list flex-1 overflow-y-auto px-2 py-2"
+      >
         {segments.map((seg) => {
           const isActive = currentTime >= seg.start && currentTime < seg.end
           return (
             <button
               key={seg.id}
+              data-testid="transcript-row"
+              data-active={isActive ? 'true' : 'false'}
               onClick={() => onSeek(seg.start)}
               className={cn(
                 // A transcript segment is a seek target; on a phone it has
                 // to be one a finger can hit.
-                'flex w-full gap-2.5 rounded-md px-2 py-1.5 hover-none:min-h-11 text-left transition-colors',
+                //
+                // §228c item 4 — `viewer-transcript-row` is the hook the
+                // phone rule in globals.css takes this from 44px to 36.
+                // The class stays on the element at every width; the rule
+                // that reads it is inside `max-width: 767px`, so the
+                // drawer at `md`+ is pixel-identical.
+                'viewer-transcript-row flex w-full gap-2.5 rounded-md px-2 py-1.5 hover-none:min-h-11 text-left transition-colors',
                 isActive
                   ? 'bg-bg-hover'
                   : 'hover:bg-bg-hover/60',
