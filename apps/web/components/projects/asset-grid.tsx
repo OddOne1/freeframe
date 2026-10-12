@@ -12,6 +12,7 @@ import { AssetCard } from './asset-card'
 import { AssetMenuItems } from './asset-menu-items'
 import { CursorMenu, menuItemClass, menuItemDangerClass, type CursorMenuState } from '@/components/ui/cursor-menu'
 import { FolderCard } from './folder-card'
+import { FolderBackButton, type BackTarget } from './folder-back-button'
 import { AppearancePopover } from './appearance-popover'
 import { SortPopover } from './sort-popover'
 import { MoveToDialog } from './move-to-dialog'
@@ -79,6 +80,19 @@ interface AssetGridProps {
   onAssetDelete?: (asset: Asset) => void
   /** Actions rendered on the right side of the navigator bar */
   actions?: React.ReactNode
+  /**
+   * §228d item 3 — where "up one level" goes, or nothing.
+   *
+   * Passed in rather than worked out here: the parent is read off the
+   * project page's `folderTrail`, which is the one walk of the tree the
+   * breadcrumb and the folder navigator already share (§227). A second
+   * lookup in this component would be a second answer to "what is the
+   * parent" waiting to disagree with them.
+   *
+   * Optional, so the /assets page — one flat list of every asset in every
+   * project, with no folder to be above — renders exactly what it did.
+   */
+  backTo?: BackTarget
   /** Whether the current user can vote (reviewer role or higher) */
   canVote?: boolean
   onAssetVote?: (asset: Asset, stars: number) => void
@@ -143,6 +157,7 @@ export function AssetGrid({
   onAssetRename,
   onAssetDelete,
   actions,
+  backTo,
   canVote = false,
   onAssetVote,
 }: AssetGridProps) {
@@ -470,14 +485,20 @@ export function AssetGrid({
 
   if (isLoading) {
     return (
-      <div className={cn(gridClass, 'gap-4')} data-size={cardSize}>
-        {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="flex flex-col gap-2">
-            <div className={cn('animate-pulse rounded-lg bg-bg-tertiary', aspectMap[aspectRatio])} />
-            <div className="h-4 w-3/4 animate-pulse rounded bg-bg-tertiary" />
-            <div className="h-3 w-1/2 animate-pulse rounded bg-bg-tertiary" />
-          </div>
-        ))}
+      <div className="flex flex-col gap-3">
+        {/* The same first element as the loaded view, so the first row of
+            cards does not jump by the button's height the moment the
+            assets arrive. */}
+        {backTo && <FolderBackButton {...backTo} />}
+        <div className={cn(gridClass, 'gap-4')} data-size={cardSize}>
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="flex flex-col gap-2">
+              <div className={cn('animate-pulse rounded-lg bg-bg-tertiary', aspectMap[aspectRatio])} />
+              <div className="h-4 w-3/4 animate-pulse rounded bg-bg-tertiary" />
+              <div className="h-3 w-1/2 animate-pulse rounded bg-bg-tertiary" />
+            </div>
+          ))}
+        </div>
       </div>
     )
   }
@@ -501,6 +522,19 @@ export function AssetGrid({
         setContextMenu({ x: e.clientX, y: e.clientY, mode: 'canvas' })
       }}
     >
+      {/* ─── Up one level (§228d item 3) ────────────────────────────────
+          The FIRST element of the content column, at every width, which is
+          both what the owner asked for ("right above the first text or
+          item") and the only position that is the same control on a phone
+          and on a desktop. Below `md` the navigator bar under it is
+          `display: none`, so this sits directly above "5 FOLDERS" exactly
+          as in his screenshot; at `md`+ the bar's own row of popovers is
+          between the two, because that row is chrome rather than content.
+
+          `self-start` and `w-fit`: in a `flex-col` the default would
+          stretch it across the column and give it a 390px hover target. */}
+      {backTo && <FolderBackButton {...backTo} />}
+
       {/* ─── Share Selection Mode Bar ──────────────────────────────────── */}
       {shareMode && (
         <div className="flex items-center justify-between rounded-lg border border-accent/30 bg-accent/5 px-4 py-2.5">

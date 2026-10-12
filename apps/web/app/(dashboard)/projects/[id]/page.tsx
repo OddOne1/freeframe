@@ -48,6 +48,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/shared/avatar";
 import { AssetGrid } from "@/components/projects/asset-grid";
+import { folderBackTarget } from "@/components/projects/folder-back-button";
 import { CommentPanel } from "@/components/review/comment-panel";
 import { UploadZone } from "@/components/upload/upload-zone";
 import type { DroppedFile } from "@/lib/read-dropped-entries";
@@ -426,6 +427,20 @@ export default function ProjectDetailPage() {
     }
     return findPath(tree, currentFolderId, []) ?? [];
   }, [currentFolderId, tree]);
+
+  /**
+   * §228d item 3 — where the content column's Back button points.
+   *
+   * The FOURTH reader of `folderTrail`, and deliberately not a fifth walk
+   * of the tree: the crumbs, the navigator's path, the drop overlay's
+   * target name and now this one all answer "where am I" from the same
+   * array. At the project root the trail is empty and the button goes to
+   * the projects list, which is why it is rendered at every depth.
+   */
+  const backTarget = React.useMemo(
+    () => folderBackTarget(projectId, project?.name ?? "Project", folderTrail),
+    [projectId, project?.name, folderTrail],
+  );
 
   // Push folder path as extra breadcrumb crumbs when navigating folders
   React.useEffect(() => {
@@ -1308,6 +1323,7 @@ export default function ProjectDetailPage() {
             <AssetGrid
               assets={assets ?? []}
               folders={subfolders ?? []}
+              backTo={backTarget}
               currentFolderId={currentFolderId}
               projectId={projectId}
               projectName={project?.name ?? 'Project'}

@@ -1169,7 +1169,9 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
         >
           <span
             className={cn(
-              'flex h-7 w-full items-center justify-center rounded-md text-[13px] font-medium transition-all',
+              // §228d item 2 — `rounded` (4px), not `rounded-md` (6px):
+              // the strip's 8px radius minus the 4px inset it now has.
+              'flex h-7 w-full items-center justify-center rounded text-[13px] font-medium transition-all',
               active
                 ? 'bg-bg-hover text-text-primary shadow-sm'
                 : 'text-text-tertiary',
@@ -1216,21 +1218,34 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
         phoneChrome
           // §228c item 1 — `mt-1 mb-0.5`. The owner: "the Comment section
           // as a whole is now overlaying the buttons above slightly. A few
-          // pixels down are needed." Measured at 390x844 before this
+          // pixels down are needed." Measured at 390x844 before that
           // change, the five rects in this column touched EXACTLY: the
           // transport row ended at y=344.4 and this row started at y=344.4,
           // so the pill strip's own background sat against the transport
           // row's bottom border with nothing between them, and the comment
-          // toolbar sat against this row's border in turn. Nothing
-          // overlapped in the arithmetic sense — §228b left no negative
-          // margin — but three solid bands with zero separation read as one
-          // band lying on another, which is what he saw.
+          // toolbar sat against this row's border in turn.
           //
-          // 4px above and 2px below, 6px in all, which is the budget this
-          // item allows against the 33px §228b won back; it comes out of
-          // the comment list (the player is `shrink-0` and keeps its
-          // aspect ratio), so the list goes 324 -> 318 at 390x844.
-          ? 'flex items-center border-b border-border px-2 mt-1 mb-0.5'
+          // §228d item 1 — `py-1.5` INSIDE the border, replacing that
+          // `mt-1`. "The comments bar divider is still overlapping."
+          // §228c measured the gaps between SIBLING RECTS and got 4px
+          // above and 2px below; what it never measured is the 1px line
+          // this very element paints on its own bottom edge. With no
+          // bottom padding the strip's rounded background ended on the
+          // pixel the divider starts (measured: strip bottom 381.4,
+          // divider top 381.4 at 390x844), so the strip sat ON the line —
+          // which is what he saw, and why a sibling-gap assertion passed
+          // while the screen looked wrong.
+          //
+          // The fix belongs on THIS element, not on a margin somewhere
+          // else, because this element owns the line: padding separates
+          // the strip from its own border, 6px above and 6px below, which
+          // is what item 1 asks for. `mb-0.5` stays: that is the 2px
+          // between the LINE and the comment toolbar, a different gap.
+          // Total cost 8px (4 -> 12 of vertical space), the most this item
+          // allows, out of the comment list — the player is `shrink-0` and
+          // keeps its aspect ratio — so the list goes 317.6 -> 309.6 at
+          // 390x844.
+          ? 'flex items-center border-b border-border px-2 py-1.5 mb-0.5'
           : 'px-4 pt-3 pb-2',
       )}
     >
@@ -1238,21 +1253,34 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
         data-testid="viewer-tab-strip"
         className={cn(
           'flex items-center bg-bg-tertiary rounded-lg',
-          // §228c item 2 — `px-0.5`, which is the whole fix for "if the
-          // buttons are selected left or right, the selection goes outside
-          // the overall button area". The strip is `rounded-lg` (8px) and
-          // the active pill `rounded-md` (6px); with no padding the first
-          // and last pill's edges were flush with the strip's (measured:
-          // both at x=8 and x=382 against a strip of 8→382), so at the
-          // four corners a 6px arc sat inside an 8px arc and the pill's
-          // square shoulders painted over the strip's rounding.
+          // §228c item 2 — `px-0.5`, for "if the buttons are selected left
+          // or right, the selection goes outside the overall button area".
+          // With no padding the first and last pill's edges were flush
+          // with the strip's (measured: both at x=8 and x=382 against a
+          // strip of 8→382), so at the four corners a 6px arc sat inside
+          // an 8px arc and the pill's square shoulders painted over the
+          // strip's rounding.
           //
-          // HORIZONTAL padding only, so this costs no height: the pill is
-          // already inset 4px top and bottom (a 28px pill centred in a
-          // 36px button). 2px of inset against an 8px container radius is
-          // exactly the 6px the pill already has — container radius minus
-          // inset — so nothing else has to change.
-          phoneChrome ? 'w-full min-w-0 px-0.5' : 'p-0.5',
+          // §228d item 2 — `px-1`, i.e. 2px -> 4px. The owner, looking at
+          // the deployed §228c: "the selection highlight is also still too
+          // close to the edge on both sides." 2px is measurable and still
+          // reads as flush at 3x, so the number goes up rather than being
+          // defended.
+          //
+          // HORIZONTAL padding only, and that is the whole point: the pill
+          // is ALREADY inset 4px top and bottom, because it is a 28px pill
+          // centred in the 36px button that carries the hit area. Adding
+          // `p-1` instead would either push the strip to 44px (8px of
+          // growth, twice what this item allows) or cut the button to 28px
+          // and take the tap target below the 36px floor §228b set. `px-1`
+          // gets the 4px on all four sides for 0px of growth and no change
+          // to the hit area — the strip stays 36px tall.
+          //
+          // The pill's radius drops with it: 8px container radius minus a
+          // 4px inset is 4px (`rounded`), which is what keeps the two
+          // curves concentric. At 6px it would have been tighter than the
+          // corner it sits in.
+          phoneChrome ? 'w-full min-w-0 px-1' : 'p-0.5',
         )}
       >
         {tabButton('comments', 'Comments')}

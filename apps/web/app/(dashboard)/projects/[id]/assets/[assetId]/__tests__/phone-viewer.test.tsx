@@ -831,17 +831,26 @@ describe('§228c item 6 — compact landscape is two columns, not a stack', () =
   })
 })
 
-// ─── §228c items 1 and 2 — the tab row's own geometry ───────────────────
+// ─── §228c items 1 and 2, as §228d raised them ──────────────────────────
 
-describe('§228c item 1 — the comment section sits below the transport row', () => {
-  it('the phone tab row carries the 4px above and 2px below', () => {
+describe('§228d item 1 — the tab strip is clear of the line below it', () => {
+  it('the phone tab row pads INSIDE its own border, 6px above and below', () => {
     renderViewer()
     const row = screen.getByTestId('viewer-panel-tabs')
-    // Measured before this change at 390x844: transport bottom 344.4, tab
-    // row top 344.4 — touching exactly. The gap is what the owner asked
-    // for ("a few pixels down are needed").
-    expect(row.className).toContain('mt-1')
+    // §228c put 4px above and 2px below as MARGINS and measured the gaps
+    // between sibling rects. The line the owner was looking at is this
+    // element's own `border-b`, which no sibling gap can describe:
+    // measured at 390x844, the strip's background ended at y=381.4 and the
+    // divider began at y=381.4. Padding is what separates a box from its
+    // own border, so that is where the fix has to live.
+    expect(row.className).toContain('border-b')
+    expect(row.className).toContain('py-1.5')
+    // the 2px between the LINE and the comment toolbar — a different gap,
+    // and still a margin, because it is outside the border.
     expect(row.className).toContain('mb-0.5')
+    // and not the old outer margin, which would have moved the whole band
+    // down without lifting the strip off the line.
+    expect(row.className).not.toContain('mt-1 ')
   })
 
   it('and the drawer at md+ has neither', () => {
@@ -849,21 +858,37 @@ describe('§228c item 1 — the comment section sits below the transport row', (
     renderViewer()
     const row = screen.getByTestId('viewer-panel-tabs')
     expect(row.className).toContain('px-4 pt-3 pb-2')
-    expect(row.className).not.toContain('mt-1')
+    expect(row.className).not.toContain('py-1.5')
     expect(row.className).not.toContain('mb-0.5')
   })
 })
 
-describe('§228c item 2 — the active pill stays inside its container', () => {
-  it('the strip is padded, so the first and last pill are inset', () => {
+describe('§228d item 2 — the active pill is 4px inside its container', () => {
+  it('the strip is padded 4px, so the first and last pill are inset', () => {
     renderViewer()
     const strip = screen.getByTestId('viewer-tab-strip')
-    expect(strip.className).toContain('px-0.5')
-    // 8px container radius, 2px inset, 6px pill radius: container radius
+    // §228c's 2px (`px-0.5`) was measurable and still read as flush at 3x:
+    // "the selection highlight is also still too close to the edge on both
+    // sides". 4px, and the pill's radius with it.
+    expect(strip.className).toContain('px-1')
+    expect(strip.className).not.toContain('px-0.5')
+    // 8px container radius, 4px inset, 4px pill radius: container radius
     // minus inset, which is what makes the corners concentric.
     expect(strip.className).toContain('rounded-lg')
     const pill = screen.getByTestId('viewer-tab-comments').firstElementChild
-    expect(pill?.className).toContain('rounded-md')
+    expect(pill?.className).toMatch(/\brounded\b/)
+    expect(pill?.className).not.toContain('rounded-md')
+  })
+
+  it('the vertical 4px comes from the hit area, not from a taller strip', () => {
+    // A 28px pill centred in the 36px button that carries the tap target
+    // is already 4px clear top and bottom. `p-1` instead of `px-1` would
+    // have cost 8px of height — twice what item 2 allows — or taken the
+    // button to 28px, under the 36px floor §228b set.
+    renderViewer()
+    const btn = screen.getByTestId('viewer-tab-comments')
+    expect(btn.className).toContain('h-9')
+    expect(btn.firstElementChild?.className).toContain('h-7')
   })
 
   it('every tab paints its pill the same way, first and last included', () => {
@@ -871,7 +896,7 @@ describe('§228c item 2 — the active pill stays inside its container', () => {
     for (const id of ['comments', 'fields', 'transcript']) {
       const tab = screen.queryByTestId(`viewer-tab-${id}`)
       if (!tab) continue
-      expect(tab.firstElementChild?.className).toContain('rounded-md')
+      expect(tab.firstElementChild?.className).toMatch(/\brounded\b/)
     }
   })
 
@@ -879,7 +904,8 @@ describe('§228c item 2 — the active pill stays inside its container', () => {
     setPhone(false, true)
     renderViewer()
     await ready()
-    expect(screen.getByTestId('viewer-tab-strip').className).toContain('px-0.5')
+    expect(screen.getByTestId('viewer-tab-strip').className).toContain('px-1')
+    expect(screen.getByTestId('viewer-panel-tabs').className).toContain('py-1.5')
   })
 })
 
