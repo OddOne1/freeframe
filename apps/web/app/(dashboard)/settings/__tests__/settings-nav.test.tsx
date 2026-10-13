@@ -5,6 +5,13 @@
  * conditionally visible, so a separator placed by index would leave a stray
  * line whenever the item beside it is hidden. That is what these assert,
  * rather than the order alone.
+ *
+ * §229 — two changes here, both consequences of the layout rather than of
+ * the list: Branding is gone (it is a tab of Admin now, see
+ * admin-tabs.test.tsx), and the layout renders a "‹ Settings" back link
+ * above the content on phones. `order()` therefore reads links from INSIDE
+ * the sidebar rather than from the whole document, which it should always
+ * have done — it is the sidebar's order it is asserting.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
@@ -31,11 +38,12 @@ function renderNav() {
   return render(<SettingsLayout>{null}</SettingsLayout>)
 }
 
-/** Nav links in render order. */
+/** Nav links in render order, from the sidebar only. */
 function order() {
-  return screen
-    .getAllByRole('link')
-    .map((a) => a.textContent?.trim())
+  const sidebar = screen.getByTestId('settings-sidebar')
+  return Array.from(sidebar.querySelectorAll('a')).map((a) =>
+    a.textContent?.trim(),
+  )
 }
 
 function groups() {
@@ -60,10 +68,9 @@ describe('settings nav order', () => {
       'LUTs',
       'Projects',
       'Admin',
-      'Branding',
       'Contact',
     ])
-    // Three dividers: after LUTs, after Projects, after Branding.
+    // Three dividers: after LUTs, after Projects, after Admin.
     expect(dividerCount()).toBe(3)
   })
 })
@@ -99,17 +106,29 @@ describe('dividers follow visibility', () => {
       'Projects',
       'Contact',
     ])
-    // Admin/Branding is empty for them and collapses away entirely rather
-    // than leaving two adjacent lines.
+    // The Admin group is empty for them and collapses away entirely
+    // rather than leaving two adjacent lines.
     expect(groups()).toHaveLength(3)
     expect(dividerCount()).toBe(2)
   })
 
-  it('hides Admin and Branding together from a non-superadmin', () => {
+  it('hides Admin from a non-superadmin', () => {
     isSuperAdmin = false
     hasProjectPrivilege = true
     renderNav()
     expect(order()).not.toContain('Admin')
+  })
+
+  // §229 — Branding is not a section any more, for ANY user. The owner
+  // asked for "only one Admin setting to hide", and a nav entry that still
+  // existed beside Admin would be the second one.
+  it('offers no Branding entry at all, superadmin included', () => {
+    isSuperAdmin = true
+    hasProjectPrivilege = true
+    renderNav()
     expect(order()).not.toContain('Branding')
+    expect(
+      screen.queryByRole('link', { name: 'Branding' }),
+    ).not.toBeInTheDocument()
   })
 })

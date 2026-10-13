@@ -92,7 +92,8 @@ function renderDrawer() {
 const drawer = () => screen.getByTestId('app-sidebar')
 const block = () => screen.getByTestId('sidebar-user-block')
 
-/** Every settings section that exists, by the label the nav gives it. */
+/** Every settings section that exists, by the label the nav gives it.
+ *  §229 — Branding is no longer one of them; it is a tab of Admin. */
 const ALL_SECTIONS = [
   'Profile',
   'Appearance',
@@ -100,7 +101,6 @@ const ALL_SECTIONS = [
   'LUTs',
   'Projects',
   'Admin',
-  'Branding',
   'Contact',
 ]
 
@@ -219,7 +219,6 @@ describe('§227 (d) — the sections live on the Settings page', () => {
     renderSettings()
     expect(await screen.findByRole('link', { name: 'Profile' })).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Admin' })).toBeNull()
-    expect(screen.queryByRole('link', { name: 'Branding' })).toBeNull()
   })
 
   it('and the drawer’s one link is the way in, for both', () => {

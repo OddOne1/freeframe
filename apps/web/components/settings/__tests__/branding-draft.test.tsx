@@ -32,7 +32,7 @@ vi.mock('@/stores/auth-store', () => ({
 vi.mock('@/stores/theme-store', () => ({ useThemeStore: () => ({ resolvedTheme: 'dark' }) }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: vi.fn() }) }))
 
-import BrandingPage from '../page'
+import { BrandingSection as BrandingPage } from '../branding-section'
 
 type Settings = {
   org_name: string

@@ -168,10 +168,14 @@ export function Header({ onSearchOpen, onMobileNavOpen }: HeaderProps) {
           </button>
         )}
 
-        {/* Search trigger */}
+        {/* Search trigger.
+            §229 — `hover-none:h-9`: the box is 36x24 and it is the only
+            sub-36px target left on four of the Settings pages at 390px.
+            Touch-only, so the mouse keeps the 24px chip exactly as it
+            is at every width. */}
         <button
           onClick={onSearchOpen}
-          className="flex items-center gap-1.5 rounded-md border border-nav-border bg-nav-text/5 px-2.5 py-1 text-xs text-nav-text/70 hover:border-nav-text/50 hover:text-nav-text transition-colors"
+          className="flex items-center gap-1.5 rounded-md border border-nav-border bg-nav-text/5 px-2.5 py-1 text-xs text-nav-text/70 hover:border-nav-text/50 hover:text-nav-text transition-colors hover-none:h-9 hover-none:px-3"
         >
           <Search className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Search</span>

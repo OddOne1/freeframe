@@ -479,7 +479,8 @@ async function handleAvatarCropped(blob: Blob) {
       <Dialog.Root open={pwCodeDialogOpen} onOpenChange={setPwCodeDialogOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary shadow-xl p-6">
+          <Dialog.Content
+          data-settings-touch className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary shadow-xl p-6">
             <Dialog.Title className="text-sm font-semibold text-text-primary">Confirm password change</Dialog.Title>
             <Dialog.Description className="mt-1.5 text-sm text-text-tertiary leading-relaxed">
               We emailed a verification code to {user?.email}. Enter it below to finish changing your password. If you did not request this, ignore the email and your password will stay the same.
@@ -508,7 +509,8 @@ async function handleAvatarCropped(blob: Blob) {
       <Dialog.Root open={pw2faDialogOpen} onOpenChange={setPw2faDialogOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary shadow-xl p-6">
+          <Dialog.Content
+          data-settings-touch className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary shadow-xl p-6">
             <Dialog.Title className="text-sm font-semibold text-text-primary">One more step</Dialog.Title>
             <Dialog.Description className="mt-1.5 text-sm text-text-tertiary leading-relaxed">
               {pw2faNotice ||

@@ -15,6 +15,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { useUploadStore } from '@/stores/upload-store'
 import { useNotificationStore } from '@/stores/notification-store'
 import { useSiteSettings } from '@/hooks/use-site-settings'
+import { useIsPhone } from '@/hooks/use-media-query'
 import { useThemeStore } from '@/stores/theme-store'
 import { Avatar } from '@/components/shared/avatar'
 import { NotificationDrawer } from './notification-drawer'
@@ -47,6 +48,9 @@ export function Sidebar({
 }: SidebarProps) {
   const pathname = usePathname()
   const { user } = useAuthStore()
+  // §229 — where the avatar row goes depends on what Settings IS at this
+  // width. See the comment on the Link itself.
+  const isPhone = useIsPhone()
   const { files: uploadFiles, togglePanel, panelOpen } = useUploadStore()
   const { unreadCount, fetchNotifications } = useNotificationStore()
   const { orgName, logoDarkUrl, logoLightUrl } = useSiteSettings()
@@ -254,9 +258,28 @@ export function Sidebar({
             already gates what each user sees once they arrive, so the old
             per-role routing between /settings/admin and /settings/projects
             was picking a destination the destination already handles. Log
-            out moved to the Profile page, which is where this lands. */}
+            out moved to the Profile page, which is where this lands.
+
+            §229 — on a phone it lands on `/settings`, the section LIST,
+            and not on Profile. Both were available and this is the one
+            that makes the "‹ Settings" header on every section page
+            honest: tapping the avatar, choosing a section and pressing
+            that link walks back to a page the user has actually seen.
+            Landing straight on Profile would put a "back" link above it
+            pointing at a list nobody had opened.
+
+            At `md`+ the href stays `/settings/profile`. The desktop
+            sidebar shows every section at once, so the list adds nothing
+            there, and `/settings` on a desktop only redirects to Profile
+            anyway — this skips the hop and the empty frame it costs.
+
+            `useIsPhone` rather than two links: the row is the sidebar's
+            own avatar row, shown in the rail AND in the drawer, and a
+            second copy of it for one href is exactly the duplication
+            §227 took out of `sidebar-user-block`. The hook resolves in a
+            layout effect, before paint. */}
         <Link
-          href="/settings/profile"
+          href={isPhone ? '/settings' : '/settings/profile'}
           title={!expanded ? (user?.name ?? 'Account') : undefined}
           className={cn(
             'flex w-full items-center rounded-md text-nav-text/60 hover:bg-nav-text/10 hover:text-nav-text transition-colors',

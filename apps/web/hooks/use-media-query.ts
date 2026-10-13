@@ -91,6 +91,34 @@ export function useIsPhone(): boolean {
 }
 
 /**
+ * Below Tailwind's `lg` — where a 760px table stops fitting (§229).
+ *
+ * `BELOW_MD` is the phone line everywhere else in this app, and the
+ * Settings sidebar follows it. The Admin users TABLE needs a wider line,
+ * and the arithmetic says so: the sidebar is 224px, so a 768px tablet
+ * leaves 496px of content for a table that declares `min-w-[760px]`.
+ * Measured at 768x1024 against the pre-§229 build, 118 of that page's
+ * interactive controls were off the right edge of the screen, reachable
+ * only by dragging the table sideways inside its own card.
+ *
+ * Narrowing the sidebar to icons at that range — the other option §229
+ * offered — does not fix it: 768 − 56 = 712, still 48px short of the
+ * table, and 148 short of the Projects page's 860px one. So the sidebar
+ * keeps its labels at every width and the TABLE is what changes: below
+ * `lg` a user is a card, which needs no particular width at all.
+ *
+ * Phrased as a `max-width` for the same reason as `BELOW_MD`: the hook
+ * starts `false`, and `false` has to mean "not known to be narrow",
+ * which is the existing table.
+ */
+export const BELOW_LG = '(max-width: 1023px)'
+
+/** Is this viewport too narrow for Settings' widest table? (§229) */
+export function useBelowLg(): boolean {
+  return useMediaQuery(BELOW_LG)
+}
+
+/**
  * A short touch screen in landscape — "compact landscape" (§228c item 6).
  *
  * The owner, with an iPhone on its side: "if flipped on the side the view

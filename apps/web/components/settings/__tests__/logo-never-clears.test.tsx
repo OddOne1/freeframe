@@ -37,7 +37,7 @@ vi.mock('@/stores/auth-store', () => ({
 vi.mock('@/stores/theme-store', () => ({ useThemeStore: () => ({ resolvedTheme: 'dark' }) }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: vi.fn() }) }))
 
-import BrandingPage from '../page'
+import { BrandingSection as BrandingPage } from '../branding-section'
 
 const COMMITTED = '/stream/hls/acme-dark.png?token=t'
 const REPLACEMENT = '/stream/hls/acme-new.png?token=t'

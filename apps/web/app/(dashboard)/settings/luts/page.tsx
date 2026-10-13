@@ -981,11 +981,19 @@ export default function LutsSettingsPage() {
 
   return (
     <div className="p-6 max-w-3xl space-y-8">
-      <div className="flex items-center gap-3">
+      {/* §229 — below `lg` the three buttons go to a row of their own
+          rather than being clipped off the right edge. Measured at 390px
+          before this: "New Platform Group" ran to x=492 and Upload to
+          x=598 against a 390px viewport, both only reachable by dragging
+          the page sideways. `max-lg:` and not `flex-wrap` alone, because
+          the row still has to be ONE line at 1440x900 where the content
+          column is 720px wide and the title block is squeezed to 181px —
+          an unconditional wrap would move it there too. */}
+      <div className="flex items-center gap-3 max-lg:flex-wrap">
         <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-muted">
           <SwatchBook className="h-5 w-5 text-accent" />
         </div>
-        <div className="flex-1">
+        <div className="flex-1 max-lg:min-w-[12rem]">
           <h1 className="text-lg font-semibold text-text-primary">LUTs</h1>
           <p className="text-sm text-text-secondary">
             Your personal color LUTs, available in every project you work on.
@@ -1037,7 +1045,8 @@ export default function LutsSettingsPage() {
       <Dialog.Root open={uploadOpen} onOpenChange={setUploadOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary p-6 shadow-xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+          <Dialog.Content
+          data-settings-touch className="fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary p-6 shadow-xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
             <Dialog.Close className="absolute right-4 top-4 text-text-tertiary hover:text-text-primary transition-colors">
               <X className="h-4 w-4" />
             </Dialog.Close>
@@ -1170,6 +1179,7 @@ export default function LutsSettingsPage() {
               </DropdownMenu.Trigger>
               <DropdownMenu.Portal>
                 <DropdownMenu.Content
+          data-settings-touch
                   align="end"
                   sideOffset={4}
                   className="z-[100] w-56 max-h-80 overflow-y-auto rounded-lg border border-border bg-bg-elevated shadow-xl py-1"
@@ -1521,7 +1531,8 @@ export default function LutsSettingsPage() {
       >
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary p-6 shadow-xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+          <Dialog.Content
+          data-settings-touch className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary p-6 shadow-xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
             <Dialog.Close className="absolute right-4 top-4 text-text-tertiary hover:text-text-primary transition-colors">
               <X className="h-4 w-4" />
             </Dialog.Close>
@@ -1736,7 +1747,14 @@ function LutRow({
         e.dataTransfer.effectAllowed = 'move'
       }}
       className={cn(
-        'flex items-center gap-3 p-4 rounded-lg border border-border bg-bg-secondary',
+        // §229 — `max-sm:flex-wrap`: the row's fixed parts are a checkbox,
+        // a 48px swatch and three controls, and with §229's 36px touch
+        // floor on the controls they add up to more than a 390px phone
+        // has. Measured before this: every row's `⋯` button sat at
+        // x=367..403 against a 390px viewport, so the menu holding
+        // Rename, Duplicate, Export and Delete was off the screen on
+        // every LUT a phone could see. `sm:` and above is untouched.
+        'flex items-center gap-3 p-4 rounded-lg border border-border bg-bg-secondary max-sm:flex-wrap',
         canDrag && !renaming && 'cursor-grab active:cursor-grabbing',
       )}
     >
@@ -1801,7 +1819,11 @@ function LutRow({
       {busy && <Loader2 className="h-4 w-4 animate-spin text-text-tertiary shrink-0" />}
 
       {canManage && (
-        <>
+        // The action cluster. A wrapper rather than three loose flex
+        // items so that, when the row wraps on a phone, they move as one
+        // line instead of one control at a time. Same 12px gaps inside
+        // it, so nothing moves at `sm` and above.
+        <div className="flex items-center gap-3 shrink-0 max-sm:w-full max-sm:justify-end">
           {canTogglePlatform && (
             // Promoted out of the ⋯ menu for the same reason SharePopover was:
             // a superadmin could not find it in there. Its border carries the
@@ -1841,6 +1863,7 @@ function LutRow({
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content
+          data-settings-touch
                 align="end"
                 sideOffset={4}
                 onCloseAutoFocus={(e) => {
@@ -1902,7 +1925,7 @@ function LutRow({
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
-        </>
+        </div>
       )}
     </div>
   )
@@ -2105,6 +2128,7 @@ function SharePopover({
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
+          data-settings-touch
           align="end"
           sideOffset={6}
           className="z-[100] w-64 max-h-80 overflow-y-auto rounded-lg border border-border bg-bg-elevated shadow-xl p-1"

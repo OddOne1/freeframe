@@ -905,3 +905,76 @@
     padding-bottom: max(0px, env(safe-area-inset-bottom));
   }
 }
+
+/* ═════════════════════════════════════════════════════════════════════════
+ * §229 — Settings on a touch screen. ALL OF §229's CSS IS IN THIS BLOCK,
+ * at the end of the file, so a merge with §228b (which is adding its own
+ * rules above) is a concatenation rather than a conflict.
+ * ═════════════════════════════════════════════════════════════════════════
+ *
+ * One rule, scoped to `[data-settings-touch]` and to touch screens only.
+ *
+ * That attribute is on the Settings layout's own root, AND on each of the
+ * 15 portalled surfaces inside Settings — every `Dialog.Content`,
+ * `DropdownMenu.Content` and `Popover.Content` on these pages. Radix
+ * portals its overlays to `document.body`, so they are not inside the
+ * layout in the DOM however they look on screen, and a rule scoped only
+ * to the layout reached none of them: measured in the delete-user dialog
+ * at 390x640, its close ✕ was 16x16, the "choose a new owner" select
+ * 32px and Cancel 32px, all outside the rule that had just raised the
+ * page behind them.
+ *
+ * What it is for: Settings is where this app keeps its SMALL controls.
+ * `size="sm"` buttons are 32px, the admin fields are `h-8`, a sortable
+ * column header is a 17px button and a theme colour swatch is a 24px
+ * square. §228 set the policy — 44px for a primary action, 36px for
+ * everything else — and audited the asset viewer against it; these pages
+ * were not in that pass, and at 390px they are where a finger spends its
+ * time once the sidebar stops eating the screen.
+ *
+ * Why a stylesheet rule rather than `hover-none:min-h-9` on each control:
+ * there are ~120 of them across eight pages and five Admin tabs, the
+ * failure is invisible on a desktop, and every new control added to
+ * Settings would have to remember. One selector cannot forget.
+ *
+ * Why it is safe where it applies:
+ *   - `min-height`/`min-width` only. A control that is already big enough
+ *     is untouched, and nothing can shrink.
+ *   - `(hover: none) and (pointer: coarse)`. No mouse matches it, so
+ *     every desktop screenshot — at every width — is byte-identical.
+ *   - scoped to the Settings subtree, so the dashboard, the project views
+ *     and the asset viewer keep exactly the sizes §228 measured for them.
+ *
+ * Checkboxes and radios are excluded: their rendered box moves with the
+ * declared size, and growing it would misalign every row they sit in. A
+ * colour swatch is NOT excluded — it is a 24px square whose whole job is
+ * to be tapped — and gets a width floor as well as a height one.
+ */
+@media (hover: none) and (pointer: coarse) {
+  [data-settings-touch] button,
+  [data-settings-touch] [role='button'],
+  [data-settings-touch] select,
+  [data-settings-touch] textarea,
+  [data-settings-touch] input:not([type='checkbox']):not([type='radio']):not([type='hidden']) {
+    min-height: 36px;
+  }
+
+  /* Width too, for the controls whose box is a square or an icon: the
+   * password eye inside a text field is 16px wide, a colour swatch 24.
+   * A text button is always wider than 36 already, so this is a floor
+   * nothing with words in it ever notices. */
+  [data-settings-touch] button,
+  [data-settings-touch] [role='button'],
+  [data-settings-touch] input[type='color'] {
+    min-width: 36px;
+  }
+
+  /* The one exception in the other direction: a `⋯` menu is the ONLY way
+   * to reach a user card's actions, so it is a primary action and gets
+   * the full 44. It is already 44 in the markup; this keeps it 44 if the
+   * markup ever changes. */
+  [data-settings-touch] [data-testid='user-card-menu'] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

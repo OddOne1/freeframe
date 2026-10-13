@@ -1,6 +1,6 @@
 'use client'
 
-import { User, Bell, Shield, Palette, Brush, FolderKanban, LifeBuoy, SwatchBook } from 'lucide-react'
+import { User, Bell, Shield, Palette, FolderKanban, LifeBuoy, SwatchBook } from 'lucide-react'
 import type * as React from 'react'
 import { useAuthStore } from '@/stores/auth-store'
 import { useHasProjectPrivilege } from '@/hooks/use-project-privilege'
@@ -18,9 +18,15 @@ export interface SettingsNavItem {
 /**
  * Grouped rather than flat, so a divider belongs to a group instead of
  * sitting at a fixed index. Every item here is gated individually, and
- * Projects/Admin/Branding are all conditional — an index-counted separator
- * would leave a stray line whenever the item beside it is hidden.
+ * Projects/Admin are both conditional — an index-counted separator would
+ * leave a stray line whenever the item beside it is hidden.
  * A group renders no divider when it has no visible items at all.
+ *
+ * §229 — Branding is no longer an entry of its own. It is a tab inside
+ * Admin (`/settings/admin?tab=branding`), and `/settings/branding` is a
+ * redirect to it, because the owner asked for "only one Admin setting to
+ * hide". This list is the single source for the desktop sub-nav AND the
+ * phone section list, so removing it here removes it from both.
  */
 export const settingsNavGroups: SettingsNavItem[][] = [
   [
@@ -36,7 +42,6 @@ export const settingsNavGroups: SettingsNavItem[][] = [
   ],
   [
     { href: '/settings/admin', label: 'Admin', icon: Shield, adminOnly: true },
-    { href: '/settings/branding', label: 'Branding', icon: Brush, adminOnly: true },
   ],
   [
     // Ungated, and last: reaching a human is not an admin feature.
@@ -54,6 +59,11 @@ export const settingsNavGroups: SettingsNavItem[][] = [
  * it. The Settings sub-nav and the drawer now read one list through one
  * gate; whoever can see Admin in the sidebar can see it in the drawer, by
  * construction rather than by both remembering the same rule.
+ *
+ * §229 — the phone's `/settings` section list reads this too, and it is
+ * deliberately the SAME call rather than a second gate of its own: a list
+ * that decided for itself who may see Admin is exactly how the drawer and
+ * the sub-nav would have drifted apart, one screen size at a time.
  */
 export function useVisibleSettingsNav(): SettingsNavItem[][] {
   const { isSuperAdmin } = useAuthStore()
