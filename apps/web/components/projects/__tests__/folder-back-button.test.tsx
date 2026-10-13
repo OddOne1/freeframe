@@ -15,11 +15,20 @@
  *  - the button itself, rendered by the real `AssetGrid` in grid, in list
  *    and with nothing in the folder at all.
  *
+ * §228e moved it: at `md`+ Back now sits BELOW the toolbar row and its
+ * divider and directly above the first label; on a phone it is still the
+ * first thing in the column, because the toolbar row is `hidden md:flex`
+ * and paints nothing there. One component, one render site, so the two
+ * cases are one DOM order read under two different sets of CSS — which is
+ * exactly what the order tests below assert.
+ *
  * What jsdom cannot show, as everywhere else in this app: that 28px is
  * 28px, that `md:` applies at 768, or that the invisible `tap-target-44`
- * box is 44 CSS px. Those are asserted here as the classes that encode the
- * decision and measured for real in Chromium — the numbers are in the
- * §228d report.
+ * box is 44 CSS px. jsdom also loads no stylesheet, so `hidden md:flex` is
+ * an inert string here and the toolbar row is in the tree at every width:
+ * the phone case is therefore asserted as "first among what is NOT
+ * phone-hidden", and the real pixels are measured in Chromium — the
+ * numbers are in the §228e report.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
@@ -94,6 +103,33 @@ function renderGrid(
 }
 
 const backLink = () => screen.getByTestId('folder-back') as HTMLAnchorElement
+const toolbar = () => screen.getByTestId('navigator-bar') as HTMLElement
+
+const INTERACTIVE = 'button, a[href], input, select, textarea, [role="button"]'
+
+/** Does `a` come before `b` in DOM order? That is also tab order here:
+ *  nothing in the column carries a tabindex. */
+const precedes = (a: Element, b: Element) =>
+  !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+
+/** Is this element inside something Tailwind hides below `md`? jsdom
+ *  applies no stylesheet, so the class is the only evidence there is. */
+const phoneHidden = (el: Element) => {
+  for (let n: Element | null = el; n; n = n.parentElement) {
+    const cls = n.className?.toString?.() ?? ''
+    if (/(^|\s)hidden(\s|$)/.test(cls) && /\bmd:(flex|block|inline|contents|grid|inline-flex)\b/.test(cls)) {
+      return true
+    }
+  }
+  return false
+}
+
+/** "N FOLDERS" — the first label of the content, the thing the owner
+ *  asked Back to sit directly above. */
+const foldersLabel = () =>
+  Array.from(document.querySelectorAll('span')).find((s) =>
+    /^\d+\s+folders?$/i.test((s.textContent || '').trim()),
+  )!
 
 beforeEach(() => {
   push.mockClear()
@@ -143,12 +179,46 @@ describe('§228d item 3 — the parent, from the trail the breadcrumb uses', () 
 describe('§228d item 3 — the control itself', () => {
   const backTo = { href: `/projects/${PROJECT}?folder=f-b`, parentName: 'Day 2' }
 
-  it('is the first interactive element in the content column', () => {
+  it('at md+ it comes AFTER the toolbar row and BEFORE the first label', () => {
+    /* §228e. The owner wants it under the toolbar's divider line and
+       directly above "N FOLDERS", and DOM order is what delivers that at
+       `md`+ — the column is a plain `flex-col` with no `order` anywhere,
+       so DOM order, tab order and visual order are one order. */
+    renderGrid({ backTo })
+    expect(precedes(toolbar(), backLink())).toBe(true)
+    expect(precedes(backLink(), foldersLabel())).toBe(true)
+  })
+
+  it('at md+ nothing else sits between the toolbar and Back', () => {
+    // "directly below", not "somewhere below".
     const { container } = renderGrid({ backTo })
-    const first = container.querySelector(
-      'button, a[href], input, select, textarea, [role="button"]',
+    const col = container.firstElementChild!
+    const kids = Array.from(col.children)
+    expect(kids.indexOf(backLink())).toBe(kids.indexOf(toolbar()) + 1)
+  })
+
+  it('is rendered ONCE, so there is one tab stop and one test id', () => {
+    /* The alternative placement — two buttons, `md:hidden` and
+       `hidden md:inline-flex` — would read identically in a screenshot
+       and leave a second node, a second tab stop and a duplicate
+       `data-testid` behind. */
+    renderGrid({ backTo })
+    expect(screen.getAllByTestId('folder-back')).toHaveLength(1)
+    expect(screen.getAllByLabelText('Back to Day 2')).toHaveLength(1)
+  })
+
+  it('on a phone it is still the first thing in the column', () => {
+    /* Unchanged from §228d, and unchanged to the pixel: below `md` the
+       toolbar row is `hidden md:flex`, so it paints nothing and a
+       `gap-3` column collapses its gap too. Back is therefore the first
+       element a finger can reach, directly above "N FOLDERS". */
+    const { container } = renderGrid({ backTo })
+    const painted = Array.from(container.querySelectorAll(INTERACTIVE)).filter(
+      (el) => !phoneHidden(el),
     )
-    expect(first).toBe(backLink())
+    expect(painted[0]).toBe(backLink())
+    expect(phoneHidden(toolbar())).toBe(true)
+    expect(precedes(backLink(), foldersLabel())).toBe(true)
   })
 
   it('is a real link to the parent, never a history instruction', async () => {
@@ -174,7 +244,7 @@ describe('§228d item 3 — the control itself', () => {
   it('shows the parent name only where it fits, and the word always', () => {
     renderGrid({ backTo })
     expect(backLink().textContent).toContain('Back')
-    const name = [...backLink().querySelectorAll('span')].find((s) =>
+    const name = Array.from(backLink().querySelectorAll('span')).find((s) =>
       s.textContent?.trim().startsWith('to '),
     )
     // Below `md` the name is hidden: at 320px "Back to Reaction_watchparty"
@@ -218,17 +288,42 @@ describe('§228d item 3 — the control itself', () => {
     expect(icon?.getAttribute('class')).toContain('lucide-arrow-left')
   })
 
-  it('is there in list layout too', () => {
-    renderGrid({ layout: 'list', backTo })
+  it('is there in list layout too, in the same place', () => {
+    const { container } = renderGrid({ layout: 'list', backTo })
     expect(backLink()).toBeTruthy()
+    // One placement for all four states: the list's rows hang off the
+    // same column as the grid's cards.
+    const kids = Array.from(container.firstElementChild!.children)
+    expect(kids.indexOf(backLink())).toBe(kids.indexOf(toolbar()) + 1)
+    const rows = container.querySelector('[data-folder-row], [data-asset-row]')!
+    expect(precedes(backLink(), rows)).toBe(true)
   })
 
-  it('is there in an empty folder, above the empty state', () => {
+  it('is there in an empty folder, under the toolbar and above the empty state', () => {
     const { container } = renderGrid({ assets: [], folders: [], backTo })
     expect(backLink()).toBeTruthy()
-    expect(screen.getByText('No assets')).toBeTruthy()
-    const first = container.querySelector('a[href], button')
-    expect(first).toBe(backLink())
+    const empty = screen.getByText('No assets')
+    const kids = Array.from(container.firstElementChild!.children)
+    expect(kids.indexOf(backLink())).toBe(kids.indexOf(toolbar()) + 1)
+    expect(precedes(backLink(), empty)).toBe(true)
+    // and on a phone it is the first thing again, for the same reason
+    const painted = Array.from(container.querySelectorAll(INTERACTIVE)).filter(
+      (el) => !phoneHidden(el),
+    )
+    expect(painted[0]).toBe(backLink())
+  })
+
+  it('the loading skeleton puts it in the same place, so it does not jump', () => {
+    /* §228d made the skeleton render Back so the first row did not move
+       when the assets arrived; §228e has to keep that true of the new
+       position, or Back itself would jump from above the toolbar to below
+       it on load. Same `columnHead`, same order. */
+    const { container } = renderGrid({ backTo, handlers: { isLoading: true } })
+    expect(backLink()).toBeTruthy()
+    const kids = Array.from(container.firstElementChild!.children)
+    expect(kids.indexOf(backLink())).toBe(kids.indexOf(toolbar()) + 1)
+    // it really is the skeleton, not the loaded grid
+    expect(container.querySelectorAll('.animate-pulse').length).toBeGreaterThan(0)
   })
 
   it('does not open or select the item under it', async () => {

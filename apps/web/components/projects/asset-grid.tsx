@@ -483,90 +483,29 @@ export function AssetGrid({
   }, [selectAllVisible, shareMode])
 
 
-  if (isLoading) {
-    return (
-      <div className="flex flex-col gap-3">
-        {/* The same first element as the loaded view, so the first row of
-            cards does not jump by the button's height the moment the
-            assets arrive. */}
-        {backTo && <FolderBackButton {...backTo} />}
-        <div className={cn(gridClass, 'gap-4')} data-size={cardSize}>
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="flex flex-col gap-2">
-              <div className={cn('animate-pulse rounded-lg bg-bg-tertiary', aspectMap[aspectRatio])} />
-              <div className="h-4 w-3/4 animate-pulse rounded bg-bg-tertiary" />
-              <div className="h-3 w-1/2 animate-pulse rounded bg-bg-tertiary" />
-            </div>
-          ))}
-        </div>
-      </div>
-    )
-  }
-
-  const selectedAssetList = () => Array.from(selectedAssetIds)
-  const selectedFolderList = () => Array.from(selectedFolderIds)
-
-  return (
-    <div
-      className="flex flex-col gap-3 relative"
-      onContextMenu={(e) => {
-        // Only genuinely empty space. A right-click on a card is handled by
-        // the card's own handler, which stops propagation — but a click on
-        // a folder tile or the selection bar must not be mistaken for
-        // canvas either, so this checks what was actually hit.
-        const target = e.target as HTMLElement
-        if (target.closest('[data-asset-card],[data-folder-card],[data-no-canvas-menu]')) return
-        // Nothing to offer means no menu at all, rather than an empty box.
-        if (!onNewFolder && !onUpload) return
-        e.preventDefault()
-        setContextMenu({ x: e.clientX, y: e.clientY, mode: 'canvas' })
-      }}
-    >
-      {/* ─── Up one level (§228d item 3) ────────────────────────────────
-          The FIRST element of the content column, at every width, which is
-          both what the owner asked for ("right above the first text or
-          item") and the only position that is the same control on a phone
-          and on a desktop. Below `md` the navigator bar under it is
-          `display: none`, so this sits directly above "5 FOLDERS" exactly
-          as in his screenshot; at `md`+ the bar's own row of popovers is
-          between the two, because that row is chrome rather than content.
-
-          `self-start` and `w-fit`: in a `flex-col` the default would
-          stretch it across the column and give it a 390px hover target. */}
-      {backTo && <FolderBackButton {...backTo} />}
-
-      {/* ─── Share Selection Mode Bar ──────────────────────────────────── */}
-      {shareMode && (
-        <div className="flex items-center justify-between rounded-lg border border-accent/30 bg-accent/5 px-4 py-2.5">
-          <span className="text-sm font-medium text-text-primary">
-            Select items to share
-          </span>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                clearSelection()
-                onShareModeChange?.(false)
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              disabled={totalSelected === 0}
-              onClick={() => {
-                onCreateShareLink?.(Array.from(selectedAssetIds), Array.from(selectedFolderIds))
-                clearSelection()
-                onShareModeChange?.(false)
-              }}
-            >
-              Create Share Link
-            </Button>
-          </div>
-        </div>
-      )}
-
+  /**
+   * The head of the content column: the toolbar row, then Back (§228e).
+   *
+   * ONE definition and ONE render site for the button, rather than two
+   * copies toggled with `hidden`/`md:hidden`. A duplicate is a duplicate
+   * DOM node, a duplicate tab stop and a duplicate `data-testid`, and the
+   * two copies drift the first time one of them is edited. Here Back comes
+   * after the toolbar in DOM order at EVERY width, so DOM order, tab order
+   * and visual order are the same order.
+   *
+   * Below `md` the toolbar row is `display: none` (§224b), and a
+   * `display: none` child of a `gap-3` flex column contributes neither a
+   * box nor a gap — so the phone layout is exactly what it was: Back, then
+   * "5 FOLDERS". At `md`+ the two swap places, and because the column's
+   * gap is the same 12px above and below, the first card lands on the same
+   * pixel it did before.
+   *
+   * Rendered by the loaded view AND by the loading skeleton below, so
+   * grid, list, empty folder and skeleton cannot place Back differently:
+   * there is only one placement left to get wrong.
+   */
+  const columnHead = (
+    <>
       {/* ─── Navigator Bar (Frame.io style) ─────────────────────────────── */}
       {!shareMode && (
         <div
@@ -619,6 +558,97 @@ export function AssetGrid({
           )}
         </div>
       )}
+
+      {/* ─── Up one level (§228d item 3, moved by §228e) ───────────────
+          Directly BELOW the toolbar row and its divider line, directly
+          ABOVE the first label ("5 FOLDERS"), the first row or the empty
+          state. §228d had it above the toolbar, which on a phone is the
+          same place — the toolbar row is `hidden md:flex` there, so Back
+          still lands right above "5 FOLDERS" — but at `md`+ it put a
+          control that belongs to the folder you are IN above a row of
+          page chrome. The owner asked for it under the line.
+
+          `self-start` and `w-fit`: in a `flex-col` the default would
+          stretch it across the column and give it a 390px hover target. */}
+      {backTo && <FolderBackButton {...backTo} />}
+    </>
+  )
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col gap-3">
+        {/* The same head as the loaded view, in the same order, so neither
+            Back nor the first row of cards jumps the moment the assets
+            arrive. The toolbar's own controls (Appearance, Sort, and the
+            actions passed in) read no asset data, so they are usable while
+            the grid loads instead of appearing a beat later and pushing
+            everything down. */}
+        {columnHead}
+        <div className={cn(gridClass, 'gap-4')} data-size={cardSize}>
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="flex flex-col gap-2">
+              <div className={cn('animate-pulse rounded-lg bg-bg-tertiary', aspectMap[aspectRatio])} />
+              <div className="h-4 w-3/4 animate-pulse rounded bg-bg-tertiary" />
+              <div className="h-3 w-1/2 animate-pulse rounded bg-bg-tertiary" />
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  const selectedAssetList = () => Array.from(selectedAssetIds)
+  const selectedFolderList = () => Array.from(selectedFolderIds)
+
+  return (
+    <div
+      className="flex flex-col gap-3 relative"
+      onContextMenu={(e) => {
+        // Only genuinely empty space. A right-click on a card is handled by
+        // the card's own handler, which stops propagation — but a click on
+        // a folder tile or the selection bar must not be mistaken for
+        // canvas either, so this checks what was actually hit.
+        const target = e.target as HTMLElement
+        if (target.closest('[data-asset-card],[data-folder-card],[data-no-canvas-menu]')) return
+        // Nothing to offer means no menu at all, rather than an empty box.
+        if (!onNewFolder && !onUpload) return
+        e.preventDefault()
+        setContextMenu({ x: e.clientX, y: e.clientY, mode: 'canvas' })
+      }}
+    >
+      {/* ─── Share Selection Mode Bar ──────────────────────────────────── */}
+      {shareMode && (
+        <div className="flex items-center justify-between rounded-lg border border-accent/30 bg-accent/5 px-4 py-2.5">
+          <span className="text-sm font-medium text-text-primary">
+            Select items to share
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                clearSelection()
+                onShareModeChange?.(false)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              disabled={totalSelected === 0}
+              onClick={() => {
+                onCreateShareLink?.(Array.from(selectedAssetIds), Array.from(selectedFolderIds))
+                clearSelection()
+                onShareModeChange?.(false)
+              }}
+            >
+              Create Share Link
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {columnHead}
 
       {/* ─── Grid view: folders section ──────────────────────────────── */}
       {showFolders && layout === 'grid' && (
