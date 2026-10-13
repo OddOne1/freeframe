@@ -496,204 +496,218 @@ export function BrandingSection() {
   const previewName = draftName.trim() || 'FreeFrame'
 
   return (
-    <div className="max-w-2xl space-y-8 pb-24">
-      {/* Workspace name */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-text-primary">Workspace name</h2>
-        <div className="p-4 rounded-lg border border-border bg-bg-secondary space-y-3">
-          <Input
-            value={draftName}
-            onChange={(e) => setDraftName(e.target.value)}
-            placeholder="e.g. Acme Studio"
-            className="max-w-xs"
-            disabled={saving}
-          />
-          <p className="text-xs text-text-tertiary">
-            Shown in the sidebar for everyone in this workspace. Defaults to &ldquo;FreeFrame&rdquo;.
-          </p>
-        </div>
-      </section>
+    <div className="branding-area">
+      <div className="branding-root max-w-2xl space-y-8 pb-24">
+        {/* §230 — two columns above 992px of CONTENT width, one below.
+            The DOM order is what it has always been: name, logo, login
+            logo, favicon, theme colors, preview, reset — the left
+            column first, so the stacked single column reads, tabs and
+            measures exactly as it did. `.branding-cols` is in
+            app/globals.css. */}
+        <div className="branding-cols">
+          <div data-testid="branding-col-left" className="space-y-8">
+            {/* Workspace name */}
+            <section className="space-y-3">
+              <h2 className="text-sm font-semibold text-text-primary">Workspace name</h2>
+              <div className="p-4 rounded-lg border border-border bg-bg-secondary space-y-3">
+                <Input
+                  value={draftName}
+                  onChange={(e) => setDraftName(e.target.value)}
+                  placeholder="e.g. Acme Studio"
+                  className="max-w-xs"
+                  disabled={saving}
+                />
+                <p className="text-xs text-text-tertiary">
+                  Shown in the sidebar for everyone in this workspace. Defaults to &ldquo;FreeFrame&rdquo;.
+                </p>
+              </div>
+            </section>
 
-      {/* Logo — per theme */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-text-primary">Logo</h2>
-        <p className="text-xs text-text-tertiary -mt-1">
-          Upload separate logos for dark and light themes. If only one is set, it will be used for both.
-        </p>
-        {/* §178 — stated, not left to be discovered by a Remove button that
-            silently did nothing. */}
-        <p className="text-xs text-text-tertiary -mt-1">
-          Once a logo is set it can be replaced, but not removed — uploading a new file is the only
-          way to change what everyone sees.
-        </p>
+            {/* Logo — per theme */}
+            <section className="space-y-3">
+              <h2 className="text-sm font-semibold text-text-primary">Logo</h2>
+              <p className="text-xs text-text-tertiary -mt-1">
+                Upload separate logos for dark and light themes. If only one is set, it will be used for both.
+              </p>
+              {/* §178 — stated, not left to be discovered by a Remove button that
+                  silently did nothing. */}
+              <p className="text-xs text-text-tertiary -mt-1">
+                Once a logo is set it can be replaced, but not removed — uploading a new file is the only
+                way to change what everyone sees.
+              </p>
 
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 mb-1">
-            <Moon className="h-3.5 w-3.5 text-text-tertiary" />
-            <span className="text-xs font-medium text-text-secondary uppercase tracking-wider">Dark theme</span>
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 mb-1">
+                  <Moon className="h-3.5 w-3.5 text-text-tertiary" />
+                  <span className="text-xs font-medium text-text-secondary uppercase tracking-wider">Dark theme</span>
+                </div>
+                <LogoUploadSlot
+                  label="Dark theme logo"
+                  description="Shown when the app is in dark mode. Use a light-colored logo."
+                  logoUrl={effectiveLogo('dark')}
+                  pending={draftLogos.dark.kind === 'file'}
+                  uploading={uploadingSide === 'dark'}
+                  onUpload={(file) => pickLogo('dark', file)}
+                  onUndo={() => undoLogo('dark')}
+                  previewBg="bg-zinc-900"
+                />
+
+                <div className="flex items-center gap-2 mt-4 mb-1">
+                  <Sun className="h-3.5 w-3.5 text-text-tertiary" />
+                  <span className="text-xs font-medium text-text-secondary uppercase tracking-wider">Light theme</span>
+                </div>
+                <LogoUploadSlot
+                  label="Light theme logo"
+                  description="Shown when the app is in light mode. Use a dark-colored logo."
+                  logoUrl={effectiveLogo('light')}
+                  pending={draftLogos.light.kind === 'file'}
+                  uploading={uploadingSide === 'light'}
+                  onUpload={(file) => pickLogo('light', file)}
+                  onUndo={() => undoLogo('light')}
+                  previewBg="bg-white"
+                />
+              </div>
+            </section>
+
+            {/* Login page logo */}
+            <section className="space-y-3">
+              <div className="flex items-center gap-2">
+                <LogIn className="h-3.5 w-3.5 text-text-tertiary" />
+                <h2 className="text-sm font-semibold text-text-primary">Login page logo</h2>
+              </div>
+              <p className="text-xs text-text-tertiary -mt-1">
+                Shown above the sign-in form, before anyone is logged in. Falls back to the default FreeFrame logo
+                until one is set.
+              </p>
+              <LogoUploadSlot
+                label="Login page logo"
+                description="Shown on the sign-in and password-setup screens."
+                logoUrl={effectiveLogo('login')}
+                pending={draftLogos.login.kind === 'file'}
+                uploading={uploadingSide === 'login'}
+                onUpload={(file) => pickLogo('login', file)}
+                onUndo={() => undoLogo('login')}
+                previewBg="bg-zinc-900"
+              />
+            </section>
           </div>
-          <LogoUploadSlot
-            label="Dark theme logo"
-            description="Shown when the app is in dark mode. Use a light-colored logo."
-            logoUrl={effectiveLogo('dark')}
-            pending={draftLogos.dark.kind === 'file'}
-            uploading={uploadingSide === 'dark'}
-            onUpload={(file) => pickLogo('dark', file)}
-            onUndo={() => undoLogo('dark')}
-            previewBg="bg-zinc-900"
-          />
 
-          <div className="flex items-center gap-2 mt-4 mb-1">
-            <Sun className="h-3.5 w-3.5 text-text-tertiary" />
-            <span className="text-xs font-medium text-text-secondary uppercase tracking-wider">Light theme</span>
-          </div>
-          <LogoUploadSlot
-            label="Light theme logo"
-            description="Shown when the app is in light mode. Use a dark-colored logo."
-            logoUrl={effectiveLogo('light')}
-            pending={draftLogos.light.kind === 'file'}
-            uploading={uploadingSide === 'light'}
-            onUpload={(file) => pickLogo('light', file)}
-            onUndo={() => undoLogo('light')}
-            previewBg="bg-white"
-          />
-        </div>
-      </section>
+          <div data-testid="branding-col-right" className="space-y-8">
+            {/* Favicon */}
+            <section className="space-y-3">
+              <h2 className="text-sm font-semibold text-text-primary">Favicon</h2>
+              <p className="text-xs text-text-tertiary -mt-1">
+                Shown in the browser tab. Use a square image — it&apos;s scaled down automatically. Like the
+                logo, it can be replaced but not removed.
+              </p>
+              <LogoUploadSlot
+                label="Favicon"
+                description="Shown in the browser tab for everyone in this workspace."
+                logoUrl={effectiveFavicon}
+                pending={draftFavicon.kind === 'file'}
+                uploading={uploadingSide === 'favicon'}
+                onUpload={pickFavicon}
+                onUndo={undoFavicon}
+                previewBg="bg-bg-tertiary"
+                accept="image/png"
+                hint="PNG only · Max 2 MB"
+              />
+            </section>
 
-      {/* Login page logo */}
-      <section className="space-y-3">
-        <div className="flex items-center gap-2">
-          <LogIn className="h-3.5 w-3.5 text-text-tertiary" />
-          <h2 className="text-sm font-semibold text-text-primary">Login page logo</h2>
-        </div>
-        <p className="text-xs text-text-tertiary -mt-1">
-          Shown above the sign-in form, before anyone is logged in. Falls back to the default FreeFrame logo
-          until one is set.
-        </p>
-        <LogoUploadSlot
-          label="Login page logo"
-          description="Shown on the sign-in and password-setup screens."
-          logoUrl={effectiveLogo('login')}
-          pending={draftLogos.login.kind === 'file'}
-          uploading={uploadingSide === 'login'}
-          onUpload={(file) => pickLogo('login', file)}
-          onUndo={() => undoLogo('login')}
-          previewBg="bg-zinc-900"
-        />
-      </section>
+            {/* Theme colors — light + dark side by side on desktop, stacked on mobile */}
+            <section className="space-y-3">
+              <h2 className="text-sm font-semibold text-text-primary">Theme colors</h2>
+              <p className="text-xs text-text-tertiary -mt-1">
+                Customize the background, text, accent, and nav colors for each theme independently. A theme with no
+                custom colors keeps FreeFrame&apos;s original palette.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <ThemeColorEditor
+                  label="Light theme"
+                  icon={Sun}
+                  defaults={DEFAULT_LIGHT_TOKENS}
+                  overrides={draftColors.light}
+                  onChange={(key, value) => changeColor('light', key, value)}
+                  onReset={() => resetThemeDraft('light')}
+                />
+                <ThemeColorEditor
+                  label="Dark theme"
+                  icon={Moon}
+                  defaults={DEFAULT_DARK_TOKENS}
+                  overrides={draftColors.dark}
+                  onChange={(key, value) => changeColor('dark', key, value)}
+                  onReset={() => resetThemeDraft('dark')}
+                />
+              </div>
+            </section>
 
-      {/* Favicon */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-text-primary">Favicon</h2>
-        <p className="text-xs text-text-tertiary -mt-1">
-          Shown in the browser tab. Use a square image — it&apos;s scaled down automatically. Like the
-          logo, it can be replaced but not removed.
-        </p>
-        <LogoUploadSlot
-          label="Favicon"
-          description="Shown in the browser tab for everyone in this workspace."
-          logoUrl={effectiveFavicon}
-          pending={draftFavicon.kind === 'file'}
-          uploading={uploadingSide === 'favicon'}
-          onUpload={pickFavicon}
-          onUndo={undoFavicon}
-          previewBg="bg-bg-tertiary"
-          accept="image/png"
-          hint="PNG only · Max 2 MB"
-        />
-      </section>
+            {/* Live preview — of the DRAFT */}
+            <section className="space-y-3">
+              <h2 className="text-sm font-semibold text-text-primary">Preview</h2>
+              <p className="text-xs text-text-tertiary -mt-1">
+                Currently showing the <strong>{resolvedTheme === 'light' ? 'light' : 'dark'}</strong> theme logo.
+                {isDirty && <span className="text-status-warning"> Includes unsaved changes.</span>}
+              </p>
+              <div className="rounded-lg border border-border bg-bg-secondary p-4 flex items-center gap-2.5">
+                <div className="h-7 w-7 rounded-md overflow-hidden flex items-center justify-center bg-bg-tertiary shrink-0">
+                  {activeLogo ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={activeLogo} alt={previewName} className="h-full w-full object-contain" />
+                  ) : (
+                    <>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src="/logo-icon.png" alt="FreeFrame" className="h-6 w-6 object-contain logo-dark" />
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src="/logo-icon-dark.png" alt="FreeFrame" className="h-6 w-6 object-contain logo-light" />
+                    </>
+                  )}
+                </div>
+                <span className="text-sm font-semibold text-text-primary tracking-tight">{previewName}</span>
+              </div>
+            </section>
 
-      {/* Theme colors — light + dark side by side on desktop, stacked on mobile */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-text-primary">Theme colors</h2>
-        <p className="text-xs text-text-tertiary -mt-1">
-          Customize the background, text, accent, and nav colors for each theme independently. A theme with no
-          custom colors keeps FreeFrame&apos;s original palette.
-        </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <ThemeColorEditor
-            label="Light theme"
-            icon={Sun}
-            defaults={DEFAULT_LIGHT_TOKENS}
-            overrides={draftColors.light}
-            onChange={(key, value) => changeColor('light', key, value)}
-            onReset={() => resetThemeDraft('light')}
-          />
-          <ThemeColorEditor
-            label="Dark theme"
-            icon={Moon}
-            defaults={DEFAULT_DARK_TOKENS}
-            overrides={draftColors.dark}
-            onChange={(key, value) => changeColor('dark', key, value)}
-            onReset={() => resetThemeDraft('dark')}
-          />
-        </div>
-      </section>
-
-      {/* Live preview — of the DRAFT */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-text-primary">Preview</h2>
-        <p className="text-xs text-text-tertiary -mt-1">
-          Currently showing the <strong>{resolvedTheme === 'light' ? 'light' : 'dark'}</strong> theme logo.
-          {isDirty && <span className="text-status-warning"> Includes unsaved changes.</span>}
-        </p>
-        <div className="rounded-lg border border-border bg-bg-secondary p-4 flex items-center gap-2.5">
-          <div className="h-7 w-7 rounded-md overflow-hidden flex items-center justify-center bg-bg-tertiary shrink-0">
-            {activeLogo ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={activeLogo} alt={previewName} className="h-full w-full object-contain" />
-            ) : (
-              <>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/logo-icon.png" alt="FreeFrame" className="h-6 w-6 object-contain logo-dark" />
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/logo-icon-dark.png" alt="FreeFrame" className="h-6 w-6 object-contain logo-light" />
-              </>
+            {/* Reset — stages, like everything else here */}
+            {hasResettableBranding && (
+              <section className="pt-2 border-t border-border">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-status-error hover:text-status-error hover:bg-status-error/10 gap-1.5"
+                  onClick={stageResetAll}
+                  disabled={saving}
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Reset name and colors
+                </Button>
+                <p className="text-2xs text-text-tertiary mt-1.5">
+                  Staged like any other change — nothing is reset until you save. Logos and the favicon are
+                  not affected; they can only be replaced.
+                </p>
+              </section>
             )}
           </div>
-          <span className="text-sm font-semibold text-text-primary tracking-tight">{previewName}</span>
         </div>
-      </section>
 
-      {/* Reset — stages, like everything else here */}
-      {hasResettableBranding && (
-        <section className="pt-2 border-t border-border">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-status-error hover:text-status-error hover:bg-status-error/10 gap-1.5"
-            onClick={stageResetAll}
-            disabled={saving}
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            Reset name and colors
-          </Button>
-          <p className="text-2xs text-text-tertiary mt-1.5">
-            Staged like any other change — nothing is reset until you save. Logos and the favicon are
-            not affected; they can only be replaced.
+        {/* Save / Discard. Nothing above this has touched the server. */}
+        {isDirty && (
+          <div className="sticky bottom-0 -mx-6 px-6 py-3 border-t border-border bg-bg-primary/95 backdrop-blur flex items-center gap-2">
+            <span className="text-xs text-text-secondary flex-1">
+              {saveError ? <span className="text-status-error">{saveError}</span> : 'Unsaved changes'}
+            </span>
+            <Button variant="ghost" size="sm" onClick={handleDiscard} disabled={saving}>
+              Discard
+            </Button>
+            <Button size="sm" onClick={handleSave} disabled={saving}>
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Save changes'}
+            </Button>
+          </div>
+        )}
+        {saved && !isDirty && (
+          <p className="text-xs text-status-success flex items-center gap-1.5">
+            <Check className="h-3.5 w-3.5" /> Branding saved.
           </p>
-        </section>
-      )}
-
-      {/* Save / Discard. Nothing above this has touched the server. */}
-      {isDirty && (
-        <div className="sticky bottom-0 -mx-6 px-6 py-3 border-t border-border bg-bg-primary/95 backdrop-blur flex items-center gap-2">
-          <span className="text-xs text-text-secondary flex-1">
-            {saveError ? <span className="text-status-error">{saveError}</span> : 'Unsaved changes'}
-          </span>
-          <Button variant="ghost" size="sm" onClick={handleDiscard} disabled={saving}>
-            Discard
-          </Button>
-          <Button size="sm" onClick={handleSave} disabled={saving}>
-            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Save changes'}
-          </Button>
-        </div>
-      )}
-      {saved && !isDirty && (
-        <p className="text-xs text-status-success flex items-center gap-1.5">
-          <Check className="h-3.5 w-3.5" /> Branding saved.
-        </p>
-      )}
+        )}
+      </div>
     </div>
   )
 }

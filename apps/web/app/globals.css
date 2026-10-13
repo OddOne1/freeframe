@@ -978,3 +978,76 @@
     min-width: 44px;
   }
 }
+
+/* ═════════════════════════════════════════════════════════════════════════
+ * §230 — Branding uses the width the Admin TAB has, not the window's.
+ * ═════════════════════════════════════════════════════════════════════════
+ *
+ * The Branding tab was a `max-w-2xl` column: 672px of controls with ~450px
+ * of empty space beside them at 1440, while the other four Admin tabs run
+ * the full width. Two columns fix that — but the width that decides is not
+ * the window's. Three things stand to the left of this content before it
+ * gets any: the app rail (52px collapsed, 192px open), the Settings sidebar
+ * (224px + its border) and the page's own `p-6`. Measured on the built app:
+ * a 1440px window leaves this content 1116px, a 1280px window 956px, and
+ * opening the app rail at 1440 leaves 975px. A viewport breakpoint cannot
+ * see any of that — the window is 1440px either way.
+ *
+ * So: a container query, the same mechanism and the same reason as §50's
+ * asset grid and §224b's toolbar, and raw CSS for the same reason too —
+ * `@container` needs a Tailwind 3.4 plugin, and a dependency change to
+ * apps/web is what left the production image unbuildable for eleven days
+ * (§13c). No install, no lockfile change, nothing new in the Docker build.
+ *
+ * ── The threshold: 992px ──────────────────────────────────────────────
+ *
+ * 480 + 32 + 480. A column narrower than ~480px is where this content
+ * starts to suffer: measured by pinning the section to a fixed width, the
+ * Theme colors cards (its own `md:grid-cols-2`, unchanged) are 232px at a
+ * 480px column and one label — "Background (secondary)" — wraps to two
+ * lines; nothing clips or overflows until the column is under ~400px.
+ * 480 is therefore the floor with room to spare, and 32px is the gap the
+ * section already uses between its own blocks (`space-y-8`).
+ *
+ * Below 992px of CONTENT width the section is exactly what it was: one
+ * `max-w-2xl` column, same order, same spacing — `.branding-cols` is a
+ * one-column grid whose 2rem gap is the 2rem `space-y-8` was already
+ * putting between the same blocks.
+ *
+ * ── Why the sticky bar is not in a column ─────────────────────────────
+ *
+ * The Save/Discard bar stays a direct child of `.branding-root`, after the
+ * grid, so it still spans the whole width and its `-mx-6` still bleeds
+ * into the page's `p-6`. It also has to STAY there: a `position: sticky`
+ * box is clamped to its containing block, and for a grid item that is its
+ * grid area — one row exactly as tall as the bar, which is no room to
+ * stick in. In the flow of `.branding-root` its containing block is the
+ * whole section, which is what makes it pin to the bottom of the viewport
+ * while the columns scroll under it.
+ */
+.branding-area {
+  container-type: inline-size;
+  container-name: branding;
+}
+
+.branding-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2rem;
+}
+
+@container branding (min-width: 992px) {
+  /* Two selectors deep so it beats the `max-w-2xl` utility in the markup
+   * whatever order Tailwind emits — the cap is what makes the narrow
+   * layout identical to the old one, and it is only lifted here. */
+  .branding-area > .branding-root {
+    max-width: none;
+  }
+
+  .branding-cols {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    /* Each column is its own height; the left one is much taller than the
+     * right and stretching the short one buys nothing. */
+    align-items: start;
+  }
+}
