@@ -205,8 +205,16 @@ describe('the switch is the container, not the window', () => {
   })
 
   it('is one column below the threshold and two above it', () => {
+    // No `s` flag: `tsconfig.json` sets no `target`, so tsc defaults below
+    // es2018 and rejects it (TS1501) even though esbuild runs it happily —
+    // a type error that only `tsc --noEmit` would ever see. Nothing is lost
+    // by dropping it: the pattern has no unescaped `.` for dotAll to
+    // affect, and the two `[^}]*` runs already cross newlines on their own.
+    // They are NOT widened to `[\s\S]*`, which is the usual es2018 escape
+    // hatch but would be wrong here — the whole point of `[^}]` is that the
+    // match cannot run past this rule's closing brace into the next one.
     expect(CSS).toMatch(
-      /\.branding-cols \{[^}]*grid-template-columns: minmax\(0, 1fr\);[^}]*gap: 2rem/s,
+      /\.branding-cols \{[^}]*grid-template-columns: minmax\(0, 1fr\);[^}]*gap: 2rem/,
     )
     const block = CSS.split('@container branding (min-width: 992px)')[1]
     expect(block).toContain('grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)')
