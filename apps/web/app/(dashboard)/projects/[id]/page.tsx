@@ -13,13 +13,11 @@ import {
   X,
   ArrowLeft,
   FolderOpen,
-  Link as LinkIcon,
   Download,
   Share2,
   Plus,
   Trash2,
   ChevronDown,
-  MessageSquare,
   FolderPlus,
   Folder as FolderIcon,
   FileText,
@@ -30,7 +28,6 @@ import {
 } from "lucide-react";
 import {
   cn,
-  formatRelativeTime,
   resolveApiMediaUrl,
   trashExpiresAt,
   formatTimeRemaining,
@@ -46,10 +43,8 @@ import {
 } from "@/lib/bulk-download";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Avatar } from "@/components/shared/avatar";
 import { AssetGrid } from "@/components/projects/asset-grid";
 import { folderBackTarget } from "@/components/projects/folder-back-button";
-import { CommentPanel } from "@/components/review/comment-panel";
 import { UploadZone } from "@/components/upload/upload-zone";
 import type { DroppedFile } from "@/lib/read-dropped-entries";
 import {
@@ -61,9 +56,9 @@ import {
 } from "@/stores/upload-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useViewStore } from "@/stores/view-store";
+import { useRightPanelStore } from "@/stores/right-panel-store";
 import { useBreadcrumbStore } from "@/stores/breadcrumb-store";
 import { useMobileViewSettingsStore } from "@/stores/mobile-view-settings-store";
-import { useComments } from "@/hooks/use-comments";
 import { useFolders, useTrash } from "@/hooks/use-folders";
 import { useShareLinks } from "@/hooks/use-share-links";
 import { FolderTree } from "@/components/projects/folder-tree";
@@ -155,12 +150,22 @@ export default function ProjectDetailPage() {
   // Whether a folder was involved at all — only then is there a structure
   // question to ask.
   const [keepStructure, setKeepStructure] = React.useState(false);
-  const [selectedAsset, setSelectedAsset] =
-    React.useState<AssetResponse | null>(null);
   const [shareLinksExpanded, setShareLinksExpanded] = React.useState(true);
-  const [rightTab, setRightTab] = React.useState<"comments" | "fields">(
-    "comments",
-  );
+  /**
+   * §232 item 2 — `selectedAsset` and `rightTab` are gone with the panel.
+   *
+   * They were the panel's whole reason to exist: a plain click set
+   * `selectedAsset`, the panel showed its thumbnail, its fields, its
+   * comments and its Share / Download / Open in Player buttons, and
+   * `rightTab` chose which of the two tabs was showing. With a single
+   * click opening the asset there is nothing to select and nowhere to
+   * show it — comments and fields belong to the opened asset (§228), and
+   * the viewer already has both.
+   *
+   * `rightPanelOpen` stays, and is no longer this view's: it now only
+   * opens the SHARE LINK settings panel, which is the one panel this page
+   * still has (see the panel below and `rightPanelAvailable`).
+   */
   const { rightPanelOpen, setRightPanelOpen, flattenFolders } = useViewStore();
 
   /**
@@ -320,38 +325,17 @@ export default function ProjectDetailPage() {
     mutateShareLinks,
   } = useShareLinks(projectId);
 
-  // Comments for the selected asset
-  const selectedVersionId = selectedAsset?.latest_version?.id || null;
-  const {
-    comments,
-    createComment,
-    resolveComment,
-    deleteComment,
-    addReaction,
-    removeReaction,
-  } = useComments(selectedAsset?.id || null, selectedVersionId);
-
   /**
-   * §209 — this used to be `onSubmitReply={async () => {}}`.
+   * §232 item 2 — the project view no longer reads comments.
    *
-   * Not an oversight that crept in: it was a no-op from the commit that
-   * introduced this panel (4d37deb, 2026-03-20), so replying from the folder
-   * view has never once worked. The box opened, took the text, resolved
-   * successfully and posted nothing — no request, no console error, which is
-   * exactly why the report said "it fails silently".
-   *
-   * `createComment` already routes to /assets/{id}/comments/{parentId}/replies
-   * when given a parentId, so there is nothing to build here beyond handing
-   * it the parent. Errors are deliberately NOT caught: InlineReplyInput shows
-   * what it catches, and swallowing here would restore the silence.
+   * `useComments(selectedAsset)` fed the removed panel's Comments tab, and
+   * `handleSubmitReply` (§209) was its reply path. Both go with it, and
+   * with them one SWR subscription per selected asset that this page
+   * opened purely to paint a panel. Reading and writing comments is the
+   * viewer's job and always was the better place for it: the viewer has
+   * the playhead, the annotation canvas and the version the comment
+   * belongs to.
    */
-  const handleSubmitReply = React.useCallback(
-    async (parentId: string, body: string) => {
-      await createComment(body, undefined, undefined, undefined, parentId);
-    },
-    [createComment],
-  );
-
   const { data: project, isLoading: loadingProject, mutate: mutateProject } = useSWR<Project>(
     `/projects/${projectId}`,
     () => api.get<Project>(`/projects/${projectId}`),
@@ -975,6 +959,26 @@ export default function ProjectDetailPage() {
    * component: Trash and Share Links are not in the URL, so a history
    * entry would let Back restore the folder while leaving this view open.
    */
+  /**
+   * §232 item 2 — is there a right-hand panel on this screen?
+   *
+   * Exactly one case is left: a share link's Settings / Activity. ONE
+   * expression, read by the panel itself and — through the store below —
+   * by the header's toggle, so the button and the panel cannot disagree
+   * about whether there is anything to toggle. That disagreement is
+   * precisely the §224 bug ("the toggle does nothing"), and the only way
+   * to make it impossible is to have one answer.
+   */
+  const panelHasContent = showShareLinks && !!selectedShareLink;
+
+  const setPanelAvailable = useRightPanelStore((s) => s.setAvailable);
+  React.useEffect(() => {
+    setPanelAvailable(panelHasContent);
+    // Cleared on the way out as well, so the toggle does not survive onto
+    // the next page: this page is the only thing that has ever had a panel.
+    return () => setPanelAvailable(false);
+  }, [panelHasContent, setPanelAvailable]);
+
   const shareLinksSectionProps = {
     shareLinks,
     expanded: shareLinksExpanded,
@@ -1124,8 +1128,14 @@ export default function ProjectDetailPage() {
         // which is `absolute inset-0` here, covers the visible area instead
         // of stretching to the full content height and scrolling its own
         // border off screen. The container-query class stays on THIS
-        // element, because it is still the flex child whose width the right
-        // panel changes (§50).
+        // element, because it is still the flex child whose width a panel
+        // changes (§50) — now only in the share-link view.
+        //
+        // §232 item 2 — with the project/folder view's panel gone, this
+        // column is the full width at every viewport. The class stays: the
+        // share-link view still mounts a 360px panel beside it, and the
+        // container query has to keep measuring the element whose width
+        // that changes.
         className={cn(
           "asset-grid-container flex-1 flex flex-col min-w-0 relative bg-bg-primary h-full overflow-hidden",
           // §227 — unconditionally `flex` (the base class above) at every
@@ -1133,7 +1143,10 @@ export default function ProjectDetailPage() {
           // bar switched between; with the bar gone from this view there is
           // nothing to switch to, so the grid is simply the content area.
         )}
-        onClick={() => setSelectedAsset(null)}
+        // §232 item 2 — the click that cleared `selectedAsset` is gone with
+        // it. Clearing the MULTI-selection on a click into empty space is
+        // the grid's own job and is handled there, on the element that can
+        // tell a card from the canvas.
         {...fileDrop.dropProps}
       >
         {/* §227 — the folder navigator, below `xl`. A full-width bar in the
@@ -1335,15 +1348,15 @@ export default function ProjectDetailPage() {
               versionCounts={versionCounts}
               authorNames={authorNames}
               fileSizes={fileSizes}
-              selectedAssetId={selectedAsset?.id}
               // Gated to match the toolbar's own Upload button (§28). Also
               // fixes the empty-state "Upload" CTA, which a viewer could
               // previously click through to a dialog they can't submit.
               onUpload={canUpload ? () => setUploadOpen(true) : undefined}
-              onAssetSelect={(asset, e) => {
-                e?.stopPropagation();
-                setSelectedAsset(asset as AssetResponse);
-              }}
+              // §232 — `selectedAssetId` and `onAssetSelect` are gone: the
+              // panel they fed is gone, and the gesture that set them now
+              // does this instead. The open path itself is byte-identical
+              // — the same `router.push`, so §179's return logic and the
+              // single history entry per open are unchanged.
               onAssetOpen={(asset) =>
                 router.push(`/projects/${projectId}/assets/${asset.id}`)
               }
@@ -1716,296 +1729,78 @@ export default function ProjectDetailPage() {
         )}
       </div>
 
-      {/* §224 — the scrim for the tablet / small-laptop drawer. Only in
-          that band: below `md` the panel is a full-screen pane with the tab
-          bar still visible, so there is nothing behind it to dim; at `xl`+
-          it is a column in the layout. */}
-      {rightPanelOpen && (
-        <div
-          data-testid="right-panel-scrim"
-          className="fixed inset-0 z-30 hidden bg-black/50 md:max-xl:block"
-          onClick={() => setRightPanelOpen(false)}
-        />
-      )}
+      {/* ─── Right panel: SHARE LINK settings only (§232 item 2) ────────
+          What is gone: the Comments | Fields panel this page showed for a
+          SELECTED asset — the inline 360px column at `xl`+, the 768–1279
+          slide-over drawer, its scrim, its two tabs, the asset thumbnail,
+          the Type / Uploaded / Uploaded by / File size / Version /
+          Assignee rows and the Open in Player / Share / Download buttons.
 
-      {/* ─── Right Panel (Comments + Fields tabs, or Share Link Settings) ─ */}
-      {/* §224 — ONE element, two behaviours from `md` up:
-            md-xl  slide-over drawer from the right, over a scrim, opened by
-                   the header's EXISTING toggle — the control the owner
-                   reported as dead, because the panel it toggled was
-                   `hidden xl:flex` and so never appeared below 1280px
-            xl+    in-flow 360px column, byte-for-byte what it was
+          Why: that panel existed to give a selected asset somewhere to be
+          inspected, BECAUSE opening it needed a double click. With a
+          single click opening it (§232 item 1) the panel is the long way
+          round to a screen you now reach in one gesture, and the owner's
+          decision is that the panel belongs only to an OPENED asset. The
+          viewer's own Comments | Fields | Transcript sidebar is untouched.
+          Every action and field the panel carried has a new home — the
+          table is in the build report.
 
-          §227 — and NOT below `md` at all any more. §224 made it a
-          full-screen phone pane on the Comments tab; the owner's decision
-          is that comments and fields belong inside the asset viewer
-          (§228), not on the project view, so the tab, the pane and the bar
-          that switched them are all gone from here. The panel is not
-          merely hidden on a phone: there is no control on this screen that
-          could open it, which is the point.
+          Why this element still exists at all: the panel SLOT is also
+          where a share link's Settings and Activity live
+          (`ShareLinkSettingsPanel` — password, expiry, theme, accent,
+          layout, card size, download permission, and the per-link
+          activity log). That is a different VIEW of this page
+          (`showShareLinks`), not the project/folder view; it is the only
+          place those controls exist; and §232 asks for the panel to go
+          from the project/folder view. So it is scoped to exactly that
+          case rather than deleted along with the rest.
 
-          Not two trees: a second copy would mean two CommentPanels mounted
-          against the same asset and two SWR subscriptions.
-
-          The display classes still come in two DISJOINT media bands
-          (`max-md:` and `md:`) so exactly one applies at any width. That
-          matters: `flex` and `hidden` in the same band would leave the
-          outcome to Tailwind's class ordering rather than to this code. */}
-      <div
-        data-testid="project-right-panel"
-        className={cn(
-          "flex-col border-l border-border bg-bg-secondary",
-          // phone: absent. Not a bare `hidden` — that was the §224 bug,
-          // which hid it at every width below xl and made the toggle dead.
-          "max-md:hidden",
-          // tablet / small laptop: a drawer over the content.
-          "md:max-xl:fixed md:max-xl:inset-y-0 md:max-xl:right-0 md:max-xl:z-40",
-          "md:max-xl:w-[360px] md:max-xl:max-w-[85vw] md:max-xl:shadow-2xl",
-          // desktop: exactly as before.
-          "xl:static xl:z-auto xl:w-[360px] xl:shrink-0",
-          rightPanelOpen ? "md:flex" : "md:hidden",
-        )}
-      >
-        {/* The drawer needs its own way out: below `xl` the header toggle
-            is behind the scrim, and on a phone there is no toggle at all. */}
-        <button
-          onClick={() => setRightPanelOpen(false)}
-          aria-label="Close panel"
-          className="absolute right-1 top-1 z-10 flex h-11 w-11 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary xl:hidden"
-        >
-          <X className="h-4 w-4" />
-        </button>
-        <div className="flex min-h-0 flex-1 flex-col">
-          {showShareLinks && selectedShareLink ? (
-            <ShareLinkSettingsPanel token={selectedShareLink} />
-          ) : (
-            <>
-              {/* Tabs */}
-              <div className="flex items-center border-b border-border">
-                <button
-                  onClick={() => setRightTab("comments")}
-                  className={cn(
-                    "flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm font-medium transition-colors border-b-2",
-                    rightTab === "comments"
-                      ? "border-accent text-text-primary"
-                      : "border-transparent text-text-tertiary hover:text-text-secondary",
-                  )}
-                >
-                  <MessageSquare className="h-4 w-4" />
-                  Comments
-                </button>
-                <button
-                  onClick={() => setRightTab("fields")}
-                  className={cn(
-                    "flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm font-medium transition-colors border-b-2",
-                    rightTab === "fields"
-                      ? "border-accent text-text-primary"
-                      : "border-transparent text-text-tertiary hover:text-text-secondary",
-                  )}
-                >
-                  Fields
-                </button>
-                {selectedAsset && (
-                  <button
-                    onClick={() => setSelectedAsset(null)}
-                    className="px-3 text-text-tertiary hover:text-text-primary transition-colors"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                )}
-              </div>
-
-              {selectedAsset ? (
-                rightTab === "comments" ? (
-                  /* Comments tab — real comments */
-                  <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                    {comments.length > 0 ? (
-                      <CommentPanel
-                        comments={comments as any}
-                        currentUserId={user?.id}
-                        onResolve={resolveComment}
-                        onDelete={deleteComment}
-                        onAddReaction={addReaction}
-                        onRemoveReaction={removeReaction}
-                        onReply={() => {}}
-                        onSubmitReply={handleSubmitReply}
-                      />
-                    ) : (
-                      <div className="flex-1 flex items-center justify-center p-6 text-center">
-                        <div>
-                          <div className="mx-auto mb-3 h-12 w-12 rounded-full bg-bg-tertiary flex items-center justify-center">
-                            <MessageSquare className="h-6 w-6 text-text-tertiary/50" />
-                          </div>
-                          <p className="text-sm text-text-secondary">
-                            No comments yet
-                          </p>
-                          <p className="text-xs text-text-tertiary mt-1">
-                            Double-click the asset to open the viewer and leave
-                            comments.
-                          </p>
-                        </div>
-                      </div>
-                    )}
-                    {/* Quick link to open in viewer */}
-                    <div className="border-t border-border p-3 shrink-0">
-                      <Link
-                        href={`/projects/${projectId}/assets/${selectedAsset.id}`}
-                      >
-                        <div className="rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-tertiary cursor-pointer hover:border-border-focus transition-colors text-center">
-                          Open in viewer to comment
-                        </div>
-                      </Link>
-                    </div>
-                  </div>
-                ) : (
-                  /* Fields tab */
-                  <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                    {/* Thumbnail preview */}
-                    <div className="aspect-video bg-bg-tertiary rounded-lg overflow-hidden border border-border flex items-center justify-center">
-                      {selectedAsset.thumbnail_url ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={resolveApiMediaUrl(selectedAsset.thumbnail_url) ?? selectedAsset.thumbnail_url}
-                          alt={selectedAsset.name}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <span className="text-xs text-text-tertiary uppercase font-bold">
-                          {selectedAsset.asset_type}
-                        </span>
-                      )}
-                    </div>
-
-                    <h4 className="text-sm font-semibold text-text-primary break-words">
-                      {selectedAsset.name}
-                    </h4>
-
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-text-tertiary">Type</span>
-                        <span className="text-xs text-text-primary capitalize">
-                          {selectedAsset.asset_type.replace("_", " ")}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-text-tertiary">
-                          Uploaded
-                        </span>
-                        <span className="text-xs text-text-primary">
-                          {formatRelativeTime(selectedAsset.created_at)}
-                        </span>
-                      </div>
-                      {(selectedAsset.created_by_name || (selectedAsset.created_by && authorNames[selectedAsset.created_by])) && (
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs text-text-tertiary">
-                            Uploaded by
-                          </span>
-                          <span className="text-xs text-text-primary">
-                            {selectedAsset.created_by_name ||
-                              (selectedAsset.created_by && authorNames[selectedAsset.created_by])}
-                          </span>
-                        </div>
-                      )}
-                      {fileSizes[selectedAsset.id] != null && (
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs text-text-tertiary">
-                            File size
-                          </span>
-                          <span className="text-xs text-text-primary">
-                            {formatBytes(fileSizes[selectedAsset.id])}
-                          </span>
-                        </div>
-                      )}
-                      {selectedAsset.latest_version && (
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs text-text-tertiary">
-                            Version
-                          </span>
-                          <span className="text-xs text-text-primary">
-                            v{selectedAsset.latest_version.version_number}
-                          </span>
-                        </div>
-                      )}
-                      {selectedAsset.assignee_id &&
-                        assigneesMap[selectedAsset.assignee_id] && (
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-text-tertiary">
-                              Assignee
-                            </span>
-                            <div className="flex items-center gap-1.5">
-                              <Avatar size="sm" className="h-5 w-5" />
-                              <span className="text-xs text-text-primary">
-                                {assigneesMap[selectedAsset.assignee_id].name}
-                              </span>
-                            </div>
-                          </div>
-                        )}
-                    </div>
-
-                    <div className="pt-3 border-t border-border grid grid-cols-2 gap-2">
-                      <Button asChild className="w-full col-span-2" size="sm">
-                        <Link
-                          href={`/projects/${projectId}/assets/${selectedAsset.id}`}
-                        >
-                          Open in Player
-                        </Link>
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        className="gap-1"
-                        onClick={() => {
-                          setShareDialogPreselect({
-                            type: "asset",
-                            id: selectedAsset.id,
-                            name: selectedAsset.name,
-                          });
-                          setShareDialogOpen(true);
-                        }}
-                      >
-                        <LinkIcon className="h-3.5 w-3.5" /> Share
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        className="gap-1"
-                        onClick={async () => {
-                          try {
-                            const res = await api.get<{ url: string }>(
-                              `/assets/${selectedAsset.id}/stream?download=true`,
-                            );
-                            triggerBrowserDownload(res.url);
-                          } catch {
-                            // Silent fail
-                          }
-                        }}
-                      >
-                        <Download className="h-3.5 w-3.5" /> Download
-                      </Button>
-                    </div>
-                  </div>
-                )
-              ) : (
-                /* No asset selected */
-                <div className="flex-1 flex items-center justify-center p-6 text-center">
-                  <div>
-                    <div className="mx-auto mb-3 h-16 w-16 rounded-full bg-bg-tertiary flex items-center justify-center">
-                      <MessageSquare className="h-8 w-8 text-text-tertiary/50" />
-                    </div>
-                    <p className="text-sm text-text-secondary">
-                      Select an asset to view comments
-                    </p>
-                    {/* §227 — §224's "Go to Assets" button is gone with
-                        the phone Comments tab it pointed back from: this
-                        panel is `md`+ only now, where the grid is beside
-                        it and there is nowhere to go. */}
-                  </div>
-                </div>
-              )}
-            </>
+          The consequence, stated plainly: in the project/folder view
+          there is no panel at ANY width, and the header's panel toggle is
+          not rendered there either — see `panelHasContent` below, which
+          is the single source for both. */}
+      {panelHasContent && (
+        <>
+          {/* The scrim for the tablet / small-laptop drawer (§224). Only in
+              that band: at `xl`+ the panel is a column in the layout, and
+              below `md` it is not rendered at all. */}
+          {rightPanelOpen && (
+            <div
+              data-testid="right-panel-scrim"
+              className="fixed inset-0 z-30 hidden bg-black/50 md:max-xl:block"
+              onClick={() => setRightPanelOpen(false)}
+            />
           )}
-        </div>
-      </div>
+
+          <div
+            data-testid="project-right-panel"
+            className={cn(
+              "flex-col border-l border-border bg-bg-secondary",
+              // phone: absent.
+              "max-md:hidden",
+              // tablet / small laptop: a drawer over the content.
+              "md:max-xl:fixed md:max-xl:inset-y-0 md:max-xl:right-0 md:max-xl:z-40",
+              "md:max-xl:w-[360px] md:max-xl:max-w-[85vw] md:max-xl:shadow-2xl",
+              // desktop: a 360px column, exactly as before.
+              "xl:static xl:z-auto xl:w-[360px] xl:shrink-0",
+              rightPanelOpen ? "md:flex" : "md:hidden",
+            )}
+          >
+            {/* The drawer needs its own way out: below `xl` the header
+                toggle is behind the scrim. */}
+            <button
+              onClick={() => setRightPanelOpen(false)}
+              aria-label="Close panel"
+              className="absolute right-1 top-1 z-10 flex h-11 w-11 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary xl:hidden"
+            >
+              <X className="h-4 w-4" />
+            </button>
+            <div className="flex min-h-0 flex-1 flex-col">
+              <ShareLinkSettingsPanel token={selectedShareLink as string} />
+            </div>
+          </div>
+        </>
+      )}
 
       {/* ─── Phone: the view-settings pane ───────────────────────────────── */}
       {/* §224's third tab, §227's cogwheel pane. `md:hidden` because at
@@ -2196,7 +1991,6 @@ export default function ProjectDetailPage() {
           try {
             await api.delete(`/assets/${assetToDelete.id}`);
             mutateAssets();
-            if (selectedAsset?.id === assetToDelete.id) setSelectedAsset(null);
           } catch {}
           setAssetToDelete(null);
         }}

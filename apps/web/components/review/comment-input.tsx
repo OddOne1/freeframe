@@ -24,7 +24,7 @@ import { resolveSubmitTimecode } from "@/lib/resolve-submit-timecode";
 import { useReviewStore } from "@/stores/review-store";
 import { useReview } from "./review-provider";
 import { useDrawing } from "@/hooks/use-drawing";
-import { usePhoneChrome } from "@/hooks/use-media-query";
+import { usePhoneChrome, useCompactLandscape } from "@/hooks/use-media-query";
 import { api } from "@/lib/api";
 import type { User } from "@/types";
 
@@ -241,6 +241,24 @@ export function CommentInput({
    * which `useIsPhone` alone would have missed: landscape is 844px wide.
    */
   const isPhone = usePhoneChrome();
+  /**
+   * §232 item 3 — a phone on its SIDE only, not a phone in portrait.
+   *
+   * The owner's screenshot: in landscape the placeholder wraps to two
+   * lines and the second is clipped — "Leave your / comment" with the
+   * bottom half cut off by the field's own 36px box. The arithmetic: the
+   * panel is 40% of the width with a 300px floor, which at 844px wide is
+   * the floor; the composer's `px-3` takes 24 of it, the timecode chip
+   * ~90 more, and §228b's no-iOS-zoom rule puts the placeholder at 16px
+   * rather than 13 — at which "Leave your comment…" is wider than the
+   * ~160px of field that is left, so it wraps, and the field cannot grow
+   * because 36px is one line box.
+   *
+   * In PORTRAIT the same composer has the full 390px and the long
+   * placeholder fits on one line, so it keeps it: this is about the
+   * narrowest column this app puts the composer in, not about touch.
+   */
+  const compactLandscape = useCompactLandscape();
 
   // §107 — compare mode drives all three of these per-pane. Each falls back to
   // the global store when its prop is absent, which is the normal viewer, so
@@ -504,8 +522,16 @@ export function CommentInput({
                   ? "py-2 h-9 min-h-0 leading-[20px]"
                   : "py-2.5 min-h-[38px] hover-none:min-h-11",
               )}
+              // §232 item 3 — shortened in compact landscape, and ONLY
+              // there. The field keeps its 36px height and its 16px text
+              // (§228b's iOS zoom rule): the text is what gives way,
+              // because it is the only one of the three that can without
+              // either re-introducing the zoom or growing the field into
+              // a screen that has 390px of height in total.
               placeholder={
-                replyToId ? "Write a reply..." : "Leave your comment..."
+                compactLandscape
+                  ? replyToId ? "Reply…" : "Comment…"
+                  : replyToId ? "Write a reply..." : "Leave your comment..."
               }
               value={body}
               onChange={handleTextChange}

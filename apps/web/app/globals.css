@@ -9,6 +9,36 @@
 
 
 @layer base {
+  /* ─── The safe area, behind four custom properties (§232 item 3) ──────
+   *
+   * These are `env(safe-area-inset-*)` and nothing else — the same four
+   * values, named. Two reasons they exist rather than `env()` being
+   * written inline where it is used:
+   *
+   *  1. Chromium reports 0 for every inset, at every viewport and under
+   *     every device emulation it offers. There is no notch to measure,
+   *     so there is no way to test a safe-area rule in a browser — and
+   *     the §228c rules that pad the landscape viewer were shipped
+   *     UNTESTED for exactly that reason, which is how they came to be
+   *     twice as wide as they should be on a real iPhone. A custom
+   *     property can be overridden from a test stylesheet; `env()`
+   *     cannot. The §232 Playwright run sets these to 59/47 (and 47/59,
+   *     and 0/0) and measures what follows. That is EMULATION of the
+   *     insets, not a measurement of a physical cutout.
+   *  2. The reduced inset below has to be written once, not per rule.
+   *
+   * No behaviour of its own: a rule that said `env(safe-area-inset-left)`
+   * and now says `var(--safe-area-left)` resolves to the same pixel on
+   * every real device. Rules elsewhere in this file that use `env()`
+   * directly are left exactly as they are — this is not a sweep.
+   */
+  :root {
+    --safe-area-top: env(safe-area-inset-top);
+    --safe-area-right: env(safe-area-inset-right);
+    --safe-area-bottom: env(safe-area-inset-bottom);
+    --safe-area-left: env(safe-area-inset-left);
+  }
+
   * {
     border-color: var(--border-primary);
   }
@@ -795,6 +825,55 @@
  * 2.2 AA minimum of 24.
  */
 @media (hover: none) and (pointer: coarse) and (max-height: 500px) {
+  /* ─── A SMALLER safe area, for text and controls only (§232 item 3) ───
+   *
+   * The owner, from a real iPhone in landscape: the side-by-side layout is
+   * right, but "the safe-area padding on the left and right is so wide
+   * that content is squeezed… the actual safe zone can be a bit smaller in
+   * this case." His screenshot: ~65pt of black down each side of the
+   * screen, and the comment field's placeholder wrapping to two lines with
+   * the second one clipped off by the bottom of the field.
+   *
+   * What §228c did, and why it was too much: it padded `.viewer-topbar`
+   * and `.viewer-landscape` by the FULL `env(safe-area-inset-left/right)`
+   * on both sides. In landscape iOS reports ~59pt on the notch / Dynamic
+   * Island side and ~47pt on the other. Only the first of those is a
+   * cutout; the second is almost entirely rounded-corner margin, and even
+   * on the cutout side the island itself is only ~35pt wide — the rest of
+   * the 59 is clearance iOS adds for a full-bleed status bar this viewer
+   * does not draw. Apple's own apps let backgrounds and video run to the
+   * physical edge and inset only TEXT and CONTROLS, which is what this
+   * does now.
+   *
+   * The arithmetic, and why these two constants:
+   *
+   *     max(12px, calc(inset - 24px))
+   *
+   *   - `- 24px` is what is given back. It is bounded below by the cutout
+   *     itself: 59 − 24 = 35, and the island is ~35pt wide, so a control
+   *     still cannot sit under it — subtracting 25 would be the first
+   *     value that could. On the other side 47 − 24 = 23, which is past
+   *     the corner radius (iPhone 14 Pro: ~55px device = ~18pt of corner
+   *     at the screen's own scale) and clear of it.
+   *   - `12px` is the floor for a device that reports no inset at all, so
+   *     this is never WORSE than ordinary padding. It is also exactly the
+   *     `px-3` the top bar already carries from Tailwind, so at 0 inset
+   *     the bar is byte-identical to a bar with no rule at all.
+   *   - Net on the owner's phone: 65pt of black per side becomes 35 and
+   *     23, and the 70pt it hands back goes to the panel — which at
+   *     844px wide is a 300px minimum that was being squeezed to its
+   *     floor.
+   *
+   * NOT measured on a notch: Chromium reports 0 for every inset. The
+   * values are reached through `--safe-area-*` (see `@layer base`) and the
+   * Playwright run overrides those to 59/47, 47/59 and 0/0 at three
+   * landscape sizes. See the report.
+   */
+  :root {
+    --viewer-inset-left: max(12px, calc(var(--safe-area-left) - 24px));
+    --viewer-inset-right: max(12px, calc(var(--safe-area-right) - 24px));
+  }
+
   /* 40px exactly: the 1px bottom border is inside it (`border-box`, from
    * Tailwind's preflight), and the floor below keeps the bar's own controls
    * at 36 so nothing in it can set it taller than that.
@@ -811,14 +890,13 @@
    * Measured before the `:root`: the bar was 44px at 667x375, because
    * `max-md:min-h-11` was still the last word.
    *
-   * The safe-area padding is a `max()` rather than a plain 8px because in
-   * LANDSCAPE the notch and the home indicator are on the left and right
-   * edges — exactly where this bar puts Back and the `⋯` menu. UNTESTED on
-   * a real device: Chromium reports 0 for every inset. */
+   * The side padding keeps Back and the `⋯` menu clear of the cutout and
+   * the rounded corners — see `--viewer-inset-*` below for why it is a
+   * REDUCED inset rather than the whole thing. */
   :root .viewer-topbar {
     min-height: 40px;
-    padding-left: max(0.5rem, env(safe-area-inset-left));
-    padding-right: max(0.5rem, env(safe-area-inset-right));
+    padding-left: var(--viewer-inset-left);
+    padding-right: var(--viewer-inset-right);
   }
 
   /* Back says the word "Back" here as well as in portrait: `md:hidden`
@@ -896,13 +974,46 @@
     display: none;
   }
 
-  /* The panel's edges follow the safe area too: the composer's Send button
-   * is at the right edge of the screen in landscape, and the list's text
-   * at the left. */
+  /* §232 item 3 — the two-column layout itself has NO side padding.
+   *
+   * It used to be padded by the full inset on both sides, which is where
+   * the black bars in the owner's screenshot came from: padding on this
+   * flex container moves the video stage AND the panel inwards and leaves
+   * the page's own background showing in the gap. The video stage and the
+   * panel surface now reach the physical edge of the screen, the way
+   * Apple's own players do.
+   *
+   * `padding-bottom` is unchanged and deliberately so: the home indicator
+   * really does sit over the bottom of a landscape screen, it is ~21pt
+   * rather than ~59, and it is not what was reported. One change at a
+   * time. */
   .viewer-landscape {
-    padding-left: max(0px, env(safe-area-inset-left));
-    padding-right: max(0px, env(safe-area-inset-right));
-    padding-bottom: max(0px, env(safe-area-inset-bottom));
+    padding-left: 0;
+    padding-right: 0;
+    padding-bottom: max(0px, var(--safe-area-bottom));
+  }
+
+  /* The left column's one row of CONTROLS. The stage above it is a
+   * surface — tap-to-play — and surfaces go edge to edge; the play button,
+   * the timecode and the scrubber handles are controls and keep clear of
+   * the corner. `px-1` (4px) is what the row carries from Tailwind, so on
+   * a device with no inset this moves the play button 8px right and
+   * changes nothing else. */
+  :root .viewer-landscape [data-testid='viewer-landscape-media'] [data-testid='video-transport-compact'] {
+    padding-left: var(--viewer-inset-left);
+  }
+
+  /* The right column's three children — the tab strip, the scrolling list
+   * and the composer — rather than the panel itself.
+   *
+   * Deliberate: padding on the panel would shorten its border-left, the
+   * composer's border-top and the tab strip's border-bottom by 35px each,
+   * leaving three broken lines a few pixels short of the screen edge.
+   * Each child paints its own background and border across the full
+   * width and insets only what is inside it, which is the same split the
+   * left column gets. */
+  :root .viewer-landscape [data-testid='viewer-landscape-panel'] > * {
+    padding-right: var(--viewer-inset-right);
   }
 }
 

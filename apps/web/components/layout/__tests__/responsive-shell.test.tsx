@@ -54,6 +54,7 @@ vi.mock('@/components/layout/notification-drawer', () => ({ NotificationDrawer: 
 
 import { DashboardShell } from '../dashboard-shell'
 import { useViewStore } from '@/stores/view-store'
+import { useRightPanelStore } from '@/stores/right-panel-store'
 
 /** jsdom has no media queries, so this is what the code actually reads. */
 function setViewportXl(isXl: boolean) {
@@ -86,6 +87,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   setViewportXl(true)
   useViewStore.setState({ rightPanelOpen: true })
+  // §232 — no page has registered a panel until one says so.
+  useRightPanelStore.setState({ available: false })
 })
 
 // ─── The off-canvas nav ─────────────────────────────────────────────────
@@ -176,27 +179,60 @@ describe('§224 — the nav is off-canvas below md', () => {
   })
 })
 
-describe('§224 — the panel toggle', () => {
-  it('is md-and-up only: below that the bottom tab bar owns the panel', () => {
+describe('§232 item 2 — the panel toggle only exists where a panel does', () => {
+  /**
+   * The condition was `pathname !== '/projects'`, which assumed every
+   * other page had a panel. §232 removes the project/folder view's, so
+   * the toggle now asks `right-panel-store` — set by the page that
+   * renders a panel, for as long as it renders one.
+   *
+   * This shell test mounts no page, so nothing has registered a panel:
+   * the absent case is the default, which is the right default. A dead
+   * toggle is what §224 was reported for.
+   */
+  it('is absent when nothing has registered a panel', () => {
     renderShell()
-    const toggle = screen.getByRole('button', { name: /show panel|hide panel/i })
-    // It writes `rightPanelOpen`, which the phone pane deliberately does
-    // not read — leaving it visible there would be a second dead button,
-    // which is the exact bug §224 exists to fix.
+    expect(screen.queryByRole('button', { name: /show panel|hide panel/i })).toBeNull()
+  })
+
+  it('appears as soon as a page registers one', async () => {
+    renderShell()
+    useRightPanelStore.getState().setAvailable(true)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /show panel|hide panel/i })).toBeInTheDocument(),
+    )
+  })
+
+  it('is md-and-up only: below that the panel is not rendered at any width', async () => {
+    renderShell()
+    useRightPanelStore.getState().setAvailable(true)
+    const toggle = await screen.findByRole('button', { name: /show panel|hide panel/i })
     expect(toggle.className).toMatch(/hidden md:flex/)
   })
 
-  it('is thumb-sized where there is no pointer', () => {
+  it('is thumb-sized where there is no pointer', async () => {
     renderShell()
-    const toggle = screen.getByRole('button', { name: /show panel|hide panel/i })
+    useRightPanelStore.getState().setAvailable(true)
+    const toggle = await screen.findByRole('button', { name: /show panel|hide panel/i })
     expect(toggle.className).toMatch(/hover-none:h-11/)
     expect(toggle.className).toMatch(/hover-none:w-11/)
   })
 
-  it('says what it is, not just what it looks like', () => {
+  it('says what it is, not just what it looks like', async () => {
     renderShell()
-    const toggle = screen.getByRole('button', { name: /show panel|hide panel/i })
+    useRightPanelStore.getState().setAvailable(true)
+    const toggle = await screen.findByRole('button', { name: /show panel|hide panel/i })
     expect(toggle).toHaveAttribute('aria-pressed')
+  })
+
+  it('still toggles the persisted flag it always did', async () => {
+    const user = userEvent.setup()
+    renderShell()
+    useRightPanelStore.getState().setAvailable(true)
+    const toggle = await screen.findByRole('button', { name: /show panel|hide panel/i })
+    const before = useViewStore.getState().rightPanelOpen
+    await user.click(toggle)
+    expect(useViewStore.getState().rightPanelOpen).toBe(!before)
   })
 })
 

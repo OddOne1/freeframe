@@ -2,8 +2,8 @@
 
 import * as React from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { X, Download, MoreHorizontal, Layers, Share2, Trash2, FolderInput, FolderIcon, Check, Film, Music, Image as ImageIcon, Images, Link as LinkIcon, Pencil, FolderPlus, Upload, CheckSquare } from 'lucide-react'
-import { cn, formatRelativeTime } from '@/lib/utils'
+import { X, Download, MoreHorizontal, Layers, Share2, Trash2, FolderInput, FolderIcon, Check, Film, Music, Image as ImageIcon, Images, Pencil, FolderPlus, Upload, CheckSquare } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { useFormatBytes } from '@/hooks/use-byte-units'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/shared/avatar'
@@ -17,7 +17,7 @@ import { AppearancePopover } from './appearance-popover'
 import { SortPopover } from './sort-popover'
 import { MoveToDialog } from './move-to-dialog'
 import { useViewStore } from '@/stores/view-store'
-import { usePointerGesture } from '@/hooks/use-pointer-gesture'
+import { usePointerGesture, cardKeyIntent } from '@/hooks/use-pointer-gesture'
 import type { Asset, AssetStatus, User, Folder, FolderTreeNode } from '@/types'
 
 const assetTypeIcons: Record<string, React.ElementType> = {
@@ -47,9 +47,16 @@ interface AssetGridProps {
   fileSizes?: Record<string, number>
   /** asset id -> folder path label (e.g. "Test / Sub"), used when Flatten Folders is on */
   folderPaths?: Record<string, string>
-  selectedAssetId?: string | null
   onUpload?: () => void
-  onAssetSelect?: (asset: Asset, e?: React.MouseEvent) => void
+  /**
+   * §232 item 2 — there is no `onAssetSelect` / `selectedAssetId` pair any
+   * more. They existed to feed the project view's right panel: a plain
+   * click told the page which asset to inspect, and the page rang the
+   * selected card. With the panel gone and a plain click opening the
+   * asset, nothing is left to tell and nothing to ring. Multi-selection
+   * (the checkbox, cmd, shift) is this component's own state, as it
+   * always was, and the bulk bar is still its one readout.
+   */
   onAssetOpen?: (asset: Asset) => void
   folders?: Folder[]
   currentFolderId?: string | null
@@ -132,9 +139,7 @@ export function AssetGrid({
   authorNames = {},
   fileSizes = {},
   folderPaths = {},
-  selectedAssetId,
   onUpload,
-  onAssetSelect,
   onAssetOpen,
   folders,
   currentFolderId,
@@ -163,12 +168,12 @@ export function AssetGrid({
 }: AssetGridProps) {
   const formatBytes = useFormatBytes()
   /**
-   * §227b — one tap opens, one click selects, decided per gesture.
+   * §232 item 1 — one click opens, whatever made it; one click toggles
+   * once a selection exists; a click that ended a drag does nothing.
    *
-   * ONE instance for every card and row this grid renders: the recorded
-   * pointer type belongs to the gesture in flight, and there is only ever
-   * one of those. See hooks/use-pointer-gesture.ts for why the type cannot
-   * be read off the click itself.
+   * ONE instance for every card and row this grid renders: the gesture
+   * being judged is the one in flight, and there is only ever one of
+   * those. See hooks/use-pointer-gesture.ts.
    */
   const gesture = usePointerGesture()
   const [selectedAssetIds, setSelectedAssetIds] = React.useState<Set<string>>(new Set())
@@ -300,18 +305,20 @@ export function AssetGrid({
   const totalSelected = selectedAssetIds.size + selectedFolderIds.size
 
   /**
-   * §227b — once anything is selected, a TAP toggles instead of opening.
+   * §227b, extended to every pointer by §232 — once anything is selected,
+   * a CLICK toggles instead of opening.
    *
-   * The standard multi-select rule, and on a phone the only one that makes
-   * a second selected item reachable at all: the checkbox starts a
-   * selection, and from then on the whole card is the toggle, until the
-   * selection is cleared.
+   * The standard multi-select rule, and the one that makes single-click
+   * open safe rather than destructive: the checkbox (or cmd-click) starts
+   * a selection, and from then on the whole card is the toggle, until the
+   * selection is cleared with Escape, the bulk bar's ✕, or a click on
+   * empty space. Nothing can navigate away from a selection by accident.
    *
    * Share mode counts as a selection for assets — it is a selection mode,
-   * and a tap that navigated into the viewer would make picking what to
+   * and a click that navigated into the viewer would make picking what to
    * share impossible. For FOLDERS it does not, because in share mode the
    * wrapper below already owns the folder toggle; counting it twice would
-   * toggle and untoggle in one tap.
+   * toggle and untoggle in one click.
    */
   const tapTogglesAssets = shareMode || totalSelected > 0
   const tapTogglesFolders = !shareMode && totalSelected > 0
@@ -345,24 +352,14 @@ export function AssetGrid({
   const showFolders = !flattenFolders && folders && folders.length > 0
 
   /**
-   * §99 — what a click on a card body means.
-   *
-   * Plain click is unchanged and deliberately so: it opens the side panel,
-   * which is what this grid has always done and what the parent's
-   * `selectedAsset` state exists for. Only the modified cases are new.
-   *
-   * ONE handler for both the grid and list views. They render separately
-   * and each had its own inline onClick; two copies of a selection rule is
-   * how the two would come to disagree about what shift-click does.
-   */
-  /**
    * §101 — the modifier half of a click, shared by every entry point.
    *
    * Returns true when a modifier was held and the selection has been
    * changed; false for a plain click, which each caller then finishes in
-   * its own way. That split is the whole point: the card body opens the
-   * side panel on a plain click and the checkbox must never do that, but
-   * shift and cmd have to mean the same thing on both.
+   * its own way. That split is the whole point: a plain click on the card
+   * body now OPENS the asset (§232) and the checkbox must never do that,
+   * but shift and cmd have to mean the same thing on both — and must
+   * never open, which is what makes a selection buildable with a mouse.
    *
    * §99 put this logic only on the card body. The checkbox — the visible
    * "select" control, and the more natural target — silently plain-toggled
@@ -415,13 +412,45 @@ export function AssetGrid({
     return false
   }
 
-  /** A click on the card BODY. Plain clicks open the side panel — which is
-   *  what makes this different from the checkbox, and why the modifier
-   *  logic above is shared rather than this function reused. */
-  const handleCardClick = (asset: Asset, e: React.MouseEvent) => {
+  /**
+   * A click on the card BODY or a list ROW, in either layout (§232 item 1).
+   *
+   * ONE function for all four surfaces. §227b had the rule written out
+   * inline at each of them, which is how the folder row ended up with a
+   * different answer from the folder card; there is one answer left to get
+   * wrong now.
+   *
+   * Order matters and is the whole safety argument:
+   *   1. a drag, or the tail of a double-click -> nothing at all
+   *   2. a modified click -> selection only, never an open
+   *   3. a selection is on screen -> toggle, never an open
+   *   4. otherwise -> open
+   */
+  const handleAssetActivate = (asset: Asset, e: React.MouseEvent) => {
+    const intent = gesture.tapIntent(e, { selectionActive: tapTogglesAssets })
+    if (intent === 'ignore') return
     if (applyModifierSelection(asset, e)) return
-    setLastClickedId(asset.id)
-    onAssetSelect?.(asset, e)
+    if (intent === 'toggle') {
+      toggleAssetSelect(asset.id)
+      setLastClickedId(asset.id)
+      return
+    }
+    onAssetOpen?.(asset)
+  }
+
+  /** The same for a folder row. Folders have no range of their own — the
+   *  shift range is measured over the rendered ASSET list — so a modified
+   *  click toggles rather than ranging. */
+  const handleFolderActivate = (folder: Folder, e: React.MouseEvent) => {
+    const intent = gesture.tapIntent(e, { selectionActive: tapTogglesFolders })
+    if (intent === 'ignore') return
+    if (e.metaKey || e.ctrlKey || e.shiftKey) {
+      e.preventDefault()
+      toggleFolderSelect(folder.id)
+      return
+    }
+    if (intent === 'toggle') { toggleFolderSelect(folder.id); return }
+    onFolderOpen?.(folder)
   }
 
   /**
@@ -481,6 +510,33 @@ export function AssetGrid({
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [selectAllVisible, shareMode])
+
+  /**
+   * Escape clears the selection (§232 item 1).
+   *
+   * NEW — it did nothing before. It is listed as one of the things that
+   * "must stay possible", and single-click open is what makes it matter:
+   * a selection now changes what every click in the view does, so there
+   * has to be a one-key way out of that mode. The bulk bar's ✕ was the
+   * only one.
+   *
+   * It yields to anything that owns Escape more strongly: an open dialog
+   * (Move to…, rename, delete) or an open menu should close on Escape,
+   * not have the selection pulled out from under the thing it is about
+   * to act on. `preventDefault` is deliberately NOT called, so Radix's
+   * own document-level handlers are untouched either way.
+   */
+  React.useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (document.querySelector('[role="dialog"],[role="menu"],[role="alertdialog"]')) return
+      const el = document.activeElement as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
+      clearSelection()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [clearSelection])
 
 
   /**
@@ -603,6 +659,31 @@ export function AssetGrid({
   return (
     <div
       className="flex flex-col gap-3 relative"
+      /**
+       * A click on genuinely empty space clears the selection (§232
+       * item 1). NEW — nothing cleared it before except the bulk bar's ✕
+       * and a folder change.
+       *
+       * The same "is this actually blank?" test the right-click handler
+       * below uses, widened to the list rows and to anything
+       * interactive: the bulk bar, the share bar and the toolbar popovers
+       * are all children of this element, and a click on one of them is
+       * not a click on the canvas. It only ever CLEARS, so the worst a
+       * missed case can do is leave a selection standing.
+       */
+      onClick={(e) => {
+        if (totalSelected === 0) return
+        const target = e.target as HTMLElement
+        if (
+          target.closest(
+            '[data-asset-card],[data-folder-card],[data-asset-row],[data-folder-row],' +
+            'button,a,input,textarea,select,label,[role="menu"],[role="dialog"]',
+          )
+        ) {
+          return
+        }
+        clearSelection()
+      }}
       onContextMenu={(e) => {
         // Only genuinely empty space. A right-click on a card is handled by
         // the card's own handler, which stops propagation — but a click on
@@ -689,12 +770,9 @@ export function AssetGrid({
                   <FolderCard
                     folder={folder}
                     onOpen={shareMode ? () => {} : onFolderOpen!}
-                    // §227b — a tap opens a folder card the way it opens
-                    // an asset card. The card itself decides, because the
-                    // gesture lands on IT; `onSelect` is deliberately not
-                    // passed, so a plain MOUSE click on a folder card does
-                    // exactly what it does today (nothing — the checkbox
-                    // and the double-click are the mouse's two controls).
+                    // §232 item 1 — one click opens a folder card the way
+                    // it opens an asset card, on every pointer. The card
+                    // itself decides, because the gesture lands on IT.
                     selectionActive={tapTogglesFolders}
                     onToggleSelect={shareMode ? undefined : () => toggleFolderSelect(folder.id)}
                     onRename={shareMode ? undefined : onFolderRename}
@@ -740,21 +818,20 @@ export function AssetGrid({
           {filtered.map((asset) => (
             <div
               key={asset.id}
-              className={cn(
-                'rounded-lg transition-all cursor-pointer',
-                selectedAssetId === asset.id && 'ring-2 ring-accent ring-offset-1 ring-offset-bg-primary',
-              )}
-              // §227b — a tap opens the asset; a mouse click still only
-              // selects and a mouse double-click still opens. The pointer
-              // type is recorded here and read by the click that follows.
+              className="rounded-lg transition-all cursor-pointer"
+              // §232 item 1 — one click opens the asset, whatever made the
+              // click. The pointer-down position is recorded here and read
+              // by the click that follows, so a drag that ends on this card
+              // cannot be mistaken for a click on it. No `onDoubleClick`:
+              // the first click has already opened it.
               onPointerDown={gesture.onPointerDown}
-              onClick={(e) => {
-                const intent = gesture.tapIntent({ selectionActive: tapTogglesAssets })
-                if (intent === 'open') { onAssetOpen?.(asset); return }
-                if (intent === 'toggle') { handleCheckboxClick(asset, e); return }
-                handleCardClick(asset, e)
+              onClick={(e) => handleAssetActivate(asset, e)}
+              tabIndex={0}
+              onKeyDown={(e) => {
+                const intent = cardKeyIntent(e)
+                if (intent === 'open') onAssetOpen?.(asset)
+                else if (intent === 'toggle') { toggleAssetSelect(asset.id); setLastClickedId(asset.id) }
               }}
-              onDoubleClick={() => { if (gesture.doubleOpens()) onAssetOpen?.(asset) }}
             >
               <AssetCard
                 asset={asset}
@@ -824,20 +901,18 @@ export function AssetGrid({
                   i !== folders!.length - 1 || filtered.length > 0 ? 'border-b border-border' : '',
                   isFolderSelected && 'bg-accent/5',
                 )}
-                // §227b — the one surface where a plain mouse click
-                // ALREADY opens, so `mouseClickOpens`: "mouse behaviour
-                // unchanged" outranks making the four surfaces agree.
-                // What is new is the touch half — a tap toggles instead
-                // of opening once a selection exists.
+                // §232 item 1 — the one surface where a plain mouse click
+                // already opened; it now shares the single rule with the
+                // other three instead of carrying a `mouseClickOpens`
+                // exception of its own.
                 onPointerDown={gesture.onPointerDown}
-                onClick={() => {
-                  if (gesture.tapIntent({ selectionActive: tapTogglesFolders, mouseClickOpens: true }) === 'toggle') {
-                    toggleFolderSelect(folder.id)
-                    return
-                  }
-                  onFolderOpen?.(folder)
+                onClick={(e) => handleFolderActivate(folder, e)}
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  const intent = cardKeyIntent(e)
+                  if (intent === 'open') onFolderOpen?.(folder)
+                  else if (intent === 'toggle') toggleFolderSelect(folder.id)
                 }}
-                onDoubleClick={() => { if (gesture.doubleOpens()) onFolderOpen?.(folder) }}
               >
                 {/* Folder icon with checkbox overlay — aligned with asset thumbnail */}
                 <div className="relative h-10 w-10 shrink-0 rounded-md bg-bg-tertiary flex items-center justify-center overflow-hidden">
@@ -950,17 +1025,17 @@ export function AssetGrid({
                 key={asset.id}
                 data-asset-row={asset.id}
                 onPointerDown={gesture.onPointerDown}
-                onClick={(e) => {
-                  const intent = gesture.tapIntent({ selectionActive: tapTogglesAssets })
-                  if (intent === 'open') { onAssetOpen?.(asset); return }
-                  if (intent === 'toggle') { handleCheckboxClick(asset, e); return }
-                  handleCardClick(asset, e)
+                onClick={(e) => handleAssetActivate(asset, e)}
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  const intent = cardKeyIntent(e)
+                  if (intent === 'open') onAssetOpen?.(asset)
+                  else if (intent === 'toggle') { toggleAssetSelect(asset.id); setLastClickedId(asset.id) }
                 }}
-                onDoubleClick={() => { if (gesture.doubleOpens()) onAssetOpen?.(asset) }}
                 className={cn(
                   'group flex items-center gap-4 px-3 py-2 transition-colors hover:bg-bg-hover cursor-pointer',
                   i !== filtered.length - 1 && 'border-b border-border',
-                  selectedAssetId === asset.id ? 'bg-accent/10' : selectedAssetIds.has(asset.id) && 'bg-accent/5',
+                  selectedAssetIds.has(asset.id) && 'bg-accent/5',
                 )}
               >
                 {/* Square thumbnail with checkbox overlay */}
@@ -1026,7 +1101,23 @@ export function AssetGrid({
                 <div className="w-8 shrink-0 flex justify-center">
                   {assignee && <Avatar src={assignee.avatar_url} name={assignee.name} size="sm" />}
                 </div>
-                {/* Context menu — hidden until hover */}
+                {/* Context menu — hidden until hover.
+                    §232 item 2 — the SAME `AssetMenuItems` the grid card
+                    and the right-click menu use. This row carried its own
+                    hand-written copy of the five entries, and the copy had
+                    drifted: every entry rendered unconditionally and
+                    called an optional handler, so a viewer — who is given
+                    no `onAssetShare` / `onAssetRename` / `onAssetDelete`
+                    (page.tsx's canShare / canEditAssets gates) — was
+                    offered Create Share Link, Rename and Delete here and
+                    they silently did nothing. With the right panel gone
+                    this menu is where Share and Download now live, so it
+                    has to be the gated list, not a lookalike.
+
+                    Behaviour kept from the copy: "Copy Asset URL" uses
+                    `asset.project_id` rather than the grid's `projectId`
+                    prop, which matters on /assets where `projectId` is
+                    the empty string. */}
                 <div className="w-8 shrink-0 flex justify-center opacity-0 group-hover:opacity-100 hover-none:opacity-100 transition-opacity">
                   <DropdownMenu.Root>
                     <DropdownMenu.Trigger asChild>
@@ -1044,46 +1135,17 @@ export function AssetGrid({
                         className="z-[100] min-w-[200px] rounded-xl border border-border bg-bg-elevated shadow-2xl py-1.5 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <DropdownMenu.Item
-                          onSelect={() => onAssetShare?.(asset)}
-                          className="flex items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
-                        >
-                          <Share2 className="h-3.5 w-3.5 text-text-tertiary" />
-                          Create Share Link
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Separator className="my-1 h-px bg-border mx-1" />
-                        <DropdownMenu.Item
-                          onSelect={() => onAssetDownload?.(asset)}
-                          className="flex items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
-                        >
-                          <Download className="h-3.5 w-3.5 text-text-tertiary" />
-                          Download
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Item
-                          onSelect={() => {
-                            const url = `${window.location.origin}/projects/${asset.project_id}/assets/${asset.id}`
-                            navigator.clipboard.writeText(url)
-                          }}
-                          className="flex items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
-                        >
-                          <LinkIcon className="h-3.5 w-3.5 text-text-tertiary" />
-                          Copy Asset URL
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Separator className="my-1 h-px bg-border mx-1" />
-                        <DropdownMenu.Item
-                          onSelect={() => onAssetRename?.(asset)}
-                          className="flex items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors"
-                        >
-                          <Pencil className="h-3.5 w-3.5 text-text-tertiary" />
-                          Rename
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Item
-                          onSelect={() => onAssetDelete?.(asset)}
-                          className="flex items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-status-error hover:bg-status-error/10 cursor-pointer outline-none transition-colors"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          Delete
-                        </DropdownMenu.Item>
+                        <AssetMenuItems
+                          onShare={onAssetShare ? () => onAssetShare(asset) : undefined}
+                          onDownload={onAssetDownload ? () => onAssetDownload(asset) : undefined}
+                          onRename={onAssetRename ? () => onAssetRename(asset) : undefined}
+                          onDelete={onAssetDelete ? () => onAssetDelete(asset) : undefined}
+                          assetUrl={
+                            typeof window !== 'undefined'
+                              ? `${window.location.origin}/projects/${asset.project_id}/assets/${asset.id}`
+                              : null
+                          }
+                        />
                       </DropdownMenu.Content>
                     </DropdownMenu.Portal>
                   </DropdownMenu.Root>

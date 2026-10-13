@@ -71,7 +71,6 @@ function Harness({ onZip }: { onZip: (v: { assetIds: string[]; scope: string; fo
         folders={FOLDERS}
         projectId="p-1"
         projectName="Rope Challenge"
-        onAssetSelect={() => {}}
         onBulkDownload={async (assetIds, folderIds) => {
           const plan = await planBulkDownload({
             assetIds,

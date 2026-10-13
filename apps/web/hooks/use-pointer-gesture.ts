@@ -3,97 +3,135 @@
 import * as React from 'react'
 
 /**
- * What a card click MEANS, decided per gesture by the pointer that made it
- * (§227b item 1).
+ * What a click on a card MEANS, decided per gesture (§232 item 1).
  *
- * The bug: `asset-grid.tsx` opened an asset on `onDoubleClick` and the grid
- * folder card did the same, so on a phone a single tap selected and nothing
- * visible happened. §227 removed the Comments tab that used to make that
- * selection worth something, so a tap became a dead gesture and a
- * double-tap the only way into the viewer.
+ * §227b made this hook because a tap and a mouse click arrive as the same
+ * `click` event and had to mean different things: a tap opened, a click
+ * selected, and a mouse needed a DOUBLE click to open. The owner, after
+ * living with it: "we would want to open folders and assets on the first
+ * click" — the same as a tap, on every pointer.
  *
- * The decision is per GESTURE, not per device, and that distinction is the
- * whole reason this file exists:
+ * So the pointer TYPE no longer decides anything, and nothing here reads
+ * it any more. `coarsePointer`, the recorded `pointerType` and
+ * `doubleOpens()` are gone rather than collapsed to a constant: a branch
+ * that can only go one way is a branch someone will try to use again.
  *
- *  - A tap and a mouse click both arrive as `click`, so `onClick` alone
- *    cannot tell them apart.
- *  - The `click` event is NOT reliably a `PointerEvent` — in jsdom (and in
- *    Safari) `click.pointerType` is `undefined` even for a real mouse
- *    gesture, measured. So the type is recorded on `pointerdown`, where it
- *    is always present, and read by the click that follows.
- *  - No width breakpoint and no device-level `(hover: none)` test: an iPad
- *    with a trackpad must open on a finger tap and select on a trackpad
- *    click, within the same second, on the same card. A media query cannot
- *    express that; the gesture that is actually happening can.
+ * Two things still have to be decided per gesture, and this is still the
+ * one place that decides them:
  *
- * `(hover: none)` stays what it was — a CSS visibility rule for controls
- * that would otherwise only appear on hover. It decides what is PAINTED,
- * never what a click does.
+ *  1. A click that ENDED A DRAG must not open anything. HTML5 drag and
+ *     drop (§223's move-onto-a-folder) normally swallows the click — but
+ *     only once the browser has actually promoted the gesture to a drag.
+ *     A press, a move and a release that the browser does NOT promote
+ *     still ends in a `click`, at the release point, and before §232 that
+ *     click only selected, so it was harmless. Now it would navigate.
+ *     The guard is geometric and needs no drag API: remember where the
+ *     pointer went DOWN and compare it with where the click landed.
+ *
+ *  2. The SECOND click of a double-click must not open a second time.
+ *     Years of double-clicking this grid is muscle memory, and two opens
+ *     is two `router.push`es — two history entries for one gesture, so
+ *     one Back press would not get you out. `MouseEvent.detail` is the
+ *     click count within the sequence, which is exactly the question.
  *
  * One instance per component serves every card it renders: a pointer
  * gesture is a global, serial thing — pointerdown and the click it causes
  * are adjacent, and there is no second finger pressing a different card
  * in between.
  */
-export type GesturePointer = 'mouse' | 'touch' | 'pen'
 
 /**
- * Anything that is not a finger or a stylus is treated as a mouse — which
- * is also what an unknown or absent `pointerType` gets. Defaulting the
- * other way would hand single-click-opens to every mouse user the moment a
- * browser stopped telling us, and "desktop behaviour is exactly as today"
- * is the constraint that must survive a surprise.
+ * How far the pointer may travel between `pointerdown` and `click` and
+ * still count as a click rather than a drag, in CSS pixels.
+ *
+ * 5 and not 0: a real click wobbles a pixel or two, and a trackpad tap
+ * wobbles more than a mouse. 5 and not 20: a drag that is promoted by the
+ * browser fires no click at all, so everything this number has to catch
+ * is a gesture the browser decided was NOT a drag — and the only cost of
+ * being strict is that a sloppy click does nothing instead of opening,
+ * which is recoverable. Chromium's own drag threshold is also ~5px.
  */
-export function coarsePointer(pointerType: string | null | undefined): GesturePointer {
-  return pointerType === 'touch' || pointerType === 'pen' ? pointerType : 'mouse'
-}
+const DRAG_SLOP_PX = 5
 
 /** What the click belonging to the recorded gesture should do. */
-export type TapIntent = 'open' | 'toggle' | 'select'
+export type TapIntent = 'open' | 'toggle' | 'ignore'
 
 export interface TapIntentOptions {
   /**
-   * Is anything in this view selected right now? Then a tap extends or
+   * Is anything in this view selected right now? Then a click extends or
    * undoes that selection instead of navigating away from it — the
-   * standard multi-select rule, and on a phone the only way a second item
-   * can ever be added once a tap opens.
+   * standard multi-select rule, which §227b introduced for touch and
+   * §232 extends to every pointer. It is also what makes single-click
+   * open safe: with a selection on screen, no plain click can lose it.
    */
   selectionActive?: boolean
-  /**
-   * For the one surface where a plain MOUSE click already opens today: the
-   * list layout's folder rows. "Mouse behaviour is unchanged" outranks any
-   * wish to make the four surfaces agree, so that row keeps its
-   * single-click open rather than quietly becoming a select.
-   */
-  mouseClickOpens?: boolean
 }
 
 export function usePointerGesture() {
   /**
-   * `mouse` until a pointerdown says otherwise, so a synthetic or
-   * programmatic click — one with no gesture in front of it — behaves the
-   * way the desktop always has.
+   * Where the pointer went down, or null when the click that is being
+   * judged had no gesture in front of it at all — a programmatic
+   * `.click()`, or a keyboard Enter, both of which report (0,0) and must
+   * NOT be read as a 400px drag.
    */
-  const pointer = React.useRef<GesturePointer>('mouse')
+  const origin = React.useRef<{ x: number; y: number } | null>(null)
 
   const onPointerDown = React.useCallback((e: React.PointerEvent) => {
-    pointer.current = coarsePointer(e.pointerType)
+    origin.current = { x: e.clientX, y: e.clientY }
   }, [])
 
   const tapIntent = React.useCallback(
-    ({ selectionActive = false, mouseClickOpens = false }: TapIntentOptions = {}): TapIntent => {
-      if (pointer.current !== 'mouse') return selectionActive ? 'toggle' : 'open'
-      return mouseClickOpens ? 'open' : 'select'
+    (e: React.MouseEvent, { selectionActive = false }: TapIntentOptions = {}): TapIntent => {
+      const from = origin.current
+      // Consumed: one pointerdown belongs to one click. Leaving it would
+      // let a stale origin judge the next gesture — e.g. a click whose
+      // pointerdown was swallowed by a child that stops propagation.
+      origin.current = null
+
+      // The 2nd, 3rd, … click of a multi-click sequence. The first one has
+      // already acted.
+      if (e.detail > 1) return 'ignore'
+
+      if (
+        from &&
+        (Math.abs(e.clientX - from.x) > DRAG_SLOP_PX ||
+          Math.abs(e.clientY - from.y) > DRAG_SLOP_PX)
+      ) {
+        return 'ignore'
+      }
+
+      return selectionActive ? 'toggle' : 'open'
     },
     [],
   )
 
-  /**
-   * A double-click opens only when it was made with a mouse. A double TAP
-   * would otherwise open twice: its first tap has already opened the item,
-   * and `dblclick` fires after both clicks.
-   */
-  const doubleOpens = React.useCallback(() => pointer.current === 'mouse', [])
+  return { onPointerDown, tapIntent }
+}
 
-  return { onPointerDown, tapIntent, doubleOpens }
+/**
+ * Enter opens, Space toggles the selection — on a card that has focus
+ * (§232 item 1).
+ *
+ * Shared by all four surfaces for the same reason the click logic is:
+ * four copies of "which key means what" is four chances to disagree.
+ * Returns true when the key was handled, so the caller can leave
+ * everything else — arrows, Backspace, Tab — completely alone.
+ *
+ * Space is `preventDefault`ed, because the default on a focused element
+ * is to scroll the page.
+ */
+export function cardKeyIntent(e: React.KeyboardEvent): 'open' | 'toggle' | null {
+  if (e.defaultPrevented) return null
+  // A key pressed inside a control the card happens to contain — the
+  // kebab button, the checkbox, a rename field — belongs to that control.
+  if (e.target !== e.currentTarget) return null
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    return 'open'
+  }
+  if (e.key === ' ' || e.key === 'Spacebar') {
+    e.preventDefault()
+    return 'toggle'
+  }
+  return null
 }

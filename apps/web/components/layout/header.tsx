@@ -6,6 +6,7 @@ import { Search, ChevronRight, PanelRightClose, PanelRightOpen, Menu, Settings }
 import Link from 'next/link'
 import { cn } from '@/lib/utils'
 import { useViewStore } from '@/stores/view-store'
+import { useRightPanelStore } from '@/stores/right-panel-store'
 import { useBreadcrumbsFor } from '@/stores/breadcrumb-store'
 import {
   useMobileViewSettingsStore,
@@ -62,6 +63,8 @@ function buildBreadcrumbs(pathname: string, dynamicLabels: Record<string, string
 export function Header({ onSearchOpen, onMobileNavOpen }: HeaderProps) {
   const pathname = usePathname()
   const { rightPanelOpen, toggleRightPanel } = useViewStore()
+  // §232 item 2 — does the page currently on screen have a right panel?
+  const panelAvailable = useRightPanelStore((s) => s.available)
   // §227 — scoped to THIS pathname. The Header never unmounts on a route
   // change, and the crumbs are written by the pages, so an unscoped read
   // appended an asset's folder path and name to every page the user went
@@ -184,13 +187,21 @@ export function Header({ onSearchOpen, onMobileNavOpen }: HeaderProps) {
           </kbd>
         </button>
 
-        {/* Panel toggle — only on project detail pages, not the listing.
-            §224 — and only at `md`+: below that the project view's bottom
-            tab bar owns the panel, so this would be a second control for
-            the same thing that appears to do nothing (it writes
-            `rightPanelOpen`, which the phone pane does not read). Fixing
-            one dead button by adding another would not be a fix. */}
-        {pathname !== '/projects' && (
+        {/* Panel toggle — only where there IS a panel to toggle.
+            §232 item 2 — the condition was `pathname !== '/projects'`,
+            which was wrong in both directions once the project/folder
+            view's panel was removed: it would still render here with
+            nothing to open (the §224 "dead toggle" bug all over again),
+            and it was ALREADY rendering on /assets, /notifications, every
+            /settings page and /projects/{id}/collections, none of which
+            has ever had a panel — nothing but the project page reads
+            `rightPanelOpen`.
+            The page that renders a panel says so instead, through
+            `right-panel-store`. Today that is the share-link Settings /
+            Activity panel and nothing else.
+            §224 — and still only at `md`+: below that the panel is not
+            rendered at any width. */}
+        {panelAvailable && (
           <button
             onClick={toggleRightPanel}
             className={cn(

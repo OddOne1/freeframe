@@ -7,7 +7,7 @@ import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { dragCarriesFiles } from '@/hooks/use-file-drop-zone'
 import { useFormatBytes } from '@/hooks/use-byte-units'
 import { api } from '@/lib/api'
-import { usePointerGesture } from '@/hooks/use-pointer-gesture'
+import { usePointerGesture, cardKeyIntent } from '@/hooks/use-pointer-gesture'
 import { NameDialog } from './name-dialog'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { Folder as FolderType, AssetResponse } from '@/types'
@@ -84,13 +84,13 @@ interface FolderCardProps {
   folder: FolderType
   selected?: boolean
   onOpen: (folder: FolderType) => void
-  onSelect?: (e: React.MouseEvent) => void
   /**
-   * §227b — a TAP's two meanings. `selectionActive` says something is
-   * already selected, so a tap toggles this folder rather than opening it;
-   * `onToggleSelect` is how it does that. Both are touch-only: a mouse
-   * click goes to `onSelect` exactly as before, and a mouse double-click
-   * opens exactly as before.
+   * §232 item 1 — a single click's two meanings, on every pointer.
+   * `selectionActive` says something is already selected, so a click
+   * toggles this folder rather than opening it; `onToggleSelect` is how it
+   * does that, and is also what a Cmd/Ctrl/Shift-click calls so a mouse
+   * can start a selection from the card body rather than only from the
+   * checkbox. §227b had all of this on touch alone.
    */
   selectionActive?: boolean
   onToggleSelect?: () => void
@@ -105,7 +105,6 @@ export function FolderCard({
   folder,
   selected,
   onOpen,
-  onSelect,
   selectionActive = false,
   onToggleSelect,
   onRename,
@@ -116,12 +115,13 @@ export function FolderCard({
 }: FolderCardProps) {
   const formatBytes = useFormatBytes()
   /**
-   * §227b — a single TAP opens a folder, the way a single tap opens an
-   * asset. Before this, `onDoubleClick` was the only way in from the grid
-   * layout — which is the layout a phone uses — so on a touch screen a
-   * folder card could not be opened by the gesture a touch screen has.
+   * §232 item 1 — a single CLICK opens a folder, on a mouse as well as a
+   * finger. §227b gave the tap that meaning and left the mouse with a
+   * double-click; the owner's decision is that the first click opens
+   * whatever made it.
    *
-   * The same hook the grid uses, not a copy of its reasoning.
+   * The same hook the grid uses, not a copy of its reasoning — which is
+   * also where the "a drag must not open anything" guard lives.
    */
   const gesture = usePointerGesture()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -203,12 +203,34 @@ export function FolderCard({
         onDragLeave={() => setIsDragOver(false)}
         onDrop={handleDrop}
         onPointerDown={gesture.onPointerDown}
-        onDoubleClick={() => { if (gesture.doubleOpens()) onOpen(folder) }}
+        // §232 item 1 — one click, three outcomes, and no `onDoubleClick`
+        // at all: the first click has already opened the folder, so the
+        // second one is told to do nothing by `tapIntent` (detail > 1).
         onClick={(e) => {
-          const intent = gesture.tapIntent({ selectionActive })
-          if (intent === 'open') { onOpen(folder); return }
+          const intent = gesture.tapIntent(e, { selectionActive })
+          // A drag that ended here, or the tail of a double-click.
+          if (intent === 'ignore') return
+          // A modified click never opens. Folders have no range to select
+          // over — the grid's shift-range is measured over the ASSET list
+          // it renders, and folders are not in it — so shift behaves like
+          // cmd here: it toggles. Stated rather than silently dropped.
+          if (e.metaKey || e.ctrlKey || e.shiftKey) {
+            e.preventDefault()
+            onToggleSelect?.()
+            return
+          }
           if (intent === 'toggle') { onToggleSelect?.(); return }
-          onSelect?.(e)
+          onOpen(folder)
+        }}
+        // §232 item 1 — a folder card is focusable and Enter opens it.
+        // `tabIndex` only: a `role="button"` would make the kebab button
+        // inside it an invalid child, and this card has never been a
+        // button. See the report for the tab-order consequence.
+        tabIndex={0}
+        onKeyDown={(e) => {
+          const intent = cardKeyIntent(e)
+          if (intent === 'open') onOpen(folder)
+          else if (intent === 'toggle') onToggleSelect?.()
         }}
       >
         {/* Folder thumbnail preview */}

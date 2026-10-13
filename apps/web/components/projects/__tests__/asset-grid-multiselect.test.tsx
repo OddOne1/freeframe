@@ -48,7 +48,9 @@ const FOLDERS = [
 
 function setup(overrides: Record<string, unknown> = {}) {
   const handlers = {
-    onAssetSelect: vi.fn(),
+    // §232 — `onAssetSelect` is gone; a plain click OPENS now, so the
+    // handler a selection must never reach is `onAssetOpen`.
+    onAssetOpen: vi.fn(),
     onBulkDelete: vi.fn(),
     onBulkDownload: vi.fn(),
     onBulkMove: vi.fn(),
@@ -67,6 +69,10 @@ function cardFor(id: string) {
   return el as HTMLElement
 }
 
+function checkboxFor(name: string) {
+  return screen.getByRole('button', { name: new RegExp(`^(Select|Deselect) ${name}$`) })
+}
+
 /** What the bulk bar says, or null when nothing is selected and it is not
  *  rendered at all. */
 function selectedCount(): number | null {
@@ -80,14 +86,37 @@ beforeEach(() => {
   useViewStore.setState({ layout: 'grid', flattenFolders: false, sortKey: 'name', sortDirection: 'asc' })
 })
 
-describe('plain click is unchanged', () => {
-  it('still opens the side panel and selects nothing', async () => {
+/**
+ * §232 reversed the plain-click rule this file was written against.
+ *
+ * Before: a plain MOUSE click on a card selected it for the right panel
+ * (`onAssetSelect`) and a double-click opened it. Now the first click
+ * opens, so an anchor for a range has to be set the way a selection is
+ * started — the checkbox, or a cmd-click. The range rules themselves are
+ * unchanged, which is the point of keeping these tests rather than
+ * rewriting them: shift and cmd mean exactly what §99/§101 said they mean.
+ */
+describe('a plain click OPENS and selects nothing (§232)', () => {
+  it('opens the asset, and the bulk bar never appears', async () => {
     const user = userEvent.setup()
     const { handlers } = setup()
     await user.click(cardFor('a-2'))
-    expect(handlers.onAssetSelect).toHaveBeenCalledTimes(1)
+    expect(handlers.onAssetOpen).toHaveBeenCalledTimes(1)
+    expect(handlers.onAssetOpen.mock.calls[0][0].id).toBe('a-2')
     // The bar is absent, not empty: nothing was added to the bulk set.
     expect(selectedCount()).toBeNull()
+  })
+
+  it('…but a plain click TOGGLES once something is selected', async () => {
+    const user = userEvent.setup()
+    const { handlers } = setup()
+    await user.click(checkboxFor('A One'))
+    expect(selectedCount()).toBe(1)
+    await user.click(cardFor('a-2'))
+    expect(selectedCount()).toBe(2)
+    await user.click(cardFor('a-2'))
+    expect(selectedCount()).toBe(1)
+    expect(handlers.onAssetOpen).not.toHaveBeenCalled()
   })
 })
 
@@ -95,24 +124,30 @@ describe('shift-click range', () => {
   it('selects everything between the anchor and the clicked card', async () => {
     const user = userEvent.setup()
     const { handlers } = setup()
+    // §232 — a cmd-click sets the anchor, because a plain one now opens.
+    await user.keyboard('{Meta>}')
     await user.click(cardFor('a-2'))
+    await user.keyboard('{/Meta}')
     await user.keyboard('{Shift>}')
     await user.click(cardFor('a-4'))
     await user.keyboard('{/Shift}')
     expect(selectedCount()).toBe(3)     // a-2, a-3, a-4
-    // The range must NOT also open the detail panel — one gesture, one
-    // meaning.
-    expect(handlers.onAssetSelect).toHaveBeenCalledTimes(1)
+    // Neither the anchor nor the range may open anything — one gesture,
+    // one meaning, and this is what makes single-click open safe.
+    expect(handlers.onAssetOpen).not.toHaveBeenCalled()
   })
 
   it('works upwards as well as downwards', async () => {
     const user = userEvent.setup()
-    setup()
+    const { handlers } = setup()
+    await user.keyboard('{Meta>}')
     await user.click(cardFor('a-4'))
+    await user.keyboard('{/Meta}')
     await user.keyboard('{Shift>}')
     await user.click(cardFor('a-2'))
     await user.keyboard('{/Shift}')
     expect(selectedCount()).toBe(3)
+    expect(handlers.onAssetOpen).not.toHaveBeenCalled()
   })
 
   it('is ADDITIVE — an earlier selection outside the range survives', async () => {
@@ -123,6 +158,8 @@ describe('shift-click range', () => {
     await user.click(cardFor('a-5'))
     await user.keyboard('{/Meta}')
     expect(selectedCount()).toBe(1)
+    // §232 — a selection is active, so this plain click toggles a-1 in and
+    // moves the anchor to it rather than opening.
     await user.click(cardFor('a-1'))
     await user.keyboard('{Shift>}')
     await user.click(cardFor('a-2'))
@@ -148,16 +185,19 @@ describe('shift-click range', () => {
     // the union is the same size whether or not the anchor moved. A
     // cmd-click in between is what separates them — it moves the anchor
     // without selecting a range.
-    await user.click(cardFor('a-1'))          // anchor a-1
+    await user.click(checkboxFor('A One'))    // anchor a-1, selects a-1
     await user.keyboard('{Meta>}')
     await user.click(cardFor('a-4'))          // anchor a-4, selects a-4
     await user.keyboard('{/Meta}')
     await user.keyboard('{Shift>}')
     await user.click(cardFor('a-5'))
     await user.keyboard('{/Shift}')
-    // Anchored at a-4: a-4..a-5, so two. Had the anchor stayed at a-1 this
-    // would be a-1..a-5, all five.
-    expect(selectedCount()).toBe(2)
+    // Anchored at a-4, the range adds a-4..a-5: a-1, a-4, a-5 — three.
+    // Had the anchor stayed at a-1 the range would be a-1..a-5 and this
+    // would be all five. (§232 changed how the first anchor is set — a
+    // plain click opens now — so it is the checkbox here rather than a
+    // bare click on a-1; the rule under test is untouched.)
+    expect(selectedCount()).toBe(3)
   })
 })
 
@@ -181,7 +221,9 @@ describe('the range follows the RENDERED order, not the array order', () => {
     useViewStore.setState({ layout: 'grid', flattenFolders: false, sortKey: 'date', sortDirection: 'asc' })
 
     render(<AssetGrid assets={dated} projectId="p-1" projectName="Proj" onBulkDelete={vi.fn()} />)
+    await user.keyboard('{Meta>}')
     await user.click(cardFor('a-1'))
+    await user.keyboard('{/Meta}')
     await user.keyboard('{Shift>}')
     await user.click(cardFor('a-5'))
     await user.keyboard('{/Shift}')
@@ -199,7 +241,7 @@ describe('cmd/ctrl click', () => {
     await user.click(cardFor('a-2'))
     await user.keyboard('{/Meta}')
     expect(selectedCount()).toBe(1)
-    expect(handlers.onAssetSelect).not.toHaveBeenCalled()
+    expect(handlers.onAssetOpen).not.toHaveBeenCalled()
   })
 
   it('adds without clearing what is already selected, and toggles back off', async () => {
@@ -292,9 +334,6 @@ describe('select all', () => {
  * whatever modifier was held — in two separate implementations, one per
  * view, that each ignored the event.
  */
-function checkboxFor(name: string) {
-  return screen.getByRole('button', { name: new RegExp(`^(Select|Deselect) ${name}$`) })
-}
 
 describe.each([
   ['grid', 'grid' as const],
@@ -304,16 +343,16 @@ describe.each([
     useViewStore.setState({ layout, flattenFolders: false, sortKey: 'name', sortDirection: 'asc' })
   })
 
-  it('plain click toggles and does NOT open the side panel', async () => {
+  it('plain click toggles and never opens the asset', async () => {
     const user = userEvent.setup()
     const { handlers } = setup()
     await user.click(checkboxFor('B Two'))
     expect(selectedCount()).toBe(1)
     // The one behaviour that must stay checkbox-specific.
-    expect(handlers.onAssetSelect).not.toHaveBeenCalled()
+    expect(handlers.onAssetOpen).not.toHaveBeenCalled()
     await user.click(checkboxFor('B Two'))
     expect(selectedCount()).toBeNull()
-    expect(handlers.onAssetSelect).not.toHaveBeenCalled()
+    expect(handlers.onAssetOpen).not.toHaveBeenCalled()
   })
 
   it('shift-click selects the range', async () => {
@@ -324,8 +363,8 @@ describe.each([
     await user.click(checkboxFor('D Four'))
     await user.keyboard('{/Shift}')
     expect(selectedCount()).toBe(3)     // a-2, a-3, a-4
-    // Still never the panel, even with a modifier held.
-    expect(handlers.onAssetSelect).not.toHaveBeenCalled()
+    // Still never an open, even with a modifier held.
+    expect(handlers.onAssetOpen).not.toHaveBeenCalled()
   })
 
   // Documentation, not discrimination, and worth being straight about: on
@@ -372,7 +411,9 @@ describe('the checkbox and the card body share one anchor', () => {
   it('…and the reverse', async () => {
     const user = userEvent.setup()
     setup()
+    await user.keyboard('{Meta>}')
     await user.click(cardFor('a-2'))
+    await user.keyboard('{/Meta}')
     await user.keyboard('{Shift>}')
     await user.click(checkboxFor('D Four'))
     await user.keyboard('{/Shift}')
@@ -384,7 +425,9 @@ describe('bulk actions act on exactly what was selected', () => {
   it('delete receives the range, nothing more', async () => {
     const user = userEvent.setup()
     const { handlers } = setup()
+    await user.keyboard('{Meta>}')
     await user.click(cardFor('a-2'))
+    await user.keyboard('{/Meta}')
     await user.keyboard('{Shift>}')
     await user.click(cardFor('a-4'))
     await user.keyboard('{/Shift}')

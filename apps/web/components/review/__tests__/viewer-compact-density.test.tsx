@@ -100,9 +100,90 @@ describe('§228c item 6 — the bar in compact landscape', () => {
     }
   })
 
-  it('pads to the safe area on both sides, which is where the notch is', () => {
-    expect(block).toContain('env(safe-area-inset-left)')
-    expect(block).toContain('env(safe-area-inset-right)')
+  /**
+   * §232 item 3 — the safe area, REDUCED, and on text and controls only.
+   *
+   * §228c padded this bar and `.viewer-landscape` by the full
+   * `env(safe-area-inset-*)`, untested, because Chromium reports 0 for
+   * every inset. On a real iPhone in landscape that is ~59pt on the
+   * Dynamic-Island side and ~47pt on the other, and the owner's
+   * screenshot shows the result: ~65pt of black down each side of the
+   * screen with the content squeezed between them.
+   *
+   * The contract this asserts is the one §232 asks for by name: a
+   * `max(12px, calc(inset - 24px))` per side, no FULL-inset side padding
+   * left on either class, and the insets reached through
+   * `--safe-area-*` so a test can set them (the `env()` definition is in
+   * `@layer base`, outside this block).
+   */
+  it('reduces the side inset rather than using all of it', () => {
+    expect(block).toMatch(
+      /--viewer-inset-left: max\(12px, calc\(var\(--safe-area-left\) - 24px\)\);/,
+    )
+    expect(block).toMatch(
+      /--viewer-inset-right: max\(12px, calc\(var\(--safe-area-right\) - 24px\)\);/,
+    )
+  })
+
+  it('the bar keeps text and controls clear of the cutout with that reduced inset', () => {
+    expect(block).toMatch(
+      /:root \.viewer-topbar \{[^}]*padding-left: var\(--viewer-inset-left\);/,
+    )
+    expect(block).toMatch(
+      /:root \.viewer-topbar \{[^}]*padding-right: var\(--viewer-inset-right\);/,
+    )
+  })
+
+  it('and NEITHER class pads by the full inset any more', () => {
+    // The mutation this is here to catch: putting `env(safe-area-inset-*)`
+    // back on the padding of either class.
+    const topbar = /:root \.viewer-topbar \{[^}]*\}/.exec(block)?.[0] ?? ''
+    const landscape = /\n  \.viewer-landscape \{[^}]*\}/.exec(block)?.[0] ?? ''
+    expect(topbar).not.toContain('env(safe-area-inset-left)')
+    expect(topbar).not.toContain('env(safe-area-inset-right)')
+    expect(landscape).not.toContain('env(safe-area-inset-left)')
+    expect(landscape).not.toContain('env(safe-area-inset-right)')
+  })
+
+  it('the two-column layout itself has NO side padding, so nothing is letterboxed', () => {
+    expect(block).toMatch(
+      /\n  \.viewer-landscape \{\s*padding-left: 0;\s*padding-right: 0;/,
+    )
+    // The home indicator is real and ~21pt, and was not what was
+    // reported: the bottom inset is unchanged.
+    expect(block).toMatch(/\.viewer-landscape \{[^}]*padding-bottom: max\(0px, var\(--safe-area-bottom\)\);/)
+  })
+
+  it('the transport row and the panel’s children carry the inset instead', () => {
+    expect(block).toMatch(
+      /\[data-testid='viewer-landscape-media'\] \[data-testid='video-transport-compact'\] \{\s*padding-left: var\(--viewer-inset-left\);/,
+    )
+    // The panel's CHILDREN, not the panel: padding on the panel would
+    // shorten its border-left and the composer's border-top.
+    expect(block).toMatch(
+      /\[data-testid='viewer-landscape-panel'\] > \* \{\s*padding-right: var\(--viewer-inset-right\);/,
+    )
+  })
+
+  it('and the insets are reachable from a stylesheet, which is the only way to test them', () => {
+    // Chromium has no notch. `env()` cannot be overridden; a custom
+    // property can, which is what the Playwright run does.
+    expect(CSS).toMatch(/--safe-area-left: env\(safe-area-inset-left\);/)
+    expect(CSS).toMatch(/--safe-area-right: env\(safe-area-inset-right\);/)
+    expect(CSS).toMatch(/--safe-area-bottom: env\(safe-area-inset-bottom\);/)
+  })
+
+  it('the composer shortens its placeholder in compact landscape only', () => {
+    // At 16px (§228b's iOS no-zoom floor) "Leave your comment..." is
+    // wider than the ~160px of field a 300px panel leaves once the
+    // timecode chip is in it, so it wrapped to a second line that a 36px
+    // field then clipped. The text is what gives way — not the height,
+    // and not the font size.
+    const INPUT = read('components/review/comment-input.tsx')
+    expect(INPUT).toContain('const compactLandscape = useCompactLandscape()')
+    expect(INPUT).toMatch(/compactLandscape\s*\?\s*replyToId \? "Reply…" : "Comment…"/)
+    // Portrait and desktop keep the long one.
+    expect(INPUT).toContain('"Leave your comment..."')
   })
 
   it('brings both target floors in the bar down to 36, together', () => {

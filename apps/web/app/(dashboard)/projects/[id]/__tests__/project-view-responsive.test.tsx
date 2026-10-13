@@ -69,7 +69,23 @@ const ASSETS = [
   },
 ]
 
+/** §232 — one share link, so the one panel this page still has is
+ *  reachable and can be asserted. */
+const SHARE_LINKS = [
+  {
+    token: 'tok-1',
+    title: 'Review link',
+    target_name: 'Existing clip',
+    share_type: 'asset',
+    enabled: true,
+    created_at: new Date().toISOString(),
+    expires_at: null,
+    view_count: 0,
+  },
+]
+
 const get = vi.fn(async (path: string) => {
+  if (path.includes('/share-links')) return SHARE_LINKS
   if (path.includes('/folder-tree')) return TREE
   if (path.includes('/assets?')) return ASSETS
   if (path === `/projects/${PROJECT}`) return { id: PROJECT, name: 'Podcast' }
@@ -174,86 +190,173 @@ beforeEach(() => {
 
 // ─── The reported bug: the panel below xl ────────────────────────────────
 
-describe('§224 — the right panel is ONE element, never hidden below xl', () => {
-  it('renders exactly one panel, not a desktop and a mobile copy', async () => {
+/**
+ * §232 item 2 — the project/folder view has NO right panel, at any width.
+ *
+ * What was here: the Comments | Fields panel for a SELECTED asset — a
+ * 360px column at `xl`+, a slide-over drawer with a scrim from 768 to
+ * 1279, a ✕, two tabs, the asset's thumbnail, its Type / Uploaded /
+ * Uploaded by / File size / Version / Assignee rows and its Open in
+ * Player / Share / Download buttons. §224's tests above asserted that it
+ * was one element in two disjoint media bands; they are rewritten rather
+ * than deleted, because the thing that must now hold at those same widths
+ * is the opposite, and because the share-link panel still uses the slot
+ * and still has to behave the way §224 made it behave.
+ *
+ * Why it went: it existed to give a selected asset somewhere to be
+ * inspected, because opening one needed a double click. §232 item 1 makes
+ * the first click open, so the panel is the long way round to a screen
+ * that is now one gesture away.
+ */
+describe('§232 — the project/folder view renders no right panel', () => {
+  it('no panel, with nothing selected', async () => {
     renderPage()
     await ready()
+    expect(screen.queryByTestId('project-right-panel')).toBeNull()
+  })
+
+  it('no panel at any width, including the band where it was a drawer', async () => {
+    // The flag that used to open it is still persisted and still `true` by
+    // default; nothing on this view reads it any more.
+    useViewStore.setState({ rightPanelOpen: true })
+    renderPage()
+    await ready()
+    expect(screen.queryByTestId('project-right-panel')).toBeNull()
+    expect(screen.queryByTestId('right-panel-scrim')).toBeNull()
+  })
+
+  it('no panel after a card has been CLICKED — which now opens the asset instead', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    const card = await waitFor(() => {
+      const el = document.querySelector('[data-asset-card]')
+      if (!el) throw new Error('no card yet')
+      return el as HTMLElement
+    })
+    await user.click(card)
+    // The click that used to populate the panel is the click that opens.
+    expect(push).toHaveBeenCalledWith(`/projects/${PROJECT}/assets/a-1`)
+    expect(screen.queryByTestId('project-right-panel')).toBeNull()
+  })
+
+  it('no panel after a card has been SELECTED with its checkbox', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    const box = await screen.findByRole('button', { name: /^Select Existing clip$/ })
+    await user.click(box)
+    // The selection is real — the bulk bar is up — and still no panel.
+    expect(screen.getByText(/1 Item selected/)).toBeTruthy()
+    expect(screen.queryByTestId('project-right-panel')).toBeNull()
+  })
+
+  it('no Comments | Fields tabs and no "Close panel" button anywhere', async () => {
+    renderPage()
+    await ready()
+    expect(screen.queryByRole('button', { name: 'Close panel' })).toBeNull()
+    // "Comments" and "Fields" as TAB buttons. The Appearance popover has a
+    // "Fields" trigger of its own (the per-column visibility picker), so
+    // the absence is asserted against the panel's testid rather than
+    // against the word.
+    expect(screen.queryByTestId('project-right-panel')).toBeNull()
+    expect(screen.queryByText('Select an asset to view comments')).toBeNull()
+    expect(screen.queryByText('Open in viewer to comment')).toBeNull()
+    expect(screen.queryByText('Open in Player')).toBeNull()
+  })
+
+  it('and the header shows no panel toggle for this view', async () => {
+    renderShell()
+    await ready()
+    await waitFor(() => expect(screen.queryByTestId('navigator-bar')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: /show panel|hide panel/i })).toBeNull()
+  })
+
+  it('the content column keeps the container-query class the grid measures', async () => {
+    // The column is the full width now, but `asset-grid-container` has to
+    // stay: the share-link view still mounts a 360px panel beside it, and
+    // §50's column counts are a container query on this element.
+    renderPage()
+    await ready()
+    expect(document.querySelector('.asset-grid-container')).toBeTruthy()
+  })
+})
+
+/**
+ * §232 item 2 — the one panel that is left, and it is NOT the project
+ * view's: a share link's Settings and Activity.
+ *
+ * Kept because it is the only place those controls exist (password,
+ * expiry, theme, accent, layout, card size, download permission, and the
+ * per-link activity log) and because it is a different VIEW of this page
+ * rather than the project/folder view. The §224 behaviour it relies on —
+ * one element, two disjoint media bands, a scrim in the drawer band, a ✕
+ * below `xl` — is asserted here, where it still applies.
+ */
+describe('§232 — the share-link panel still behaves as §224 built it', () => {
+  async function openShareLinkDetail(user: ReturnType<typeof userEvent.setup>) {
+    renderPage()
+    await ready()
+    // The sidebar's Share Links section: "All links", then a link.
+    const all = await screen.findByText(/^All Share Links \(1\)$/)
+    await user.click(all)
+    // Two nodes say "Review link": the sidebar entry and the row in the
+    // table that is now in the content column. The sidebar entry is the
+    // one that opens the detail view.
+    const rows = await screen.findAllByText(/^Review link$/)
+    await user.click(rows[0])
+    return screen.findByTestId('project-right-panel')
+  }
+
+  it('renders exactly one panel, in two disjoint media bands', async () => {
+    const user = userEvent.setup()
+    const el = await openShareLinkDetail(user)
     expect(screen.getAllByTestId('project-right-panel')).toHaveLength(1)
-  })
-
-  it('is an overlay below xl and a column at xl — the same element', async () => {
-    renderPage()
-    await ready()
-    const cls = panel().className
-    // md–xl: a right drawer. xl+: in flow. §227 removed the third
-    // behaviour, the full-screen phone pane — see the §227 section below.
-    expect(cls).toMatch(/md:max-xl:fixed/)
-    expect(cls).toMatch(/md:max-xl:right-0/)
-    expect(cls).toMatch(/xl:static/)
-  })
-
-  it('never carries a bare `hidden`, which is what made the toggle dead', async () => {
-    renderPage()
-    await ready()
-    // The old markup was `hidden xl:flex`: hidden at every width under
-    // 1280px, so `rightPanelOpen` had nothing to show.
-    expect(panel().className.split(/\s+/)).not.toContain('hidden')
-  })
-
-  it('decides visibility in two disjoint media bands', async () => {
-    renderPage()
-    await ready()
-    // Why this matters: `flex` and `hidden` in the SAME band would leave
-    // the outcome to Tailwind's class ordering instead of to this code.
-    const classes = displayClasses(panel())
-    const bands = classes.map((c) => c.split(':').slice(0, -1).join(':') || 'base')
+    const bands = displayClasses(el).map((c) => c.split(':').slice(0, -1).join(':') || 'base')
     expect(new Set(bands).size).toBe(bands.length)
     expect(bands.sort()).toEqual(['max-md', 'md'])
   })
 
-  it('the panel is gone from the layout when closed, at md and up', async () => {
-    useViewStore.setState({ rightPanelOpen: false })
-    renderPage()
-    await ready()
-    expect(displayClasses(panel())).toContain('md:hidden')
+  it('is an overlay below xl and a column at xl — the same element', async () => {
+    const user = userEvent.setup()
+    const el = await openShareLinkDetail(user)
+    expect(el.className).toMatch(/md:max-xl:fixed/)
+    expect(el.className).toMatch(/md:max-xl:right-0/)
+    expect(el.className).toMatch(/xl:static/)
+    // Never a bare `hidden`, which is what made §224's toggle dead.
+    expect(el.className.split(/\s+/)).not.toContain('hidden')
   })
 
-  it('the toggle in the store is what opens it', async () => {
-    useViewStore.setState({ rightPanelOpen: false })
-    renderPage()
-    await ready()
-    expect(displayClasses(panel())).toContain('md:hidden')
+  it('the scrim and the ✕ both close it', async () => {
+    const user = userEvent.setup()
+    await openShareLinkDetail(user)
+    const scrim = screen.getByTestId('right-panel-scrim')
+    expect(scrim.className).toMatch(/md:max-xl:block/)
+    await user.click(scrim)
+    await waitFor(() => expect(useViewStore.getState().rightPanelOpen).toBe(false))
 
     useViewStore.setState({ rightPanelOpen: true })
-    await waitFor(() => expect(displayClasses(panel())).toContain('md:flex'))
-  })
-
-  it('gets a scrim, in the drawer band only', async () => {
-    renderPage()
-    await ready()
-    const scrim = screen.getByTestId('right-panel-scrim')
-    // Not below md (the pane is full-screen with the tab bar still visible)
-    // and not at xl (it is a column, nothing is overlaid).
-    expect(scrim.className).toMatch(/md:max-xl:block/)
-    expect(scrim.className).toMatch(/\bhidden\b/)
-  })
-
-  it('the scrim closes the drawer', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await ready()
-    await user.click(screen.getByTestId('right-panel-scrim'))
-    await waitFor(() => expect(useViewStore.getState().rightPanelOpen).toBe(false))
-  })
-
-  it('offers a close button below xl, since the toggle is behind the scrim', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await ready()
-    const close = screen.getByRole('button', { name: 'Close panel' })
+    const close = await screen.findByRole('button', { name: 'Close panel' })
     expect(close.className).toMatch(/xl:hidden/)
     await user.click(close)
     await waitFor(() => expect(useViewStore.getState().rightPanelOpen).toBe(false))
+  })
+
+  it('and the header DOES show its toggle there', async () => {
+    const user = userEvent.setup()
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <Header onSearchOpen={() => {}} onMobileNavOpen={() => {}} />
+        <ProjectPage />
+      </SWRConfig>,
+    )
+    await ready()
+    expect(screen.queryByRole('button', { name: /show panel|hide panel/i })).toBeNull()
+    await user.click(await screen.findByText(/^All Share Links \(1\)$/))
+    await user.click((await screen.findAllByText(/^Review link$/))[0])
+    expect(
+      await screen.findByRole('button', { name: /show panel|hide panel/i }),
+    ).toBeInTheDocument()
   })
 })
 
@@ -474,26 +577,16 @@ describe('§227 — the project view has no bottom tab bar', () => {
     expect(screen.queryByRole('navigation', { name: 'Project views' })).toBeNull()
   })
 
-  it('and no Comments pane for it to switch to', async () => {
+  it('and no Comments pane for it to switch to — nor a panel at all now', async () => {
     renderPage()
     await ready()
-    // The panel still exists as the md+ drawer/column — that is §224's fix
-    // and it stays — but below `md` it is gone, and there is no control on
-    // this screen that could open it.
-    expect(displayClasses(panel())).toContain('max-md:hidden')
-    expect(displayClasses(panel())).not.toContain('max-md:flex')
+    // §227 removed the full-screen phone Comments pane and left the panel
+    // as the `md`+ drawer/column. §232 removes that too: there is no
+    // panel on this view at any width, which is a stronger version of
+    // what this test was asserting. The `md`+ bands are now asserted in
+    // the share-link section, where a panel still exists.
+    expect(screen.queryByTestId('project-right-panel')).toBeNull()
     expect(screen.queryByRole('button', { name: /go to assets/i })).toBeNull()
-  })
-
-  it('leaves the md-and-up bands exactly as §224 built them', async () => {
-    renderPage()
-    await ready()
-    const cls = panel().className
-    expect(cls).toMatch(/md:max-xl:fixed/)
-    expect(cls).toMatch(/md:max-xl:right-0/)
-    expect(cls).toMatch(/xl:static/)
-    // Still never a bare `hidden`, which is what made the toggle dead.
-    expect(cls.split(/\s+/)).not.toContain('hidden')
   })
 
   it('the grid is the content area at every width, not one of three panes', async () => {
