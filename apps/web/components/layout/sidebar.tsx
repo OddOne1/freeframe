@@ -38,6 +38,18 @@ interface SidebarProps {
    *  desktop rail preference and is deliberately not consulted there. */
   mobileOpen?: boolean
   onMobileClose?: () => void
+  /**
+   * §230 item 3 — be the drawer at `md`+ as well.
+   *
+   * Set by the shell in compact landscape, where 844px of width is above
+   * `md` but a 52px column of icons is still 6% of the screen taken from
+   * a grid that has 390px of height to fit cards into. Nothing new is
+   * built for it: this flag makes the `md`+ branch of each class pair
+   * read the same as the `max-md:` one, so the drawer, its scrim, its
+   * 244px width and the header's `≡` are the ones §224/§227 already
+   * shipped and already tested.
+   */
+  drawerOnly?: boolean
 }
 
 export function Sidebar({
@@ -45,6 +57,7 @@ export function Sidebar({
   onToggle,
   mobileOpen = false,
   onMobileClose,
+  drawerOnly = false,
 }: SidebarProps) {
   const pathname = usePathname()
   const { user } = useAuthStore()
@@ -71,7 +84,8 @@ export function Sidebar({
    * at. `mobileOpen` is false on every desktop render, so at `md`+ this is
    * exactly `!collapsed` and nothing about the rail changed.
    */
-  const expanded = mobileOpen || !collapsed
+  // §230 — a drawer is never the 52px rail, whichever width it is at.
+  const expanded = mobileOpen || drawerOnly || !collapsed
   const activeUploads = uploadFiles.filter((f) => f.status === 'uploading' || f.status === 'pending' || f.status === 'paused' || f.status === 'processing').length
 
   // Fetch notifications on mount
@@ -88,7 +102,12 @@ export function Sidebar({
     {mobileOpen && (
       <div
         data-testid="mobile-nav-scrim"
-        className="fixed inset-0 z-[45] bg-black/60 md:hidden"
+        className={cn(
+          'fixed inset-0 z-[45] bg-black/60 md:hidden',
+          // §230 — the scrim belongs to the drawer, so wherever the
+          // drawer is the drawer, the scrim is the scrim.
+          drawerOnly && 'md:block',
+        )}
         onClick={onMobileClose}
       />
     )}
@@ -114,6 +133,13 @@ export function Sidebar({
         // At `md`+, untouched: the rail/expanded widths and z-30 as before.
         'md:translate-x-0 md:z-30',
         collapsed ? 'md:w-[52px]' : 'md:w-[192px]',
+        // §230 item 3 — in compact landscape the `md`+ half of every pair
+        // above says what the `max-md:` half says. Listed after them so
+        // `cn`'s tailwind-merge resolves the width in this one's favour;
+        // the transform and z-index are not merge-aware pairs, so they are
+        // written out rather than relied on.
+        drawerOnly && 'md:w-[244px] md:shadow-2xl md:z-50',
+        drawerOnly && (mobileOpen ? 'md:translate-x-0' : 'md:-translate-x-full'),
         // The base width is the desktop one; `max-md:w-[244px]` above wins
         // below `md`. The drawer is never the 52px rail, which is why
         // `expanded` below is not simply `!collapsed`.

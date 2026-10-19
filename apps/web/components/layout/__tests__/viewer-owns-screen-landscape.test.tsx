@@ -4,10 +4,15 @@
  *
  * At 844x390 the shell is above `md`, so it renders the 52px sidebar rail
  * and indents `main` by it: 52px of the width, next to a two-column viewer
- * that needs all of it. The rail and that margin are the only things that
- * go, they go only on this route, and they go only in this mode — the
- * project and settings screens in landscape are §230's problem, and this
- * test pins that boundary so a later change cannot quietly widen it.
+ * that needs all of it.
+ *
+ * §230 — the boundary this used to pin has moved, deliberately and in one
+ * direction: EVERY route now gives up the rail's 52px gutter in compact
+ * landscape. What is still viewer-only is the rail being gone OUTRIGHT.
+ * Everywhere else it becomes the §227 off-canvas drawer, because every
+ * other route draws the app header, and the header's `≡` is what opens
+ * it; the viewer draws no header, so there would be nothing to open a
+ * drawer with and the rail has to go rather than hide.
  *
  * jsdom applies no media queries, so `matchMedia` is stubbed: it is what
  * the hook actually reads.
@@ -77,6 +82,18 @@ function renderShell() {
 
 const main = () => document.querySelector('main') as HTMLElement
 
+/**
+ * Exact class membership, not `toContain`.
+ *
+ * `max-md:w-[244px]` CONTAINS the string `md:w-[244px]`, so a substring
+ * assertion about the `md:` variant passes on the `max-md:` one and reads
+ * as green while measuring nothing. Splitting on whitespace is what makes
+ * "has this class" mean it.
+ */
+function classes(el: HTMLElement): string[] {
+  return el.className.split(/\s+/).filter(Boolean)
+}
+
 beforeEach(() => {
   pathname = '/projects/p-1/assets/a-1'
 })
@@ -102,19 +119,42 @@ describe('§228c item 6 — the app chrome in compact landscape', () => {
     expect(main().className).toContain('md:ml-[52px]')
   })
 
-  it('keeps the rail on every OTHER route, landscape or not (§230)', () => {
+  it('keeps the rail MOUNTED on every other route — as the drawer (§230)', () => {
     pathname = '/projects/p-1'
     setCompactLandscape(true)
     renderShell()
-    expect(screen.getByTestId('app-sidebar')).toBeTruthy()
-    expect(main().className).toContain('md:ml-[52px]')
+    const rail = screen.getByTestId('app-sidebar')
+    // The §227 drawer, at 844px wide: 244px, off-canvas, over the page.
+    expect(classes(rail)).toContain('md:w-[244px]')
+    expect(classes(rail)).toContain('md:-translate-x-full')
+    expect(classes(rail)).toContain('md:z-50')
   })
 
-  it('and on settings in landscape, which is also §230', () => {
+  it('and the gutter it reserved goes with it on those routes (§230)', () => {
+    pathname = '/projects/p-1'
+    setCompactLandscape(true)
+    renderShell()
+    expect(main().className).toContain('md:ml-0')
+    expect(main().className).not.toContain('md:ml-[52px]')
+  })
+
+  it('and on settings in landscape, which is the same decision (§230)', () => {
     pathname = '/settings/profile'
     setCompactLandscape(true)
     renderShell()
-    expect(screen.getByTestId('app-sidebar')).toBeTruthy()
+    expect(classes(screen.getByTestId('app-sidebar'))).toContain('md:w-[244px]')
+    expect(main().className).toContain('md:ml-0')
+  })
+
+  it('leaves the rail a RAIL on those routes when it is not compact landscape', () => {
+    pathname = '/projects/p-1'
+    setCompactLandscape(false)
+    renderShell()
+    const rail = screen.getByTestId('app-sidebar')
+    expect(classes(rail)).toContain('md:w-[52px]')
+    expect(classes(rail)).not.toContain('md:w-[244px]')
+    expect(classes(rail)).toContain('md:translate-x-0')
+    expect(main().className).toContain('md:ml-[52px]')
   })
 
   it('still renders the page itself — only the chrome went', () => {

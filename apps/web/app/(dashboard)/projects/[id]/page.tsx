@@ -44,7 +44,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AssetGrid } from "@/components/projects/asset-grid";
-import { folderBackTarget } from "@/components/projects/folder-back-button";
+import {
+  FolderBackButton,
+  folderBackTarget,
+} from "@/components/projects/folder-back-button";
+import { useCompactLandscape } from "@/hooks/use-media-query";
 import { UploadZone } from "@/components/upload/upload-zone";
 import type { DroppedFile } from "@/lib/read-dropped-entries";
 import {
@@ -425,6 +429,25 @@ export default function ProjectDetailPage() {
     () => folderBackTarget(projectId, project?.name ?? "Project", folderTrail),
     [projectId, project?.name, folderTrail],
   );
+
+  /**
+   * §230 item 3 — is this a phone lying on its side?
+   *
+   * The ONE JavaScript breakpoint this page gains, and it is here for the
+   * reason use-media-query.ts gives for every other one: a DIFFERENT TREE
+   * has to mount. Back moves out of the content column and into the
+   * navigator bar beside the path, which is a different parent, and CSS
+   * cannot reparent a node.
+   *
+   * Everything else §230 does to this view — the bar's height, the
+   * trigger's height, which of the toolbar's two homes is drawn — is
+   * size, and lives in the compact-landscape block in globals.css. Same
+   * query, same words, one decision; see `COMPACT_LANDSCAPE`.
+   *
+   * Starts `false`, like every other use of this hook, so the server and
+   * the first client render emit the layout every other screen gets.
+   */
+  const compactLandscape = useCompactLandscape();
 
   // Push folder path as extra breadcrumb crumbs when navigating folders
   React.useEffect(() => {
@@ -1176,6 +1199,15 @@ export default function ProjectDetailPage() {
                 : [project?.name || "Project", ...folderTrail.map((f) => f.name)]
           }
           actions={mobileActions}
+          /* §230 item 3 — [‹ Back][path…][⌄][⋯] in one 40px row. The
+             button is `FolderBackButton` with its compact variant, not a
+             copy: same href from `folderBackTarget`, same
+             `data-testid="folder-back"`, same `aria-label`. */
+          leading={
+            compactLandscape ? (
+              <FolderBackButton {...backTarget} compact />
+            ) : undefined
+          }
           extra={(close) => (
             <>
               {canSeeShareLinks && (
@@ -1336,7 +1368,13 @@ export default function ProjectDetailPage() {
             <AssetGrid
               assets={assets ?? []}
               folders={subfolders ?? []}
-              backTo={backTarget}
+              /* §230 item 3 — exactly one Back on the screen. In compact
+                 landscape it is the navigator bar's; everywhere else it
+                 is this one, under the toolbar's line where §228e put
+                 it. Withholding the target is what un-renders it, so
+                 there is never a second node, a second tab stop or a
+                 second `data-testid` to tell apart. */
+              backTo={compactLandscape ? undefined : backTarget}
               currentFolderId={currentFolderId}
               projectId={projectId}
               projectName={project?.name ?? 'Project'}
@@ -1816,6 +1854,12 @@ export default function ProjectDetailPage() {
           view setting. */}
       <div
         data-testid="project-settings-pane"
+        /* §230 item 3 — the open/closed state as data, because in compact
+           landscape this pane is shown at 844px wide, where the
+           `max-md:flex` / `max-md:hidden` pair below says nothing. A
+           stylesheet cannot read a conditional class it is trying to
+           override; it can read this. */
+        data-open={mobileSettingsOpen ? "true" : "false"}
         className={cn(
           "flex-col bg-bg-primary",
           "max-md:fixed max-md:inset-0 max-md:z-40",

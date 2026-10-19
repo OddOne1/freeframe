@@ -93,15 +93,39 @@ export function FolderBackButton({
   href,
   parentName,
   className,
-}: BackTarget & { className?: string }) {
+  compact = false,
+}: BackTarget & {
+  className?: string
+  /**
+   * §230 item 3 — the variant that shares a 40px row with the path.
+   *
+   * A VARIANT, not a second component: the href, the `data-testid` and
+   * the accessible name are the ones above, computed by the same
+   * `folderBackTarget`, so "where does Back go" cannot start differing
+   * between a phone on its side and every other screen. What changes is
+   * size and what text is drawn — this sits beside the folder path
+   * rather than under the toolbar's line, and the path already says
+   * which folder you are in, so repeating "to {parent}" next to it would
+   * spend half the row saying it twice.
+   *
+   * `data-compact-back` is the hook the compact-landscape block in
+   * globals.css hangs the 36px floor on. The class pair below cannot do
+   * that part on its own: `.tap-target-44`'s `::before` is 44px square
+   * and would reach 2px past a 40px row into the trigger beside it.
+   */
+  compact?: boolean
+}) {
   return (
     <Link
       href={href}
       data-testid="folder-back"
+      data-compact-back={compact ? '' : undefined}
       aria-label={`Back to ${parentName}`}
       className={cn(
         'tap-target-44 relative inline-flex w-fit shrink-0 items-center gap-1.5 self-start rounded-md',
-        'h-7 px-2 text-xs md:h-8 md:px-2.5 md:text-sm',
+        compact
+          ? 'h-9 pl-1.5 pr-2 text-[13px]'
+          : 'h-7 px-2 text-xs md:h-8 md:px-2.5 md:text-sm',
         'font-medium text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-1 focus-visible:ring-offset-bg-primary',
         className,
@@ -113,8 +137,10 @@ export function FolderBackButton({
         {/* "where it fits": the name is hidden below `md` and truncates
             above it, so a folder named after a camera roll cannot push the
             row. Inside the same span as the word, so the space between
-            them is a space and not a flex gap. */}
-        <span className="hidden md:inline">{` to ${parentName}`}</span>
+            them is a space and not a flex gap.
+            §230 — and hidden in the compact row at every width, where the
+            path standing next to it already names the folder. */}
+        {!compact && <span className="hidden md:inline">{` to ${parentName}`}</span>}
       </span>
     </Link>
   )

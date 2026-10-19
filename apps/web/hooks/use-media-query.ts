@@ -169,13 +169,22 @@ export function useCompactLandscape(): boolean {
 }
 
 /**
- * Does the viewer's chrome take its PHONE shape? (§228c item 6)
+ * Does this screen take its PHONE shape? (§228c item 6)
  *
  * The one question every compact control on this page actually asks: a
  * phone in portrait (`useIsPhone`) and a phone on its side (compact
  * landscape) both want the one-row top bar, the slim transport, the 36px
  * hit-area floor, the settings sheet instead of the LUT column, and
  * version/status/rating in the Fields tab rather than in the bar.
+ *
+ * §230 — and it is no longer only the viewer's question. Settings asks it
+ * too: §229 built master–detail (the `/settings` list, then a full-width
+ * section page) below `md`, and a phone on its side is the same phone, so
+ * the `/settings` index redirect reads THIS hook rather than `MD_UP` on
+ * its own. Deliberately the same call and not a second `isPhone ||
+ * compactLandscape` beside it — two copies of "is this phone-shaped" is
+ * how the viewer and Settings would start disagreeing about an iPhone SE
+ * in landscape, where both halves are true at once.
  *
  * What they do NOT share is the LAYOUT — portrait stacks the panel under
  * the player, landscape puts it beside it — so the layout branch asks

@@ -37,11 +37,48 @@ import SettingsLayout from '../layout'
 import SettingsIndexPage from '../page'
 import { SettingsSectionList } from '@/components/settings/settings-section-list'
 
+/**
+ * §230 — the two queries `/settings` now asks, stubbed separately.
+ *
+ * jsdom evaluates no media queries, and `matchMedia` is what the page
+ * actually reads. A stub that answered `true` to everything used to be
+ * good enough, because there was one question; now there are two and
+ * "wide" and "compact landscape" have opposite consequences, so a blanket
+ * `true` describes a desktop that is also a phone on its side.
+ *
+ * `listeners` collects the change handlers so a test can rotate the
+ * device — the page subscribes to BOTH queries, and turning a phone
+ * upright has to take effect without a reload.
+ */
+const queryState = { wide: false, compactLandscape: false }
+let listeners: Array<() => void> = []
+
+function setQueries({ wide, compactLandscape }: { wide: boolean; compactLandscape: boolean }) {
+  queryState.wide = wide
+  queryState.compactLandscape = compactLandscape
+  listeners = []
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((q: string) => ({
+      // The two halves of the real strings in use-media-query.ts.
+      get matches() {
+        return q.includes('max-height: 500px')
+          ? queryState.compactLandscape
+          : queryState.wide
+      },
+      media: q,
+      addEventListener: (_: string, fn: () => void) => listeners.push(fn),
+      removeEventListener: vi.fn(),
+    })),
+  )
+}
+
 beforeEach(() => {
   isSuperAdmin = false
   hasProjectPrivilege = false
   pathname = '/settings'
   replace.mockClear()
+  listeners = []
   // No matchMedia in jsdom's default: the index page reads it to decide
   // whether to redirect, and `undefined` must mean "do nothing".
   vi.stubGlobal('matchMedia', undefined)
@@ -177,14 +214,11 @@ describe('/settings itself', () => {
     // "Settings" link landed on a page that bounced them to `/`.
     isSuperAdmin = false
     hasProjectPrivilege = false
-    vi.stubGlobal(
-      'matchMedia',
-      vi.fn(() => ({
-        matches: true,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      })),
-    )
+    // §230 — query-aware, and it has to be: this page now asks TWO
+    // questions (`md` and up, and NOT compact landscape), and a stub that
+    // says yes to everything answers "a desktop that is also a phone on
+    // its side".
+    setQueries({ wide: true, compactLandscape: false })
     render(<SettingsIndexPage />)
     expect(replace).toHaveBeenCalledWith('/settings/profile')
     // `replace`, not `push`: Back out of Profile leaves Settings rather
@@ -193,17 +227,46 @@ describe('/settings itself', () => {
   })
 
   it('keeps the list out of a desktop paint entirely', () => {
-    vi.stubGlobal(
-      'matchMedia',
-      vi.fn(() => ({
-        matches: true,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      })),
-    )
+    setQueries({ wide: true, compactLandscape: false })
     const { container } = render(<SettingsIndexPage />)
     // The list is rendered but `md:hidden`, so a desktop never shows a
     // frame of it before the redirect takes effect.
     expect(container.firstElementChild?.className).toMatch(/\bmd:hidden\b/)
+  })
+
+  /**
+   * §230 item 2 — an iPhone on its side is 844px wide, which is `md` and
+   * above, and this page redirected straight past its own list because of
+   * it. The list is what that screen is supposed to show (the
+   * compact-landscape block in globals.css un-hides it); the redirect is
+   * what would never let it be seen.
+   */
+  it('does NOT redirect in compact landscape, however wide the screen is', () => {
+    setQueries({ wide: true, compactLandscape: true })
+    render(<SettingsIndexPage />)
+    expect(replace).not.toHaveBeenCalled()
+    expect(screen.getByTestId('settings-section-list')).toBeInTheDocument()
+  })
+
+  it('and the wrapper carries the hook the stylesheet un-hides it by', () => {
+    setQueries({ wide: true, compactLandscape: true })
+    render(<SettingsIndexPage />)
+    // `md:hidden` is still what a desktop reads; the testid is the scope
+    // the compact-landscape rule needs, and it must survive a tidy-up of
+    // "unused" attributes.
+    const wrap = screen.getByTestId('settings-section-list-wrap')
+    expect(wrap.className).toMatch(/\bmd:hidden\b/)
+    expect(wrap).toContainElement(screen.getByTestId('settings-section-list'))
+  })
+
+  it('still redirects when the phone is turned back to portrait', () => {
+    // Both listeners are attached, so the answer changes when the device
+    // is rotated rather than only on a reload.
+    setQueries({ wide: true, compactLandscape: true })
+    render(<SettingsIndexPage />)
+    expect(replace).not.toHaveBeenCalled()
+    queryState.compactLandscape = false
+    listeners.forEach((fn) => fn())
+    expect(replace).toHaveBeenCalledWith('/settings/profile')
   })
 })

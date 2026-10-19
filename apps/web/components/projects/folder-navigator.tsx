@@ -76,6 +76,7 @@ export function FolderNavigator({
   segments,
   actions,
   extra,
+  leading,
   className,
   ...treeProps
 }: React.ComponentProps<typeof FolderTree> & {
@@ -87,6 +88,21 @@ export function FolderNavigator({
   segments: string[]
   /** Project actions ("···"), which share the bar's right end on phones. */
   actions?: React.ReactNode
+  /**
+   * §230 item 3 — what stands to the LEFT of the trigger in this bar.
+   *
+   * One slot, used by one caller for one thing: the folder view's Back
+   * button, in compact landscape, where its own row underneath the
+   * toolbar costs 44px of a 390px screen that has none to spare. It is a
+   * node rather than a `showBack` flag because Back's target is derived
+   * from `folderTrail` by the page (§228d), and this bar has never known
+   * anything about the tree it is showing a path for.
+   *
+   * Outside the trigger `<button>`, never inside it: a link nested in a
+   * button is not a link, and Back and "open the tree" are two different
+   * destinations that have to stay two different targets.
+   */
+  leading?: React.ReactNode
   /**
    * Rendered inside the panel, under the tree. A render prop rather than
    * a node, because what goes there has to be able to CLOSE the panel:
@@ -133,6 +149,14 @@ export function FolderNavigator({
           (768–1279) is unchanged apart from the bar itself. The TRIGGER
           inside is h-11: 44px, the touch target this control needs. */}
       <div className="flex h-full items-center">
+        {leading && (
+          // `pl-1` so the first thing in the row is not flush against the
+          // screen edge; the compact-landscape block replaces it with the
+          // reduced safe-area inset where there is a cutout to clear.
+          <div data-testid="folder-navigator-leading" className="flex shrink-0 items-center pl-1">
+            {leading}
+          </div>
+        )}
         <button
           data-testid="folder-navigator-trigger"
           onClick={() => setOpen((o) => !o)}

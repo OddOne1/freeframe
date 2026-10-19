@@ -870,8 +870,17 @@
    * landscape sizes. See the report.
    */
   :root {
-    --viewer-inset-left: max(12px, calc(var(--safe-area-left) - 24px));
-    --viewer-inset-right: max(12px, calc(var(--safe-area-right) - 24px));
+    /* §230 — the SAME two values, named once. §232 wrote this arithmetic
+     * for the viewer; Settings and the project view need the identical
+     * reduced inset (§230 items 2 and 3), and a second copy of
+     * `max(12px, calc(... - 24px))` further down this file is how the
+     * two would drift the first time one of the constants is tuned. So
+     * the pair below is the definition, and `--viewer-inset-*` is an
+     * alias kept so every §232 rule reads exactly as it was written. */
+    --compact-inset-left: max(12px, calc(var(--safe-area-left) - 24px));
+    --compact-inset-right: max(12px, calc(var(--safe-area-right) - 24px));
+    --viewer-inset-left: var(--compact-inset-left);
+    --viewer-inset-right: var(--compact-inset-right);
   }
 
   /* 40px exactly: the 1px bottom border is inside it (`border-box`, from
@@ -1160,5 +1169,333 @@
     /* Each column is its own height; the left one is much taller than the
      * right and stretching the short one buys nothing. */
     align-items: start;
+  }
+}
+
+/* ═════════════════════════════════════════════════════════════════════════
+ * §230 — the rest of the app on a phone lying on its side.
+ * ═════════════════════════════════════════════════════════════════════════
+ *
+ * §228c introduced ONE capability query for this screen and the viewer was
+ * the only thing that read it. Everything else still decided "phone" by
+ * WIDTH (`md` = 768), and an iPhone in landscape is 844px wide — so
+ * Settings and the project view got the layout built for a 1440px monitor
+ * in 390px of height. The query is the same one, written the same way,
+ * and there is no second one:
+ *
+ *     (hover: none) and (pointer: coarse) and (max-height: 500px)
+ *
+ * Read `COMPACT_LANDSCAPE` in hooks/use-media-query.ts for why each half
+ * is there and for the device table it was measured against — iPad
+ * landscape (1024x768, 1180x820) and the foldable inner screen (884x1104)
+ * are outside it, and so is every desktop window however short.
+ *
+ * ── WHY EVERY SELECTOR HERE STARTS WITH `:root` ──────────────────────────
+ *
+ * The same correction §228c had to make, for the same measured reason:
+ * Tailwind emits its VARIANT utilities (`md:`, `max-md:`, `hover-none:`)
+ * AFTER everything written in this file, so an override of `md:hidden`
+ * cannot win on order whatever the order in the source. It has to win on
+ * specificity. `:root` adds a pseudo-class, which makes these selectors
+ * (0,2,0) against a utility's (0,1,0) — the same one-notch margin §228b's
+ * no-zoom rule and §228c's top bar use.
+ *
+ * ── WHAT IS HERE AND WHAT IS IN REACT ────────────────────────────────────
+ *
+ * §228's split, unchanged: a DIFFERENT TREE is React, a different SIZE is
+ * CSS. Three things needed a tree and are not in this file — the rail
+ * becoming the §227 drawer (dashboard-shell.tsx), Back moving from the
+ * content column into the navigator bar (projects/[id]/page.tsx), and the
+ * `/settings` index not redirecting past its own list (settings/page.tsx).
+ * Everything below is size, or is `display` on a node that is already
+ * mounted.
+ */
+@media (hover: none) and (pointer: coarse) and (max-height: 500px) {
+  /* ─── 1. SETTINGS IS THE PHONE LAYOUT (§230 item 2) ──────────────────
+   *
+   * §229 built master–detail below `md`: `/settings` is the section list,
+   * a section is a full-width page under a "‹ Settings" header, and the
+   * 224px sidebar is not rendered. All three of those are `md:` classes,
+   * so at 844px wide none of them applied. These three rules are the
+   * whole of making compact landscape read as "below `md`" — the SAME
+   * components, the same `useVisibleSettingsNav` gate, no copy.
+   *
+   * The sidebar going is also the fix for what the owner reported (§230
+   * item 1): its nav overflowed its own box into the shell's scroller, so
+   * two things scrolled and which one moved depended on where the finger
+   * landed. With the `aside` not displayed there is exactly ONE scroller
+   * on the screen — `main` — and the shell's content div is no longer
+   * scrollable at all. The structural half of that fix is in
+   * settings/layout.tsx (`min-h-0 overflow-y-auto` on the `aside`), where
+   * the measurements are written down.
+   */
+  :root [data-settings-touch] [data-testid='settings-sidebar'] {
+    display: none;
+  }
+
+  :root [data-settings-touch] [data-testid='settings-back-header'] {
+    display: flex;
+  }
+
+  :root [data-testid='settings-section-list-wrap'] {
+    display: block;
+  }
+
+  /* ─── 2. ...AND IT WAS DRAWN FOR 390px, NOT FOR 844 ──────────────────
+   *
+   * A 52px row whose label starts 12px from the left edge of an 844px
+   * screen is a line of text with 700px of nothing after it. Two things
+   * fix that, both only where there is width to spare.
+   *
+   * The reduced safe area first, because the centring is written in terms
+   * of it: `--compact-inset-*` is §232's `max(12px, inset − 24px)`,
+   * defined once in the block above and reused here rather than restated.
+   * On a device with no cutout it is 12px, which is less than anything
+   * these elements already carry, so the centring below is what decides.
+   *
+   * `max(inset, (100% − 720px) / 2)` is the whole of the centring: the
+   * element keeps its full width — so its background and its bottom
+   * border still reach the edge of the screen, which is §232's rule —
+   * and only its CONTENTS move in. 720px because the §229 rows were
+   * drawn at 390 and a 720px column is the widest they still read as a
+   * menu rather than as a table of one. Below 720px of width the
+   * expression is negative, `max` picks the inset, and the result is the
+   * §229 phone list to the pixel.
+   */
+  /* ONE padding, on the ONE scroller, so the back header, the section
+   * list and every section page share one left edge — rather than three
+   * rules that have to be kept agreeing with each other.
+   *
+   * It is a `max` of two things:
+   *
+   *   var(--compact-inset-*)      clearance from the hardware
+   *   calc((100% - 720px) / 2)    the centring
+   *
+   * Below 720px of width the second is negative and the inset wins, so
+   * 667x375 and 740x360 are the §229 phone layout with a cutout allowed
+   * for and nothing else changed. At 844 it is 62px a side, at 932 106.
+   *
+   * The page's own padding (`p-6` on most of these sections) sits INSIDE
+   * this and is untouched: the inset is clearance, the page padding is
+   * the typographic gutter, and a section that lost its `p-6` here would
+   * be a different page from the one §229 drew at 390px.
+   *
+   * On the scroller rather than on its children, and that is the one
+   * visible consequence worth stating: the sticky "‹ Settings" header's
+   * bottom border and the section list's avatar-block border now run
+   * across the 720px column instead of across the whole screen. Both
+   * elements paint `bg-bg-primary`, which is what is behind them, so a
+   * hairline under the column is all that changes — and a rule under a
+   * column is what it is a rule for. */
+  :root [data-settings-touch] > main {
+    padding-left: max(var(--compact-inset-left), calc((100% - 720px) / 2));
+    padding-right: max(var(--compact-inset-right), calc((100% - 720px) / 2));
+  }
+
+  /* The back header's own row: 40px, with its one control at 36. Same trade,
+   * and the same arithmetic, as §228c's viewer bar — a 44px target in a
+   * 40px row has to overflow it, and 4px of a 390px screen is worth more
+   * than the last 4px of a target already 12px above the WCAG 2.2 AA
+   * minimum of 24. §229's `h-11` link is what this brings down. */
+  :root [data-settings-touch] [data-testid='settings-back-header'] {
+    min-height: 40px;
+    /* §229's `py-1.5` was 12px around a 44px link in a screen with 844 of
+     * height to spend. MEASURED at 844x390 with only the link brought
+     * down: 36 + 12 + the 1px border = 49, which is not a 40px row. The
+     * row's height is now the control's, which is what `min-height`
+     * above is a floor for rather than a target. */
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  :root [data-settings-touch] [data-testid='settings-back-header'] > a {
+    height: 2.25rem;
+  }
+
+  /* Two columns for the list. MEASURED at 844x390: the seven rows, the
+   * avatar block and the two group dividers are 504px tall in a 354px
+   * box, so one column scrolls and two do not (four rows, ~300px). CSS
+   * columns rather than a grid because the list is GROUPED and a group
+   * must not be split across the break; `break-inside: avoid` says
+   * exactly that, and the 4/1/1/1 shape falls 4 + 3 on its own.
+   *
+   * `sm` (640px) is the line, measured the same way rather than taken
+   * from §230's "at 768 and above" — at 667x375 and 740x360 the same 504
+   * does not fit either (339 and 324px of box), and a 333px column still
+   * holds an 18px icon, a label and a chevron with room over. So every
+   * screen this capability query matches is two columns, and `sm` is
+   * where that would stop being true. A portrait phone is not in this
+   * block at all, so §229's 390px list is untouched by every rule
+   * here. */
+  @media (min-width: 640px) {
+    :root [data-settings-touch] [data-testid='settings-section-list'] nav {
+      columns: 2;
+      column-gap: 1.5rem;
+    }
+
+    :root [data-settings-touch] [data-testid='settings-section-group'] {
+      break-inside: avoid;
+    }
+  }
+
+  /* ─── 3. THE APP HEADER (§230 item 3) ────────────────────────────────
+   *
+   * 36px, down from 44. It is the same 8px §228c took off the viewer's
+   * bar and for the same reason: this row is above EVERY page in compact
+   * landscape, so 8px of it is 8px off the project grid, off the settings
+   * list and off every section page at once.
+   *
+   * `header[data-app-header]`, not `.sticky` or a bare `header`: the
+   * share-link pages and the asset viewer draw their own bars and are not
+   * this one. (§228c already took the viewer's to 40 and nothing here
+   * touches it — the viewer renders no app header at all.) */
+  :root header[data-app-header] {
+    height: 2.25rem;
+  }
+
+  /* ...and the controls in it, which were sized to a 44px bar. The search
+   * chip is NOT given a width — `hover-none:h-9` already puts it at 36
+   * tall and it is as wide as the word in it. */
+  :root header[data-app-header] button {
+    height: 2.25rem;
+    min-height: 2.25rem;
+  }
+
+  :root header[data-app-header] [data-testid='header-nav-open'],
+  :root header[data-app-header] [data-testid='header-view-settings'] {
+    width: 2.25rem;
+    min-width: 2.25rem;
+  }
+
+  /* The way into the navigation, now that the rail is the §227 drawer at
+   * this width too (dashboard-shell.tsx decides that; this draws the
+   * trigger). `md:hidden` is what hid it at 844px wide. */
+  :root header[data-app-header] [data-testid='header-nav-open'] {
+    display: flex;
+  }
+
+  /* The breadcrumb links, which in a 36px bar are 20px of text.
+   *
+   * MEASURED at 844x390 on `main`'s build and on this one: "Projects",
+   * "Admin_Project" and "Rope Challenge" are 49x20, 92x20 and 103x20 —
+   * under the 36px floor §228 set, and in compact landscape they are the
+   * only way back up the tree from the header. They are not given a
+   * taller BOX, because the bar is 36 and this item is about making it
+   * shorter; they are given a hit AREA, with the same out-of-flow
+   * pseudo-element `.tap-target-44` uses (§227b) and for the same reason
+   * — it paints nothing, so the row still reads as a line of text.
+   *
+   * 36 tall and at least as wide as the link: the horizontal gap between
+   * two crumbs is the 12px chevron, which is itself a target of nothing,
+   * so a box exactly as wide as the word cannot steal a neighbour's tap.
+   * Compact landscape only; a mouse is unchanged at every width. */
+  :root header[data-app-header] nav a {
+    position: relative;
+  }
+
+  :root header[data-app-header] nav a::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 100%;
+    height: 2.25rem;
+    transform: translate(-50%, -50%);
+  }
+
+  /* ─── 4. THE PROJECT / FOLDER VIEW (§230 item 3) ─────────────────────
+   *
+   * The toolbar collapses into the two homes a portrait phone already
+   * has, rather than into a new overflow menu of its own: the cogwheel
+   * pane (§227) for Appearance and Sort, and the `···` menu for Members,
+   * Project settings, Share, New Folder and Upload. Both are already
+   * built, already gated by the same flags as the buttons, and already
+   * rendered on this page — all three rules below are `display`.
+   *
+   * `.toolbar-crowded` is the scope, and it is not decoration: that class
+   * is only on the bar when it was given an action group, which is the
+   * project page and not `/assets`. `/assets` renders the same bar with
+   * Appearance and Sort and NO `···` and NO cogwheel (`
+   * pathHasMobileViewSettings` is `/projects/{id}` only), so hiding it
+   * there would take two controls away with nowhere to put them. */
+  :root [data-testid='navigator-bar'].toolbar-crowded {
+    display: none;
+  }
+
+  :root [data-testid='header-view-settings'] {
+    display: flex;
+  }
+
+  :root [data-testid='project-actions-menu'] {
+    display: flex;
+    height: 2.25rem;
+    width: 2.25rem;
+    min-height: 2.25rem;
+    min-width: 2.25rem;
+  }
+
+  /* The pane the cogwheel opens. It is `max-md:fixed` / `md:hidden`, so
+   * at 844px wide it had neither a box nor a position; `data-open` is
+   * written by the page precisely so this can read a state a conditional
+   * utility class had already resolved away. */
+  :root [data-testid='project-settings-pane'] {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    padding-bottom: var(--safe-area-bottom);
+  }
+
+  :root [data-testid='project-settings-pane'][data-open='true'] {
+    display: flex;
+  }
+
+  :root [data-testid='project-settings-pane'][data-open='false'] {
+    display: none;
+  }
+
+  /* ─── 5. ONE ROW: [‹ Back][path…][⌄][···] ────────────────────────────
+   *
+   * 40px, holding 36px controls — §228c's trade again, and the measured
+   * reason it is 40 and not 44 is the same one: what this sits above is
+   * the asset grid, whose cards are their own tap targets, so a 44px
+   * control in a 40px row would be two targets sharing 4px of screen.
+   *
+   * Before: the navigator bar was 48px (`h-12`) and Back had a row of its
+   * own below the toolbar, 32px tall with 12px of column gap above and
+   * below it. 48 + 56 = 104px of chrome for a path and one link. */
+  :root [data-testid='folder-navigator'] {
+    height: 40px;
+  }
+
+  :root [data-testid='folder-navigator-trigger'] {
+    height: 2.25rem;
+  }
+
+  /* `.tap-target-44`'s `::before` is `max(100%, 44px)` on both axes, and
+   * a minimum cannot bring that down — so it is restated at 36, exactly
+   * as §228c restated it for the viewer's transcript switch. Without
+   * this the invisible hit box reaches 2px past a 40px row and 4px into
+   * the trigger beside it, and the tap nearest the path would open the
+   * parent folder instead of the tree. */
+  :root [data-compact-back].tap-target-44::before {
+    width: max(100%, 2.25rem);
+    height: max(100%, 2.25rem);
+  }
+
+  /* The row's two ends keep clear of the cutout and the rounded corners.
+   * On the bar's own flex row rather than on the bar, so the bar's
+   * background and its bottom border still run to the edge of the screen
+   * (§232). `0.25rem` is the `pl-1` the leading slot already carries, so
+   * on a device with no inset nothing moves. */
+  :root [data-testid='folder-navigator'] > div:first-child {
+    padding-left: max(var(--compact-inset-left), 0.25rem);
+    padding-right: max(var(--compact-inset-right), 0px);
+  }
+
+  /* The grid's scroll area. `1.25rem` is its own `px-5`; the inset only
+   * wins on the side a cutout is actually on. */
+  :root .asset-grid-container > div.overflow-y-auto {
+    padding-left: max(var(--compact-inset-left), 1.25rem);
+    padding-right: max(var(--compact-inset-right), 1.25rem);
   }
 }

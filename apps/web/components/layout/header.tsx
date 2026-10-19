@@ -87,14 +87,26 @@ export function Header({ onSearchOpen, onMobileNavOpen }: HeaderProps) {
     // but can be overridden per theme in Branding settings -> Theme colors.
     // Hover/active tints use nav-text at low opacity rather than a hardcoded
     // white so they still read correctly if nav-bg ends up light-colored.
-    <header className="sticky top-0 z-20 flex h-11 items-center justify-between border-b border-nav-border bg-nav-bg px-4">
+    // `data-app-header` is a scope, not a style: §230's compact-landscape
+    // block slims this bar to 36px and un-hides the `≡`, and it needs one
+    // selector that cannot be tidied away as an unused utility class.
+    <header
+      data-app-header
+      className="sticky top-0 z-20 flex h-11 items-center justify-between border-b border-nav-border bg-nav-bg px-4"
+    >
       {/* §224 — the way into the nav when the sidebar is off-canvas.
           44px square, because this is the one control a phone user needs
           before anything else. */}
       {onMobileNavOpen && (
         <button
+          data-testid="header-nav-open"
           onClick={onMobileNavOpen}
           aria-label="Open navigation"
+          // §230 — still `md:hidden`. In compact landscape the rail is the
+          // §227 drawer at 844px wide too, and the CSS block puts this back
+          // rather than a JS branch: the button is always RENDERED (the
+          // shell passes the handler at every width), so what changes is
+          // only whether it is drawn.
           className="md:hidden -ml-2 mr-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-nav-text/70 hover:bg-nav-text/10 hover:text-nav-text transition-colors"
         >
           <Menu className="h-5 w-5" />

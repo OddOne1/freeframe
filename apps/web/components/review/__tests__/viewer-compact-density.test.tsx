@@ -115,14 +115,30 @@ describe('§228c item 6 — the bar in compact landscape', () => {
    * left on either class, and the insets reached through
    * `--safe-area-*` so a test can set them (the `env()` definition is in
    * `@layer base`, outside this block).
+   *
+   * §230 — the arithmetic now has ONE home, `--compact-inset-*`, because
+   * Settings and the project view need the identical reduced inset and a
+   * second copy of it further down globals.css is how the two would
+   * drift. `--viewer-inset-*` is an alias of it, so every §232 rule below
+   * still reads exactly as it was written. Both halves are asserted:
+   * where the arithmetic lives, and that the viewer's name still reaches
+   * it.
    */
   it('reduces the side inset rather than using all of it', () => {
     expect(block).toMatch(
-      /--viewer-inset-left: max\(12px, calc\(var\(--safe-area-left\) - 24px\)\);/,
+      /--compact-inset-left: max\(12px, calc\(var\(--safe-area-left\) - 24px\)\);/,
     )
     expect(block).toMatch(
-      /--viewer-inset-right: max\(12px, calc\(var\(--safe-area-right\) - 24px\)\);/,
+      /--compact-inset-right: max\(12px, calc\(var\(--safe-area-right\) - 24px\)\);/,
     )
+  })
+
+  it('and the viewer reaches that one definition rather than restating it', () => {
+    expect(block).toMatch(/--viewer-inset-left: var\(--compact-inset-left\);/)
+    expect(block).toMatch(/--viewer-inset-right: var\(--compact-inset-right\);/)
+    // Exactly one place in the whole stylesheet carries the constants.
+    const CSS = block
+    expect(CSS.match(/max\(12px, calc\(var\(--safe-area-/g)?.length).toBe(2)
   })
 
   it('the bar keeps text and controls clear of the cutout with that reduced inset', () => {

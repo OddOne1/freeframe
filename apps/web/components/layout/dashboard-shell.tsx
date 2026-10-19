@@ -72,6 +72,23 @@ export function DashboardShell({
   const compactLandscape = useCompactLandscape();
   const viewerOwnsScreen = isAssetViewer && compactLandscape;
 
+  /**
+   * §230 item 3 — on EVERY other page, the rail becomes the drawer.
+   *
+   * §228c took the rail away from the viewer in compact landscape and
+   * left it standing everywhere else: at 844x390 the project view spent
+   * 52px of 844 on a column of icons above a grid that had 390px of
+   * height to work with. The answer is the one portrait phones already
+   * get — the same §227 drawer, opened from the header's `≡` — rather
+   * than a second kind of hiding, so nothing new has to be navigable.
+   *
+   * NOT on the viewer, which is why this is a separate flag and not the
+   * same one: the viewer renders no header, so it has no `≡` to open a
+   * drawer with. There the rail stays gone outright (`viewerOwnsScreen`),
+   * exactly as §228c left it.
+   */
+  const railIsDrawer = compactLandscape && !isAssetViewer;
+
   React.useEffect(() => {
     fetchUser();
     fetchHistory();
@@ -132,6 +149,7 @@ export function DashboardShell({
           onToggle={() => setSidebarCollapsed((c) => !c)}
           mobileOpen={mobileNavOpen}
           onMobileClose={() => setMobileNavOpen(false)}
+          drawerOnly={railIsDrawer}
         />
       )}
 
@@ -146,7 +164,10 @@ export function DashboardShell({
           // §228c item 6 — and no margin at all where the rail is not
           // rendered: a reserved gutter with nothing in it is the same
           // 52px of a 844px screen, just emptier.
-          viewerOwnsScreen
+          // §230 item 3 — and no margin where the rail is a drawer either:
+          // an off-canvas panel is not in the layout, so a gutter reserved
+          // for it is 52px of a 844px screen with nothing in it.
+          viewerOwnsScreen || railIsDrawer
             ? "md:ml-0"
             : sidebarCollapsed
               ? "md:ml-[52px]"
