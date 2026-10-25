@@ -63,6 +63,7 @@ from ..services import s3_service
 from ..services.s3_service import build_download_filename
 from ..services.crypto_service import encrypt_password, decrypt_password
 from .hls_proxy import create_hls_token, proxy_url_for
+from ..services.owned_keys import is_owned_project_logo_key
 from ..models.project import Project, ProjectRole
 from ..tasks.email_tasks import send_share_email
 from ..tasks.celery_app import send_task_safe
@@ -459,7 +460,22 @@ def validate_share_link_endpoint(
         ).first()
         if branding:
             branding_data = {
-                "logo_url": branding.logo_s3_key,
+                # §235 — a key this project does not own is not passed on,
+                # the same rule routers/branding.py applies when it signs
+                # one. Note this field hands out the raw S3 KEY, not a
+                # signed URL, despite its name — nothing here signs
+                # anything, so an unowned value was never a token leak; it
+                # was an arbitrary internal path echoed to an anonymous
+                # share visitor. (That mismatch is also why the share
+                # viewer's logo has never rendered: the browser resolves
+                # this against the API origin and gets a 404. Left alone —
+                # fixing it is a frontend/response-shape change, not this
+                # task.)
+                "logo_url": (
+                    branding.logo_s3_key
+                    if is_owned_project_logo_key(branding.project_id, branding.logo_s3_key)
+                    else None
+                ),
                 "primary_color": branding.primary_color,
                 "custom_title": branding.custom_title,
                 "custom_footer": branding.custom_footer,

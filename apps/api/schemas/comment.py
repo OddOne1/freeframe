@@ -3,6 +3,8 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
+from ..services.owned_keys import issued_avatar_url
+
 class AnnotationData(BaseModel):
     drawing_data: dict  # Fabric.js canvas JSON
     frame_number: Optional[int] = None
@@ -82,6 +84,15 @@ class AuthorInfo(BaseModel):
     id: uuid.UUID
     name: str
     avatar_url: Optional[str] = None
+
+    @field_validator("avatar_url", mode="before")
+    @classmethod
+    def _only_an_avatar_this_server_issued(cls, v):
+        """§235 — same rule as schemas/auth.py::UserResponse: a value the
+        avatar upload route did not mint is not shown. Comment authors are
+        the widest audience an avatar reaches — every reviewer on a share
+        link sees them."""
+        return issued_avatar_url(v)
 
 class GuestAuthorInfo(BaseModel):
     id: uuid.UUID

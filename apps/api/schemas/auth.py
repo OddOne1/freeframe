@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Literal, Optional, Union
 from ..models.user import UserStatus, UserGlobalRole
 from ..models.project import ProjectRole
+from ..services.owned_keys import issued_avatar_url
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -378,6 +379,20 @@ class UserResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+    @field_validator("avatar_url", mode="before")
+    @classmethod
+    def _only_an_avatar_this_server_issued(cls, v):
+        """§235 — a column value of any other shape reads as no avatar.
+
+        `users.avatar_url` is handed to the browser verbatim and rendered as
+        an <img src> for everyone who sees the account. Until §235 closed it,
+        PATCH /users/{id} copied any string from the body into that column,
+        so this is the read-side half of the same rule: a value the avatar
+        upload route did not mint is not shown, whether or not the migration
+        that nulls those rows has run yet.
+        """
+        return issued_avatar_url(v)
+
     @field_validator("two_factor_enabled", mode="before")
     @classmethod
     def _unset_means_not_enrolled(cls, v):
@@ -470,6 +485,14 @@ class ContactUserResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+    @field_validator("avatar_url", mode="before")
+    @classmethod
+    def _only_an_avatar_this_server_issued(cls, v):
+        """§235 — same rule as UserResponse. This shape is world-readable to
+        every authenticated user (GET /users/admins), so it is the last place
+        that should pass a client-chosen string on as an image source."""
+        return issued_avatar_url(v)
+
 
 class AdminUserProjectSummary(BaseModel):
     project_id: uuid.UUID
@@ -542,6 +565,12 @@ class InviteInfoResponse(BaseModel):
 class UpdateProfileRequest(BaseModel):
     first_name: str | None = None
     last_name: str | None = None
+    #: §235 — ACCEPTED AND IGNORED. An avatar changes in exactly one place,
+    #: POST /users/me/avatar, which stores the proxy URL it minted for the
+    #: bytes it just uploaded. The field stays in the schema so a client that
+    #: still echoes back the avatar_url it read from a GET is not answered
+    #: with a 422 over a value that would have been a no-op anyway; see
+    #: routers/users.py::update_user.
     avatar_url: str | None = None
 
 class UpdateUserRoleRequest(BaseModel):

@@ -1,3 +1,4 @@
+import logging
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -18,10 +19,24 @@ from ..schemas.branding import (
 )
 from ..services.permissions import require_project_role, require_asset_access
 from ..services import s3_service
+from ..services.owned_keys import (
+    is_owned_project_logo_key,
+    new_project_logo_key,
+    new_watermark_image_key,
+)
 from .hls_proxy import proxy_url_for
 from ..config import settings
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["branding"])
+
+#: What a caller is told when it sends a logo key this project does not own.
+#: Deliberately generic and identical for every rejected shape — an absolute
+#: URL, another project's key, a traversal, an encoded traversal. The server
+#: knows which rule was broken; a caller probing for readable object paths
+#: learns nothing from the difference.
+INVALID_LOGO_KEY = "Invalid logo key"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -52,11 +67,32 @@ def _get_or_create_watermark(db: Session, project_id: uuid.UUID) -> WatermarkSet
 
 
 def _branding_to_response(branding: ProjectBranding) -> BrandingResponse:
+    """§235 — a key is signed only if THIS project owns it.
+
+    Defence in depth behind `upsert_branding`'s check, for the rows that
+    predate it (the migration nulls them, but a response must not depend on
+    the migration having run) and for any future writer that forgets. It
+    matters because `proxy_url_for` does not sign one object: it signs a
+    token scoped to the key's whole S3 prefix, so signing an unowned key
+    hands the caller read access to everything under it for 24 hours.
+
+    A refusal is LOGGED, not swallowed. The old `except Exception: None`
+    around the signing call could only ever report a signing failure as "no
+    logo", which is exactly how a bad row stays invisible. The log names the
+    project, not the key: the response is what a client reads, and nothing
+    about the refused value belongs in it.
+    """
     resp = BrandingResponse.model_validate(branding)
     if branding.logo_s3_key:
+        if not is_owned_project_logo_key(branding.project_id, branding.logo_s3_key):
+            logger.warning(
+                "Refusing to sign a logo key project %s does not own", branding.project_id
+            )
+            return resp
         try:
             resp.logo_url = proxy_url_for(branding.logo_s3_key)
         except Exception:
+            logger.warning("Failed to sign the logo key of project %s", branding.project_id)
             resp.logo_url = None
     return resp
 
@@ -84,6 +120,34 @@ def upsert_branding(
     require_project_role(db, project_id, current_user, ProjectRole.editor)
     branding = _get_or_create_branding(db, project_id)
     update_data = body.model_dump(exclude_none=True)
+
+    # §235 — `logo_s3_key` is handled on its own, before the generic loop, and
+    # never by it. Any other string the column could hold becomes a 24-hour
+    # read token for a whole S3 prefix the moment a response signs it (see
+    # `_branding_to_response`), so the only values accepted here are the one
+    # format POST .../branding/logo-upload issues FOR THIS PROJECT — and the
+    # empty one, which clears.
+    #
+    # Read from an `exclude_unset` dump rather than the `exclude_none` one
+    # above: `exclude_none` cannot tell "no logo field in this PATCH" from
+    # "logo: null", and a client that asks to remove its logo has to be able
+    # to say so.
+    update_data.pop("logo_s3_key", None)
+    provided = body.model_dump(exclude_unset=True)
+    if "logo_s3_key" in provided:
+        requested = provided["logo_s3_key"]
+        if requested is None or not str(requested).strip():
+            branding.logo_s3_key = None
+        elif is_owned_project_logo_key(project_id, requested):
+            branding.logo_s3_key = requested
+        else:
+            logger.warning(
+                "Rejected a logo key project %s does not own (user %s)",
+                project_id,
+                current_user.id,
+            )
+            raise HTTPException(status_code=400, detail=INVALID_LOGO_KEY)
+
     for field, value in update_data.items():
         setattr(branding, field, value)
     db.commit()
@@ -102,7 +166,9 @@ def get_logo_upload_url(
     current_user: User = Depends(get_current_user),
 ):
     require_project_role(db, project_id, current_user, ProjectRole.editor)
-    key = f"branding/{project_id}/logo/{uuid.uuid4()}.webp"
+    # §235 — built by the same module that validates it, so the issued format
+    # and the accepted format cannot drift apart.
+    key = new_project_logo_key(project_id)
     upload_url = s3_service.get_s3_client().generate_presigned_url(
         "put_object",
         Params={
@@ -156,7 +222,7 @@ def get_watermark_image_upload_url(
     current_user: User = Depends(get_current_user),
 ):
     require_project_role(db, project_id, current_user, ProjectRole.editor)
-    key = f"branding/{project_id}/watermark/{uuid.uuid4()}.png"
+    key = new_watermark_image_key(project_id)
     upload_url = s3_service.get_s3_client().generate_presigned_url(
         "put_object",
         Params={

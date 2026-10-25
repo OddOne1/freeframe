@@ -10,6 +10,7 @@ from ..services import s3_service
 from ..middleware.auth import get_current_user
 from ..services.auth_service import hash_password, get_user_by_email, split_full_name
 from ..services.search import LIKE_ESCAPE, like_contains
+from ..services.owned_keys import new_avatar_key
 from ..tasks.email_tasks import send_invite_email
 from ..tasks.celery_app import send_task_safe
 from ..config import settings
@@ -39,7 +40,9 @@ async def upload_avatar(
     either.
     """
     body = await file.read()
-    key = f"avatars/{current_user.id}/{uuid.uuid4()}.webp"
+    # §235 — built by services/owned_keys.py, which is also what decides
+    # whether a stored avatar value is one this server issued.
+    key = new_avatar_key(current_user.id)
     s3_service.put_object(key, body, content_type="image/webp", cache_control="max-age=86400")
     # ~5 years -- avatar_url is stored as a plain string with no separate
     # resolution step at read time, so this needs to outlive normal token
@@ -170,8 +173,21 @@ def update_user(user_id: uuid.UUID, body: UpdateProfileRequest, db: Session = De
         if not stripped_last_name:
             raise HTTPException(status_code=400, detail="Last name cannot be empty")
         user.last_name = stripped_last_name
-    if body.avatar_url is not None:
-        user.avatar_url = body.avatar_url
+    # §235 — `avatar_url` in the body is IGNORED, deliberately and silently.
+    # An avatar changes in exactly one place, POST /users/me/avatar, which
+    # uploads the bytes and stores the proxy URL it minted for them itself.
+    # This route used to copy any string a client sent straight into the
+    # column, and that column is rendered as an <img src> for every other
+    # user who sees the account — so whatever was sent became a URL other
+    # people's browsers fetched, chosen by the account holder (or by a
+    # superadmin acting on them) and stored for good.
+    #
+    # Ignored rather than rejected with a 400: a PATCH that carries a
+    # first/last name alongside an avatar_url the client read back from a
+    # GET is a legitimate request, and failing it would take the name change
+    # down with it. Nothing is lost by dropping the field, because there is
+    # no value a client could send here that the upload route has not
+    # already stored.
     db.commit()
     db.refresh(user)
     return user

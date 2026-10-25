@@ -1,4 +1,4 @@
-import uuid
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -18,10 +18,24 @@ from ..schemas.site_settings import (
     SiteSettingsUpdate,
 )
 from ..services import s3_service
+from ..services.owned_keys import (
+    SITE_BRAND_IMAGE_COLUMNS,
+    SITE_LOGO_SIDES,
+    is_owned_site_brand_image_key,
+    new_site_favicon_key,
+    new_site_logo_key,
+)
 from ..services.schedule_window import is_valid_timezone
 from .hls_proxy import proxy_url_for
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["site-settings"])
+
+#: §235 — what a caller is told when it sends a brand-image key this server
+#: did not issue for that slot. Generic and identical for every rejected
+#: shape, so a probe for readable object paths learns nothing from it.
+INVALID_BRAND_IMAGE_KEY = "Invalid brand image key"
 
 # -- Helpers ---------------------------------------------------------------
 
@@ -37,12 +51,10 @@ router = APIRouter(tags=["site-settings"])
 #: A never-configured install is untouched by this. Those columns are
 #: already NULL, so the fresh-install case still shows the default exactly
 #: as before — this rule only protects a value that exists.
-BRAND_IMAGE_FIELDS = (
-    "logo_dark_s3_key",
-    "logo_light_s3_key",
-    "logo_login_s3_key",
-    "favicon_s3_key",
-)
+#: §235 — the same four columns services/owned_keys.py rules on, taken from
+#: there rather than restated, so a fifth brand image cannot end up covered by
+#: one rule and not the other.
+BRAND_IMAGE_FIELDS = SITE_BRAND_IMAGE_COLUMNS
 
 
 def _require_2fa_bump_filters():
@@ -133,42 +145,48 @@ def _sniff_image_content_type(data: bytes, fallback: str) -> str:
     return fallback
 
 
+def _signed_brand_image_url(site_settings: SiteSettings, column: str) -> Optional[str]:
+    """§235 — sign a brand-image column only when the server issued its key.
+
+    GET /site-settings is PUBLIC (it backs the login page), so this is the
+    one signing site on the instance whose output reaches an unauthenticated
+    visitor. `proxy_url_for` signs a token scoped to the key's whole S3
+    prefix, so a column holding `raw/` or a short prefix would have put a
+    24-hour read token for that whole tree in an anonymous response body.
+    Only a superadmin could write such a key (PATCH /site-settings is
+    superadmin-only) — but the value of doing so is exactly that it turns
+    one admin account into a public read gateway for the bucket, which is
+    not a power the settings form is meant to grant.
+
+    Logged, not swallowed: the previous `except Exception: None` reported a
+    refusal and a signing failure identically, as "no logo".
+    """
+    key = getattr(site_settings, column, None)
+    if not key:
+        return None
+    if not is_owned_site_brand_image_key(column, key):
+        logger.warning("Refusing to sign site_settings.%s: not a key this server issued", column)
+        return None
+    try:
+        return proxy_url_for(key)
+    except Exception:
+        logger.warning("Failed to sign site_settings.%s", column)
+        return None
+
+
 def _to_response(
     site_settings: SiteSettings,
     include_usage: bool = False,
     db: Optional[Session] = None,
     two_factor_signed_out_count: Optional[int] = None,
 ) -> SiteSettingsResponse:
-    logo_dark_url = None
-    logo_light_url = None
-    logo_login_url = None
-    if site_settings.logo_dark_s3_key:
-        try:
-            logo_dark_url = proxy_url_for(site_settings.logo_dark_s3_key)
-        except Exception:
-            logo_dark_url = None
-    if site_settings.logo_light_s3_key:
-        try:
-            logo_light_url = proxy_url_for(site_settings.logo_light_s3_key)
-        except Exception:
-            logo_light_url = None
-    if site_settings.logo_login_s3_key:
-        try:
-            logo_login_url = proxy_url_for(site_settings.logo_login_s3_key)
-        except Exception:
-            logo_login_url = None
-    favicon_url = None
-    if site_settings.favicon_s3_key:
-        try:
-            favicon_url = proxy_url_for(site_settings.favicon_s3_key)
-        except Exception:
-            favicon_url = None
+    urls = {column: _signed_brand_image_url(site_settings, column) for column in BRAND_IMAGE_FIELDS}
     return SiteSettingsResponse(
         org_name=site_settings.org_name,
-        logo_dark_url=logo_dark_url,
-        logo_light_url=logo_light_url,
-        logo_login_url=logo_login_url,
-        favicon_url=favicon_url,
+        logo_dark_url=urls["logo_dark_s3_key"],
+        logo_light_url=urls["logo_light_s3_key"],
+        logo_login_url=urls["logo_login_s3_key"],
+        favicon_url=urls["favicon_s3_key"],
         theme_colors=site_settings.theme_colors,
         total_storage_limit_bytes=site_settings.total_storage_limit_bytes,
         timezone=site_settings.timezone or "UTC",
@@ -208,6 +226,16 @@ def get_site_logo_image(db: Session = Depends(get_db)):
     site_settings = _get_or_create_settings(db)
     s3_key = site_settings.logo_light_s3_key
     if not s3_key:
+        raise HTTPException(status_code=404, detail="No logo configured")
+
+    # §235 — and this route needs the check more than any other, not less:
+    # it takes no token, no session and no expiry, and hands back the raw
+    # bytes of whatever object the column names. An unowned key here is a
+    # permanent, unauthenticated GET for one arbitrary object in the bucket.
+    if not is_owned_site_brand_image_key("logo_light_s3_key", s3_key):
+        logger.warning(
+            "Refusing to serve site_settings.logo_light_s3_key: not a key this server issued"
+        )
         raise HTTPException(status_code=404, detail="No logo configured")
 
     s3 = s3_service.get_s3_client()
@@ -263,6 +291,20 @@ def update_site_settings(
     tz = update_data.get("timezone")
     if tz is not None and not is_valid_timezone(tz):
         raise HTTPException(status_code=400, detail=f"Unknown timezone: {tz}")
+
+    # §235 — a brand-image key that this server did not issue for that exact
+    # slot is refused outright, before anything is written. Rejected with a
+    # 400 rather than ignored (the §178 treatment below), because unlike a
+    # clear-to-NULL there is no legitimate payload that carries one: the
+    # upload routes write these columns themselves and the settings form has
+    # never needed to send a key at all.
+    for field, value in update_data.items():
+        if field in BRAND_IMAGE_FIELDS and value is not None:
+            if not is_owned_site_brand_image_key(field, value):
+                logger.warning(
+                    "Rejected a %s this server did not issue (user %s)", field, current_user.id
+                )
+                raise HTTPException(status_code=400, detail=INVALID_BRAND_IMAGE_KEY)
 
     for field, value in update_data.items():
         # §178 — a configured brand image is never cleared. Ignored rather
@@ -379,11 +421,17 @@ async def upload_site_logo(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can update site settings",
         )
-    if side not in ("dark", "light", "login"):
+    # §235 — the accepted sides come from owned_keys, which is also what
+    # builds the key below and what validates the column afterwards. Three
+    # separate lists of the same three strings is how a fourth logo slot gets
+    # added to the upload route and refused by the validator.
+    if side not in SITE_LOGO_SIDES:
         raise HTTPException(status_code=400, detail="side must be 'dark', 'light', or 'login'")
 
     body = await file.read()
-    key = f"site-settings/logo-{side}/{uuid.uuid4()}.webp"
+    # §235 — built by services/owned_keys.py, the same module that decides
+    # whether a key in this column is one the server issued.
+    key = new_site_logo_key(side)
     s3_service.put_object(key, body, content_type="image/webp", cache_control="max-age=86400")
 
     site_settings = _get_or_create_settings(db)
@@ -414,7 +462,7 @@ async def upload_site_favicon(
         )
 
     body = await file.read()
-    key = f"site-settings/favicon-{uuid.uuid4()}.png"
+    key = new_site_favicon_key()
     s3_service.put_object(key, body, content_type="image/png", cache_control="max-age=86400")
 
     site_settings = _get_or_create_settings(db)

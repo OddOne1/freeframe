@@ -16,6 +16,11 @@ def _validate_hex_color(v: Optional[str]) -> Optional[str]:
 # ── Branding ──────────────────────────────────────────────────────────────────
 
 class BrandingUpdate(BaseModel):
+    #: §235 — validated in routers/branding.py::upsert_branding, not here: the
+    #: only legal value is the one key POST .../branding/logo-upload issued
+    #: FOR THAT PROJECT, and a body schema does not know which project it is
+    #: being PUT to. `None` (or an empty string) clears the logo; anything
+    #: else that is not this project's own issued key is a 400.
     logo_s3_key: Optional[str] = None
     primary_color: Optional[str] = None
     secondary_color: Optional[str] = None

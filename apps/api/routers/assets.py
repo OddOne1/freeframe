@@ -22,6 +22,7 @@ from ..services.permissions import require_project_role, require_asset_access, c
 from ..services.s3_service import build_download_filename, get_s3_client
 from ..config import settings
 from .hls_proxy import create_hls_token, proxy_url_for
+from ..services.owned_keys import issued_avatar_url
 from ..schemas.upload import InitiateUploadRequest, InitiateUploadResponse, ALLOWED_MIME_TYPES, mime_to_asset_type
 from ..services.upload_policy import plan_parts, UploadTooLarge
 from ..services.s3_service import create_multipart_upload
@@ -1078,7 +1079,10 @@ def list_votes(
         {
             "user_id": str(v.user_id),
             "name": users[v.user_id].name if v.user_id in users else "Unknown",
-            "avatar_url": users[v.user_id].avatar_url if v.user_id in users else None,
+            # §235 — this list is a hand-built dict, not a schema, so it
+            # does not inherit UserResponse's validator. Same rule applied
+            # by hand: only an avatar URL this server minted is shown.
+            "avatar_url": issued_avatar_url(users[v.user_id].avatar_url) if v.user_id in users else None,
             "stars": v.stars,
             "created_at": v.created_at.isoformat() if v.created_at else None,
         }
