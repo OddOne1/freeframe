@@ -58,13 +58,43 @@ from ..tasks.email_tasks import (
     send_security_notice_email,
 )
 from ..tasks.celery_app import send_task_safe
-from ..models.user import User, UserStatus, UserGlobalRole
+# §233b — `UserGlobalRole` is no longer imported: the only reference to it
+# in this module was the `is_first_user` branch that made the first address
+# to ask for a magic code a superadmin. This router no longer assigns a
+# role to anybody, because it no longer creates anybody.
+from ..models.user import User, UserStatus
 from ..middleware.auth import get_current_user, get_optional_user
 from ..middleware.rate_limit import rate_limit, login_rate_limit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 MAGIC_CODE_EXPIRY_MINUTES = MAGIC_CODE_EXPIRY_SECONDS // 60
+
+#: §233b — the ONE success body /auth/send-magic-code has, in every case: an
+#: address with an account and an address without one, a login code and a
+#: password reset, and a reset that could not be delivered because no backup
+#: address is verified yet.
+#:
+#: One string, because a second one is an enumeration oracle. Before this,
+#: "Magic code sent to your email" meant the address has an account and "If
+#: that email has an account, a code has been sent" meant it does not — so
+#: anyone who could load the login page could sort a list of addresses into
+#: users and non-users, five at a time per ten minutes, without needing a
+#: code or a password. Closing the account-creation half of this endpoint
+#: while leaving two distinguishable success bodies behind would have
+#: replaced a way IN with a way to enumerate who is in.
+#:
+#: The wording is the neutral one the password_reset branch already used, so
+#: the claim it makes is true on every path it is now returned from.
+#: `apps/web` never renders it — `handleSendCode` in
+#: components/auth/login-form.tsx discards the body and moves to the code
+#: step — so this is an API-surface change, not a visible copy change.
+SEND_MAGIC_CODE_MESSAGE = "If that email has an account, a code has been sent"
+
+#: §233b — the ONE failure body /auth/verify-magic-code has before a code is
+#: proven correct. See the single refusal inside verify_magic_code for what
+#: it collapses and what it costs.
+VERIFY_MAGIC_CODE_REFUSED = "Invalid or expired code"
 
 
 def _generate_invite_token() -> str:
@@ -209,18 +239,37 @@ def _send_backup_email_code(user: User, address: str, org_name: str) -> bool:
 
 @router.post("/send-magic-code", response_model=SendMagicCodeResponse, dependencies=[Depends(rate_limit("send_magic_code", 5, 600))])
 def send_magic_code(body: SendMagicCodeRequest, db: Session = Depends(get_db)):
-    """
-    Send magic code to email.
-    - If user exists: send code for login
-    - If user doesn't exist: create pending user and send code
+    """Send a magic code to an address that ALREADY HAS AN ACCOUNT.
 
-    §195 — both of those stop once 2FA is required instance-wide. A magic
+    §233b — THIS ENDPOINT NO LONGER CREATES USERS, and that is the whole of
+    the change. Until this, an unknown address asking with any purpose but
+    `password_reset` got a `User` row of its own — `pending_verification`,
+    `email_verified=False`, no password, and `superadmin` if the table
+    happened to be empty — and then a code mailed to it, which
+    /auth/verify-magic-code turned into a session. That is a public sign-up
+    form: the same open door §233 deleted `POST /auth/register` for, with
+    email verification as its only gate, reachable by anyone who can load
+    the login page. §195 closed it only on instances that require 2FA.
+
+    The owner's decision is invite-only. The only two paths that may bring a
+    user row into existence are `POST /users/invite` (an admin, row starts
+    `pending_invite`) and `POST /setup/create-superadmin` (first boot,
+    behind the setup guard). An address with no row gets NOTHING here: no
+    row, no code in Redis, no mail — and the same neutral success body a
+    known address gets.
+
+    An invited user is unaffected, because their row already exists:
+    `get_user_by_email` finds it, so a `pending_invite` or
+    `pending_verification` account still gets a code exactly as before.
+    Nothing about the invite flow (`GET /auth/invite/{token}`,
+    `POST /auth/accept-invite`) is touched.
+
+    §195 — magic codes stop entirely once 2FA is required instance-wide. A
     code is a COMPLETE primary credential (§193's finding), so an instance
     that has decided every sign-in needs two factors cannot also offer a
-    one-step sign-in that starts from reading an email. The self-registration
-    half goes with it: this endpoint creating a `pending_verification` user
-    for any address that asks is a way in that no invite and no admin
-    approved, and it is reachable by anyone who can load the login page.
+    one-step sign-in that starts from reading an email. Its other half — the
+    self-registration — is now closed on every instance rather than only on
+    those, which is what §233b above is.
 
     `password_reset` is deliberately exempt, and that is not a loophole —
     it is the recovery path. Magic-code login has always worked without a
@@ -257,29 +306,52 @@ def send_magic_code(body: SendMagicCodeRequest, db: Session = Depends(get_db)):
     user = get_user_by_email(db, body.email)
 
     if not user:
-        if body.purpose == "password_reset":
-            # Don't reveal whether this email has an account, and don't
-            # create a phantom pending user for a reset that can never
-            # complete.
-            return SendMagicCodeResponse(
-                message="If that email has an account, a code has been sent",
-                email=body.email,
-            )
-        # Check if this is the first user (becomes super admin)
-        user_count = db.query(User).filter(User.deleted_at.is_(None)).count()
-        is_first_user = user_count == 0
-
-        # Create new user in pending_verification status
-        user = User(
+        # §233b — NOTHING HAPPENS HERE. No count, no INSERT, no commit, no
+        # Redis write, no mail task, and no `is_first_user` branch (see
+        # below). This is the security property, and it is written as an
+        # early return with no reachable code after it so a later edit
+        # cannot slip a write back in above the `if`.
+        #
+        # The response is byte-identical to the one a KNOWN address gets, so
+        # it says nothing about who has an account. What it cannot hide is
+        # timing: a known address additionally does one Redis SETEX, one
+        # DELETE of the attempts counter, and starts one daemon thread
+        # (`send_task_safe` returns without waiting for the broker, so the
+        # SMTP conversation is not on this request at all). That is a
+        # fraction of a millisecond on the same host, against a request that
+        # crossed Cloudflare and Traefik to arrive — measurable in a tight
+        # local loop, not over the network this deployment is reached on.
+        #
+        # Nothing is padded to match it. A sleep long enough to mask the
+        # difference is also a free way for an anonymous caller to hold a
+        # worker thread, and `rate_limit("send_magic_code", 5, 600)` is
+        # what actually bounds how much of this timing signal anyone can
+        # collect.
+        return SendMagicCodeResponse(
+            message=SEND_MAGIC_CODE_MESSAGE,
             email=body.email,
-            last_name=body.email.split("@")[0],
-            status=UserStatus.pending_verification,
-            email_verified=False,
-            role=UserGlobalRole.superadmin if is_first_user else UserGlobalRole.user,
         )
-        db.add(user)
-        db.commit()
-        
+
+    # §233b — the `is_first_user` branch that used to stand here is GONE,
+    # and removing it does not strand a fresh install, because it was never
+    # the first-run path:
+    #
+    #   * `POST /setup/create-superadmin` creates the first superadmin, and
+    #     `routers/setup.py` refuses once any superadmin exists. It makes
+    #     the account ACTIVE, `email_verified=True`, and WITH a password
+    #     that `validate_password` has checked.
+    #   * `apps/web/middleware.ts` redirects every unauthenticated request
+    #     to `/setup` while `GET /setup/status` answers `needs_setup`, and
+    #     `app/(auth)/login/page.tsx` does the same on load — so the login
+    #     screen cannot even be reached on an empty instance.
+    #
+    # The branch here therefore duplicated the bootstrap and produced a
+    # strictly WEAKER account than the route the browser actually takes:
+    # `pending_verification`, unverified, no password — superadmin on this
+    # instance for whoever typed an address first. It was a second way in,
+    # not a bootstrap. tests/test_setup_superadmin.py and
+    # tests/test_user_storage_default.py cover the real one.
+
     # §197 — a reset code goes into its own pool, never the login one. They
     # shared `magic_code:{email}` and an unconditional setex, so asking for
     # one destroyed the other; and since §195 they are not even subject to
@@ -322,7 +394,7 @@ def send_magic_code(body: SendMagicCodeRequest, db: Session = Depends(get_db)):
     if body.purpose == "password_reset":
         if not (user.backup_email and user.backup_email_verified_at):
             return SendMagicCodeResponse(
-                message="If that email has an account, a code has been sent",
+                message=SEND_MAGIC_CODE_MESSAGE,
                 email=body.email,
             )
         destination = user.backup_email
@@ -335,33 +407,76 @@ def send_magic_code(body: SendMagicCodeRequest, db: Session = Depends(get_db)):
         pass  # Email delivery is best-effort; code is already in Redis
 
     return SendMagicCodeResponse(
-        message="Magic code sent to your email",
+        message=SEND_MAGIC_CODE_MESSAGE,
         email=body.email,
     )
+
+
 @router.post("/verify-magic-code", response_model=LoginResponse, dependencies=[Depends(rate_limit("verify_magic_code", 10, 600))])
 def verify_magic_code(body: VerifyMagicCodeRequest, db: Session = Depends(get_db)):
-    """
-    Verify magic code and return tokens.
-    Returns needs_password=True if user hasn't set a password yet.
+    """Verify a magic code and return tokens.
+
+    §233b — EVERY way this can fail before a code is proven correct answers
+    the same 401 with the same message. See the single refusal below.
     """
     user = get_user_by_email(db, body.email)
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    if user.status == UserStatus.deactivated:
-        raise HTTPException(status_code=401, detail="Account deactivated")
-    
+
     # §197 — checks the pool matching the stated purpose. Trusting the
     # client's claim is safe because it can only ever LOSE: naming the wrong
     # pool means checking a code that is not there, which fails. There is no
     # purpose a caller can claim that makes a wrong code verify.
+    #
+    # §233b — this now runs BEFORE the account is questioned, and runs
+    # whatever the answers would have been. See below for why.
     if body.purpose == "password_reset":
-        success, error = verify_password_reset_code(body.email, body.code)
+        success, _error = verify_password_reset_code(body.email, body.code)
     else:
-        success, error = redis_verify_magic_code(body.email, body.code)
-    if not success:
-        raise HTTPException(status_code=401, detail=error)
+        success, _error = redis_verify_magic_code(body.email, body.code)
+
+    # §233b — ONE refusal: one status, one message, for all three of
+    #
+    #   * no account for this address — and a soft-deleted account IS this
+    #     case, because get_user_by_email filters on `deleted_at`;
+    #   * a deactivated account;
+    #   * a code that is wrong, expired, already spent, or guessed too often.
+    #
+    # Before this they were three different answers: 404 "User not found",
+    # 401 "Account deactivated", and 401 with whichever of
+    # redis_service's strings applied. The 404 was a free enumeration
+    # oracle — one request per address, no code to guess and nothing to
+    # steal, so a list of addresses could be sorted into accounts and
+    # non-accounts as fast as the rate limiter allowed. "Account
+    # deactivated" was worse than that: it confirmed the address exists AND
+    # that somebody switched it off, which is precisely the account worth
+    # trying elsewhere.
+    #
+    # The code check moving ABOVE the account questions is what makes the
+    # three indistinguishable in TIMING as well as in body — every one of
+    # them now costs the same single Redis round trip, where an unknown
+    # address used to return without touching Redis at all. It has one other
+    # consequence, and it is the right way round: a correct code is SPENT
+    # even when the account behind it cannot sign in. A code is consumed by
+    # being presented, not by succeeding.
+    #
+    # `error` from the Redis helpers is dropped rather than passed through,
+    # and that is a real cost worth naming. Its three strings ("Invalid
+    # code", "Code expired or not found", "Too many attempts. Request a new
+    # code.") said nothing about the account, but they did say whether a
+    # code had ever been issued for that address — the same oracle by a
+    # longer route, since `magic_code:{email}` only exists for an address
+    # send-magic-code accepted. So a person who has burned their five
+    # attempts is no longer told that is why, and reads the same "invalid or
+    # expired" as someone who mistyped a digit. Requesting a fresh code
+    # clears the counter (store_magic_code deletes it), which is what the
+    # UI's "send a new code" button already does.
+    #
+    # Everything BELOW this line is a path that has already proved it read
+    # the mailbox, and those stay distinguishable on purpose: the §200
+    # passwordless-window 403, and the §193 second-factor outcomes
+    # (`requires_2fa`, `setup_required`) that `apps/web`'s login form
+    # branches on.
+    if not success or user is None or user.status == UserStatus.deactivated:
+        raise HTTPException(status_code=401, detail=VERIFY_MAGIC_CODE_REFUSED)
 
     # §200 — the end of the migration window, for passwordless accounts only.
     #

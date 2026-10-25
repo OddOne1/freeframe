@@ -7,12 +7,13 @@ factors therefore cannot also offer a one-step sign-in that begins with
 reading an email, and this closes that door at the only place codes are
 issued.
 
-The self-registration half goes with it, and it is the less obvious of the
-two: POST /auth/send-magic-code creates a `pending_verification` user for
-ANY address that asks, with no invite and no admin approval, reachable by
-anyone who can load the login page. That is current behaviour today and
-stays current behaviour while `require_2fa` is off — this is not a general
-lockdown, it is tied to that one setting.
+§195 also closed the self-registration half of that endpoint — a
+`pending_verification` user created for ANY address that asked — but only
+while `require_2fa` was on. §233b closed it on every instance, so the test
+below that used to assert self-registration "still works" with the setting
+off now asserts that it does not happen at all. What this file still owns is
+the SETTING: that `require_2fa` turns login codes off and leaves password
+reset on.
 
 `password_reset` stays open on purpose. Magic-code login has always worked
 without a password, so there are existing users whose `password_hash` is
@@ -29,6 +30,7 @@ import pyotp
 import pytest
 
 from apps.api.models.user import User, UserGlobalRole, UserStatus
+from apps.api.routers.auth import SEND_MAGIC_CODE_MESSAGE
 from apps.api.services import totp_service
 from apps.api.services.auth_service import create_2fa_pending_token
 
@@ -53,6 +55,11 @@ _REFUSAL = (
     "Magic-code sign-in is disabled on this instance. "
     "Sign in with your email and password."
 )
+
+#: §233b — the endpoint's ONE success body. Imported from the router rather
+#: than retyped, so these assertions cannot keep passing against a copy of a
+#: string the router has since changed.
+_NEUTRAL = SEND_MAGIC_CODE_MESSAGE
 
 
 def _user(*, email="u@example.com", password_hash="$2b$12$fake", enrolled=False):
@@ -112,21 +119,32 @@ class TestNothingChangesWhile2faIsOff:
         resp, store, send = _send(client, mock_db, user=_user(), require_2fa=False)
 
         assert resp.status_code == 200
-        assert resp.json()["message"] == "Magic code sent to your email"
+        # §233b — this line used to assert the cheerful success message,
+        # which said the address HAS an account while an unknown one got a
+        # different string. One neutral body now, on every path. What the
+        # test is really about is the two calls below: a code reached Redis
+        # and a mail task was queued.
+        assert resp.json()["message"] == _NEUTRAL
         store.assert_called_once()
         send.assert_called_once()
 
-    def test_an_unknown_email_still_self_registers(self, client, mock_db):
-        """Not an endorsement of this behaviour — a regression test for it.
-        §195 changes it only when `require_2fa` is on."""
-        resp, store, _ = _send(client, mock_db, user=None, require_2fa=False)
+    def test_an_unknown_email_no_longer_self_registers(self, client, mock_db):
+        """§233b — this test used to assert the OPPOSITE, as a regression
+        test for behaviour §195 narrowed but did not remove: with
+        `require_2fa` off, an unknown address got a `pending_verification`
+        row and a code. That is gone on every instance now, so the case is
+        kept and inverted rather than deleted — a deleted test is how a
+        closed door gets quietly reopened. tests/test_signup_closed.py owns
+        the full set of assertions; this one holds the `require_2fa=False`
+        corner, which is the one §195 deliberately left open."""
+        resp, store, send = _send(client, mock_db, user=None, require_2fa=False)
 
-        added = _users_added(mock_db)
         assert resp.status_code == 200
-        assert len(added) == 1
-        assert added[0].email == "u@example.com"
-        assert added[0].status == UserStatus.pending_verification
-        store.assert_called_once()
+        assert resp.json()["message"] == _NEUTRAL
+        assert _users_added(mock_db) == []
+        mock_db.commit.assert_not_called()
+        store.assert_not_called()
+        send.assert_not_called()
 
     def test_password_reset_still_works(self, client, mock_db):
         resp, store, _ = _send(
@@ -142,7 +160,7 @@ class TestNothingChangesWhile2faIsOff:
         )
 
         assert resp.status_code == 200
-        assert resp.json()["message"] == "If that email has an account, a code has been sent"
+        assert resp.json()["message"] == _NEUTRAL
         assert _users_added(mock_db) == []
         store.assert_not_called()
 
@@ -213,7 +231,12 @@ class TestPasswordResetStaysOpen:
         )
 
         assert resp.status_code == 200
-        assert resp.json()["message"] == "Magic code sent to your email"
+        # §233b — this line used to assert the cheerful success message,
+        # which said the address HAS an account while an unknown one got a
+        # different string. One neutral body now, on every path. What the
+        # test is really about is the two calls below: a code reached Redis
+        # and a mail task was queued.
+        assert resp.json()["message"] == _NEUTRAL
         store.assert_called_once()
         send.assert_called_once()
 
@@ -223,7 +246,7 @@ class TestPasswordResetStaysOpen:
         )
 
         assert resp.status_code == 200
-        assert resp.json()["message"] == "If that email has an account, a code has been sent"
+        assert resp.json()["message"] == _NEUTRAL
         assert _users_added(mock_db) == []
         store.assert_not_called()
 

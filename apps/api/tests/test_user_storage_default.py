@@ -93,26 +93,20 @@ def fetch(session, email):
     return session.query(User).filter(User.email == email).one()
 
 
-# ─── the three creation paths ────────────────────────────────────────────────
+# ─── the two creation paths ──────────────────────────────────────────────────
 
-def test_magic_code_signup_gets_the_default(db):
-    session, created = db
-    from apps.api.routers.auth import send_magic_code
-    from apps.api.schemas.auth import SendMagicCodeRequest
-
-    email = unique_email("magic")
-    send_magic_code(SendMagicCodeRequest(email=email), db=session)
-
-    user = fetch(session, email)
-    created.append(user.id)
-    assert user.storage_limit_bytes == TWO_HUNDRED_GB
-
-
-# §233 — the fourth path, `/auth/register`, is gone: it let an anonymous
-# caller create an ACTIVE account, which this instance never wanted. It is
-# not rewritten into another shape here because there is nothing left to
-# rewrite it to — the three creation paths above and below ARE how
-# production makes a user, and each already has its own test in this file.
+# §233b — `test_magic_code_signup_gets_the_default` stood here, and it is
+# gone because the path it tested is gone. POST /auth/send-magic-code no
+# longer creates a user for an unknown address: this instance is invite-only,
+# so the only two paths that insert a row are the two tested below. That the
+# endpoint inserts NOTHING is asserted — against this same real Postgres, by
+# row count — in tests/test_signup_closed.py.
+#
+# §233 — the fourth path, `/auth/register`, is gone for the same kind of
+# reason: it let an anonymous caller create an ACTIVE account, which this
+# instance never wanted. Neither is rewritten into another shape here,
+# because there is nothing left to rewrite them to — the two creation paths
+# below ARE how production makes a user, and each has its own test.
 # `/auth/accept-invite` is deliberately still absent: it finishes a row that
 # `invite_user` already inserted, so it is not a creation path.
 

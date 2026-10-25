@@ -131,23 +131,38 @@ class TestNothingElseChanged:
         assert resp.status_code == 401
         assert "pending_token" not in resp.json()
 
-    def test_an_unknown_email_is_still_a_404(self, client, mock_db):
+    def test_an_unknown_email_is_refused(self, client, mock_db):
+        """§233b — was a 404 "User not found" when this file was written.
+
+        Now the same generic 401 as a wrong code, because the 404 was a free
+        enumeration oracle. tests/test_signup_closed.py is where the three
+        refusals are asserted to be identical; this one stays because what
+        it was really pinning is that an unknown address is refused at all.
+        """
         mock_db.first.return_value = None
-        resp = client.post(
-            "/auth/verify-magic-code", json={"email": "no@example.com", "code": "1"}
-        )
-        assert resp.status_code == 404
+        # §233b — the code pool is consulted before the account is, so this
+        # reaches Redis where it used to return before touching it.
+        with patch(_REDIS_OK, return_value=(False, "Code expired or not found")):
+            resp = client.post(
+                "/auth/verify-magic-code", json={"email": "no@example.com", "code": "1"}
+            )
+        assert resp.status_code == 401
 
     def test_a_deactivated_account_is_still_refused(self, client, mock_db):
         user = _user(two_factor_enabled=True)
         user.status = UserStatus.deactivated
         mock_db.first.return_value = user
 
-        resp = client.post(
-            "/auth/verify-magic-code", json={"email": user.email, "code": "1"}
-        )
+        # §233b — as above: patched because the code check now runs first,
+        # and with a CORRECT code, so this asserts the account check refuses
+        # on its own rather than riding on a wrong code.
+        with patch(_REDIS_OK, return_value=(True, "")):
+            resp = client.post(
+                "/auth/verify-magic-code", json={"email": user.email, "code": "1"}
+            )
 
         assert resp.status_code == 401
+        assert "pending_token" not in resp.json()
 
     def test_the_email_is_still_marked_verified_even_when_2fa_stops_the_login(
         self, client, mock_db

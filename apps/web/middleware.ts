@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
+import { safeNext } from '@/lib/safe-next'
 
 const PUBLIC_ROUTES = ['/login', '/setup']
 const PUBLIC_PREFIXES = ['/invite/', '/share/']
@@ -58,7 +59,16 @@ export async function middleware(request: NextRequest) {
 
   if (!accessToken && !refreshToken) {
     const loginUrl = new URL('/login', request.url)
-    loginUrl.searchParams.set('from', pathname)
+    // §233b — the WRITING end of the same rule the login page applies when
+    // it reads this back. `pathname` comes from NextURL and always starts
+    // with a single slash today, so this changes nothing in practice; it is
+    // here because a target that the producer guarantees is safe and the
+    // consumer independently re-checks is the only arrangement where
+    // neither side's assumption can rot unnoticed. `safeNext`'s fallback
+    // (DEFAULT_LANDING_PATH) is what lands in the parameter if that ever
+    // stops being true, which is a pointless redirect rather than an
+    // off-site one.
+    loginUrl.searchParams.set('from', safeNext(pathname))
     return NextResponse.redirect(loginUrl)
   }
 
