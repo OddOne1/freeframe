@@ -183,15 +183,39 @@ def test_the_upload_is_not_failed_by_an_unverifiable_size():
 
 class TestCompleteUploadWiring:
     """The function above is inert unless /upload/complete calls it, and
-    unless it does so before the commit."""
+    unless it does so before the commit.
 
-    def _run(self, mock_db, media_file, head=ACTUAL):
+    §236 CHANGED WHAT THIS CLASS CAN SAY. /upload/complete no longer takes
+    the request's word for anything: the body's `s3_key` must be the
+    version's own key and its `asset_id` must be the version's asset, the
+    version has to be `uploading`, and the part list is read from the
+    store. So the world each of these runs in is now a CONSISTENT one, and
+    the two §180 properties are asserted inside it:
+
+      * the size written is the one S3 reports, and
+      * the key HEADed is the row's, not the request's.
+
+    The second one used to be shown by sending a *different* key in the
+    body and watching the HEAD ignore it. That request is now a 404 before
+    it reaches any of this, which is a stronger version of the same
+    guarantee — so it is asserted as a refusal below, and the HEAD's key is
+    asserted directly.
+    """
+
+    def _run(self, mock_db, media_file, head=ACTUAL, key=None, asset_id=None,
+             status=None):
+        from apps.api.models.asset import ProcessingStatus
         from apps.api.routers import upload as upload_router
         from apps.api.schemas.upload import CompleteUploadRequest
 
         version = MagicMock()
         version.id = uuid.uuid4()
+        version.asset_id = uuid.uuid4()
         version.created_by = uuid.uuid4()
+        version.processing_status = status or ProcessingStatus.uploading
+        version.deleted_at = None
+        if media_file is not None:
+            media_file.version_id = version.id
 
         # The version lookup and the media-file lookup both go through
         # db.query(...).filter(...).first().
@@ -199,9 +223,9 @@ class TestCompleteUploadWiring:
         mock_db.query.return_value.filter.return_value.first.side_effect = results
 
         body = CompleteUploadRequest(
-            asset_id=uuid.uuid4(),
+            asset_id=asset_id or version.asset_id,
             version_id=version.id,
-            s3_key="raw/client/said/this.mov",
+            s3_key=key if key is not None else getattr(media_file, "s3_key_raw", S3_KEY),
             upload_id="u-1",
             parts=[{"PartNumber": 1, "ETag": "e"}],
         )
@@ -209,7 +233,14 @@ class TestCompleteUploadWiring:
         user = MagicMock()
         user.id = version.created_by
 
-        with patch.object(upload_router, "complete_multipart_upload") as cmu, \
+        # §236 — the store's list is what gets completed, so it has to
+        # describe the whole declared file for the happy path to run.
+        declared = getattr(media_file, "file_size_bytes", DECLARED) or DECLARED
+        listed = [{"PartNumber": 1, "ETag": '"e1"', "Size": declared,
+                   "LastModified": None}]
+
+        with patch.object(upload_router, "list_multipart_parts", return_value=listed), \
+             patch.object(upload_router, "complete_multipart_upload") as cmu, \
              patch.object(upload_router, "head_object_size", return_value=head) as hos:
             upload_router.complete_upload(
                 body, MagicMock(), db=mock_db, current_user=user
@@ -223,12 +254,28 @@ class TestCompleteUploadWiring:
 
         assert mf.file_size_bytes == ACTUAL
 
-    def test_it_heads_the_stored_key_not_the_one_in_the_request(self, mock_db):
+    def test_it_heads_the_stored_key(self, mock_db):
+        """NOT a key out of the request — which §236 refuses outright (see
+        the test below), so the only key left to HEAD is the row's."""
         mf = _media_file(key="raw/server/generated.mov")
 
         _cmu, hos, _v = self._run(mock_db, mf)
 
         hos.assert_called_with("raw/server/generated.mov")
+
+    def test_a_request_naming_another_key_is_refused_before_anything_runs(
+        self, mock_db
+    ):
+        """§236 — the §180 docstring's "reconciling against a client-chosen
+        key would check a number against whatever object the client pointed
+        at" is now unreachable, because the request cannot name one."""
+        from fastapi import HTTPException
+
+        mf = _media_file(key="raw/server/generated.mov")
+        with pytest.raises(HTTPException) as caught:
+            self._run(mock_db, mf, key="raw/client/said/this.mov")
+        assert caught.value.status_code == 404
+        assert mf.size_verified_at is None
 
     def test_the_corrected_size_is_committed_with_the_status_change(self, mock_db):
         """One commit, so the row never exists in a committed-but-
@@ -239,7 +286,15 @@ class TestCompleteUploadWiring:
 
         assert mock_db.commit.call_count == 1
 
-    def test_a_row_that_cannot_be_found_does_not_break_completion(self, mock_db):
-        """Defensive: no MediaFile means nothing to reconcile, not a 500 on
-        an upload whose bytes are already safely stored."""
-        self._run(mock_db, None)  # must not raise
+    def test_a_row_that_cannot_be_found_is_now_a_refusal(self, mock_db):
+        """This used to assert that a missing MediaFile "does not break
+        completion". §236 retires that: without the row there is no key to
+        bind the request's to, no declared size to check the parts against,
+        and nothing this endpoint is allowed to complete. The upload is
+        refused instead of completed blind — and nothing is dispatched."""
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as caught:
+            self._run(mock_db, None)
+        assert caught.value.status_code == 404
+        assert mock_db.commit.call_count == 0

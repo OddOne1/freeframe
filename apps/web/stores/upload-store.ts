@@ -174,6 +174,92 @@ function isGoneSession(err: unknown): boolean {
   return err instanceof ApiError && (err.code === 'no_such_upload' || err.status === 404)
 }
 
+/**
+ * §236 — the server completed nothing because the store does not hold the
+ * whole file yet.
+ *
+ * `/upload/complete` builds the completion list from storage now, and
+ * answers 409 `parts_incomplete` when the part numbers are not 1..N or the
+ * sizes do not add up to the declared size. The upload is LEFT OPEN by
+ * that answer, which is what makes it resumable rather than fatal: the
+ * right move is to go back for the missing parts, not to fail the file.
+ *
+ * On the code, never on the status: 409 alone also covers `upload_failed`
+ * (a version something already resolved as broken) and `parts_rejected`
+ * (a list the store looked at and refused), and re-sending parts is the
+ * wrong answer to both.
+ */
+function isPartsIncomplete(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 409 && err.code === 'parts_incomplete'
+}
+
+/**
+ * How many bytes `held` accounts for, given the part layout.
+ *
+ * One expression rather than four copies of it: the progress bar, the
+ * saved session's `uploadedBytes` and §236's re-list all need it, and a
+ * copy that drifted would show a resumed 97 GiB upload at the wrong
+ * percentage.
+ */
+function bytesHeld(
+  held: Map<number, string>,
+  totalChunks: number,
+  partSize: number,
+  fileSize: number,
+): number {
+  return Array.from(held.keys()).reduce(
+    (sum, n) => sum + (n < totalChunks ? partSize : fileSize - (totalChunks - 1) * partSize),
+    0,
+  )
+}
+
+/**
+ * The parts from a `GET /upload/parts` listing that may be REUSED.
+ *
+ * A PART IS NEVER TRUSTED ON ITS NUMBER ALONE. A short part is a partial
+ * write, and completing an upload around one produces a corrupt object
+ * that passes every other check there is — so anything whose `Size` is not
+ * exactly what this layout expects, and anything without an ETag, is
+ * dropped here and re-sent.
+ *
+ * Shared by the §213 resume path and §236's re-list after a
+ * `parts_incomplete`, because the two must agree about what counts as a
+ * usable part: a stricter resume than re-list would re-send parts the
+ * other had just accepted, and the looser of the two decides whether a
+ * corrupt object is possible.
+ */
+function usablePartsFromListing(
+  listed: UploadedPart[],
+  fileSize: number,
+  partSize: number,
+): Map<number, string> {
+  const held = new Map<number, string>()
+  const total = Math.max(1, Math.ceil(fileSize / partSize))
+  for (const part of listed) {
+    const n = Number(part.PartNumber)
+    if (!(n >= 1 && n <= total)) continue
+    const expected = n < total ? partSize : fileSize - (total - 1) * partSize
+    if (Number(part.Size) !== expected) continue
+    if (!part.ETag) continue
+    held.set(n, part.ETag)
+  }
+  return held
+}
+
+/**
+ * §236 — how many times a `parts_incomplete` may send us back for more
+ * parts before the upload is reported as failed.
+ *
+ * Bounded, unlike the per-part retry loop, and deliberately small. A part
+ * that will not stick is not weather: each round here is a full re-list
+ * plus however many parts are missing, and a server that keeps saying
+ * "still short" after two honest attempts is telling us something the user
+ * needs to see rather than something to grind on. The parts that did land
+ * are kept and the session stays resumable either way, so stopping costs
+ * nothing but a message.
+ */
+const COMPLETE_RESUME_ROUNDS = 2
+
 function retryDelay(attempt: number): number {
   return RETRY_DELAYS_MS[Math.min(attempt - 1, RETRY_DELAYS_MS.length - 1)]
 }
@@ -500,17 +586,15 @@ async function runChunkedUpload(params: {
         // re-planning would renumber every remaining part against bytes
         // already stored under the old numbering.
         partSize = resumeFrom.partSize > 0 ? resumeFrom.partSize : CHUNK_SIZE
-        const total = Math.max(1, Math.ceil(file.size / partSize))
-        for (const part of listed?.parts ?? []) {
-          const n = Number(part.PartNumber)
-          if (!(n >= 1 && n <= total)) continue
-          const expected = n < total ? partSize : file.size - (total - 1) * partSize
-          // A PART IS NEVER TRUSTED ON ITS NUMBER ALONE. A short part is a
-          // partial write, and completing an upload around one produces a
-          // corrupt object that passes every other check there is.
-          if (Number(part.Size) !== expected) continue
-          if (!part.ETag) continue
-          existing.set(n, part.ETag)
+        // §236 — the same validator the re-list after a `parts_incomplete`
+        // uses. See `usablePartsFromListing`: a short part is a partial
+        // write and is never trusted on its number alone.
+        // `Array.from` rather than iterating the Map directly: this
+        // project's tsconfig target predates for..of over a Map.
+        for (const [n, etag] of Array.from(
+          usablePartsFromListing(listed?.parts ?? [], file.size, partSize).entries(),
+        )) {
+          existing.set(n, etag)
         }
       } catch (err) {
         if (!isGoneSession(err)) throw err
@@ -544,10 +628,7 @@ async function runChunkedUpload(params: {
     // later otherwise leaves a multipart upload nothing can ever find
     // again — and on the web, "find again" is the only way back to it.
     if (describe) {
-      const alreadyBytes = Array.from(existing.keys()).reduce(
-        (sum, n) => sum + (n < totalChunks ? partSize : file.size - (totalChunks - 1) * partSize),
-        0,
-      )
+      const alreadyBytes = bytesHeld(existing, totalChunks, partSize, file.size)
       void saveSession({
         uploadId: upload_id,
         s3Key: s3_key!,
@@ -571,10 +652,7 @@ async function runChunkedUpload(params: {
     // Progress starts at the bytes already present, not at 0%: a resumed
     // 97 GiB upload that reports 0% is indistinguishable from one that
     // threw everything away.
-    bytesUploadedMap[id] = Array.from(existing.keys()).reduce(
-      (sum, n) => sum + (n < totalChunks ? partSize : file.size - (totalChunks - 1) * partSize),
-      0,
-    )
+    bytesUploadedMap[id] = bytesHeld(existing, totalChunks, partSize, file.size)
     updateFile(id, {
       progress: Math.min(95, Math.round((bytesUploadedMap[id] / Math.max(1, file.size)) * 95)),
     })
@@ -585,50 +663,119 @@ async function runChunkedUpload(params: {
     // until none are left; each part still goes through the same
     // pause/retry-with-backoff path as before, just several at once.
     //
-    // §213 — the counter now walks only the MISSING parts.
-    const missing: number[] = []
-    for (let n = 1; n <= totalChunks; n++) if (!existing.has(n)) missing.push(n)
-    let nextIndex = 0
-    const claimNextPart = (): number | null => {
-      if (nextIndex >= missing.length) return null
-      return missing[nextIndex++]
-    }
-
-    const partWorker = async (): Promise<void> => {
-      let partNumber = claimNextPart()
-      while (partNumber !== null) {
-        if (controller.signal.aborted) throw new DOMException('Upload cancelled', 'AbortError')
-
-        const start = (partNumber - 1) * partSize
-        const end = Math.min(start + partSize, file.size)
-        // A lazy view, not a copy: `Blob.slice` does not read the bytes, so
-        // CONCURRENT_PARTS x part_size is not resident even at a 512 MiB
-        // part size. (The desktop uploader has to allocate real Buffers and
-        // bounds its concurrency accordingly — see workerCountFor there.)
-        const chunk = file.slice(start, end)
-
-        const result = await uploadPartWithRetry(id, s3_key!, upload_id!, partNumber, chunk, controller, updateFile)
-        parts[result.PartNumber - 1] = result
-
-        bytesUploadedMap[id] = (bytesUploadedMap[id] ?? 0) + chunk.size
-        updateFile(id, { progress: Math.min(95, Math.round((bytesUploadedMap[id] / file.size) * 95)) })
-
-        partNumber = claimNextPart()
+    // §213 — the counter walks only the MISSING parts.
+    // §236 — and it is a function now, because `parts_incomplete` sends us
+    // back through it with a second, smaller set.
+    const sendParts = async (missing: number[]): Promise<void> => {
+      if (!missing.length) return
+      let nextIndex = 0
+      const claimNextPart = (): number | null => {
+        if (nextIndex >= missing.length) return null
+        return missing[nextIndex++]
       }
-    }
 
-    const workerCount = Math.max(1, Math.min(CONCURRENT_PARTS, missing.length))
-    if (missing.length) {
+      const partWorker = async (): Promise<void> => {
+        let partNumber = claimNextPart()
+        while (partNumber !== null) {
+          if (controller.signal.aborted) throw new DOMException('Upload cancelled', 'AbortError')
+
+          const start = (partNumber - 1) * partSize
+          const end = Math.min(start + partSize, file.size)
+          // A lazy view, not a copy: `Blob.slice` does not read the bytes, so
+          // CONCURRENT_PARTS x part_size is not resident even at a 512 MiB
+          // part size. (The desktop uploader has to allocate real Buffers and
+          // bounds its concurrency accordingly — see workerCountFor there.)
+          const chunk = file.slice(start, end)
+
+          const result = await uploadPartWithRetry(id, s3_key!, upload_id!, partNumber, chunk, controller, updateFile)
+          parts[result.PartNumber - 1] = result
+
+          bytesUploadedMap[id] = (bytesUploadedMap[id] ?? 0) + chunk.size
+          updateFile(id, { progress: Math.min(95, Math.round((bytesUploadedMap[id] / file.size) * 95)) })
+
+          partNumber = claimNextPart()
+        }
+      }
+
+      const workerCount = Math.max(1, Math.min(CONCURRENT_PARTS, missing.length))
       await Promise.all(Array.from({ length: workerCount }, () => partWorker()))
     }
 
-    await api.post('/upload/complete', {
-      s3_key,
-      upload_id,
-      asset_id,
-      version_id,
-      parts,
-    })
+    const missingNow = (held: Map<number, string>): number[] => {
+      const out: number[] = []
+      for (let n = 1; n <= totalChunks; n++) if (!held.has(n)) out.push(n)
+      return out
+    }
+
+    await sendParts(missingNow(existing))
+
+    // §236 — complete, and if the SERVER says the store does not hold the
+    // whole file, go back for what it is missing instead of failing.
+    //
+    // `/upload/complete` builds its part list from storage now, so a 409
+    // `parts_incomplete` is the one honest answer this client could not
+    // previously act on: every PUT in this tab returned 200 and the parts
+    // array here is full, yet the store is short. That happens — a part
+    // that a proxy acknowledged and the store never kept, a resumed
+    // session whose listing was stale, a part overwritten by a retry that
+    // landed short. Re-listing is the only way to find out which, and it
+    // is exactly what the §213 resume path already does, so this re-enters
+    // it rather than inventing a second mechanism.
+    //
+    // Deliberately NOT an abort and NOT a failure: the server left the
+    // upload open precisely so this can happen, and the bytes already
+    // there can be hours of transfer.
+    for (let round = 0; ; round++) {
+      try {
+        await api.post('/upload/complete', {
+          s3_key,
+          upload_id,
+          asset_id,
+          version_id,
+          // Holes filtered out: a sparse array serialises its gaps as
+          // `null`, which a server that still READS this field (one that
+          // predates §236, during a rolling deploy) would reject as a
+          // validation error instead of completing the upload.
+          parts: parts.filter(Boolean),
+        })
+        break
+      } catch (err) {
+        if (!isPartsIncomplete(err) || round >= COMPLETE_RESUME_ROUNDS) throw err
+
+        updateFile(id, { status: 'uploading', pauseReason: undefined, error: undefined })
+
+        // THE SERVER'S LIST, again — not the `missing` the 409 named. The
+        // response's part numbers are a convenience for a human reading a
+        // log; `GET /upload/parts` is the same source of truth /complete
+        // itself used, and going back to it means the two cannot disagree
+        // about what is already there.
+        const listed = await api.get<{ parts: UploadedPart[] }>(
+          `/upload/parts?s3_key=${encodeURIComponent(s3_key!)}` +
+            `&upload_id=${encodeURIComponent(upload_id!)}`,
+        )
+        const held = usablePartsFromListing(listed?.parts ?? [], file.size, partSize)
+        for (const [n, etag] of Array.from(held.entries())) {
+          parts[n - 1] = { PartNumber: n, ETag: etag }
+        }
+
+        const stillMissing = missingNow(held)
+        if (!stillMissing.length) {
+          // Every part is there and the right size, and the server still
+          // refuses: re-sending nothing would loop. Surface the server's
+          // own message instead.
+          throw err
+        }
+
+        // Progress goes BACK to what the store actually holds. Leaving it
+        // at 100% while parts are re-sent is how a stalled upload looks
+        // finished.
+        bytesUploadedMap[id] = bytesHeld(held, totalChunks, partSize, file.size)
+        updateFile(id, {
+          progress: Math.min(95, Math.round((bytesUploadedMap[id] / Math.max(1, file.size)) * 95)),
+        })
+        await sendParts(stillMissing)
+      }
+    }
     // Completed, so there is nothing left to resume.
     if (upload_id) void deleteSession(upload_id).catch(() => {})
 

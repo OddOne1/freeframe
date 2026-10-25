@@ -111,6 +111,13 @@ def _make_mock_db() -> MagicMock:
     db.commit.return_value = None
     db.refresh.return_value = None
     db.close.return_value = None
+    # §236 — self-returning like `query`/`filter` above, so a chained
+    # `.with_for_update()` lands on the same stub. /upload/complete and
+    # /upload/abort take a row lock on the version (the check and the
+    # status write have to be one critical section); without this the
+    # locked lookup returns a fresh MagicMock instead of the row a test
+    # planted, and every upload test reads a version that does not exist.
+    db.with_for_update.return_value = db
     return db
 
 

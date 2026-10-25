@@ -105,7 +105,20 @@ class CompleteUploadRequest(BaseModel):
     upload_id: str
     asset_id: uuid.UUID
     version_id: uuid.UUID
-    parts: list[UploadPart]
+    # §236 — STILL ACCEPTED, NO LONGER USED.
+    #
+    # The completion list is built by the server from
+    # `list_multipart_parts(..., strict=True)`, because S3 checks each ETag
+    # a client names against a part it holds but never checks that the list
+    # is the whole file: a client that omits a part completes a truncated
+    # object with a 200. See services/upload_completion.py.
+    #
+    # Optional rather than removed, and ignored rather than rejected, so
+    # every shipped client keeps working through a rolling deploy — web and
+    # api are separate containers, and the desktop app ships on its own
+    # release. A list that disagrees with the store's is logged (counts
+    # only) and discarded.
+    parts: list[UploadPart] = []
 
 class CompleteUploadResponse(BaseModel):
     status: str
@@ -132,3 +145,27 @@ class UploadedPart(BaseModel):
 
 class UploadedPartsResponse(BaseModel):
     parts: list[UploadedPart]
+
+
+class UploadErrorDetail(BaseModel):
+    """The `detail` of every refusal `/upload/complete` and `/upload/abort`
+    can be branched on (§236).
+
+    One declared shape rather than a dict literal per raise site, because
+    `lib/api.ts` and the desktop app both read `detail.code` off these and
+    a typo in one raise site is a client branch that silently never fires.
+    `message` is what a person reads; `code` is what the client acts on
+    (`parts_incomplete` -> resume, `no_such_upload` -> start over,
+    `upload_failed` / `upload_not_abortable` -> show it and stop).
+
+    `missing` names the part numbers a resuming client still has to send,
+    and is omitted when there are too many to be useful (the client
+    re-lists `GET /upload/parts` regardless) or when the gap is not in the
+    numbering at all but in the byte total. `missing_count` is the number
+    either way.
+    """
+
+    code: str
+    message: str
+    missing: list[int] | None = None
+    missing_count: int | None = None
