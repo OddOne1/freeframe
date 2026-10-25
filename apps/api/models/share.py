@@ -139,19 +139,19 @@ class ShareLink(Base):
     # describe one panel from two sides. `_reconcile_comment_settings` in
     # routers/share.py collapses that one pair on every write.
     show_comments: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
-    # §234 F1 — whether the comments this link shows INCLUDE the team's
-    # internal ones. Default false, server default false: every link that
-    # existed before this column behaves exactly as it did, which for an
-    # internal comment means "never left the team".
+    # DEAD COLUMN (§234b). §234 F1 made "do the comments this link shows
+    # include the team's internal ones" an option; the owner then removed
+    # the option: a share link NEVER returns an internal comment, password
+    # or no password. Nothing reads this attribute any more — not the
+    # visibility filter, not the comment count, not the create/update
+    # schemas, not the web app — and a row where it is TRUE, written before
+    # the change, behaves exactly like one where it is FALSE
+    # (tests/test_share_internal_comments_removed.py forces it TRUE and
+    # asserts the internal comment still does not come back).
     #
-    # Read-only for a guest either way: `internal` can only be POSTED by a
-    # caller who passes the normal asset access check, so turning this on
-    # lets link holders READ the internal thread, never join it.
-    #
-    # Subordinate to `show_comments`, not independent of it — see
-    # `_reconcile_comment_settings` in routers/share.py, which switches it
-    # off with the panel that would have displayed it, for the same reason
-    # §189 collapsed `permission` against `show_comments`.
+    # It stays declared because the column is applied on production and the
+    # attribute has to match the table; dropping both is a separate, later
+    # migration. Do not start reading it again.
     show_internal_comments: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )

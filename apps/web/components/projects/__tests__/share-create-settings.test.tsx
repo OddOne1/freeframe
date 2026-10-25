@@ -11,9 +11,15 @@
  * folder and the project root each POST a bare title and then PATCH the
  * settings on. A field added to one and not the other silently does
  * nothing on three paths out of four.
+ *
+ * §234b — "Display internal comments to guests" was one of those settings
+ * and is gone: a comment marked internal is never shown on a share link, so
+ * there is nothing to configure. What is asserted below is that the control
+ * is absent from the dialog and the field absent from every request, while
+ * "Show comments" and "Allow comments" behave exactly as before.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { AssetResponse, Folder, ShareLink } from '@/types'
 
@@ -58,7 +64,8 @@ function toggle(name: string) {
   return screen.getByRole('switch', { name })
 }
 
-/** The §234 F1 control, by the owner’s wording. */
+/** The §234 F1 control, by the owner’s wording — removed in §234b, and
+ *  asserted absent below. */
 const INTERNAL = 'Display internal comments to guests'
 
 async function create(user: ReturnType<typeof userEvent.setup>) {
@@ -102,15 +109,15 @@ describe('§223 B.1 — the settings the popup offers', () => {
     expect(toggle('Show all versions')).toBeTruthy()
   })
 
-  it('offers the §234 F1 setting too, directly below "Show comments"', () => {
+  it('does NOT offer the §234 F1 setting — §234b removed it', () => {
     configureAsset()
-    const show = toggle('Show comments')
-    const internal = toggle(INTERNAL)
+    // "Show comments" is still there; the third toggle below it is not.
+    expect(toggle('Show comments')).toBeTruthy()
+    expect(screen.queryByRole('switch', { name: INTERNAL })).toBeNull()
     expect(
-      screen.getByText('Internal comments are visible to everyone who opens this link'),
-    ).toBeTruthy()
-    const switches = Array.from(document.querySelectorAll('[role="switch"]'))
-    expect(switches.indexOf(internal)).toBe(switches.indexOf(show) + 1)
+      screen.queryByText('Internal comments are visible to everyone who opens this link'),
+    ).toBeNull()
+    expect(document.body.textContent).not.toContain('internal')
   })
 
   it('still offers everything it already did', () => {
@@ -177,16 +184,15 @@ async function setEverything(user: ReturnType<typeof userEvent.setup>) {
   await user.click(toggle('Allow comments')) // → permission 'comment'
   await user.click(toggle('Show all versions')) // → false
   await user.click(toggle('Watermark')) // → true
-  await user.click(toggle(INTERNAL)) // §234 F1 → true (the default is false)
 }
 
 function expectEverythingPresent(body: Record<string, unknown>) {
   expect(body.permission).toBe('comment')
   expect(body.show_comments).toBe(true)
-  // §234 F1 — on every one of the four create paths, like every other
-  // setting here: a field added to one and not the others silently does
-  // nothing on three paths out of four.
-  expect(body.show_internal_comments).toBe(true)
+  // §234b — and the field that used to be here is sent on NO path, which
+  // matters for the same reason it had to be sent on all four: a leftover
+  // on one path only is invisible until someone reads that one request.
+  expect(body).not.toHaveProperty('show_internal_comments')
   expect(body.show_versions).toBe(false)
   expect(body.show_watermark).toBe(true)
   expect(body.visibility).toBe('public')
@@ -289,8 +295,7 @@ describe('§223 B.4 — path 4 of 4: a multi-item link', () => {
     // The §188 configuration, and the default: read without joining.
     expect(body.permission).toBe('view')
     expect(body.show_comments).toBe(true)
-    // §234 F1 — and the internal thread stays in, untouched by default.
-    expect(body.show_internal_comments).toBe(false)
+    expect(body).not.toHaveProperty('show_internal_comments')
   })
 })
 
@@ -392,71 +397,35 @@ describe('§223 B.2 — the defaults match what the server would have used', () 
   })
 })
 
-// ─── §234 F1 — the third setting, and its one rule ───────────────────────────
+// ─── §234b — the third setting is gone ───────────────────────────────────────
 
-describe('§234 F1 — "Display internal comments to guests" at creation', () => {
-  it('is off by default, so no link is created showing them', async () => {
-    const user = userEvent.setup()
+describe('§234b — "Display internal comments to guests" is not offered', () => {
+  it('is absent from the dialog, with "Show comments" still there', () => {
     configureAsset()
-    expect(toggle(INTERNAL)).toHaveAttribute('data-state', 'unchecked')
-    await create(user)
-    await waitFor(() => expect(api.patch).toHaveBeenCalled())
-    expect(patchBody().show_internal_comments).toBe(false)
+    expect(toggle('Show comments')).toBeTruthy()
+    expect(screen.queryByRole('switch', { name: INTERNAL })).toBeNull()
   })
 
-  it('is offered only while there is a comment panel to show them in', async () => {
+  it('is absent while comments are hidden too', async () => {
+    /* The old control was conditional on "Show comments". Nothing must
+       bring it back by turning the panel off and on again. */
     const user = userEvent.setup()
     configureAsset()
     await user.click(toggle('Show comments'))
     expect(screen.queryByRole('switch', { name: INTERNAL })).toBeNull()
+    await user.click(toggle('Show comments'))
+    expect(screen.queryByRole('switch', { name: INTERNAL })).toBeNull()
   })
 
-  it('hiding the comment panel switches it off, not just out of sight', async () => {
+  it('sends the field on no create path: the single-asset PATCH', async () => {
     const user = userEvent.setup()
     configureAsset()
-    await user.click(toggle(INTERNAL))
-    expect(toggle(INTERNAL)).toHaveAttribute('data-state', 'checked')
-
-    await user.click(toggle('Show comments'))
-    // Shown again: it must not come back checked, which is what a
-    // hidden-but-still-set control would do.
-    await user.click(toggle('Show comments'))
-    expect(toggle(INTERNAL)).toHaveAttribute('data-state', 'unchecked')
-
     await create(user)
     await waitFor(() => expect(api.patch).toHaveBeenCalled())
-    const body = patchBody()
-    expect(body.show_comments).toBe(true)
-    expect(body.show_internal_comments).toBe(false)
+    expect(patchBody()).not.toHaveProperty('show_internal_comments')
   })
 
-  it('never sends "internal visible, no panel" — in either order of clicks', async () => {
-    for (const order of [
-      [INTERNAL, 'Show comments'],
-      ['Show comments', INTERNAL],
-    ] as const) {
-      vi.clearAllMocks()
-      ;(api.post as ReturnType<typeof vi.fn>).mockResolvedValue({ token: TOKEN, title: 'X' })
-      ;(api.patch as ReturnType<typeof vi.fn>).mockResolvedValue({})
-      const user = userEvent.setup()
-      configureAsset()
-      for (const name of order) {
-        // The second click of the first order has nothing to click: hiding
-        // the panel takes the control away. That IS the rule.
-        const control = screen.queryByRole('switch', { name })
-        if (control) await user.click(control)
-      }
-      await create(user)
-      await waitFor(() => expect(api.patch).toHaveBeenCalled())
-      const body = patchBody()
-      expect(
-        body.show_comments === false && body.show_internal_comments === true,
-      ).toBe(false)
-      cleanup()
-    }
-  })
-
-  it('reaches the multi-item path as well', async () => {
+  it('nor on the multi-item POST', async () => {
     const user = userEvent.setup()
     renderDialog({
       preselectedItems: [
@@ -464,9 +433,46 @@ describe('§234 F1 — "Display internal comments to guests" at creation', () =>
         { type: 'asset', id: 'a-2', name: 'Clip Two' },
       ],
     })
-    await user.click(toggle(INTERNAL))
     await create(user)
     await waitFor(() => expect(api.post).toHaveBeenCalled())
-    expect(postBody('/share/multi').show_internal_comments).toBe(true)
+    expect(postBody('/share/multi')).not.toHaveProperty('show_internal_comments')
+  })
+})
+
+// ─── the two settings that DID stay, unchanged ───────────────────────────────
+
+describe('§234b — "Show comments" and "Allow comments" are untouched', () => {
+  it('"Show comments" is on by default and reaches the server', async () => {
+    const user = userEvent.setup()
+    configureAsset()
+    expect(toggle('Show comments')).toHaveAttribute('data-state', 'checked')
+    await create(user)
+    await waitFor(() => expect(api.patch).toHaveBeenCalled())
+    expect(patchBody().show_comments).toBe(true)
+  })
+
+  it('turning "Show comments" off still withdraws posting, and only that', async () => {
+    const user = userEvent.setup()
+    configureAsset()
+    await user.click(toggle('Allow comments'))
+    await user.click(toggle('Show comments'))
+    expect(toggle('Allow comments')).toHaveAttribute('data-state', 'unchecked')
+    await create(user)
+    await waitFor(() => expect(api.patch).toHaveBeenCalled())
+    const body = patchBody()
+    expect(body.show_comments).toBe(false)
+    expect(body.permission).toBe('view')
+    expect(body).not.toHaveProperty('show_internal_comments')
+  })
+
+  it('"Allow comments" on its own still means permission=comment', async () => {
+    const user = userEvent.setup()
+    configureAsset()
+    await user.click(toggle('Allow comments'))
+    await create(user)
+    await waitFor(() => expect(api.patch).toHaveBeenCalled())
+    const body = patchBody()
+    expect(body.permission).toBe('comment')
+    expect(body.show_comments).toBe(true)
   })
 })

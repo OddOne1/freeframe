@@ -13,15 +13,35 @@
  * What is asserted is the PAIRING — panel visible, input absent — because
  * each half alone is the wrong outcome. A panel with a compose box that
  * 403s on submit is worse than no panel.
+ *
+ * §234b — these two settings are now the ONLY two. "Display internal
+ * comments to guests" (§234 F1) was removed: a comment marked internal is
+ * never shown on a share link, password or not. The assertions below say
+ * that neither the toggle nor its field is left anywhere in the panel, and
+ * that the two that remain are untouched.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 vi.mock('@/lib/api', () => ({
   api: { get: vi.fn(async () => []), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
 }))
+
+vi.mock('@/hooks/use-site-settings', () => ({
+  useSiteSettings: () => ({ themeColors: null, isLoading: false }),
+}))
+
+/** The settings panel reads its link through SWR; §234b's assertions are
+ *  about what it renders and PATCHes for a given link, so the link is
+ *  supplied directly. */
+let settingsLink: Record<string, unknown> = {}
+vi.mock('swr', async () => {
+  const actual = await vi.importActual<typeof import('swr')>('swr')
+  return { ...actual, default: () => ({ data: settingsLink, mutate: vi.fn(), isLoading: false }) }
+})
 
 vi.stubGlobal(
   'fetch',
@@ -39,7 +59,9 @@ vi.mock('@/components/share/share-fields-panel', () => ({
   ShareFieldsPanel: () => <div data-testid="fields-panel" />,
 }))
 
+import { api } from '@/lib/api'
 import { useShareSidebar } from '../use-share-sidebar'
+import { ShareLinkSettingsPanel } from '@/components/projects/share-link-detail'
 
 /**
  * The panel's own rules, exercised through the real hook.
@@ -207,18 +229,24 @@ describe('the Permissions toggles send both fields together', () => {
   })
 
   it('hiding the panel also revokes posting', () => {
-    // §234 F1 added a THIRD field to this same payload (the internal-comment
-    // option goes off with the panel too), so the literal is now spread over
-    // several lines. Same rule, same single call — see
-    // components/projects/__tests__/share-internal-comments-toggle.test.tsx,
-    // which asserts the dispatched PATCH body rather than the source text.
+    // §234 F1 had added a THIRD field to this same payload; §234b removed
+    // the setting, so the payload is the two fields §189 made it again.
     expect(SRC).toMatch(
-      /show_comments: false,\s*permission: "view",\s*show_internal_comments: false/,
+      /\{ show_comments: false, permission: "view" \}/,
     )
   })
 
-  it('and takes the internal-comment option with it, in the same call', () => {
-    expect(SRC).toMatch(/show_internal_comments: false/)
+  it('and sends nothing about internal comments any more (§234b)', () => {
+    /* The option is gone: a comment marked internal is never shown on a
+       share link, so there is no third field to reconcile and no toggle to
+       render. The field must be absent from the whole component — a
+       leftover `show_internal_comments: false` in one payload would be a
+       write to a dead column. */
+    /* SRC, not RAW: the file still MENTIONS the removed control in the
+       comment that records where it was, which is the point of keeping
+       that comment. What must be gone is the code. */
+    expect(SRC).not.toContain('show_internal_comments')
+    expect(SRC).not.toContain('Display internal comments to guests')
   })
 
   it('never sends a bare permission:comment that could strand the panel', () => {
@@ -240,5 +268,97 @@ describe('the Permissions toggles send both fields together', () => {
   it('turning posting OFF leaves the panel alone', () => {
     /* A reader can keep seeing the discussion after posting is revoked. */
     expect(SRC).toMatch(/\{ permission: "view" \}/)
+  })
+})
+
+// ─── §234b: the settings panel of an existing link ──────────────────────────
+
+describe('§234b — the link settings offer two comment toggles, not three', () => {
+  /* The rendered panel, not its source: the removed control was a
+     `ToggleRow`, and a leftover one would still be a switch in the DOM
+     however the file reads. (This replaces
+     components/projects/__tests__/share-internal-comments-toggle.test.tsx,
+     which existed to assert the toggle was there.) */
+  const INTERNAL = 'Display internal comments to guests'
+
+  function baseLink(overrides: Record<string, unknown> = {}) {
+    return {
+      token: 'tok',
+      has_password: false,
+      appearance: { theme: 'dark', accent_color: null },
+      allowed_download_variants: [],
+      fields_visibility: 'disabled',
+      permission: 'view',
+      is_enabled: true,
+      show_versions: true,
+      show_comments: true,
+      ...overrides,
+    }
+  }
+
+  function patchBodies() {
+    return (api.patch as ReturnType<typeof vi.fn>).mock.calls
+      .filter((c) => String(c[0]) === '/share/tok')
+      .map((c) => c[1] as Record<string, unknown>)
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.patch as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    settingsLink = baseLink()
+  })
+
+  it('renders no "Display internal comments to guests" toggle', () => {
+    render(<ShareLinkSettingsPanel token="tok" />)
+    expect(screen.getByRole('switch', { name: 'Show comments' })).toBeTruthy()
+    expect(screen.getByRole('switch', { name: 'Let viewers comment' })).toBeTruthy()
+    expect(screen.queryByRole('switch', { name: INTERNAL })).toBeNull()
+    expect(
+      screen.queryByText('Internal comments are visible to everyone who opens this link'),
+    ).toBeNull()
+  })
+
+  it('renders none even for a stored link whose dead column is TRUE', () => {
+    /* A link created before §234b still carries the column in a cached
+       response. It must not resurrect the control. */
+    settingsLink = baseLink({ show_internal_comments: true })
+    render(<ShareLinkSettingsPanel token="tok" />)
+    expect(screen.queryByRole('switch', { name: INTERNAL })).toBeNull()
+  })
+
+  it('"Show comments" still hides the panel and revokes posting, in one PATCH', async () => {
+    settingsLink = baseLink({ permission: 'comment', show_comments: true })
+    const user = userEvent.setup()
+    render(<ShareLinkSettingsPanel token="tok" />)
+    await user.click(screen.getByRole('switch', { name: 'Show comments' }))
+    await waitFor(() => expect(api.patch).toHaveBeenCalled())
+    expect(patchBodies()).toEqual([{ show_comments: false, permission: 'view' }])
+  })
+
+  it('turning it back on touches nothing else', async () => {
+    settingsLink = baseLink({ permission: 'view', show_comments: false })
+    const user = userEvent.setup()
+    render(<ShareLinkSettingsPanel token="tok" />)
+    await user.click(screen.getByRole('switch', { name: 'Show comments' }))
+    await waitFor(() => expect(api.patch).toHaveBeenCalled())
+    expect(patchBodies()).toEqual([{ show_comments: true }])
+  })
+
+  it('"Let viewers comment" still forces the panel visible', async () => {
+    settingsLink = baseLink({ permission: 'view', show_comments: false })
+    const user = userEvent.setup()
+    render(<ShareLinkSettingsPanel token="tok" />)
+    await user.click(screen.getByRole('switch', { name: 'Let viewers comment' }))
+    await waitFor(() => expect(api.patch).toHaveBeenCalled())
+    expect(patchBodies()).toEqual([{ permission: 'comment', show_comments: true }])
+  })
+
+  it('and withdrawing it leaves the panel alone', async () => {
+    settingsLink = baseLink({ permission: 'comment', show_comments: true })
+    const user = userEvent.setup()
+    render(<ShareLinkSettingsPanel token="tok" />)
+    await user.click(screen.getByRole('switch', { name: 'Let viewers comment' }))
+    await waitFor(() => expect(api.patch).toHaveBeenCalled())
+    expect(patchBodies()).toEqual([{ permission: 'view' }])
   })
 })

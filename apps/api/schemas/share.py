@@ -31,6 +31,19 @@ class ShareLinkAppearance(BaseModel):
 
 
 class ShareLinkCreate(BaseModel):
+    """§234b — `show_internal_comments` is NOT a field here any more.
+
+    The owner removed the option: a share link never returns an internal
+    comment. An older client that still sends the key is not an error —
+    Pydantic's default `model_config` ignores an unknown field rather than
+    refusing the request — so a stale browser tab keeps creating links, and
+    the key it sends has no effect anywhere. Asserted in
+    tests/test_share_internal_comments_removed.py.
+
+    The same goes for `MultiShareCreate` and `ShareLinkUpdate` below; the
+    column itself is still in the database and is read by nothing.
+    """
+
     permission: SharePermission = SharePermission.view
     visibility: str = "public"
     expires_at: Optional[datetime] = None
@@ -43,10 +56,6 @@ class ShareLinkCreate(BaseModel):
     #: §188 — whether a viewer may READ existing comments. Independent of
     #: `permission`, which decides whether they may POST one.
     show_comments: bool = True
-    #: §234 F1 — and whether those comments include the team's internal
-    #: ones. Off by default, and switched off with `show_comments` by
-    #: `_reconcile_comment_settings`.
-    show_internal_comments: bool = False
     show_watermark: bool = False
     appearance: ShareLinkAppearance = ShareLinkAppearance()
 
@@ -65,10 +74,6 @@ class MultiShareCreate(BaseModel):
     #: §188 — whether a viewer may READ existing comments. Independent of
     #: `permission`, which decides whether they may POST one.
     show_comments: bool = True
-    #: §234 F1 — and whether those comments include the team's internal
-    #: ones. Off by default, and switched off with `show_comments` by
-    #: `_reconcile_comment_settings`.
-    show_internal_comments: bool = False
     show_watermark: bool = False
     appearance: ShareLinkAppearance = ShareLinkAppearance()
 
@@ -88,13 +93,6 @@ class ShareLinkResponse(BaseModel):
     fields_visibility: FieldsVisibility = FieldsVisibility.disabled
     show_versions: bool
     show_comments: bool
-    #: §234 F1. On the creator-facing responses only (this model backs
-    #: POST/PATCH /share and GET /share/{token}/details, all of which
-    #: require project editor+). `ShareLinkValidateResponse` below, which is
-    #: what an anonymous viewer reads, deliberately does NOT carry it: the
-    #: server decides what the listing contains, so the page has no decision
-    #: to make and no reason to be told the setting.
-    show_internal_comments: bool = False
     show_watermark: bool
     appearance: dict
     expires_at: Optional[datetime] = None
@@ -149,7 +147,6 @@ class ShareLinkUpdate(BaseModel):
     is_enabled: Optional[bool] = None
     show_versions: Optional[bool] = None
     show_comments: Optional[bool] = None
-    show_internal_comments: Optional[bool] = None
     show_watermark: Optional[bool] = None
     appearance: Optional[ShareLinkAppearance] = None
     password: Optional[str] = None

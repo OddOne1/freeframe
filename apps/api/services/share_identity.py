@@ -1,23 +1,30 @@
-"""What a share-link viewer may ever learn about a person (§234 F2).
+"""What a share-link viewer may ever learn about a person (§234 F2, §234b).
 
 The owner's rule, which overrides anything the share routes did before:
 **nobody's identity may leak through a share link.** A link holder is an
 anonymous stranger as far as this instance is concerned — they hold a URL,
 which says nothing about who they are or who they may know about.
 
-So a comment's author reaches a share viewer as exactly two values:
+So a comment's author reaches a share viewer as exactly three values:
 
 * ``author_label`` — the author's INITIALS on a link with no password
   ("MS"), their FIRST NAME on a password-protected link once the viewer has
   passed the gate ("Mathias"). The password is the only evidence a share
   viewer ever offers that they were meant to be there, so it is what buys
   the extra word.
+* ``author_initials`` — §234b: ALWAYS the initials, on both link types, so
+  the share page's avatar chip reads "MS" with "Mathias" beside it on a
+  password link instead of taking letters off a first name ("MA", which
+  looks like a typo). On an open link it is the same string as
+  ``author_label``, and the page then shows the chip alone.
 * ``author_color`` — a palette colour this module assigns, per link.
 
 Nothing else: no user id, no guest id, no e-mail, no full or last name, no
-avatar, no role, no "this one is yours" flag. The allowlist response model
-(`schemas/comment.ShareCommentResponse`) is the other half of this: the
-route cannot leak a field it has no place to put.
+avatar, no role, no "this one is yours" flag — and, since §234b, not even
+the comment's ``visibility``: a share link NEVER returns an internal
+comment, so the field could only ever have said "public". The allowlist
+response model (`schemas/comment.ShareCommentResponse`) is the other half of
+this: the route cannot leak a field it has no place to put.
 
 Upstream v1.21.0 does not have this — it answers share listings with the
 same `CommentResponse` the authenticated app gets, author object, guest
@@ -63,8 +70,13 @@ UNKNOWN_FIRST_NAME = "Someone"
 ANONYMOUS_MENTION = "@someone"
 
 
-def initials(name: Optional[str]) -> str:
-    """"Mathias Sonnleitner" -> "MS". One word gives one letter."""
+def initials_for_name(name: Optional[str]) -> str:
+    """"Mathias Sonnleitner" -> "MS". One word gives one letter.
+
+    §234b — also what fills ``author_initials``, on BOTH link types. Two
+    letters at most, and only ever the first letter of a word, so a last
+    name cannot arrive here whole.
+    """
     parts = [p for p in (name or "").replace("\t", " ").split(" ") if p.strip()]
     letters = [p.strip()[0].upper() for p in parts[:2]]
     return "".join(letters) or UNKNOWN_INITIALS
@@ -81,7 +93,7 @@ def label_for_name(name: Optional[str], *, password_protected: bool) -> str:
     """The label rule, in one place: initials without a password, first name
     with one. Every author on every share route goes through this —
     signed-in users, guests, reply authors and mentioned members alike."""
-    return first_name(name) if password_protected else initials(name)
+    return first_name(name) if password_protected else initials_for_name(name)
 
 
 def link_is_password_protected(link: ShareLink) -> bool:
@@ -187,6 +199,22 @@ class ShareAuthorStyles:
         if author_id is None:
             return fallback, PALETTE[0]
         return fallback, PALETTE[_base_index(self._link.id, author_kind, author_id)]
+
+    def initials_for(self, author_kind: str, author_id) -> str:
+        """This author's INITIALS, whatever kind of link this is (§234b).
+
+        Deliberately not part of `style`'s collision resolution: the point
+        of the colour walk is that two people whose LABEL is the same still
+        get two chips, and initials that collide are exactly the case it
+        exists for — pulling the letters apart as well would invent a
+        third letter nobody has. So two "MS" authors keep "MS" and are told
+        apart by colour, which is the rule §234 F2 settled on.
+
+        An author this listing never declared gets `UNKNOWN_INITIALS`, the
+        same answer `style` falls back to, rather than a crash.
+        """
+        name = (self._authors.get((author_kind, author_id)) or (None, None))[0]
+        return initials_for_name(name)
 
     def label_for(self, name: Optional[str]) -> str:
         """The label rule for someone who is not a comment author — a

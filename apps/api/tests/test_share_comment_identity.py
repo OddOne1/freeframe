@@ -1,9 +1,16 @@
-"""§234 F2/F4 — what a share-link viewer may ever learn about a person.
+"""§234 F2/F4, §234b — what a share-link viewer may ever learn about a person.
 
 The owner's rule: nobody's identity leaks through a share link. A comment's
-author reaches a share viewer as a LABEL and a COLOUR and nothing else —
-initials on a link with no password, a first name on one that has a password
-the viewer has already answered.
+author reaches a share viewer as a LABEL, their INITIALS and a COLOUR and
+nothing else — the label is the initials on a link with no password, a first
+name on one that has a password the viewer has already answered.
+
+§234b added `author_initials`: always the initials, on both link types, so
+the share page's chip reads "MS" with "Mathias" beside it on a password link
+instead of "MA". On an open link the two are the same string and the page
+shows the chip alone. It also REMOVED `visibility`, because a share link
+never returns an internal comment any more — see
+test_share_internal_comments_removed.py.
 
 What the routes used to answer with is `CommentResponse`, which carries
 `author_id`, `author_name`, `guest_author_id`, `author` (id, name,
@@ -58,9 +65,9 @@ ALLOWED_FIELDS = {
     "body",
     "created_at",
     "updated_at",
-    "visibility",
     "annotation",
     "author_label",
+    "author_initials",
     "author_color",
     "replies",
 }
@@ -68,6 +75,10 @@ ALLOWED_FIELDS = {
 #: Everything `CommentResponse` carries that must never appear here. Spelled
 #: out so the failure names the field rather than a set difference.
 FORBIDDEN_FIELDS = {
+    # §234b — `visibility` was on the allowlist and is not any more. Every
+    # comment a share link returns is public, so the field could only carry
+    # one value; listed here so putting it back names itself.
+    "visibility",
     "asset_id",
     "author_id",
     "author_name",
@@ -220,6 +231,54 @@ def test_the_label_rule_in_isolation():
     assert label_for_name("  ", password_protected=True) == "Someone"
 
 
+def test_the_initials_rule_in_isolation():
+    """§234b — `author_initials`, which does NOT depend on the link."""
+    from apps.api.services.share_identity import initials_for_name
+
+    assert initials_for_name("Mathias Sonnleitner") == "MS"
+    assert initials_for_name("Cher") == "C"
+    assert initials_for_name("Ada B Lovelace") == "AB"
+    assert initials_for_name(None) == "?"
+    assert initials_for_name("  ") == "?"
+    # The point of the field: never a whole word, so no last name and no
+    # first name can arrive through it.
+    for name in ("Mathias Sonnleitner", "Marta Steiner", "Dana Doe"):
+        got = initials_for_name(name)
+        assert len(got) <= 2
+        for word in name.split():
+            assert word.lower() not in got.lower()
+
+
+def test_the_initials_of_an_author_the_listing_never_declared():
+    link, styles = _styles_for()
+    assert styles.initials_for("user", uuid.uuid4()) == "?"
+
+
+def test_two_colliding_authors_keep_the_same_initials():
+    """Initials are NOT pulled apart the way colours are: two people who
+    are both "MS" stay "MS" and are told apart by the chip colour."""
+    from datetime import datetime, timezone
+
+    link, styles = _styles_for()
+    first, second = _colliding_author_ids(link.id)
+    styles.add("user", first, "Mathias Sonnleitner", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    styles.add("user", second, "Marta Steiner", datetime(2026, 1, 2, tzinfo=timezone.utc))
+    assert styles.initials_for("user", first) == "MS"
+    assert styles.initials_for("user", second) == "MS"
+    assert styles.style("user", first)[1] != styles.style("user", second)[1]
+
+
+def test_a_password_link_s_initials_are_still_initials():
+    """The label becomes the first name; the initials do not follow it."""
+    from datetime import datetime, timezone
+
+    link, styles = _styles_for(password_hash="$2b$12$whatever")
+    author = uuid.uuid4()
+    styles.add("user", author, "Mathias Sonnleitner", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert styles.style("user", author)[0] == "Mathias"
+    assert styles.initials_for("user", author) == "MS"
+
+
 # ── everything below needs the real schema ──────────────────────────────────
 
 pytestmark = realdb
@@ -279,6 +338,17 @@ def secrets_of(world) -> list[str]:
     return out
 
 
+def first_names_of(world) -> list[str]:
+    """The fixture's first names — what a PASSWORD link may say and an open
+    link may not (§234b item 2)."""
+    return [
+        world["owner"].first_name,
+        world["member"].first_name,
+        world["outsider"].first_name,
+        world["guest"].name.split()[0],  # "Dana"
+    ]
+
+
 def assert_no_identity(text: str, world, *, allow=()):
     """`text` is the raw response body. Searched as TEXT, deliberately."""
     lowered = text.lower()
@@ -286,6 +356,46 @@ def assert_no_identity(text: str, world, *, allow=()):
         if secret in allow:
             continue
         assert secret.lower() not in lowered, f"{secret!r} reached a share viewer"
+
+
+def assert_no_first_names(text: str, world):
+    """For an OPEN link: not even a first name. The password is what buys
+    the extra word, so a link with no password must not carry one."""
+    lowered = text.lower()
+    for name in first_names_of(world):
+        assert name.lower() not in lowered, f"{name!r} reached an open-link viewer"
+
+
+def assert_label_rule(payload, *, password_protected: bool, world):
+    """§234b item 2, on every comment in a listing, replies included.
+
+    The structural half, which holds whoever the authors turn out to be:
+
+    * `author_initials` is at most two letters and is never a whole word
+      from anybody's name — so neither a first nor a last name can ride in
+      on the chip;
+    * on an OPEN link `author_label` is the same string as
+      `author_initials`: there is nothing more to say without a password.
+
+    The exact pairs for the fixture's own authors are asserted separately
+    (`test_the_pairs_on_an_open_link` / `..._on_a_password_link`), because
+    "the label is a first name" is only checkable against a known person.
+    """
+    comments = flatten(payload)
+    assert comments
+    words = [w for n in first_names_of(world) for w in (n,)]
+    words += [p.last_name for p in (world["owner"], world["member"], world["outsider"])]
+    words += world["guest"].name.split()
+    for c in comments:
+        initials, label = c["author_initials"], c["author_label"]
+        assert initials and label
+        assert len(initials) <= 2, c
+        for word in words:
+            if word and len(word) > 2:
+                assert word.lower() not in initials.lower(), c
+        if not password_protected:
+            assert label == initials, c
+    return comments
 
 
 def flatten(payload):
@@ -301,10 +411,19 @@ def flatten(payload):
 # ── F4's matrix: nothing identifying, in any combination ────────────────────
 
 
+#: Every link the matrix runs over: open and password-protected, each with
+#: the dead `show_internal_comments` column both ways (§234b). The pair of
+#: booleans is what the parametrize ids read off.
+OPEN_LINKS = ["link_asset", "link_internal_column_true"]
+PASSWORD_LINKS = ["link_pw", "link_pw_internal_column_true"]
+ALL_LINKS = OPEN_LINKS + PASSWORD_LINKS
+
+
 @realredis
 class TestNoIdentityReachesAShareViewer:
     """{password, no password} x {guest author, signed-in author, reply,
-    mention, internal on/off}. Each case asserts on the whole response text.
+    mention} x {dead column false, true}. Each case asserts on the whole
+    response text.
     """
 
     def _listing(self, client, world, link_key):
@@ -316,16 +435,52 @@ class TestNoIdentityReachesAShareViewer:
         assert resp.status_code == 200, resp.text
         return resp
 
-    @pytest.mark.parametrize(
-        "link_key", ["link_asset", "link_pw", "link_internal_on"]
-    )
+    @pytest.mark.parametrize("link_key", ALL_LINKS)
     def test_the_listing_as_it_stands(self, client, world, link_key):
         resp = self._listing(client, world, link_key)
         assert_no_identity(resp.text, world)
         # And it did return something, so the assertion above is not vacuous.
         assert resp.json()
+        assert_label_rule(
+            resp.json(),
+            password_protected=bool(world[link_key].password_hash),
+            world=world,
+        )
 
-    @pytest.mark.parametrize("link_key", ["link_asset", "link_pw"])
+    @pytest.mark.parametrize("link_key", OPEN_LINKS)
+    def test_an_open_link_carries_no_first_name_either(
+        self, client, world, link_key
+    ):
+        """§234b item 2's other half: the password is what buys the word."""
+        resp = self._listing(client, world, link_key)
+        assert resp.json()
+        assert_no_first_names(resp.text, world)
+
+    @pytest.mark.parametrize("link_key", OPEN_LINKS)
+    def test_the_pairs_on_an_open_link(self, client, world, link_key):
+        """The fixture's two authors on this thread, exactly: the owner
+        ("Mathias Sonnleitner") and the guest ("Dana Doe")."""
+        resp = self._listing(client, world, link_key)
+        pairs = {
+            (c["author_label"], c["author_initials"])
+            for c in flatten(resp.json())
+        }
+        assert pairs == {("MS", "MS"), ("DD", "DD")}, pairs
+
+    @pytest.mark.parametrize("link_key", PASSWORD_LINKS)
+    def test_the_pairs_on_a_password_link(self, client, world, link_key):
+        """Same two people: the FIRST NAME as the label, the initials as the
+        chip. Two different strings, which is the whole of §234b item 3."""
+        resp = self._listing(client, world, link_key)
+        pairs = {
+            (c["author_label"], c["author_initials"])
+            for c in flatten(resp.json())
+        }
+        assert pairs == {("Mathias", "MS"), ("Dana", "DD")}, pairs
+        # The last names they were derived from are nowhere in the text.
+        assert_no_identity(resp.text, world)
+
+    @pytest.mark.parametrize("link_key", ALL_LINKS)
     def test_a_guest_s_own_comment_comes_back_without_their_e_mail(
         self, client, world, link_key
     ):
@@ -344,8 +499,16 @@ class TestNoIdentityReachesAShareViewer:
         assert fields["guest_email"].lower() not in resp.text.lower()
         assert "Visitor" not in resp.text  # their surname
         assert_no_identity(resp.text, world)
+        # §234b — the echo carries the chip's initials too, and on an open
+        # link not even the name they just typed.
+        body = resp.json()
+        if link.password_hash:
+            assert (body["author_label"], body["author_initials"]) == ("Pat", "PV")
+        else:
+            assert (body["author_label"], body["author_initials"]) == ("PV", "PV")
+            assert "Pat" not in resp.text
 
-    @pytest.mark.parametrize("link_key", ["link_asset", "link_pw"])
+    @pytest.mark.parametrize("link_key", ALL_LINKS)
     def test_a_signed_in_author_is_a_label_too(self, client, world, link_key):
         link = world[link_key]
         query = ""
@@ -361,6 +524,10 @@ class TestNoIdentityReachesAShareViewer:
         body = resp.json()
         expected = "Marta" if link.password_hash else "MS"
         assert body["author_label"] == expected
+        # §234b — the member's initials, whichever kind of link this is.
+        assert body["author_initials"] == "MS"
+        if not link.password_hash:
+            assert_no_first_names(resp.text, world)
 
     def test_a_reply_s_author_is_a_label_too(self, client, world):
         """Replies are built by the same recursion and were the likeliest
@@ -370,8 +537,18 @@ class TestNoIdentityReachesAShareViewer:
         assert replies
         for reply in replies:
             assert reply["author_label"]
+            # §234b — a reply carries the chip's initials like any other
+            # comment; it is built by the same recursion.
+            assert reply["author_initials"] == reply["author_label"]
             assert reply["author_color"].startswith("#")
             assert set(reply) == ALLOWED_FIELDS
+
+    def test_a_reply_on_a_password_link_gets_both_strings(self, client, world):
+        resp = self._listing(client, world, "link_pw")
+        replies = [c for c in flatten(resp.json()) if c["parent_id"]]
+        assert replies
+        for reply in replies:
+            assert (reply["author_label"], reply["author_initials"]) == ("Dana", "DD")
 
     def test_a_mention_in_a_body_is_a_label_not_an_address(self, client, world):
         resp = client.post(
@@ -393,6 +570,7 @@ class TestNoIdentityReachesAShareViewer:
         listed = self._listing(client, world, "link_asset")
         assert_no_identity(listed.text, world)
         assert world["member"].email.lower() not in listed.text.lower()
+        assert_no_first_names(listed.text, world)
 
     def test_a_mention_on_a_password_link_uses_the_first_name(self, client, world):
         token = world["link_pw"].token
@@ -408,18 +586,25 @@ class TestNoIdentityReachesAShareViewer:
         assert "@Marta" in resp.json()["body"]
         assert world["member"].email.lower() not in resp.text.lower()
 
-    def test_internal_comments_carry_no_identity_either(self, client, world):
-        resp = self._listing(client, world, "link_internal_on")
-        text = resp.text
-        assert "the internal note" in text
-        assert_no_identity(text, world)
+    @pytest.mark.parametrize("link_key", ALL_LINKS)
+    def test_the_internal_thread_is_not_in_the_listing_to_leak_from(
+        self, client, world, link_key
+    ):
+        """§234b — the identity question does not arise for an internal
+        comment any more, because it is not there. Asserted here as well as
+        in test_share_internal_comments_removed.py: this file is the one
+        that searches the whole response TEXT.
+        """
+        resp = self._listing(client, world, link_key)
+        assert "the internal" not in resp.text
+        assert_no_identity(resp.text, world)
         for comment in flatten(resp.json()):
             assert set(comment) == ALLOWED_FIELDS
 
     def test_every_comment_in_every_listing_has_exactly_the_allowed_keys(
         self, client, world
     ):
-        for link_key in ("link_asset", "link_pw", "link_internal_on"):
+        for link_key in ALL_LINKS:
             resp = self._listing(client, world, link_key)
             for comment in flatten(resp.json()):
                 assert set(comment) == ALLOWED_FIELDS, (link_key, sorted(comment))
@@ -451,21 +636,45 @@ class TestColours:
             (c["author_label"], c["author_color"]) for c in flatten(resp.json())
         }
 
+    def _add_second_ms(self, client, world, link):
+        """A PUBLIC comment from "Marta Steiner", so one thread holds two
+        authors whose label is "MS".
+
+        §234b — this used to be the fixture's internal REPLY read through
+        the link that showed internal comments. No link shows those any
+        more, so the second "MS" has to be a public comment; posted through
+        the share route by the member herself, which is also the one way a
+        signed-in author reaches these routes at all.
+        """
+        resp = client.post(
+            f"/share/{link.token}/comment",
+            json={"body": "from the other MS"},
+            headers=auth_header(world["member"]),
+        )
+        assert resp.status_code == 201, resp.text
+        return resp
+
     def test_two_authors_with_the_same_initials_get_different_colours(
         self, client, world
     ):
         """"Mathias Sonnleitner" and "Marta Steiner" are both "MS"; one chip
         colour for two people is the bug this rule exists for."""
-        # Both authors in one thread: the fixture's internal reply is
-        # Marta's, so the link that shows internal comments has both.
-        pairs = self._labels(client, world, world["link_internal_on"])
+        link = world["link_asset"]
+        self._add_second_ms(client, world, link)
+        pairs = self._labels(client, world, link)
         ms = {colour for label, colour in pairs if label == "MS"}
         assert len(ms) == 2, pairs
+        # And both of them are still "MS": the initials are not walked
+        # apart, only the colours.
+        assert len([1 for label, _ in pairs if label == "MS"]) == 2
 
     def test_the_colours_are_the_same_on_a_second_request(self, client, world):
-        first = self._labels(client, world, world["link_internal_on"])
-        second = self._labels(client, world, world["link_internal_on"])
+        link = world["link_asset"]
+        self._add_second_ms(client, world, link)
+        first = self._labels(client, world, link)
+        second = self._labels(client, world, link)
         assert first == second
+        assert len({colour for label, colour in first if label == "MS"}) == 2
 
     def test_one_author_gets_a_different_colour_on_a_different_link(
         self, client, world
@@ -505,7 +714,7 @@ class TestColours:
     def test_the_colour_is_a_palette_hex_and_nothing_else(self, client, world):
         from apps.api.services.share_identity import PALETTE
 
-        pairs = self._labels(client, world, world["link_internal_on"])
+        pairs = self._labels(client, world, world["link_asset"])
         for _label, colour in pairs:
             assert colour in PALETTE
 

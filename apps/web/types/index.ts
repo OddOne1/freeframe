@@ -397,6 +397,13 @@ export interface Comment {
    * label when it is there (`authorChip` in comment-panel.tsx).
    */
   author_label?: string;
+  /**
+   * §234b — the author's INITIALS, on both kinds of link: what goes inside
+   * the colour chip. Equal to `author_label` on a link with no password; on
+   * a password link the label is the first name and this is still "MS", so
+   * the chip never shows the first two letters of a first name.
+   */
+  author_initials?: string;
   author_color?: string;
 }
 
@@ -522,11 +529,10 @@ export interface ShareLink {
    *  the backend schema field exactly; a mismatch is silent (the field
    *  reads undefined) and falls back to showing comments. */
   show_comments: boolean;
-  /** §234 F1 — whether those comments include the team's internal ones.
-   *  Subordinate to `show_comments`: the server switches it off with the
-   *  panel (`_reconcile_comment_settings`), and so does this UI. Off for
-   *  every link that existed before the column. */
-  show_internal_comments?: boolean;
+  /* §234b — `show_internal_comments` was here. The option is gone: a share
+     link never returns a comment marked internal, so there is nothing to
+     send and nothing to read. The column still exists in the database and
+     is read by nothing. */
   show_watermark: boolean;
   appearance: ShareLinkAppearance | null;
   created_at: string;

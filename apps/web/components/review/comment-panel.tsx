@@ -101,13 +101,17 @@ function getAvatarColor(name: string): string {
 }
 
 /**
- * §234 F3 — what goes inside the chip for a SHARE label.
+ * §234 F3/§234b — what goes inside the chip for a SHARE author.
  *
- * The label is already the initials on a link with no password ("MS") and a
- * first name on one with a password ("Mathias"); `getInitials` below cannot
- * tell those apart, and "Mathias" through it comes out "MM".
+ * The server sends `author_initials` on both kinds of link, so the chip no
+ * longer has to guess from the label: the label is the initials on a link
+ * with no password ("MS") and a first name on one with a password
+ * ("Mathias"), and `getInitials` below cannot tell those apart ("Mathias"
+ * through it comes out "MM"). The label is only the fallback, for a
+ * response that carried no initials at all.
  */
-function shareChipText(label: string): string {
+function shareChipText(label: string, initials?: string): string {
+  if (initials) return initials
   return label.length <= 2 ? label.toUpperCase() : label.charAt(0).toUpperCase()
 }
 
@@ -470,6 +474,9 @@ function CommentItem({
    * `guest_author`, so that branch is exactly as it was.
    */
   const shareLabel = comment.author_label;
+  const shareChip = shareLabel
+    ? shareChipText(shareLabel, comment.author_initials)
+    : undefined;
   const authorName =
     shareLabel ?? comment.author?.name ?? comment.guest_author?.name ?? "Unknown";
   const isOwn = !!(currentUserId && comment.author_id === currentUserId);
@@ -554,15 +561,22 @@ function CommentItem({
             comment.author_color ? { backgroundColor: comment.author_color } : undefined
           }
         >
-          {shareLabel ? shareChipText(shareLabel) : getInitials(authorName)}
+          {shareChip ?? getInitials(authorName)}
         </div>
 
         <div className="flex-1 min-w-0">
           {/* Header row */}
           <div className="flex items-center gap-2">
-            <span className="text-[13px] font-semibold text-text-primary leading-none">
-              {authorName}
-            </span>
+            {/* §234b — on a share link the name beside the chip is dropped
+                when it would repeat the chip: that is an open link, where
+                the label IS the initials. A password link shows the first
+                name here, and the authenticated app shows the real name as
+                it always did. */}
+            {shareChip !== authorName && (
+              <span className="text-[13px] font-semibold text-text-primary leading-none">
+                {authorName}
+              </span>
+            )}
             <span className="text-[11px] text-text-tertiary leading-none">
               {formatRelativeTime(comment.created_at)}
             </span>

@@ -440,11 +440,15 @@ interface GuestComment {
    * addresses to whoever held the link and are no longer sent.
    */
   author_label?: string
+  /** §234b — the author's initials, on both kinds of link: what goes inside
+   *  the colour chip. The label is shown next to it only when it differs,
+   *  i.e. on a password-protected link, where it is the first name. */
+  author_initials?: string
   author_color?: string
   created_at: string
   timecode_start?: number | null
-  /** Only present on a link that shows internal comments (§234 F1). */
-  visibility?: string | null
+  /* §234b — `visibility` was here. A share link never returns an internal
+     comment now, so there is no field and nothing to mark. */
   replies?: GuestComment[]
 }
 
@@ -520,9 +524,14 @@ function authorColor(comment: GuestComment): string {
   return comment.author_color || SHARE_CHIP_FALLBACK
 }
 
-/** Initials label -> the whole label; first-name label -> one letter. Same
- *  rule as guest-comment-list.tsx's `chipText`, and for the same reason. */
-function chipText(label: string): string {
+/** §234b — the INITIALS the server sent, which are the same on both kinds
+ *  of link. The fallback chain is for a response that carried neither field
+ *  (an older API, or a parse that failed): a chip, never a crash. Same rule
+ *  as guest-comment-list.tsx's `commentAuthorInitials`. */
+function authorInitials(comment: GuestComment): string {
+  const initials = comment.author_initials
+  if (initials) return initials
+  const label = authorLabel(comment)
   return label.length <= 2 ? label.toUpperCase() : label.charAt(0).toUpperCase()
 }
 
@@ -556,6 +565,7 @@ function ShareCommentList({ comments, loading, canComment, onReply }: ShareComme
     <div className="px-4 py-3 space-y-1">
       {comments.map((comment, i) => {
         const name = authorLabel(comment)
+        const initials = authorInitials(comment)
         const color = authorColor(comment)
         return (
           <div key={comment.id} className="py-3 border-b border-border last:border-0">
@@ -565,15 +575,16 @@ function ShareCommentList({ comments, loading, canComment, onReply }: ShareComme
                 className="h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0"
                 style={{ backgroundColor: color }}
               >
-                {chipText(name)}
+                {initials}
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-text-primary">{name}</span>
-                  {comment.visibility === 'internal' && (
-                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-2xs font-medium text-amber-400">
-                      Internal
-                    </span>
+                  {/* §234b — the label beside the chip only when it says
+                      something the chip does not: the first name, on a
+                      password-protected link. On an open link the two are
+                      the same string. */}
+                  {initials !== name && (
+                    <span className="text-sm font-medium text-text-primary">{name}</span>
                   )}
                   <span className="text-2xs text-text-tertiary">{formatShortDate(comment.created_at)}</span>
                   <span className="ml-auto text-2xs text-text-tertiary">#{i + 1}</span>
@@ -597,6 +608,7 @@ function ShareCommentList({ comments, loading, canComment, onReply }: ShareComme
               <div className="ml-11 mt-2 space-y-2 border-l-2 border-border pl-3">
                 {comment.replies.map((r) => {
                   const rName = authorLabel(r)
+                  const rInitials = authorInitials(r)
                   const rColor = authorColor(r)
                   return (
                     <div key={r.id} className="flex items-start gap-2.5 py-1">
@@ -604,11 +616,13 @@ function ShareCommentList({ comments, loading, canComment, onReply }: ShareComme
                         className="h-6 w-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0"
                         style={{ backgroundColor: rColor }}
                       >
-                        {chipText(rName)}
+                        {rInitials}
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="text-xs font-medium text-text-primary">{rName}</span>
+                          {rInitials !== rName && (
+                            <span className="text-xs font-medium text-text-primary">{rName}</span>
+                          )}
                           <span className="text-2xs text-text-tertiary">{formatShortDate(r.created_at)}</span>
                         </div>
                         <p className="text-xs text-text-secondary mt-0.5">{r.body}</p>

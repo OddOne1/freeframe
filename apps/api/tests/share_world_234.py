@@ -1,17 +1,20 @@
 """The world §234's share-comment tests run in, against a real schema.
 
 NOT a test module (no `test_` prefix, so pytest collects nothing here). It
-exists because the two §234 files — `test_share_comment_scope.py` and
-`test_share_comment_identity.py` — need the same unusually broad fixture:
-every shape of share link crossed with content in and out of each one's
-scope. Building that twice would be 400 duplicated lines whose two copies
-would drift the first time one of them needed a new row.
+exists because the §234/§234b files — `test_share_comment_scope.py`,
+`test_share_comment_identity.py` and
+`test_share_internal_comments_removed.py` — need the same unusually broad
+fixture: every shape of share link crossed with content in and out of each
+one's scope. Building that three times would be 400 duplicated lines whose
+copies would drift the first time one of them needed a new row.
 
 Real Postgres, schema built by `alembic upgrade head`, like
 tests/test_comment_replies.py — not `create_all`, because a schema derived
-from the models cannot disagree with them, and the new
-`share_links.show_internal_comments` column is exactly the kind of thing
-that has to be shown arriving through the migration.
+from the models cannot disagree with them, and
+`share_links.show_internal_comments` is exactly the kind of thing that has
+to be shown arriving through the migration. §234b made that column dead
+rather than dropping it, so two of the links below are created with it set
+TRUE: that is now a link like any other, and the tests say so.
 
     docker run -d --name ff234-pg -e POSTGRES_USER=freeframe \\
       -e POSTGRES_PASSWORD=freeframe -e POSTGRES_DB=freeframe \\
@@ -220,7 +223,18 @@ def build_world(session):
     link_disabled = _link(asset_id=asset_single.id, is_enabled=False)
     link_trashed_project = _link(project_id=trashed_project.id)
     link_trashed_asset = _link(asset_id=asset_trashed.id)
-    link_internal_on = _link(asset_id=asset_single.id, show_internal_comments=True)
+    # §234b — two links whose DEAD `show_internal_comments` column is TRUE,
+    # one open and one password-protected. Written through the model here;
+    # test_share_internal_comments_removed.py also forces the column with
+    # raw SQL, so neither path can be the reason it has no effect.
+    link_internal_column_true = _link(
+        asset_id=asset_single.id, show_internal_comments=True
+    )
+    link_pw_internal_column_true = _link(
+        asset_id=asset_single.id,
+        password_hash=_password_hash(),
+        show_internal_comments=True,
+    )
     session.commit()
     session.add(ShareLinkItem(share_link_id=link_items.id, asset_id=asset_in_a1.id))
     session.commit()
@@ -302,7 +316,8 @@ def build_world(session):
         "link_disabled": link_disabled,
         "link_trashed_project": link_trashed_project,
         "link_trashed_asset": link_trashed_asset,
-        "link_internal_on": link_internal_on,
+        "link_internal_column_true": link_internal_column_true,
+        "link_pw_internal_column_true": link_pw_internal_column_true,
         "public_comment": public_comment,
         "internal_comment": internal_comment,
         "reply": reply,

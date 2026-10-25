@@ -113,14 +113,11 @@ def _reconcile_comment_settings(link: ShareLink) -> None:
         # Nothing visible to comment on, so nothing to permit.
         link.permission = SharePermission.view
 
-    # §234 F1 — the same rule for the third setting, which is subordinate to
-    # the panel rather than independent of it: "show the internal ones too"
-    # with no comment panel at all is the same dead end §189 collapsed, and
-    # turning the panel off has to take it with it in ONE update, or a link
-    # whose comments were hidden and then shown again would silently bring
-    # the internal thread back with it.
-    if not link.show_comments:
-        link.show_internal_comments = False
+    # §234b — §234 F1's third setting used to be reconciled here too. It is
+    # gone: there is no "show the internal ones" option any more, so there
+    # is no pair to keep consistent. The column it wrote is still in the
+    # database and is read by nothing, here least of all — writing a dead
+    # column would be the one way this rule could come back by accident.
 
 
 def _require_fields_visibility(link: ShareLink, minimum: FieldsVisibility) -> None:
@@ -342,7 +339,6 @@ def create_share_link(
         fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
         show_comments=body.show_comments,
-        show_internal_comments=body.show_internal_comments,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
     )
@@ -678,7 +674,6 @@ def create_folder_share_link(
         fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
         show_comments=body.show_comments,
-        show_internal_comments=body.show_internal_comments,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
     )
@@ -728,7 +723,6 @@ def create_project_share_link(
         fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
         show_comments=body.show_comments,
-        show_internal_comments=body.show_internal_comments,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
     )
@@ -1358,7 +1352,6 @@ def create_multi_share_link(
         fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
         show_comments=body.show_comments,
-        show_internal_comments=body.show_internal_comments,
         show_watermark=body.show_watermark,
         password_hash=password_hash,
         password_encrypted=password_encrypted,
@@ -1675,18 +1668,15 @@ def get_folder_share_assets(
             file_size = media_file.file_size_bytes
             duration_seconds = media_file.duration_seconds
 
-        # §234 F1 — the count has to mean the same list the viewer can
-        # actually open. It counted internal comments too, so a card
+        # §234 F1/§234b — the count has to mean the same list the viewer can
+        # actually open, which since §234b is the PUBLIC comments and only
+        # those, on every link. It counted internal comments too, so a card
         # advertised a discussion the panel then refused to show, and the
         # number itself told a link holder that an internal thread exists.
-        comment_count_filter = [
+        comment_count = db.query(sa_func.count(Comment.id)).filter(
             Comment.asset_id == asset.id,
             Comment.deleted_at.is_(None),
-        ]
-        if not link.show_internal_comments:
-            comment_count_filter.append(Comment.visibility == "public")
-        comment_count = db.query(sa_func.count(Comment.id)).filter(
-            *comment_count_filter
+            Comment.visibility == "public",
         ).scalar() or 0
 
         # §234 F2 — the uploader, as a label only: initials, or a first name

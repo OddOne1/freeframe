@@ -32,7 +32,6 @@ def _link(asset_id=None, *, password=None):
     link.id = uuid.uuid4()
     link.asset_id = asset_id
     link.password_hash = password
-    link.show_internal_comments = False
     return link
 
 

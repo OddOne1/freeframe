@@ -577,15 +577,22 @@ def comment_deep_link(
 
 
 def _share_visibility_filter(link: ShareLink):
-    """Which comments this link is allowed to show.
+    """Which comments this link is allowed to show: the PUBLIC ones. Always.
 
-    §234 F1 — public only, unless the link's own `show_internal_comments` is
-    on, in which case internal ones come too (read-only: posting one still
-    needs real access to the asset). The authenticated listing filters
-    `visibility` on request; this one is not a request, it is the rule.
+    §234b, the owner's decision, which replaces §234 F1's option: a share
+    link NEVER returns a comment marked internal. "Internal" means the
+    team's own notes, invisible to anyone holding a link, password or not —
+    so there is nothing here to configure, and nothing read off the link.
+
+    `link` is still the argument because the caller has one and the filter
+    belongs to it conceptually; `share_links.show_internal_comments` is
+    deliberately NOT consulted. That column is dead (§234b C) and stays in
+    the database only until a later migration drops it; a link whose column
+    is TRUE from before this change gets exactly this filter.
+
+    The authenticated listing filters `visibility` on request; this one is
+    not a request, it is the rule.
     """
-    if getattr(link, "show_internal_comments", False):
-        return Comment.visibility.in_(("public", "internal"))
     return Comment.visibility == "public"
 
 
@@ -595,7 +602,8 @@ def _share_comment_tree(db: Session, link: ShareLink, asset_id: uuid.UUID, depth
     The visibility filter is applied at EVERY level, replies included: an
     internal note nested under a public comment is still an internal note, and
     §234 F2's whole point is that it does not leave the team by being deep in
-    a thread.
+    a thread. Replies go through `_share_visibility_filter` — the same one
+    object, not a second copy of the rule that could drift from it.
     """
     vis = _share_visibility_filter(link)
     top_level = db.query(Comment).filter(
@@ -721,9 +729,11 @@ def _build_share_comment_response(
     Built field by field into an allowlist model rather than by stripping
     `CommentResponse`: `resolved`, `asset_id`, the reaction list, the
     attachment list and every author field simply have nowhere to go here.
-    `author_label`/`author_color` are the only statements about a person, and
-    the link creator previewing their own link gets exactly the same shape —
-    these routes never switch to the authenticated one.
+    `author_label`/`author_initials`/`author_color` are the only statements
+    about a person, and the link creator previewing their own link gets
+    exactly the same shape — these routes never switch to the authenticated
+    one. `visibility` has nowhere to go here either, since §234b: every
+    comment in a share listing is public by construction.
     """
     kind, author_id = (
         ("user", comment.author_id) if comment.author_id else ("guest", comment.guest_author_id)
@@ -740,10 +750,12 @@ def _build_share_comment_response(
         body=_rewrite_share_body(comment.body, mention_labels.get(comment.id, {})),
         created_at=comment.created_at,
         updated_at=comment.updated_at,
-        # Only meaningful when internal comments are on the list at all.
-        visibility=comment.visibility if getattr(link, "show_internal_comments", False) else None,
         annotation=AnnotationResponse.model_validate(annotation) if annotation else None,
         author_label=label,
+        # §234b — the chip's letters, the same on both link types. Derived
+        # from the name `styles` already read, never from the label: taking
+        # letters off a first name gives "MA" for "Mathias".
+        author_initials=styles.initials_for(kind, author_id),
         author_color=color,
         replies=[
             _build_share_comment_response(
@@ -780,8 +792,10 @@ def list_share_comments(
       asset inside the link rather than any uuid on the instance. The link's
       own `asset_id` still wins where it has one;
     * VISIBILITY: internal comments are the team's, and this answered all of
-      them to anonymous callers. They now come back only on a link whose
-      `show_internal_comments` is on (§234 F1), and read-only.
+      them to anonymous callers. Since §234b they NEVER come back here —
+      not on any link, with or without a password, whatever
+      `share_links.show_internal_comments` says. See
+      `_share_visibility_filter`.
     """
     link = validate_share_link_with_session(
         db, token, share_session=share_session, current_user=current_user
@@ -859,10 +873,10 @@ def guest_comment(
     asset = validate_asset_in_share(db, link, target_asset_id)
 
     # A reply has to answer something a holder of this link can actually see:
-    # a live, public comment on the asset the link resolved to. Deliberately
-    # public even on a link that SHOWS internal comments — those are
-    # read-only for a guest (§234 F1). The message is generic: a share caller
-    # learns only that this parent is not available to them.
+    # a live, public comment on the asset the link resolved to. Since §234b
+    # that is the only kind of comment a link lists at all, so this check
+    # and the listing agree by construction. The message is generic: a share
+    # caller learns only that this parent is not available to them.
     parent = None
     if body.parent_id:
         parent = db.query(Comment).filter(

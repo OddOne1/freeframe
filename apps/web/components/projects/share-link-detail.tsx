@@ -998,40 +998,16 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
                   immediateUpdate(
                     checked
                       ? { show_comments: true }
-                      : {
-                          show_comments: false,
-                          permission: "view",
-                          // §234 F1 — in the SAME update. A link whose
-                          // comments are hidden and later shown again must
-                          // not bring the internal thread back with it,
-                          // which is what leaving this set would do. The
-                          // server applies the same rule
-                          // (_reconcile_comment_settings) and is the actual
-                          // guarantee; this is so the panel is right
-                          // immediately.
-                          show_internal_comments: false,
-                        },
+                      : { show_comments: false, permission: "view" },
                   )
                 }
               />
-              {/* §234 F1 — directly below "Show comments" (the owner's
-                  placement), and only while there is a comment panel to
-                  show them in: "include the internal ones" with no panel is
-                  the same dead end §189 collapsed for `permission`.
-
-                  Guests READ them here; they can never post one — that
-                  needs real access to the asset, which a link does not
-                  grant (POST /share/{token}/comment answers 403). */}
-              {(shareLink.show_comments ?? true) && (
-                <ToggleRow
-                  label="Display internal comments to guests"
-                  description="Internal comments are visible to everyone who opens this link"
-                  checked={shareLink.show_internal_comments ?? false}
-                  onCheckedChange={(checked) =>
-                    immediateUpdate({ show_internal_comments: checked })
-                  }
-                />
-              )}
+              {/* §234b — "Display internal comments to guests" was here.
+                  The owner removed the option: a comment marked internal is
+                  the team's own note and is never shown on a share link,
+                  password or not. "Show comments" above decides whether a
+                  link's viewers see the public comments; "Let viewers
+                  comment" decides whether they may post. Nothing else. */}
               <div className="py-2">
                 <div className="mb-1 text-xs font-medium text-text-primary">
                   Fields

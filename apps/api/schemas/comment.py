@@ -148,9 +148,14 @@ class ShareCommentResponse(BaseModel):
     (id, name, e-mail) — all of which a share viewer may never see.
 
     Every field here is deliberate; tests/test_share_comment_identity.py
-    fails if this model grows one that is not on the list. `author_label`
-    and `author_color` are built by services/share_identity.py and are the
-    ONLY things said about a person.
+    fails if this model grows one that is not on the list. `author_label`,
+    `author_initials` and `author_color` are built by
+    services/share_identity.py and are the ONLY things said about a person.
+
+    §234b removed `visibility` from this list. A share link never returns a
+    comment whose visibility is "internal" — there is no option any more —
+    so the field could only ever carry the one value "public", which says
+    nothing and invites a page to branch on it.
     """
 
     id: uuid.UUID
@@ -161,15 +166,17 @@ class ShareCommentResponse(BaseModel):
     body: str
     created_at: datetime
     updated_at: datetime
-    #: Only populated when the link shows internal comments (§234 F1), so
-    #: the page can mark one. `None` on a link that shows public comments
-    #: only, where every comment in the list is public by construction.
-    visibility: Optional[str] = None
     #: The drawing itself, which the share page needs to render an
     #: annotation over the frame. `AnnotationResponse` is (id, comment_id,
     #: drawing_data, frame_number, carousel_position) — no identity.
     annotation: Optional[AnnotationResponse] = None
     author_label: str
+    #: §234b — always the initials, on both link types; equal to
+    #: `author_label` on a link with no password. The share page paints the
+    #: avatar chip with this and puts `author_label` next to it only when
+    #: the two differ, so a password link reads "MS Mathias" and an open one
+    #: just "MS".
+    author_initials: str
     author_color: str
     replies: list["ShareCommentResponse"] = []
 

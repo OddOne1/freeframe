@@ -14,8 +14,9 @@ asserted away:
     could write a comment onto any asset;
   * `parent_id` and `version_id` went straight into the row.
 
-And §234 F1's option: internal comments reach a link only when the link's
-own `show_internal_comments` is on, and a guest can never write one.
+And what became of §234 F1's option: §234b removed it. Internal comments
+NEVER reach a share link — see `TestInternalComments` below and
+test_share_internal_comments_removed.py — and a guest can never write one.
 
 Refusals are asserted two ways on purpose — the status code, and that NO
 row and NO notification appeared. A 400 over a committed row would look
@@ -286,8 +287,8 @@ class TestThePasswordGate:
         first = resp.json()[0]
         assert set(first) == {
             "id", "parent_id", "version_id", "timecode_start", "timecode_end",
-            "body", "created_at", "updated_at", "visibility", "annotation",
-            "author_label", "author_color", "replies",
+            "body", "created_at", "updated_at", "annotation",
+            "author_label", "author_initials", "author_color", "replies",
         }
 
 
@@ -482,12 +483,19 @@ class TestTheParentAndTheVersion:
         assert resp.status_code == 201, resp.text
 
 
-# ── F1 — internal comments are an option, and read-only ─────────────────────
+# ── §234b — internal comments are never shown, and never writable here ──────
 
 
 class TestInternalComments:
-    def test_they_are_absent_when_the_option_is_off(self, client, world):
-        resp = client.get(f"/share/{world['link_asset'].token}/comments")
+    """The option is gone (§234b). Only the absence is left to assert — on
+    every kind of link, and whatever the dead column says."""
+
+    @pytest.mark.parametrize(
+        "link_key",
+        ["link_asset", "link_internal_column_true"],
+    )
+    def test_they_are_absent_from_an_open_link(self, client, world, link_key):
+        resp = client.get(f"/share/{world[link_key].token}/comments")
         assert resp.status_code == 200
         payload = resp.json()
         assert bodies(payload) == ["the public note"]
@@ -495,40 +503,27 @@ class TestInternalComments:
         assert bodies(payload[0]["replies"]) == ["the reply"]
         assert "the internal" not in resp.text
 
-    def test_they_are_present_when_it_is_on(self, client, world):
-        resp = client.get(f"/share/{world['link_internal_on'].token}/comments")
-        assert resp.status_code == 200, resp.text
-        payload = resp.json()
-        assert sorted(bodies(payload)) == ["the internal note", "the public note"]
-        public = [c for c in payload if c["body"] == "the public note"][0]
-        assert sorted(bodies(public["replies"])) == ["the internal reply", "the reply"]
-        # And marked, so the page can show it as internal.
-        internal = [c for c in payload if c["body"] == "the internal note"][0]
-        assert internal["visibility"] == "internal"
-
-    def test_the_visibility_field_is_not_even_populated_when_it_is_off(
-        self, client, world
-    ):
+    def test_there_is_no_visibility_field_to_read_at_all(self, client, world):
+        """§234b removed it from `ShareCommentResponse`: every comment here
+        is public, so the field could only ever say "public"."""
         resp = client.get(f"/share/{world['link_asset'].token}/comments")
-        assert all(c["visibility"] is None for c in resp.json())
+        for comment in resp.json():
+            assert "visibility" not in comment
 
-    def test_a_guest_cannot_post_an_internal_comment(self, client, world):
+    @pytest.mark.parametrize(
+        "link_key",
+        ["link_asset", "link_internal_column_true"],
+    )
+    def test_a_guest_cannot_post_an_internal_comment(self, client, world, link_key):
         session = world["session"]
         before = comment_count(session)
         resp = client.post(
-            f"/share/{world['link_internal_on'].token}/comment",
+            f"/share/{world[link_key].token}/comment",
             json={"body": "sneaking in", "visibility": "internal", **guest_fields()},
         )
         assert resp.status_code == 403
         session.expire_all()
         assert comment_count(session) == before
-
-    def test_nor_on_a_link_where_the_option_is_off(self, client, world):
-        resp = client.post(
-            f"/share/{world['link_asset'].token}/comment",
-            json={"body": "sneaking in", "visibility": "internal", **guest_fields()},
-        )
-        assert resp.status_code == 403
 
     def test_a_signed_in_project_editor_can(self, client, world):
         from apps.api.models.comment import Comment

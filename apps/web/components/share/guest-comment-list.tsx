@@ -25,11 +25,19 @@ export interface GuestComment {
    * from a name or an id (it no longer receives one).
    */
   author_label?: string
+  /**
+   * §234b — the author's INITIALS, whichever kind of link this is: what
+   * goes inside the colour chip. On a link with no password it is the same
+   * string as `author_label` and the chip stands alone; on a password link
+   * the label is the first name and is shown next to the chip.
+   */
+  author_initials?: string
   author_color?: string
   created_at: string
   timecode_start?: number | null
-  /** Only present on a link that shows internal comments (§234 F1). */
-  visibility?: string | null
+  /* §234b — `visibility` was here, to mark an internal comment. A share
+     link never returns one now, so the server does not send the field and
+     there is nothing to mark. */
 }
 
 /**
@@ -57,16 +65,19 @@ export function commentAuthorColor(comment: GuestComment): string {
 }
 
 /**
- * What goes INSIDE the chip, given the label beside it.
+ * What goes INSIDE the chip (§234b): the initials the SERVER sent.
  *
- * A label is one of two things and the chip has to read correctly for both:
- * on a link with no password it is already the initials ("MS"), so the chip
- * shows it whole; on a password-protected link it is a first name
- * ("Mathias"), so the chip shows the one letter an avatar normally would.
- * Taking the "first two letters" of a first name gives "MA", which looks
- * like a typo.
+ * The page used to derive this from the label, because the label was all it
+ * had: initials on an open link, a first name on a password one, so the chip
+ * took the first letter of a long label ("M" for "Mathias") — "MS" and "M"
+ * for the same person on two links. The server now sends `author_initials`
+ * on both, and this is only the fallback chain for a response that carried
+ * neither: a chip, never a crash.
  */
-export function chipText(label: string): string {
+export function commentAuthorInitials(comment: GuestComment): string {
+  const initials = comment.author_initials
+  if (initials) return initials
+  const label = commentAuthorName(comment)
   return label.length <= 2 ? label.toUpperCase() : label.charAt(0).toUpperCase()
 }
 
@@ -121,29 +132,27 @@ export function GuestCommentList({ token, refreshKey, shareSession }: GuestComme
     <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2.5">
       {comments.map((comment) => {
         const name = commentAuthorName(comment)
+        const initials = commentAuthorInitials(comment)
         return (
           <div
             key={comment.id}
             className="rounded-lg bg-white/[0.03] border border-white/5 px-3 py-2.5"
           >
             <div className="flex items-center gap-2 mb-1.5">
-              {/* §234 F3 — the label and the colour the server assigned, as
-                  an avatar-style chip. See `chipText`. */}
+              {/* §234 F3/§234b — the INITIALS the server sent, in the colour
+                  it chose. */}
               <div
                 className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-2xs font-semibold text-white"
                 style={{ backgroundColor: commentAuthorColor(comment) }}
               >
-                {chipText(name)}
+                {initials}
               </div>
-              {/* Not repeated when the chip already IS the label — "MS MS"
-                  is what showing both gives on a link with no password. */}
-              {chipText(name) !== name && (
+              {/* The label beside the chip only when it says something the
+                  chip does not: the first name, on a password-protected
+                  link. On an open link the two are the same string, and
+                  showing both gives "MS MS". */}
+              {initials !== name && (
                 <span className="text-xs font-medium text-zinc-200">{name}</span>
-              )}
-              {comment.visibility === 'internal' && (
-                <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-2xs font-medium text-amber-400">
-                  Internal
-                </span>
               )}
               {comment.timecode_start != null && (
                 <span className="text-2xs text-zinc-500 font-mono bg-white/5 px-1.5 py-0.5 rounded">

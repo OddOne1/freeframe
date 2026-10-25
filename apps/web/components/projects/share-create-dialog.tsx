@@ -25,7 +25,6 @@ import {
   Layers,
   LayoutGrid,
   FileText,
-  Lock,
 } from 'lucide-react'
 import * as Switch from '@radix-ui/react-switch'
 import { cn, endOfDayISO, resolveApiMediaUrl } from '@/lib/utils'
@@ -262,10 +261,6 @@ interface ShareConfig {
    *  which is a separate decision from `allowComments` (posting). Same
    *  semantics as the detail panel's "Show comments". */
   showComments: boolean
-  /** §234 F1 — and whether those comments include the internal ones. Only
-   *  meaningful while `showComments` is true; the dialog keeps the pair
-   *  consistent, and the server collapses it again either way. */
-  showInternalComments: boolean
   showVersions: boolean
   downloadVariants: DownloadVariant[]
   fieldsVisibility: FieldsVisibility
@@ -292,9 +287,6 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
   // `show_comments` and `show_versions` to True), so adding the controls
   // changes no default, only what can be chosen.
   const [showComments, setShowComments] = React.useState(true)
-  // §234 F1 — off by default, exactly like the server's column default, so
-  // adding the control changes no default; only what can be chosen.
-  const [showInternalComments, setShowInternalComments] = React.useState(false)
   const [showVersions, setShowVersions] = React.useState(true)
   const [downloadVariants, setDownloadVariants] = React.useState<DownloadVariant[]>([])
   const [fieldsVisibility, setFieldsVisibility] = React.useState<FieldsVisibility>('disabled')
@@ -325,11 +317,6 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
     setShowComments(next)
     // Nothing visible to comment on, so nothing to permit.
     if (!next) setAllowComments(false)
-    // §234 F1 — and nothing to show the internal ones in. Same rule the
-    // settings panel applies on edit and `_reconcile_comment_settings`
-    // applies server-side: this setting is subordinate to the panel, not
-    // independent of it.
-    if (!next) setShowInternalComments(false)
   }
 
   function handleCreate() {
@@ -337,7 +324,6 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
       title: title.trim() || defaultTitle,
       allowComments,
       showComments,
-      showInternalComments,
       showVersions,
       downloadVariants,
       fieldsVisibility,
@@ -435,33 +421,10 @@ function ConfigurePhase({ defaultTitle, onBack, onCreate, creating }: ConfigureP
             </Switch.Root>
           </div>
 
-          {/* §234 F1 — directly below "Show comments" (the owner's
-              placement), and only while there is a panel to show them in.
-              Same control, same wording and same rule as the settings panel
-              of an existing link. */}
-          {showComments && (
-            <div className="flex items-center justify-between py-2.5">
-              <div className="flex items-center gap-2.5">
-                <Lock className="h-4 w-4 text-text-tertiary shrink-0" />
-                <div>
-                  <span className="text-sm text-text-primary">
-                    Display internal comments to guests
-                  </span>
-                  <p className="text-2xs text-text-tertiary">
-                    Internal comments are visible to everyone who opens this link
-                  </p>
-                </div>
-              </div>
-              <Switch.Root
-                checked={showInternalComments}
-                onCheckedChange={setShowInternalComments}
-                aria-label="Display internal comments to guests"
-                className="shrink-0 w-9 h-5 rounded-full relative bg-bg-tertiary border border-border data-[state=checked]:bg-accent transition-colors"
-              >
-                <Switch.Thumb className="block w-4 h-4 rounded-full bg-white shadow transition-transform translate-x-0.5 data-[state=checked]:translate-x-[18px]" />
-              </Switch.Root>
-            </div>
-          )}
+          {/* §234b — "Display internal comments to guests" was here, below
+              "Show comments". The owner removed it: a comment marked
+              internal is never shown on a share link, so there is nothing
+              to offer. "Show comments" and "Allow comments" are unchanged. */}
 
           {/* Downloads — §30: which versions, not just on/off */}
           <div className="py-2.5">
@@ -1253,7 +1216,6 @@ export function ShareCreateDialog({
           // the §189 dead end, so the omission was invisible until the
           // toggle existed.
           show_comments: config.showComments,
-          show_internal_comments: config.showInternalComments,
           show_versions: config.showVersions,
           visibility: config.visibility,
           allowed_download_variants: config.downloadVariants,
@@ -1305,7 +1267,6 @@ export function ShareCreateDialog({
           visibility: config.visibility,
           permission: config.allowComments ? 'comment' : 'view',
           show_comments: config.showComments,
-          show_internal_comments: config.showInternalComments,
           show_versions: config.showVersions,
           allowed_download_variants: config.downloadVariants,
           fields_visibility: config.fieldsVisibility,
