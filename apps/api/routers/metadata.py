@@ -24,6 +24,7 @@ from ..schemas.metadata import (
     MetadataFieldResponse,
 )
 from ..services.permissions import require_project_role
+from ..services.search import LIKE_ESCAPE, like_contains
 
 router = APIRouter(tags=["metadata"])
 
@@ -47,7 +48,15 @@ def _apply_smart_filter(db: Session, project_id: uuid.UUID, rules: dict):
     if rules and "asset_type" in rules:
         q = q.filter(Asset.asset_type == rules["asset_type"])
     if rules and "name_contains" in rules:
-        q = q.filter(Asset.name.ilike(f"%{rules['name_contains']}%"))
+        # §233 — `filter_rules` is whatever the caller PUT on the smart
+        # collection, so this string is user input like any other. A rule of
+        # "%" made a "smart" collection that silently contained every asset
+        # in the project.
+        q = q.filter(
+            Asset.name.ilike(
+                like_contains(str(rules["name_contains"])), escape=LIKE_ESCAPE
+            )
+        )
     return q
 
 

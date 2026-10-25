@@ -171,8 +171,9 @@ class TestAUsersOwnTwoFactorStateIsReadable:
 
     def test_a_user_created_a_moment_ago_reads_as_not_enrolled(self):
         """A User that has never been flushed has None here — the column's
-        server default has not been applied yet. /auth/register serialises
-        exactly such an object."""
+        server default has not been applied yet. §233 deleted
+        /auth/register, which was the original example; POST /users/invite
+        serialises exactly such an object and still does."""
         from apps.api.schemas.auth import UserResponse
 
         fresh = _user()

@@ -1,8 +1,8 @@
 """One password policy, used by every path that sets a password (§200).
 
 Before this there was no policy at all on the server: `/auth/set-password`,
-`/auth/accept-invite`, `/auth/register` and the fresh-install setup route each
-took whatever string arrived and hashed it. The only rule anywhere was a
+`/auth/accept-invite`, `/auth/register` (deleted in §233) and the fresh-install
+setup route each took whatever string arrived and hashed it. The only rule anywhere was a
 `password.length < 8` check in the browser, in two separate components — which
 is not a rule, it is a suggestion to anyone not using that browser.
 

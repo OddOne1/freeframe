@@ -60,50 +60,10 @@ _HASH_PATCH = "apps.api.routers.auth.hash_password"
 _VERIFY_PATCH = "apps.api.routers.auth.verify_password"
 
 
-def test_register_success(client, mock_db):
-    """POST /auth/register — happy path creates a user and returns 201."""
-    mock_db.first.return_value = None  # no duplicate email
-
-    def _refresh_side_effect(obj):
-        obj.id = uuid.uuid4()
-        obj.created_at = datetime.now(timezone.utc)
-        obj.deleted_at = None
-        obj.avatar_url = None
-        obj.status = UserStatus.active
-        obj.role = UserGlobalRole.user
-        obj.email_verified = False
-        obj.preferences = {}
-        obj.invite_token = None
-
-    mock_db.refresh.side_effect = _refresh_side_effect
-
-    with patch(_HASH_PATCH, return_value=_FAKE_HASH):
-        resp = client.post(
-            "/auth/register",
-            # §200 — "securepassword" no longer is one: twelve characters,
-            # but no upper case, no digit, no special character, and squarely
-            # in the common-password blocklist. Updated rather than exempted,
-            # because a registration test that could not pass the policy
-            # would be testing a route nobody can actually use.
-            json={"email": "newuser@example.com", "name": "New User", "password": "Wq7#vLm2$kPz"},
-        )
-
-    assert resp.status_code == 201
-    assert resp.json()["email"] == "newuser@example.com"
-
-
-def test_register_duplicate_email(client, mock_db):
-    """POST /auth/register — returns 400 when email already exists."""
-    existing = _mock_user("dup@example.com")
-    mock_db.first.return_value = existing
-
-    with patch(_HASH_PATCH, return_value=_FAKE_HASH):
-        resp = client.post(
-            "/auth/register",
-            json={"email": "dup@example.com", "name": "A", "password": "pw123456"},
-        )
-
-    assert resp.status_code == 400
+# §233 — test_register_success and test_register_duplicate_email lived here
+# and are gone with the route they exercised. What replaced them is
+# tests/test_register_removed.py, which asserts the path is unroutable and
+# unadvertised rather than asserting what it used to do.
 
 
 def test_login_success(client, mock_db):

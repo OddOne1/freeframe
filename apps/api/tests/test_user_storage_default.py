@@ -7,7 +7,7 @@ asks it to, which is exactly how a real row reached production with
 `storage_limit_bytes` NULL while `test_admin_user_storage_limit.py` stayed
 green.
 
-The four routers are called for real rather than having their `User(...)`
+The routers are called for real rather than having their `User(...)`
 construction copied here. A copy would keep passing if someone later added
 an explicit `storage_limit_bytes=None` to one of the real paths, which is
 the regression worth catching.
@@ -93,7 +93,7 @@ def fetch(session, email):
     return session.query(User).filter(User.email == email).one()
 
 
-# ─── the four creation paths ─────────────────────────────────────────────────
+# ─── the three creation paths ────────────────────────────────────────────────
 
 def test_magic_code_signup_gets_the_default(db):
     session, created = db
@@ -108,18 +108,13 @@ def test_magic_code_signup_gets_the_default(db):
     assert user.storage_limit_bytes == TWO_HUNDRED_GB
 
 
-def test_legacy_register_gets_the_default(db):
-    session, created = db
-    from apps.api.routers.auth import register
-    from apps.api.schemas.auth import RegisterRequest
-
-    email = unique_email("register")
-    user = register(
-        RegisterRequest(email=email, name="Reg Ister", password="testpassword123"),
-        db=session,
-    )
-    created.append(user.id)
-    assert fetch(session, email).storage_limit_bytes == TWO_HUNDRED_GB
+# §233 — the fourth path, `/auth/register`, is gone: it let an anonymous
+# caller create an ACTIVE account, which this instance never wanted. It is
+# not rewritten into another shape here because there is nothing left to
+# rewrite it to — the three creation paths above and below ARE how
+# production makes a user, and each already has its own test in this file.
+# `/auth/accept-invite` is deliberately still absent: it finishes a row that
+# `invite_user` already inserted, so it is not a creation path.
 
 
 def test_admin_invite_gets_the_default(db):
@@ -158,7 +153,12 @@ def test_initial_superadmin_setup_gets_the_default(db):
             email=email,
             first_name="Set",
             last_name="Up",
-            password="testpassword123",
+            # §233 — was "testpassword123", which §200's password policy
+            # rejects (no upper case, no special character), so this test
+            # had been failing on a real database since §200 landed. Not
+            # caused by §233; fixed here because §233 is what finally ran
+            # this file against Postgres again.
+            password="Wq7#vLm2$kPz",
         ),
         db=session,
     )

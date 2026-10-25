@@ -15,6 +15,7 @@ from ..models.activity import Mention, Notification
 from ..models.comment import Comment
 from ..schemas.asset import AssetResponse, NotificationResponse
 from ..routers.assets import _build_asset_response, _build_asset_responses_bulk
+from ..services.search import LIKE_ESCAPE, like_contains
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -101,7 +102,12 @@ def list_my_assets(
 
     # Apply search filter
     if q and q.strip():
-        query = query.filter(Asset.name.ilike(f"%{q.strip()}%"))
+        # §233 — `%` and `_` are LIKE wildcards. Unescaped, a search for "%"
+        # returned every asset the caller can see and "_" matched any single
+        # character, so this filter quietly did not filter.
+        query = query.filter(
+            Asset.name.ilike(like_contains(q.strip()), escape=LIKE_ESCAPE)
+        )
 
     # §113 — the uploads panel's discovery problem.
     #
@@ -166,7 +172,10 @@ def search_my_folders(
         Folder.deleted_at.is_(None),
     )
     if q and q.strip():
-        query = query.filter(Folder.name.ilike(f"%{q.strip()}%"))
+        # §233 — same wildcard escape as the asset search above.
+        query = query.filter(
+            Folder.name.ilike(like_contains(q.strip()), escape=LIKE_ESCAPE)
+        )
 
     folders = query.order_by(Folder.name).limit(limit).all()
 

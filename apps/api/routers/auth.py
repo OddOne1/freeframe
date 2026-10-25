@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 import uuid
@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from ..database import get_db
 from ..config import settings
 from ..schemas.auth import (
-    RegisterRequest, LoginRequest, TokenResponse,
+    LoginRequest, TokenResponse,
     RefreshRequest, UserResponse, InviteRequest,
     SendMagicCodeRequest, SendMagicCodeResponse,
     VerifyMagicCodeRequest, SetPasswordRequest, SetPasswordResponse,
@@ -28,7 +28,7 @@ from ..services.auth_service import (
     create_2fa_pending_token, decode_2fa_pending_token, pending_token_via,
     VIA_PASSWORD, VIA_MAGIC_CODE,
     bump_token_version, token_version_of,
-    get_user_by_email, get_user_by_id, split_full_name,
+    get_user_by_email, get_user_by_id,
 )
 from ..services.redis_service import (
     generate_magic_code, store_magic_code, verify_magic_code as redis_verify_magic_code,
@@ -60,7 +60,7 @@ from ..tasks.email_tasks import (
 from ..tasks.celery_app import send_task_safe
 from ..models.user import User, UserStatus, UserGlobalRole
 from ..middleware.auth import get_current_user, get_optional_user
-from ..middleware.rate_limit import rate_limit
+from ..middleware.rate_limit import rate_limit, login_rate_limit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -550,32 +550,48 @@ def accept_invite(body: AcceptInviteRequest, db: Session = Depends(get_db)):
     return _issue_tokens(user)
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(body: RegisterRequest, db: Session = Depends(get_db)):
-    """Register with email + password (legacy, prefer magic code flow)."""
-    if get_user_by_email(db, body.email):
-        raise HTTPException(status_code=400, detail="Email already registered")
-    first_name, last_name = split_full_name(body.name)
-    # §200 — validated against the address and name being registered, since
-    # there is no row yet to read them off.
-    _enforce_password_policy(
-        db, body.password, None, email=body.email, name=body.name
-    )
-    user = User(
-        email=body.email,
-        first_name=first_name,
-        last_name=last_name,
-        password_hash=hash_password(body.password),
-        status=UserStatus.active,
-        email_verified=False,  # Not verified until magic code
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return user
+# §233 — POST /auth/register is GONE, deliberately, and must not come back.
+#
+# It took an email, a name and a password from an ANONYMOUS caller and
+# committed `User(status=UserStatus.active)` — no invite, no admin, no rate
+# limit, no email verification gate on the account being usable. On a
+# self-hosted instance whose whole access model is "an admin invites you",
+# that one route was a public sign-up form nobody had asked for and nothing
+# in `apps/web` or `apps/desktop` ever called.
+#
+# It was not secured, it was deleted: there is no version of "anyone may
+# create an ACTIVE account here, with a password, unverified" that this
+# deployment wants. The three paths that still create a user are the ones
+# production actually uses:
+#
+#   POST /users/invite        an admin, and the row starts pending_invite
+#   POST /setup/superadmin    first boot only, behind the setup guard
+#   POST /auth/send-magic-code  an unknown address, and the row starts
+#                             `pending_verification` with NO password — and
+#                             §195 closes even that once the instance
+#                             requires 2FA
+#
+# That third one is stated rather than glossed: anonymous row creation is
+# not gone from this API. What is gone is anonymous creation of an ACTIVE,
+# password-holding account, which is the only one of the two that is a way
+# IN. A caller now gets 404, not 405: Starlette answers 405 only when a
+# path MATCHES a route that does not accept the method, and /auth/register
+# matches no route at all once this one is gone. Asserted both ways in
+# tests/test_register_removed.py, so the day someone re-adds it the test
+# says so.
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post(
+    "/login",
+    response_model=LoginResponse,
+    # §233 — the only auth route that had NO limiter while eight others did.
+    # Not `rate_limit(...)`: a password login has to be metered per ACCOUNT,
+    # because the IP this deployment sees comes out of a Cloudflare tunnel
+    # and is either shared by everybody or chosen by the caller. See
+    # middleware/rate_limit.login_rate_limit for both failure modes and why
+    # the per-IP brake it also applies is the loose one.
+    dependencies=[Depends(login_rate_limit)],
+)
 def login(body: LoginRequest, db: Session = Depends(get_db)):
     """Login with email + password.
 

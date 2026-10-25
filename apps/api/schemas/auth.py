@@ -5,11 +5,6 @@ from typing import Literal, Optional, Union
 from ..models.user import UserStatus, UserGlobalRole
 from ..models.project import ProjectRole
 
-class RegisterRequest(BaseModel):
-    email: EmailStr
-    name: str
-    password: str
-
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
@@ -389,9 +384,11 @@ class UserResponse(BaseModel):
         """A User that has never been flushed reads None here.
 
         The column is NOT NULL with a server default, so a row in the
-        database is never None — but /auth/register serialises the object it
-        just created, before any default has been applied. "Not enrolled" is
-        the honest answer for a user who was created a millisecond ago.
+        database is never None — but a route that serialises a User it has
+        only just added, before the default has been applied, reads None.
+        (§233 — /auth/register was the example; POST /users/invite is the
+        one that still does it.) "Not enrolled" is the honest answer for a
+        user who was created a millisecond ago.
 
         Deliberately not `bool(v)`: that would quietly turn any unexpected
         object into True, which in a test suite built on MagicMock users

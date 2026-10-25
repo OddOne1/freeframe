@@ -216,9 +216,10 @@ def split_full_name(full_name: str) -> tuple[Optional[str], str]:
     splitting on the first space -- everything before the first space
     becomes first_name, everything after becomes last_name (so multi-word
     last names like "Mary Jane Watson" stay together as one last_name).
-    Single-word names have no first_name. Used by the legacy /auth/register
-    endpoint and the admin invite flow, which still collect one "name"
-    field, to populate the split first_name/last_name columns on User.
+    Single-word names have no first_name. §233 deleted /auth/register, which
+    was the other caller; the admin invite flow (POST /users/invite) still
+    collects one "name" field, and this is what turns it into the split
+    first_name/last_name columns on User.
     """
     stripped = full_name.strip()
     if " " in stripped:

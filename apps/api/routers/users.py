@@ -9,6 +9,7 @@ from ..models.user import User, UserStatus, UserGlobalRole
 from ..services import s3_service
 from ..middleware.auth import get_current_user
 from ..services.auth_service import hash_password, get_user_by_email, split_full_name
+from ..services.search import LIKE_ESCAPE, like_contains
 from ..tasks.email_tasks import send_invite_email
 from ..tasks.celery_app import send_task_safe
 from ..config import settings
@@ -72,10 +73,18 @@ def search_users(
     current_user: User = Depends(get_current_user),
 ):
     """Search users by name or email. Returns up to 10 matching users."""
-    pattern = f"%{q}%"
+    # §233 — the worst of the four unescaped sites. `q` has min_length=1 and
+    # any authenticated user may call this, so a one-character search for "%"
+    # or "_" matched every row and handed back ten accounts — names and email
+    # addresses — to someone who had typed nothing.
+    pattern = like_contains(q)
     users = db.query(User).filter(
         User.deleted_at.is_(None),
-        (User.first_name.ilike(pattern) | User.last_name.ilike(pattern) | User.email.ilike(pattern)),
+        (
+            User.first_name.ilike(pattern, escape=LIKE_ESCAPE)
+            | User.last_name.ilike(pattern, escape=LIKE_ESCAPE)
+            | User.email.ilike(pattern, escape=LIKE_ESCAPE)
+        ),
     ).limit(10).all()
     return users
 

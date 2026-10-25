@@ -192,6 +192,32 @@ class Settings(BaseSettings):
     zip_stream_idle_seconds: int = 120
     zip_stream_stall_seconds: int = 900
 
+    # ── §233 — metering POST /auth/login ────────────────────────────────
+    #
+    # Two buckets, because neither one alone is right here. See
+    # middleware/rate_limit.login_rate_limit for the full argument; the
+    # short version is that the IP this API sees arrives through a
+    # Cloudflare tunnel and a reverse proxy, so it is either the same for
+    # everybody (one user's failures lock out the instance) or chosen by
+    # the caller (no limit at all) — and the process cannot tell which.
+    #
+    # The ACCOUNT bucket is the real limit: the normalised email from the
+    # request body, hashed, 10 attempts per 10 minutes. Unspoofable, and
+    # one account being attacked costs no other account its allowance.
+    # Counts successes too; a person does not sign in ten times in ten
+    # minutes, and counting failures only would let a correct password keep
+    # topping the budget up.
+    login_rate_limit_per_email: int = 10
+    login_rate_limit_email_window_seconds: int = 600
+
+    # The IP bucket is a coarse brake and is deliberately generous: a shared
+    # NAT, an office, or the tunnel's own address must not lock real users
+    # out. Raise it rather than lower it if legitimate traffic ever trips
+    # it. Override with LOGIN_RATE_LIMIT_PER_IP /
+    # LOGIN_RATE_LIMIT_IP_WINDOW_SECONDS.
+    login_rate_limit_per_ip: int = 60
+    login_rate_limit_ip_window_seconds: int = 600
+
     jwt_secret: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15

@@ -58,6 +58,7 @@ from ..schemas.share import (
 )
 from ..services.permissions import require_project_role, validate_share_link, validate_share_link_with_session
 from ..services.redis_service import create_share_session
+from ..services.search import LIKE_ESCAPE, like_contains
 from ..services import s3_service
 from ..services.s3_service import build_download_filename
 from ..services.crypto_service import encrypt_password, decrypt_password
@@ -182,11 +183,6 @@ def _purge_link_zips(share_link_id) -> None:
         send_task_safe(purge_share_link_zips, str(share_link_id))
     except Exception:
         logger.warning("Could not dispatch zip purge for share link %s", share_link_id)
-
-
-def _escape_like(s: str) -> str:
-    """Escape special LIKE pattern characters to prevent injection."""
-    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _get_asset(db: Session, asset_id: uuid.UUID) -> Asset:
@@ -1149,10 +1145,21 @@ def list_project_share_links(
     )
 
     if search:
-        escaped = _escape_like(search)
-        asset_query = asset_query.filter(ShareLink.title.ilike(f"%{escaped}%"))
-        folder_query = folder_query.filter(ShareLink.title.ilike(f"%{escaped}%"))
-        project_query = project_query.filter(ShareLink.title.ilike(f"%{escaped}%"))
+        # §233 — the helper moved to services/search.py, which is now the one
+        # place that knows this. The `escape=` argument is new: this site
+        # escaped the characters and then never told the database what the
+        # escape character was, which works only because PostgreSQL's default
+        # happens to be a backslash.
+        pattern = like_contains(search)
+        asset_query = asset_query.filter(
+            ShareLink.title.ilike(pattern, escape=LIKE_ESCAPE)
+        )
+        folder_query = folder_query.filter(
+            ShareLink.title.ilike(pattern, escape=LIKE_ESCAPE)
+        )
+        project_query = project_query.filter(
+            ShareLink.title.ilike(pattern, escape=LIKE_ESCAPE)
+        )
 
     results = asset_query.union_all(folder_query).union_all(project_query).all()
 
