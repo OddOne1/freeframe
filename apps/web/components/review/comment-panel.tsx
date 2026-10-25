@@ -100,6 +100,17 @@ function getAvatarColor(name: string): string {
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
+/**
+ * §234 F3 — what goes inside the chip for a SHARE label.
+ *
+ * The label is already the initials on a link with no password ("MS") and a
+ * first name on one with a password ("Mathias"); `getInitials` below cannot
+ * tell those apart, and "Mathias" through it comes out "MM".
+ */
+function shareChipText(label: string): string {
+  return label.length <= 2 ? label.toUpperCase() : label.charAt(0).toUpperCase()
+}
+
 function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
   if (parts.length === 1) return parts[0].charAt(0).toUpperCase();
@@ -450,10 +461,19 @@ function CommentItem({
     }
   }, [isFocused]);
 
+  /**
+   * §234 F2 — on a SHARE LINK this panel is fed by
+   * `GET /share/{token}/comments`, which no longer sends an author object at
+   * all: a share viewer gets a label (initials, or a first name on a
+   * password link) and a server-assigned colour, and nothing else. The
+   * authenticated routes are untouched and keep sending `author` /
+   * `guest_author`, so that branch is exactly as it was.
+   */
+  const shareLabel = comment.author_label;
   const authorName =
-    comment.author?.name ?? comment.guest_author?.name ?? "Unknown";
+    shareLabel ?? comment.author?.name ?? comment.guest_author?.name ?? "Unknown";
   const isOwn = !!(currentUserId && comment.author_id === currentUserId);
-  const avatarColor = getAvatarColor(authorName);
+  const avatarColor = shareLabel ? undefined : getAvatarColor(authorName);
   const isReplyingHere = replyingTo === comment.id && depth === 0;
 
   // Group reactions by emoji
@@ -521,14 +541,20 @@ function CommentItem({
       }}
     >
       <div className="flex gap-2.5 py-3">
-        {/* Colored avatar */}
+        {/* Colored avatar — the label and hex the server chose on a share
+            link (§234 F3), this panel's own hashed class otherwise. The
+            label IS the initials on a public link, so it is shown whole
+            rather than having initials taken off it again. */}
         <div
           className={cn(
             "h-8 w-8 rounded-full flex items-center justify-center text-[11px] font-bold text-text-inverse shrink-0 mt-0.5",
             avatarColor,
           )}
+          style={
+            comment.author_color ? { backgroundColor: comment.author_color } : undefined
+          }
         >
-          {getInitials(authorName)}
+          {shareLabel ? shareChipText(shareLabel) : getInitials(authorName)}
         </div>
 
         <div className="flex-1 min-w-0">

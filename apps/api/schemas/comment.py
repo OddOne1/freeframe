@@ -1,7 +1,7 @@
 from pydantic import BaseModel, field_validator
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from ..services.owned_keys import issued_avatar_url
 
@@ -30,6 +30,13 @@ class GuestCommentCreate(BaseModel):
     annotation: Optional[AnnotationData] = None
     guest_email: Optional[str] = None  # Not needed if user is logged in
     guest_name: Optional[str] = None
+    #: §234 B — accepted, and `internal` is REFUSED (403) unless the caller
+    #: is signed in and passes the normal asset access check. The field used
+    #: to be absent, so a project member commenting through a share link
+    #: could not file an internal note at all; it is not a way for a guest
+    #: to write one. Typed, so an unknown string is a 422 rather than a
+    #: silently stored value.
+    visibility: Literal["public", "internal"] = "public"
 
 class CommentUpdate(BaseModel):
     body: str
@@ -125,3 +132,45 @@ class CommentResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 CommentResponse.model_rebuild()
+
+
+# ── What a share-link viewer gets (§234 F2) ───────────────────────────────────
+
+class ShareCommentResponse(BaseModel):
+    """A comment as an anonymous share-link holder may see it.
+
+    A SEPARATE model, not `CommentResponse` with the identity stripped off
+    at the route. The difference matters the day someone adds a field to
+    `CommentResponse`: an allowlist cannot start leaking by itself, while a
+    strip-list leaks everything nobody remembered to add to it.
+    `CommentResponse` carries `author_id`, `author_name`, `guest_author_id`,
+    an `author` object (id, name, avatar_url) and a `guest_author` object
+    (id, name, e-mail) — all of which a share viewer may never see.
+
+    Every field here is deliberate; tests/test_share_comment_identity.py
+    fails if this model grows one that is not on the list. `author_label`
+    and `author_color` are built by services/share_identity.py and are the
+    ONLY things said about a person.
+    """
+
+    id: uuid.UUID
+    parent_id: Optional[uuid.UUID] = None
+    version_id: uuid.UUID
+    timecode_start: Optional[float] = None
+    timecode_end: Optional[float] = None
+    body: str
+    created_at: datetime
+    updated_at: datetime
+    #: Only populated when the link shows internal comments (§234 F1), so
+    #: the page can mark one. `None` on a link that shows public comments
+    #: only, where every comment in the list is public by construction.
+    visibility: Optional[str] = None
+    #: The drawing itself, which the share page needs to render an
+    #: annotation over the frame. `AnnotationResponse` is (id, comment_id,
+    #: drawing_data, frame_number, carousel_position) — no identity.
+    annotation: Optional[AnnotationResponse] = None
+    author_label: str
+    author_color: str
+    replies: list["ShareCommentResponse"] = []
+
+ShareCommentResponse.model_rebuild()

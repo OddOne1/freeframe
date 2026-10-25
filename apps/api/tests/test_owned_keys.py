@@ -963,12 +963,40 @@ class TestTheMigration:
             timeout=180,
         )
 
-    def test_there_is_exactly_one_head_and_it_is_this_revision(self):
+    def _parent_revision(self):
+        """This revision's own parent, read from the file.
+
+        The test used to step back with `downgrade -1`, which means "one
+        step back from the CURRENT head" — fine while this revision was the
+        head, wrong the moment another section chains onto it (§234 did),
+        because it would then step back over that one instead and never
+        re-run this data migration at all. Reading the parent keeps the
+        test aimed at THIS revision however many land on top of it.
+        """
+        spec = importlib.util.spec_from_file_location("ff235_parent", MIGRATION)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.down_revision
+
+    def test_there_is_exactly_one_head_and_this_revision_is_in_its_chain(self):
+        """One head, with this revision on the way to it.
+
+        Not "the head IS this revision": §234 chained onto it, and every
+        later section will too. What must never change is that there is a
+        single head and that this migration is part of the one chain that
+        reaches it — a second head is the real failure, because then a
+        deploy applies one branch and silently skips the other.
+        """
         result = self._alembic("heads")
         assert result.returncode == 0, result.stderr
         heads = [line for line in result.stdout.splitlines() if line.strip()]
         assert len(heads) == 1, result.stdout
-        assert heads[0].startswith("null_unowned_brand_keys")
+
+        history = self._alembic("history")
+        assert history.returncode == 0, history.stderr
+        assert any(
+            "-> null_unowned_brand_keys" in line for line in history.stdout.splitlines()
+        ), history.stdout
 
     def test_the_revision_id_fits_the_version_column(self):
         spec = importlib.util.spec_from_file_location("ff235_migration", MIGRATION)
@@ -1030,7 +1058,7 @@ class TestTheMigration:
         session.commit()
 
         try:
-            down = self._alembic("downgrade", "-1")
+            down = self._alembic("downgrade", self._parent_revision())
             assert down.returncode == 0, down.stderr
             up = self._alembic("upgrade", "head")
             assert up.returncode == 0, up.stderr

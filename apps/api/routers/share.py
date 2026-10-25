@@ -56,8 +56,15 @@ from ..schemas.share import (
     ShareLinkValidateResponse,
     variant_values,
 )
-from ..services.permissions import require_project_role, validate_share_link, validate_share_link_with_session
+from ..services.permissions import (
+    asset_is_in_share_scope,
+    is_descendant_of,
+    require_project_role,
+    validate_share_link,
+    validate_share_link_with_session,
+)
 from ..services.redis_service import create_share_session
+from ..services.share_identity import label_for_name, link_is_password_protected
 from ..services.search import LIKE_ESCAPE, like_contains
 from ..services import s3_service
 from ..services.s3_service import build_download_filename
@@ -105,6 +112,15 @@ def _reconcile_comment_settings(link: ShareLink) -> None:
     elif not link.show_comments:
         # Nothing visible to comment on, so nothing to permit.
         link.permission = SharePermission.view
+
+    # §234 F1 — the same rule for the third setting, which is subordinate to
+    # the panel rather than independent of it: "show the internal ones too"
+    # with no comment panel at all is the same dead end §189 collapsed, and
+    # turning the panel off has to take it with it in ONE update, or a link
+    # whose comments were hidden and then shown again would silently bring
+    # the internal thread back with it.
+    if not link.show_comments:
+        link.show_internal_comments = False
 
 
 def _require_fields_visibility(link: ShareLink, minimum: FieldsVisibility) -> None:
@@ -201,28 +217,31 @@ def _get_folder(db: Session, folder_id: uuid.UUID) -> Folder:
 
 
 def _validate_asset_in_share(db: Session, link: ShareLink, asset: Asset) -> None:
-    """Validate that an asset belongs to a share link (folder, asset, project, or multi-share)."""
-    if link.folder_id:
-        if asset.folder_id != link.folder_id:
-            if not asset.folder_id or not _is_descendant_of(db, asset.folder_id, link.folder_id):
-                raise HTTPException(status_code=403, detail="Asset is not within the shared folder")
-    elif link.asset_id:
-        if asset.id != link.asset_id:
-            raise HTTPException(status_code=403, detail="Asset does not match share link")
-    elif link.project_id:
-        if asset.project_id != link.project_id:
-            raise HTTPException(status_code=403, detail="Asset is not within the shared project")
-        # For multi-share links, also check ShareLinkItem entries
-        multi_items = db.query(ShareLinkItem).filter(ShareLinkItem.share_link_id == link.id).all()
-        if multi_items:
-            multi_asset_ids = {item.asset_id for item in multi_items if item.asset_id}
-            multi_folder_ids = {item.folder_id for item in multi_items if item.folder_id}
-            if asset.id not in multi_asset_ids:
-                # Check if asset is in one of the shared folders
-                if not any(asset.folder_id == fid or (asset.folder_id and _is_descendant_of(db, asset.folder_id, fid)) for fid in multi_folder_ids):
-                    raise HTTPException(status_code=403, detail="Asset is not in the shared items")
-    else:
+    """Refuse an asset that is not inside what this link shares.
+
+    §234 — the DECISION now lives in one place,
+    `services/permissions.asset_is_in_share_scope`, which the share-comment
+    routes read too; this wrapper keeps the wording and the 403 these routes
+    have always answered with, so nothing about them changes.
+
+    The comment routes deliberately answer the same 404 as an unknown token
+    instead (`validate_asset_in_share` in the same module). These routes are
+    not converted to that: `_get_asset` above them already answers 404 for an
+    asset that does not exist, so the pair of codes here is a distinction a
+    caller can already make, and flattening it is a behaviour change for the
+    stream, export, zip and fields routes that §234 is not the place for.
+    """
+    if not (link.folder_id or link.asset_id or link.project_id):
         raise HTTPException(status_code=400, detail="Invalid share link")
+    if asset_is_in_share_scope(db, link, asset):
+        return
+    if link.folder_id:
+        raise HTTPException(status_code=403, detail="Asset is not within the shared folder")
+    if link.asset_id:
+        raise HTTPException(status_code=403, detail="Asset does not match share link")
+    if asset.project_id != link.project_id:
+        raise HTTPException(status_code=403, detail="Asset is not within the shared project")
+    raise HTTPException(status_code=403, detail="Asset is not in the shared items")
 
 
 def _get_project_id_from_link(db: Session, link: ShareLink) -> uuid.UUID:
@@ -275,19 +294,6 @@ def _log_share_activity(
         db.rollback()
 
 
-def _is_descendant_of(db: Session, folder_id: uuid.UUID, ancestor_id: uuid.UUID) -> bool:
-    """Check if folder_id is a descendant of ancestor_id via parent chain traversal."""
-    current_id = folder_id
-    visited = set()
-    while current_id and current_id not in visited:
-        if current_id == ancestor_id:
-            return True
-        visited.add(current_id)
-        folder = db.query(Folder.parent_id).filter(Folder.id == current_id).first()
-        current_id = folder.parent_id if folder else None
-    return False
-
-
 def _get_latest_media_file(db: Session, asset_id: uuid.UUID) -> Optional[MediaFile]:
     """Get the first media file from the latest ready version of an asset."""
     version = db.query(AssetVersion).filter(
@@ -336,6 +342,7 @@ def create_share_link(
         fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
         show_comments=body.show_comments,
+        show_internal_comments=body.show_internal_comments,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
     )
@@ -671,6 +678,7 @@ def create_folder_share_link(
         fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
         show_comments=body.show_comments,
+        show_internal_comments=body.show_internal_comments,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
     )
@@ -720,6 +728,7 @@ def create_project_share_link(
         fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
         show_comments=body.show_comments,
+        show_internal_comments=body.show_internal_comments,
         show_watermark=body.show_watermark,
         appearance=body.appearance.model_dump(),
     )
@@ -1349,6 +1358,7 @@ def create_multi_share_link(
         fields_visibility=body.fields_visibility,
         show_versions=body.show_versions,
         show_comments=body.show_comments,
+        show_internal_comments=body.show_internal_comments,
         show_watermark=body.show_watermark,
         password_hash=password_hash,
         password_encrypted=password_encrypted,
@@ -1566,7 +1576,18 @@ def get_folder_share_assets(
             f = db.query(Folder).filter(Folder.id == folder_id, Folder.deleted_at.is_(None)).first()
             if not f or f.project_id != link.project_id:
                 raise HTTPException(status_code=403, detail="Folder is not within the shared project")
-        elif folder_id != link.folder_id and not _is_descendant_of(db, folder_id, link.folder_id):
+            # §234 A — and, for a multi-share, that it is one of the SELECTED
+            # folders or inside one. The project check alone let an items
+            # link list any folder of the project by naming it: the root
+            # branch above honours the selection, this branch did not.
+            if is_multi_share:
+                item_folder_ids = [i.folder_id for i in multi_share_items if i.folder_id]
+                if not any(
+                    folder_id == fid or is_descendant_of(db, folder_id, fid)
+                    for fid in item_folder_ids
+                ):
+                    raise HTTPException(status_code=403, detail="Folder is not in the shared items")
+        elif folder_id != link.folder_id and not is_descendant_of(db, folder_id, link.folder_id):
             raise HTTPException(status_code=403, detail="Folder is not within the shared folder")
         target_folder_id = folder_id
 
@@ -1654,13 +1675,27 @@ def get_folder_share_assets(
             file_size = media_file.file_size_bytes
             duration_seconds = media_file.duration_seconds
 
-        comment_count = db.query(sa_func.count(Comment.id)).filter(
+        # §234 F1 — the count has to mean the same list the viewer can
+        # actually open. It counted internal comments too, so a card
+        # advertised a discussion the panel then refused to show, and the
+        # number itself told a link holder that an internal thread exists.
+        comment_count_filter = [
             Comment.asset_id == asset.id,
             Comment.deleted_at.is_(None),
+        ]
+        if not link.show_internal_comments:
+            comment_count_filter.append(Comment.visibility == "public")
+        comment_count = db.query(sa_func.count(Comment.id)).filter(
+            *comment_count_filter
         ).scalar() or 0
 
-        # Get creator name
+        # §234 F2 — the uploader, as a label only: initials, or a first name
+        # on a password-protected link. `creator.name` itself stays here.
         creator = db.query(User).filter(User.id == asset.created_by).first() if asset.created_by else None
+        uploader_label = label_for_name(
+            creator.name if creator else None,
+            password_protected=link_is_password_protected(link),
+        ) if creator else None
 
         asset_items.append(FolderShareAssetItem(
             id=asset.id,
@@ -1670,7 +1705,7 @@ def get_folder_share_assets(
             file_size=file_size,
             duration_seconds=duration_seconds,
             comment_count=comment_count,
-            created_by_name=creator.name if creator else None,
+            uploader_label=uploader_label,
             created_at=asset.created_at,
             download_variants=_available_variants(link, asset),
         ))

@@ -381,7 +381,7 @@ function AssetGridCard({ asset, downloadVariants, token, shareSession, isSelecte
         <div className="px-3 py-2.5">
           <p className="text-sm font-medium text-text-primary line-clamp-1">{asset.name}</p>
           <p className="text-xs text-text-tertiary mt-0.5 truncate">
-            {asset.created_by_name && <>{asset.created_by_name} &middot; </>}
+            {asset.uploader_label && <>{asset.uploader_label} &middot; </>}
             {formatShortDate(asset.created_at)}
             {asset.file_size != null && <> &middot; {formatFileSize(asset.file_size)}</>}
           </p>
@@ -422,6 +422,8 @@ function SectionHeader({ label, count, totalSize, expanded, onToggle }: SectionH
 interface RightPanelProps {
   selectedAsset: FolderShareAssetItem | null
   token: string
+  /** §234 D — the comment listing is behind the link's password now. */
+  shareSession?: string | null
   permission: SharePermission
   downloadVariants: DownloadVariant[]
   onOpenAsset?: (asset: FolderShareAssetItem) => void
@@ -430,17 +432,23 @@ interface RightPanelProps {
 interface GuestComment {
   id: string
   body: string
-  guest_name: string
-  guest_email: string
-  author_name?: string
-  author?: { id: string; name: string; avatar_url?: string | null } | null
-  guest_author?: { id: string; name: string; email: string } | null
+  /**
+   * §234 F2 — the author's initials, or their first name on a
+   * password-protected link, with a chip colour the SERVER chose. The four
+   * fields that used to be read here (`author`, `guest_author`,
+   * `guest_name`, `author_name`) carried full names and guest e-mail
+   * addresses to whoever held the link and are no longer sent.
+   */
+  author_label?: string
+  author_color?: string
   created_at: string
   timecode_start?: number | null
+  /** Only present on a link that shows internal comments (§234 F1). */
+  visibility?: string | null
   replies?: GuestComment[]
 }
 
-function RightPanel({ selectedAsset, token, permission, downloadVariants, onOpenAsset }: RightPanelProps) {
+function RightPanel({ selectedAsset, token, shareSession, permission, downloadVariants, onOpenAsset }: RightPanelProps) {
   const [comments, setComments] = React.useState<GuestComment[]>([])
   const [loadingComments, setLoadingComments] = React.useState(false)
   const [commentRefresh, setCommentRefresh] = React.useState(0)
@@ -452,12 +460,13 @@ function RightPanel({ selectedAsset, token, permission, downloadVariants, onOpen
       return
     }
     setLoadingComments(true)
-    fetch(`${API_URL}/share/${token}/comments?asset_id=${selectedAsset.id}`)
+    const sp = shareSession ? `&share_session=${encodeURIComponent(shareSession)}` : ''
+    fetch(`${API_URL}/share/${token}/comments?asset_id=${selectedAsset.id}${sp}`)
       .then((r) => (r.ok ? r.json() : Promise.resolve([])))
       .then((data) => setComments(Array.isArray(data) ? data : (data.comments ?? [])))
       .catch(() => setComments([]))
       .finally(() => setLoadingComments(false))
-  }, [selectedAsset?.id, token, commentRefresh])
+  }, [selectedAsset?.id, token, shareSession, commentRefresh])
 
   if (!selectedAsset) {
     return (
@@ -494,15 +503,27 @@ function RightPanel({ selectedAsset, token, permission, downloadVariants, onOpen
 
 // ─── Share Comment List (matches project review panel style) ─────────────────
 
-const AVATAR_COLORS = [
-  'bg-purple-500', 'bg-blue-500', 'bg-green-500', 'bg-orange-500',
-  'bg-pink-500', 'bg-cyan-500', 'bg-indigo-500', 'bg-rose-500',
-]
+/* §234 F2/F3 — the chip's colour comes from the SERVER, not from a hash of
+   the author's name here. Two reasons, and the second is the real one: the
+   page no longer receives a name to hash, and a per-link colour is how two
+   authors with the same initials stay apart ("MS" and "MS") while one author
+   cannot be matched across two different links. `SHARE_CHIP_FALLBACK` is for
+   a response that carried no colour at all — an older API, or a parse that
+   failed — so a chip still renders. */
+const SHARE_CHIP_FALLBACK = '#8b5cf6'
 
-function getAvatarColor(name: string): string {
-  let hash = 0
-  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash)
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length]
+function authorLabel(comment: GuestComment): string {
+  return comment.author_label || 'User'
+}
+
+function authorColor(comment: GuestComment): string {
+  return comment.author_color || SHARE_CHIP_FALLBACK
+}
+
+/** Initials label -> the whole label; first-name label -> one letter. Same
+ *  rule as guest-comment-list.tsx's `chipText`, and for the same reason. */
+function chipText(label: string): string {
+  return label.length <= 2 ? label.toUpperCase() : label.charAt(0).toUpperCase()
 }
 
 interface ShareCommentListProps {
@@ -534,18 +555,26 @@ function ShareCommentList({ comments, loading, canComment, onReply }: ShareComme
   return (
     <div className="px-4 py-3 space-y-1">
       {comments.map((comment, i) => {
-        const name = comment.author?.name || comment.guest_author?.name || comment.guest_name || comment.author_name || 'User'
-        const color = getAvatarColor(name)
+        const name = authorLabel(comment)
+        const color = authorColor(comment)
         return (
           <div key={comment.id} className="py-3 border-b border-border last:border-0">
             {/* Comment header */}
             <div className="flex items-start gap-3">
-              <div className={cn('h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold text-text-primary shrink-0', color)}>
-                {name.charAt(0).toUpperCase()}
+              <div
+                className="h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0"
+                style={{ backgroundColor: color }}
+              >
+                {chipText(name)}
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium text-text-primary">{name}</span>
+                  {comment.visibility === 'internal' && (
+                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-2xs font-medium text-amber-400">
+                      Internal
+                    </span>
+                  )}
                   <span className="text-2xs text-text-tertiary">{formatShortDate(comment.created_at)}</span>
                   <span className="ml-auto text-2xs text-text-tertiary">#{i + 1}</span>
                 </div>
@@ -567,12 +596,15 @@ function ShareCommentList({ comments, loading, canComment, onReply }: ShareComme
             {comment.replies && comment.replies.length > 0 && (
               <div className="ml-11 mt-2 space-y-2 border-l-2 border-border pl-3">
                 {comment.replies.map((r) => {
-                  const rName = r.author?.name || r.guest_author?.name || r.guest_name || r.author_name || 'User'
-                  const rColor = getAvatarColor(rName)
+                  const rName = authorLabel(r)
+                  const rColor = authorColor(r)
                   return (
                     <div key={r.id} className="flex items-start gap-2.5 py-1">
-                      <div className={cn('h-6 w-6 rounded-full flex items-center justify-center text-[10px] font-bold text-text-primary shrink-0', rColor)}>
-                        {rName.charAt(0).toUpperCase()}
+                      <div
+                        className="h-6 w-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0"
+                        style={{ backgroundColor: rColor }}
+                      >
+                        {chipText(rName)}
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
@@ -598,10 +630,12 @@ function ShareCommentList({ comments, loading, canComment, onReply }: ShareComme
 interface ShareCommentInputProps {
   token: string
   assetId: string
+  /** §234 D — as on every other share call. */
+  shareSession?: string | null
   onCommentPosted: () => void
 }
 
-function ShareCommentInput({ token, assetId, onCommentPosted }: ShareCommentInputProps) {
+function ShareCommentInput({ token, assetId, shareSession, onCommentPosted }: ShareCommentInputProps) {
   const [body, setBody] = React.useState('')
   const [guestName, setGuestName] = React.useState('')
   const [guestEmail, setGuestEmail] = React.useState('')
@@ -631,7 +665,8 @@ function ShareCommentInput({ token, assetId, onCommentPosted }: ShareCommentInpu
         payload.guest_email = guestEmail.trim()
       }
 
-      const res = await fetch(`${API_URL}/share/${token}/comment`, {
+      const sp = shareSession ? `?share_session=${encodeURIComponent(shareSession)}` : ''
+      const res = await fetch(`${API_URL}/share/${token}/comment${sp}`, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
@@ -1733,7 +1768,7 @@ export function FolderShareViewer({
                                   <div className="flex-1 min-w-0">
                                     <p className="text-sm font-medium text-text-primary truncate leading-snug">{asset.name}</p>
                                     <p className="text-xs text-text-tertiary mt-0.5 truncate">
-                                      {asset.created_by_name && <>{asset.created_by_name} &middot; </>}
+                                      {asset.uploader_label && <>{asset.uploader_label} &middot; </>}
                                       {formatShortDate(asset.created_at)}
                                     </p>
                                   </div>
@@ -1847,6 +1882,7 @@ export function FolderShareViewer({
             <RightPanel
               selectedAsset={selectedAsset}
               token={token}
+              shareSession={shareSession}
               permission={permission}
               downloadVariants={downloadVariants}
               onOpenAsset={setViewingAsset}

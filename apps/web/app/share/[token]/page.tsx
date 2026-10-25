@@ -456,6 +456,14 @@ function ShareMediaViewer({ asset, token, streamUrl, streamLoading }: ShareMedia
 
 interface ShareRightPanelProps {
   token: string
+  /**
+   * §234 D — the password session. Every share call this panel makes now
+   * goes through the same gate the media already did: the comment listing,
+   * the composer's POST, and the fields panel (which has required it since
+   * §33 and was never given it here, so Fields was broken on every
+   * password-protected asset link).
+   */
+  shareSession?: string | null
   asset: Asset & { thumbnail_url?: string; stream_url?: string }
   permission: SharePermission
   commentRefreshKey: number
@@ -466,6 +474,7 @@ interface ShareRightPanelProps {
 
 function ShareRightPanel({
   token,
+  shareSession,
   asset,
   permission,
   commentRefreshKey,
@@ -526,7 +535,11 @@ function ShareRightPanel({
             </div>
 
             {/* Comment list */}
-            <GuestCommentList token={token} refreshKey={commentRefreshKey} />
+            <GuestCommentList
+              token={token}
+              shareSession={shareSession}
+              refreshKey={commentRefreshKey}
+            />
 
             {/* Approval actions */}
             {permission === 'approve' && (
@@ -547,6 +560,7 @@ function ShareRightPanel({
             {(permission === 'comment' || permission === 'approve') && (
               <GuestCommentInput
                 token={token}
+                shareSession={shareSession}
                 onCommentPosted={onCommentPosted}
                 className="border-t border-white/[0.06] bg-[#141416]"
               />
@@ -556,7 +570,7 @@ function ShareRightPanel({
           // §33 — the same panel the folder viewer uses, fed by the same
           // share-token route. The level (basic vs full) is decided
           // server-side, so this cannot show more than the link permits.
-          <ShareFieldsPanel token={token} assetId={asset.id} />
+          <ShareFieldsPanel token={token} assetId={asset.id} shareSession={shareSession} />
         )}
       </div>
     </div>
@@ -568,6 +582,8 @@ function ShareRightPanel({
 
 interface ShareViewerProps {
   token: string
+  /** §234 D — threaded down to every share call the panel makes. */
+  shareSession?: string | null
   asset: Asset & { thumbnail_url?: string; stream_url?: string }
   permission: SharePermission
   downloadVariants: DownloadVariant[]
@@ -581,6 +597,7 @@ interface ShareViewerProps {
 
 function ShareViewer({
   token,
+  shareSession,
   asset,
   permission,
   downloadVariants,
@@ -677,6 +694,7 @@ function ShareViewer({
         {sidebar.showSidebar && sidebarOpen && (
           <ShareRightPanel
             token={token}
+            shareSession={shareSession}
             asset={asset}
             permission={permission}
             commentRefreshKey={commentKey}
@@ -1026,6 +1044,7 @@ export default function SharePage({
   return (
     <ShareViewer
       token={token}
+      shareSession={shareSession}
       asset={state.asset}
       permission={state.permission}
       downloadVariants={state.downloadVariants}

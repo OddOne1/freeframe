@@ -43,6 +43,10 @@ class ShareLinkCreate(BaseModel):
     #: §188 — whether a viewer may READ existing comments. Independent of
     #: `permission`, which decides whether they may POST one.
     show_comments: bool = True
+    #: §234 F1 — and whether those comments include the team's internal
+    #: ones. Off by default, and switched off with `show_comments` by
+    #: `_reconcile_comment_settings`.
+    show_internal_comments: bool = False
     show_watermark: bool = False
     appearance: ShareLinkAppearance = ShareLinkAppearance()
 
@@ -61,6 +65,10 @@ class MultiShareCreate(BaseModel):
     #: §188 — whether a viewer may READ existing comments. Independent of
     #: `permission`, which decides whether they may POST one.
     show_comments: bool = True
+    #: §234 F1 — and whether those comments include the team's internal
+    #: ones. Off by default, and switched off with `show_comments` by
+    #: `_reconcile_comment_settings`.
+    show_internal_comments: bool = False
     show_watermark: bool = False
     appearance: ShareLinkAppearance = ShareLinkAppearance()
 
@@ -80,6 +88,13 @@ class ShareLinkResponse(BaseModel):
     fields_visibility: FieldsVisibility = FieldsVisibility.disabled
     show_versions: bool
     show_comments: bool
+    #: §234 F1. On the creator-facing responses only (this model backs
+    #: POST/PATCH /share and GET /share/{token}/details, all of which
+    #: require project editor+). `ShareLinkValidateResponse` below, which is
+    #: what an anonymous viewer reads, deliberately does NOT carry it: the
+    #: server decides what the listing contains, so the page has no decision
+    #: to make and no reason to be told the setting.
+    show_internal_comments: bool = False
     show_watermark: bool
     appearance: dict
     expires_at: Optional[datetime] = None
@@ -134,6 +149,7 @@ class ShareLinkUpdate(BaseModel):
     is_enabled: Optional[bool] = None
     show_versions: Optional[bool] = None
     show_comments: Optional[bool] = None
+    show_internal_comments: Optional[bool] = None
     show_watermark: Optional[bool] = None
     appearance: Optional[ShareLinkAppearance] = None
     password: Optional[str] = None
@@ -176,7 +192,12 @@ class FolderShareAssetItem(BaseModel):
     file_size: Optional[int] = None
     duration_seconds: Optional[float] = None
     comment_count: int = 0
-    created_by_name: Optional[str] = None
+    #: §234 F2 — the UPLOADER, as much of them as a share viewer may see:
+    #: their initials, or their first name on a password-protected link. This
+    #: used to be `created_by_name`, the uploader's full name, handed to
+    #: every holder of a folder or project link for every file in the
+    #: listing. The name itself never leaves the server now.
+    uploader_label: Optional[str] = None
     created_at: datetime
     #: Which of the link's permitted variants apply to THIS asset (§30).
     download_variants: list[DownloadVariant] = []

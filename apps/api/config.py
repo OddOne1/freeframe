@@ -218,6 +218,28 @@ class Settings(BaseSettings):
     login_rate_limit_per_ip: int = 60
     login_rate_limit_ip_window_seconds: int = 600
 
+    # ── §234 — metering POST /share/{token}/comment ─────────────────────
+    #
+    # The one anonymous write path in this API, so the same two buckets as
+    # the login above and for the same reasons; see
+    # middleware/rate_limit.share_comment_rate_limit.
+    #
+    # The SHARE TOKEN bucket is the real limit: unspoofable (a caller can
+    # only move bucket by holding another link), and one link being flooded
+    # costs no other link its allowance. 30 comments per 10 minutes is well
+    # above any human reviewer. Override with
+    # SHARE_COMMENT_RATE_LIMIT_PER_TOKEN /
+    # SHARE_COMMENT_RATE_LIMIT_TOKEN_WINDOW_SECONDS.
+    share_comment_rate_limit_per_token: int = 30
+    share_comment_rate_limit_token_window_seconds: int = 600
+
+    # The IP bucket is coarse and generous on purpose: the address this API
+    # sees comes through a Cloudflare tunnel and a reverse proxy (see
+    # middleware/rate_limit.client_ip), so a whole agency reviewing one cut
+    # can share it. Raise it rather than lower it if real traffic trips it.
+    share_comment_rate_limit_per_ip: int = 120
+    share_comment_rate_limit_ip_window_seconds: int = 600
+
     jwt_secret: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15

@@ -409,12 +409,29 @@ class TestTheServerRequiresGuestIdentity:
 
     def test_a_signed_in_caller_needs_no_guest_fields(self, client, world):
         """The same endpoint, with a session: identity comes from the token,
-        so the guest fields must NOT be demanded."""
-        owner, link = world["owner"], world["link"]
+        so the guest fields must NOT be demanded.
+
+        §234 F2 — the ROW is what says no guest was invented, not the
+        response: a share-link response no longer carries `guest_author` (or
+        any other author field) for anyone to read. The assertion moved from
+        the JSON to the comment itself, which is the stronger half anyway —
+        a response field could have been None while a GuestUser row was
+        written regardless.
+        """
+        from apps.api.models.comment import Comment
+
+        session, owner, link = world["session"], world["owner"], world["link"]
         res = client.post(
             f"/share/{link.token}/comment",
             json={"body": "posted while signed in"},
             headers=auth(owner),
         )
         assert res.status_code == 201, res.text
-        assert res.json()["guest_author"] is None
+        row = session.query(Comment).filter(
+            Comment.id == uuid.UUID(res.json()["id"])
+        ).one()
+        assert row.guest_author_id is None
+        assert row.author_id == owner.id
+        # And nothing about the author came back to the caller.
+        assert "guest_author" not in res.json()
+        assert "author" not in res.json()

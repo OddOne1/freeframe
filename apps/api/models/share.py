@@ -139,6 +139,22 @@ class ShareLink(Base):
     # describe one panel from two sides. `_reconcile_comment_settings` in
     # routers/share.py collapses that one pair on every write.
     show_comments: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    # §234 F1 — whether the comments this link shows INCLUDE the team's
+    # internal ones. Default false, server default false: every link that
+    # existed before this column behaves exactly as it did, which for an
+    # internal comment means "never left the team".
+    #
+    # Read-only for a guest either way: `internal` can only be POSTED by a
+    # caller who passes the normal asset access check, so turning this on
+    # lets link holders READ the internal thread, never join it.
+    #
+    # Subordinate to `show_comments`, not independent of it — see
+    # `_reconcile_comment_settings` in routers/share.py, which switches it
+    # off with the panel that would have displayed it, for the same reason
+    # §189 collapsed `permission` against `show_comments`.
+    show_internal_comments: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     show_watermark: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     appearance: Mapped[dict] = mapped_column(JSON, nullable=False, server_default='{"layout":"grid","theme":"dark","accent_color":null,"open_in_viewer":true,"sort_by":"created_at"}')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

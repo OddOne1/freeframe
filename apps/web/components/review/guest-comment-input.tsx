@@ -106,12 +106,19 @@ function IdentityForm({ onIdentified }: IdentityFormProps) {
 interface GuestCommentInputProps {
   /** The share token for this public link */
   token: string
+  /**
+   * §234 B/D — the password session for this link, sent on the POST the way
+   * every other share call sends it. POST /share/{token}/comment is behind
+   * the password gate now; without this a password-protected link's
+   * composer 403s on every submit.
+   */
+  shareSession?: string | null
   /** Called after a comment is successfully submitted */
   onCommentPosted?: () => void
   className?: string
 }
 
-export function GuestCommentInput({ token, onCommentPosted, className }: GuestCommentInputProps) {
+export function GuestCommentInput({ token, shareSession, onCommentPosted, className }: GuestCommentInputProps) {
   const [identity, setIdentity] = React.useState<GuestIdentity | null>(null)
   const [body, setBody] = React.useState('')
   const [submitting, setSubmitting] = React.useState(false)
@@ -140,7 +147,8 @@ export function GuestCommentInput({ token, onCommentPosted, className }: GuestCo
 
     try {
       const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-      const response = await fetch(`${API_URL}/share/${token}/comment`, {
+      const sp = shareSession ? `?share_session=${encodeURIComponent(shareSession)}` : ''
+      const response = await fetch(`${API_URL}/share/${token}/comment${sp}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -1,16 +1,30 @@
 /**
- * A comment from a signed-in user has no `guest_name` — and reading
- * `comment.guest_name.charAt(0)` on one took the whole asset share page down
- * to Next's generic "Application error" screen. Confirmed live on two
- * independent share links.
+ * The asset share page's comment list.
  *
- * These render the real component, rather than only testing the name helper,
- * because the crash was in the JSX. A pure-function test would keep passing
- * if someone put `comment.guest_name.charAt(0)` back in the markup.
+ * Two things this file has always been for, and one §234 adds.
+ *
+ * The original: a comment from a signed-in user has no `guest_name`, and
+ * reading `comment.guest_name.charAt(0)` on one took the whole asset share
+ * page down to Next's generic "Application error" screen (confirmed live on
+ * two independent share links). The four-field chain that fixed it is gone
+ * now — §234 F2 sends ONE field, `author_label` — but the lesson is the same
+ * and is why these tests render the real component rather than only the
+ * helper: the crash was in the JSX, and a pure-function test would keep
+ * passing if someone put a field-specific `.charAt(0)` back in the markup.
+ *
+ * What §234 adds: the list may show NOTHING about an author except the
+ * server's label and colour. A response carrying an author object, a guest
+ * e-mail or a name is no longer something the server sends — and must not be
+ * something this component would render if it arrived anyway.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
-import { GuestCommentList, commentAuthorName, type GuestComment } from '../guest-comment-list'
+import {
+  GuestCommentList,
+  commentAuthorName,
+  commentAuthorColor,
+  type GuestComment,
+} from '../guest-comment-list'
 
 const base = { id: 'c1', body: 'Looks good', created_at: '2026-01-01T00:00:00Z' }
 
@@ -18,79 +32,143 @@ function serve(comments: Partial<GuestComment>[]) {
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => comments })))
 }
 
-async function renderList() {
-  render(<GuestCommentList token="tok" refreshKey={0} />)
+async function renderList(props: Record<string, unknown> = {}) {
+  render(<GuestCommentList token="tok" refreshKey={0} {...props} />)
   await waitFor(() => expect(screen.queryByText('Looks good')).toBeTruthy())
+}
+
+function lastFetchUrl(): string {
+  const mock = fetch as unknown as ReturnType<typeof vi.fn>
+  return String(mock.mock.calls[mock.mock.calls.length - 1][0])
 }
 
 beforeEach(() => { vi.restoreAllMocks() })
 afterEach(() => { vi.unstubAllGlobals() })
 
-describe('who left the comment', () => {
-  it('renders an anonymous guest by their guest_name', async () => {
-    serve([{ ...base, guest_name: 'Dana' }])
+describe('§234 F3 — who left the comment, as far as a share viewer may know', () => {
+  it('renders the label the server sent', async () => {
+    serve([{ ...base, author_label: 'MS' }])
     await renderList()
-    expect(screen.getByText('Dana')).toBeTruthy()
-    expect(screen.getByText('D')).toBeTruthy()
+    expect(screen.getByText('MS')).toBeTruthy()
   })
 
-  it('renders a signed-in author without throwing — the reported crash', async () => {
-    serve([{ ...base, author: { id: 'u1', name: 'Mathias' } }])
+  it('renders a first name on a password-protected link just as it arrives', async () => {
+    // The server decides which of the two it sends; the page does not.
+    serve([{ ...base, author_label: 'Mathias' }])
     await renderList()
     expect(screen.getByText('Mathias')).toBeTruthy()
-    expect(screen.getByText('M')).toBeTruthy()
   })
 
-  it('renders a named share-link visitor from guest_author', async () => {
-    serve([{ ...base, guest_author: { id: 'g1', name: 'Priya', email: 'p@x.co' } }])
+  it('paints the chip with the colour the server chose', async () => {
+    serve([{ ...base, author_label: 'MS', author_color: '#10b981' }])
     await renderList()
-    expect(screen.getByText('Priya')).toBeTruthy()
-    expect(screen.getByText('P')).toBeTruthy()
+    const chips = document.querySelectorAll('[style*="background-color"]')
+    expect(chips.length).toBeGreaterThan(0)
+    expect(
+      Array.from(chips).some((c) =>
+        (c as HTMLElement).style.backgroundColor === 'rgb(16, 185, 129)',
+      ),
+    ).toBe(true)
   })
 
-  it('falls back to author_name', async () => {
-    serve([{ ...base, author_name: 'Sam' }])
+  it('gives two authors with the same label their two different colours', async () => {
+    serve([
+      { id: 'a', body: 'Looks good', created_at: base.created_at, author_label: 'MS', author_color: '#8b5cf6' },
+      { id: 'b', body: 'Agreed', created_at: base.created_at, author_label: 'MS', author_color: '#10b981' },
+    ])
     await renderList()
-    expect(screen.getByText('Sam')).toBeTruthy()
+    const colours = new Set(
+      Array.from(document.querySelectorAll('[style*="background-color"]')).map(
+        (c) => (c as HTMLElement).style.backgroundColor,
+      ),
+    )
+    expect(colours.size).toBe(2)
+  })
+
+  it('renders a thread of two without either one crashing it', async () => {
+    serve([
+      { id: 'a', body: 'Looks good', created_at: base.created_at, author_label: 'DD' },
+      { id: 'b', body: 'Agreed', created_at: base.created_at, author_label: 'MS' },
+    ])
+    await renderList()
+    expect(screen.getByText('DD')).toBeTruthy()
+    expect(screen.getByText('MS')).toBeTruthy()
+    expect(screen.getByText('Agreed')).toBeTruthy()
   })
 
   it('falls back to "User" when the comment names nobody at all', async () => {
     serve([{ ...base }])
     await renderList()
     expect(screen.getByText('User')).toBeTruthy()
-    expect(screen.getByText('U')).toBeTruthy()
   })
 
-  it('renders a mixed thread — one guest, one signed-in — in full', async () => {
-    // The real repro: the crash killed the page, so the guest comment beside
-    // it disappeared too. Both must survive together.
+  it('marks an internal comment, which a guest may read but not write', async () => {
+    serve([{ ...base, author_label: 'MS', visibility: 'internal' }])
+    await renderList()
+    expect(screen.getByText('Internal')).toBeTruthy()
+  })
+
+  it('does not mark a public one', async () => {
+    serve([{ ...base, author_label: 'MS', visibility: 'public' }])
+    await renderList()
+    expect(screen.queryByText('Internal')).toBeNull()
+  })
+
+  it('renders nothing from an author object, should one ever arrive', async () => {
+    // The server stopped sending these (§234 F2). The point of the assertion
+    // is that the COMPONENT does not display them either, so a response from
+    // an older API cannot put a name or an address back on the page.
     serve([
-      { id: 'a', body: 'Looks good', created_at: base.created_at, guest_name: 'Dana' },
-      { id: 'b', body: 'Agreed', created_at: base.created_at, author: { id: 'u1', name: 'Mathias' } },
+      {
+        ...base,
+        author_label: 'MS',
+        ...({
+          author: { id: 'u1', name: 'Mathias Sonnleitner', avatar_url: null },
+          guest_author: { id: 'g1', name: 'Dana Doe', email: 'dana@example.test' },
+          author_name: 'Mathias Sonnleitner',
+          guest_email: 'dana@example.test',
+        } as Record<string, unknown>),
+      },
     ])
     await renderList()
-    expect(screen.getByText('Dana')).toBeTruthy()
-    expect(screen.getByText('Mathias')).toBeTruthy()
-    expect(screen.getByText('Agreed')).toBeTruthy()
-  })
-
-  it('prefers the signed-in author when both are somehow present', async () => {
-    serve([{ ...base, guest_name: 'Dana', author: { id: 'u1', name: 'Mathias' } }])
-    await renderList()
-    expect(screen.getByText('Mathias')).toBeTruthy()
-    expect(screen.queryByText('Dana')).toBeNull()
+    expect(screen.getByText('MS')).toBeTruthy()
+    for (const leaked of ['Mathias Sonnleitner', 'Dana Doe', 'dana@example.test']) {
+      expect(screen.queryByText(leaked)).toBeNull()
+    }
+    expect(document.body.textContent).not.toContain('dana@example.test')
   })
 })
 
-describe('commentAuthorName', () => {
+describe('§234 D — the password session travels with the request', () => {
+  it('is sent when there is one', async () => {
+    serve([{ ...base, author_label: 'MS' }])
+    await renderList({ shareSession: 'sess-123' })
+    expect(lastFetchUrl()).toContain('share_session=sess-123')
+  })
+
+  it('is absent when there is none, rather than sent empty', async () => {
+    serve([{ ...base, author_label: 'MS' }])
+    await renderList()
+    expect(lastFetchUrl()).not.toContain('share_session')
+  })
+
+  it('refetches when the visitor unlocks the link', async () => {
+    serve([{ ...base, author_label: 'MS' }])
+    const { rerender } = render(
+      <GuestCommentList token="tok" refreshKey={0} shareSession={null} />,
+    )
+    await waitFor(() => expect(screen.queryByText('Looks good')).toBeTruthy())
+    rerender(<GuestCommentList token="tok" refreshKey={0} shareSession="sess-after" />)
+    await waitFor(() => expect(lastFetchUrl()).toContain('share_session=sess-after'))
+  })
+})
+
+describe('commentAuthorName / commentAuthorColor', () => {
   const cases: Array<[string, Partial<GuestComment>, string]> = [
-    ['author wins', { author: { id: 'u', name: 'A' }, guest_author: { id: 'g', name: 'B', email: '' }, guest_name: 'C', author_name: 'D' }, 'A'],
-    ['then guest_author', { guest_author: { id: 'g', name: 'B', email: '' }, guest_name: 'C', author_name: 'D' }, 'B'],
-    ['then guest_name', { guest_name: 'C', author_name: 'D' }, 'C'],
-    ['then author_name', { author_name: 'D' }, 'D'],
-    ['then User', {}, 'User'],
-    ['a null author does not win', { author: null, guest_name: 'C' }, 'C'],
-    ['an empty guest_name is not a name', { guest_name: '', author_name: 'D' }, 'D'],
+    ['the label', { author_label: 'MS' }, 'MS'],
+    ['a first name is a label too', { author_label: 'Mathias' }, 'Mathias'],
+    ['nothing at all', {}, 'User'],
+    ['an empty label is not a label', { author_label: '' }, 'User'],
   ]
   it.each(cases)('%s', (_label, comment, expected) => {
     expect(commentAuthorName({ ...base, ...comment } as GuestComment)).toBe(expected)
@@ -103,6 +181,13 @@ describe('commentAuthorName', () => {
       expect(name.length).toBeGreaterThan(0)
     }
   })
+
+  it('always returns a colour, even with none in the payload', () => {
+    expect(commentAuthorColor({ ...base } as GuestComment)).toMatch(/^#[0-9a-f]{6}$/i)
+    expect(
+      commentAuthorColor({ ...base, author_color: '#123456' } as GuestComment),
+    ).toBe('#123456')
+  })
 })
 
 describe('the list itself', () => {
@@ -114,6 +199,12 @@ describe('the list itself', () => {
 
   it('survives a non-array body from the API', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ detail: 'nope' }) })))
+    render(<GuestCommentList token="tok" refreshKey={0} />)
+    await waitFor(() => expect(screen.getByText('No comments — yet')).toBeTruthy())
+  })
+
+  it('shows the empty state on a 403 — a link whose password was not answered', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 403, json: async () => ({}) })))
     render(<GuestCommentList token="tok" refreshKey={0} />)
     await waitFor(() => expect(screen.getByText('No comments — yet')).toBeTruthy())
   })

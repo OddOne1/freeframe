@@ -207,9 +207,18 @@ describe('the Permissions toggles send both fields together', () => {
   })
 
   it('hiding the panel also revokes posting', () => {
+    // §234 F1 added a THIRD field to this same payload (the internal-comment
+    // option goes off with the panel too), so the literal is now spread over
+    // several lines. Same rule, same single call — see
+    // components/projects/__tests__/share-internal-comments-toggle.test.tsx,
+    // which asserts the dispatched PATCH body rather than the source text.
     expect(SRC).toMatch(
-      /\{ show_comments: false, permission: "view" \}/,
+      /show_comments: false,\s*permission: "view",\s*show_internal_comments: false/,
     )
+  })
+
+  it('and takes the internal-comment option with it, in the same call', () => {
+    expect(SRC).toMatch(/show_internal_comments: false/)
   })
 
   it('never sends a bare permission:comment that could strand the panel', () => {

@@ -371,22 +371,33 @@ export interface GuestAuthor {
 
 export interface Comment {
   id: string;
-  asset_id: string;
+  /** Absent on a share link's comments — see `author_label` below. */
+  asset_id?: string;
   version_id: string;
   parent_id: string | null;
-  author_id: string | null;
+  author_id?: string | null;
   author_name?: string | null;
-  guest_author_id: string | null;
+  guest_author_id?: string | null;
   timecode_start: number | null;
   timecode_end: number | null;
   body: string;
-  resolved: boolean;
-  visibility: string;
+  resolved?: boolean;
+  visibility?: string;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
+  deleted_at?: string | null;
   author?: CommentAuthor | null;
   guest_author?: GuestAuthor | null;
+  /**
+   * §234 F2 — on a SHARE LINK's comments, all there is to say about the
+   * author: their initials, or their first name on a password-protected
+   * link, with a server-assigned chip colour. The authenticated routes do
+   * not send these two and keep sending `author`/`guest_author`; the share
+   * routes send only these, so a component that handles both renders the
+   * label when it is there (`authorChip` in comment-panel.tsx).
+   */
+  author_label?: string;
+  author_color?: string;
 }
 
 export interface Annotation {
@@ -511,6 +522,11 @@ export interface ShareLink {
    *  the backend schema field exactly; a mismatch is silent (the field
    *  reads undefined) and falls back to showing comments. */
   show_comments: boolean;
+  /** §234 F1 — whether those comments include the team's internal ones.
+   *  Subordinate to `show_comments`: the server switches it off with the
+   *  panel (`_reconcile_comment_settings`), and so does this UI. Off for
+   *  every link that existed before the column. */
+  show_internal_comments?: boolean;
   show_watermark: boolean;
   appearance: ShareLinkAppearance | null;
   created_at: string;
@@ -564,7 +580,12 @@ export interface FolderShareAssetItem {
   file_size: number | null
   duration_seconds: number | null
   comment_count: number
-  created_by_name: string | null
+  /**
+   * §234 F2 — the uploader's initials, or their first name on a
+   * password-protected link. Replaces `created_by_name`, which was their
+   * full name and reached every holder of the link.
+   */
+  uploader_label: string | null
   created_at: string
   /** Which of the link's permitted variants apply to THIS asset (§30). */
   download_variants?: DownloadVariant[]

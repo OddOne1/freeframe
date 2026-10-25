@@ -241,7 +241,13 @@ export function ReviewProvider({
     } catch {
       // Comments failing silently — asset is still viewable
     }
-  }, [assetId, shareToken]);
+    // §234 D — `shareSessionParam` is a DEPENDENCY, not just a closure
+    // capture. The share page sets `shareSession` only once the visitor has
+    // answered the password, which is after this provider's first render, so
+    // a callback pinned to the first render kept sending the empty param
+    // forever. It did not matter while the comment routes had no password
+    // gate; now it is the difference between a working panel and a 403.
+  }, [assetId, shareToken, shareSessionParam]);
 
   const refetchComments = useCallback(async () => {
     await fetchComments();
@@ -343,7 +349,9 @@ export function ReviewProvider({
       }
       return comment;
     },
-    [assetId],
+    // Same reason as fetchComments above: the session has to be the current
+    // one, not the one that existed when this callback was first built.
+    [assetId, shareToken, shareSessionParam],
   );
 
   const resolveComment = useCallback(

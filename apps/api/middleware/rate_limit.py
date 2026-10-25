@@ -89,6 +89,14 @@ def rate_limit(action: str, max_requests: int, window_seconds: int):
 LOGIN_EMAIL_ACTION = "login_email"
 LOGIN_IP_ACTION = "login_ip"
 
+#: §234 C — the same two-bucket shape for the one anonymous WRITE this API
+#: has: POST /share/{token}/comment. `share_comment_token` holds a SHA-256
+#: of the share token for the same reason `login_email` hashes the address —
+#: a Redis key is not a safe place to keep a live credential, and the token
+#: IS the credential.
+SHARE_COMMENT_TOKEN_ACTION = "share_comment_token"
+SHARE_COMMENT_IP_ACTION = "share_comment_ip"
+
 
 def login_email_bucket(email: str) -> str:
     """The bucket an address falls in: lower-cased, stripped, then hashed.
@@ -183,6 +191,64 @@ async def login_rate_limit(request: Request) -> None:
         LOGIN_IP_ACTION,
         settings.login_rate_limit_per_ip,
         settings.login_rate_limit_ip_window_seconds,
+    )
+    if not allowed:
+        raise _too_many(retry_after)
+
+
+# ── §234 — metering the anonymous comment write ─────────────────────────────
+
+
+def share_token_bucket(token: str) -> str:
+    """The bucket a share token falls in: hashed, never the token itself."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def share_comment_rate_limit(request: Request) -> None:
+    """Meter POST /share/{token}/comment, by SHARE TOKEN first and by IP second.
+
+    The only unauthenticated write in this API. The reasoning is §233's,
+    applied to the other credential this instance accepts:
+
+    **The token bucket is the real limit.** A caller cannot change which
+    bucket they land in without changing which link they are writing to, and
+    changing that means holding a different link. One link being flooded
+    costs no other link its allowance, and the flood stops at 30 comments
+    per 10 minutes by default — far above any human reviewer and far below
+    what makes a comment thread unusable.
+
+    **The IP bucket** is the coarse second brake, deliberately generous for
+    exactly the reason `client_ip` gives: on this deployment the address
+    arrives through a Cloudflare tunnel and Traefik, so it is either shared
+    by everyone or chosen by the caller. A whole agency reviewing one cut
+    from one office must not lock each other out.
+
+    **It cannot be used to probe links.** This runs as a route dependency,
+    BEFORE the route validates anything, so an invalid, expired, disabled or
+    password-locked token is metered identically to a working one and the
+    throttled response is byte-identical either way (`_too_many`). The bucket
+    is derived from the submitted string with no database lookup, so the
+    timing does not differ either.
+
+    Both sizes are settings, read at call time so a test (or a future
+    restart-free reload) sees the current value.
+    """
+    token = request.path_params.get("token")
+    if isinstance(token, str) and token:
+        allowed, retry_after = check_rate_limit(
+            share_token_bucket(token),
+            SHARE_COMMENT_TOKEN_ACTION,
+            settings.share_comment_rate_limit_per_token,
+            settings.share_comment_rate_limit_token_window_seconds,
+        )
+        if not allowed:
+            raise _too_many(retry_after)
+
+    allowed, retry_after = check_rate_limit(
+        client_ip(request),
+        SHARE_COMMENT_IP_ACTION,
+        settings.share_comment_rate_limit_per_ip,
+        settings.share_comment_rate_limit_ip_window_seconds,
     )
     if not allowed:
         raise _too_many(retry_after)
