@@ -13,7 +13,8 @@ import boto3
 from botocore.config import Config
 from .base import (
     BaseTranscoder, TranscodeJob, TranscodeResult, VideoMetadata,
-    parse_ffprobe_metadata, probe_exiftool, merge_exiftool_metadata,
+    has_audio_stream, parse_ffprobe_metadata, probe_exiftool,
+    merge_exiftool_metadata,
 )
 
 logger = logging.getLogger(__name__)
@@ -192,6 +193,123 @@ DEFAULT_URL_EXPIRY_SECONDS = 43200
 #: (the MinIO client's own default expiry is this same 604800). Anything
 #: larger is rejected at signing time rather than merely ignored.
 MAX_PRESIGN_EXPIRY_SECONDS = 604800
+
+
+#: The ladder's rungs: scale target and x264 CRF, per quality name. Module
+#: level rather than inside transcode() so hls_ladder_cmd below is a pure
+#: function of its arguments and can be asserted on argv-for-argv.
+QUALITY_MAP = {
+    "1080p": ("1920:1080", 20),
+    "720p": ("1280:720", 22),
+    "360p": ("640:360", 26),
+}
+
+
+def hls_ladder_cmd(
+    input_url: str,
+    qualities: list[str],
+    hls_dir: Path,
+    *,
+    has_audio: bool,
+) -> list[str]:
+    """The ONE HLS ladder command, for a source with audio or without.
+
+    §237 — `-map a:0` used to be appended for every rung unconditionally,
+    and `-var_stream_map` always claimed one audio rendition per video
+    rendition. A source with no audio track therefore died in ffmpeg's
+    option parsing, ~0.7 s in, before a frame was encoded:
+
+        Stream map '' matches no streams.
+        Failed to set value 'a:0' for option 'map': Invalid argument
+        RuntimeError: Transcode failed: HLS transcode failed (exit 234)
+
+    iOS ReplayKit screen recordings, silent stock footage and any muted
+    export are all in that set, and every one of them went `failed`.
+
+    **`has_audio=True` must produce EXACTLY the argv this produced before
+    the fix** — same flags, same order, same strings. The audio path is the
+    one that works today and carries every file already in the library;
+    only the absence of audio is new behaviour. test_hls_no_audio.py pins
+    that against a copy of the old builder.
+
+    `has_audio=False` differs in exactly two places, and nothing else:
+
+      * no `-map a:0` on any rung, so ffmpeg maps the scaled video alone;
+      * `-var_stream_map` becomes `v:0 v:1 v:2` rather than
+        `v:0,a:0 v:1,a:1 v:2,a:2` — the same renditions, each with no audio
+        member. The variant count, the `%v` directories, `seg_%03d.ts`,
+        `playlist.m3u8` and `master.m3u8` are unchanged, which is why
+        nothing downstream (upload, the HLS proxy, hls.js, Safari's native
+        player, the share page) has to know about this at all.
+
+    There is deliberately NO audio encoder option on either path: the
+    ladder has never set one and inherits ffmpeg's mpegts default (AAC),
+    which is what every existing rendition in the library was made with.
+    Pinning one here would re-encode tomorrow's audio differently from
+    yesterday's for no reason connected to this bug.
+    """
+    # Build filter_complex and map args
+    # Use force_original_aspect_ratio=decrease to preserve aspect ratio,
+    # then pad to even dimensions required by libx264
+    split_outputs = "".join(f"[v{i}]" for i in range(len(qualities)))
+    filter_complex = f"[v:0]split={len(qualities)}{split_outputs};"
+    filter_complex += ";".join(
+        f"[v{i}]scale={QUALITY_MAP[q][0]}:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2[{q}]"
+        for i, q in enumerate(qualities)
+    )
+
+    ffmpeg_cmd = [
+        "ffmpeg", "-y", "-i", input_url,
+        "-filter_complex", filter_complex,
+    ]
+
+    for i, quality in enumerate(qualities):
+        scale, crf = QUALITY_MAP[quality]
+        ffmpeg_cmd += ["-map", f"[{quality}]"]
+        # §237 — the whole bug, in one condition. Unconditional before, and
+        # a source with no audio stream has nothing for `a:0` to match.
+        if has_audio:
+            ffmpeg_cmd += ["-map", "a:0"]
+        ffmpeg_cmd += [
+            f"-c:v:{i}", "libx264", f"-crf", str(crf), "-preset", "fast",
+            # §117 — PIN 8-BIT 4:2:0. Without this x264 inherits the
+            # SOURCE pixel format, so a 10-bit or 4:2:2 master (ProRes
+            # 422, Log, essentially any professional camera) produces
+            # High 10 or High 4:2:2 renditions. Chromium software-
+            # decodes those, which is why playback looked fine there,
+            # but Apple's video decoder does not: Safari plays the AAC
+            # track and shows no picture at all.
+            #
+            # These are delivery renditions, not masters -- the
+            # original is kept untouched as s3_key_raw and is what any
+            # download or NLE round-trip uses -- so there is nothing to
+            # preserve by carrying 10-bit through to HLS.
+            f"-pix_fmt:v:{i}", "yuv420p",
+            # Pinned for the same reason: an unconstrained profile/level
+            # can still emit something a hardware decoder refuses.
+            f"-profile:v:{i}", "high",
+            f"-level:v:{i}", "4.1",
+            "-force_key_frames", "expr:gte(t,n_forced*2)",
+        ]
+
+    segment_dir = hls_dir / "%v"
+    ffmpeg_cmd += [
+        "-f", "hls",
+        "-hls_time", "2",
+        "-hls_playlist_type", "vod",
+        "-hls_flags", "independent_segments",
+        "-hls_segment_type", "mpegts",
+        "-master_pl_name", "master.m3u8",
+        "-var_stream_map", " ".join(
+            f"v:{i},a:{i}" if has_audio else f"v:{i}"
+            for i in range(len(qualities))
+        ),
+        "-hls_segment_filename", str(hls_dir / "%v" / "seg_%03d.ts"),
+        str(hls_dir / "%v" / "playlist.m3u8"),
+    ]
+
+    ffmpeg_cmd += ["-progress", "pipe:1", "-nostats"]
+    return ffmpeg_cmd
 
 
 class FFmpegTranscoder(BaseTranscoder):
@@ -505,9 +623,27 @@ class FFmpegTranscoder(BaseTranscoder):
             ]
             probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=120)
             probed: dict = {}
+            # §237 — whether to map an audio track into the ladder, decided
+            # from THIS probe and no other. The input is a presigned URL to
+            # an object that can be 100 GB, and a second ffprobe of it is a
+            # second real range read over the network for an answer this
+            # payload already contains (`-show_streams`, every stream, with
+            # its codec_type).
+            #
+            # True is the default on purpose: it is what this code did
+            # before the fix, for every input. An ffprobe that failed or
+            # returned something unparseable tells us nothing about the
+            # audio, and guessing "no audio" there would strip the sound
+            # off a file that has it -- a silent rendition nobody would
+            # notice for weeks. Guessing "audio" costs, at worst, exactly
+            # the failure this section fixes, for a source we already know
+            # we cannot read properly.
+            has_audio = True
             if probe_result.returncode == 0 and probe_result.stdout:
                 try:
-                    probed = parse_ffprobe_metadata(json.loads(probe_result.stdout))
+                    probe_json = json.loads(probe_result.stdout)
+                    probed = parse_ffprobe_metadata(probe_json)
+                    has_audio = has_audio_stream(probe_json)
                 except (json.JSONDecodeError, KeyError):
                     logger.warning(
                         "ffprobe output for %s could not be parsed; continuing "
@@ -567,74 +703,34 @@ class FFmpegTranscoder(BaseTranscoder):
                     pass
 
             # 3. Build quality ladder based on available qualities
-            QUALITY_MAP = {
-                "1080p": ("1920:1080", 20),
-                "720p": ("1280:720", 22),
-                "360p": ("640:360", 26),
-            }
             qualities = [q for q in job.qualities if q in QUALITY_MAP]
 
             hls_dir = work_dir / "hls"
             hls_dir.mkdir()
 
-            # Build filter_complex and map args
-            # Use force_original_aspect_ratio=decrease to preserve aspect ratio,
-            # then pad to even dimensions required by libx264
-            split_outputs = "".join(f"[v{i}]" for i in range(len(qualities)))
-            filter_complex = f"[v:0]split={len(qualities)}{split_outputs};"
-            filter_complex += ";".join(
-                f"[v{i}]scale={QUALITY_MAP[q][0]}:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2[{q}]"
-                for i, q in enumerate(qualities)
+            if not has_audio:
+                # §237 — the one line that makes a silent source legible in
+                # the worker log, and the only trace the video-only path
+                # leaves. WARNING rather than INFO deliberately, for the
+                # same reason as the presign line above: the transcoding
+                # worker runs at `--loglevel=warning` in production
+                # (docker-compose.prod.yml), so an INFO line is never
+                # written at all -- and "this ladder went video-only" has
+                # to be readable in exactly the log the old failure was
+                # reported from.
+                logger.warning(
+                    "%s has no audio stream — encoding the HLS ladder "
+                    "video-only: no -map a:0, %d video-only rendition(s)",
+                    job.input_s3_key, len(qualities),
+                )
+
+            ffmpeg_cmd = hls_ladder_cmd(
+                input_url, qualities, hls_dir, has_audio=has_audio,
             )
-
-            ffmpeg_cmd = [
-                "ffmpeg", "-y", "-i", input_url,
-                "-filter_complex", filter_complex,
-            ]
-
-            for i, quality in enumerate(qualities):
-                scale, crf = QUALITY_MAP[quality]
-                ffmpeg_cmd += [
-                    "-map", f"[{quality}]", "-map", "a:0",
-                    f"-c:v:{i}", "libx264", f"-crf", str(crf), "-preset", "fast",
-                    # §117 — PIN 8-BIT 4:2:0. Without this x264 inherits the
-                    # SOURCE pixel format, so a 10-bit or 4:2:2 master (ProRes
-                    # 422, Log, essentially any professional camera) produces
-                    # High 10 or High 4:2:2 renditions. Chromium software-
-                    # decodes those, which is why playback looked fine there,
-                    # but Apple's video decoder does not: Safari plays the AAC
-                    # track and shows no picture at all.
-                    #
-                    # These are delivery renditions, not masters -- the
-                    # original is kept untouched as s3_key_raw and is what any
-                    # download or NLE round-trip uses -- so there is nothing to
-                    # preserve by carrying 10-bit through to HLS.
-                    f"-pix_fmt:v:{i}", "yuv420p",
-                    # Pinned for the same reason: an unconstrained profile/level
-                    # can still emit something a hardware decoder refuses.
-                    f"-profile:v:{i}", "high",
-                    f"-level:v:{i}", "4.1",
-                    "-force_key_frames", "expr:gte(t,n_forced*2)",
-                ]
-
-            segment_dir = hls_dir / "%v"
-            ffmpeg_cmd += [
-                "-f", "hls",
-                "-hls_time", "2",
-                "-hls_playlist_type", "vod",
-                "-hls_flags", "independent_segments",
-                "-hls_segment_type", "mpegts",
-                "-master_pl_name", "master.m3u8",
-                "-var_stream_map", " ".join(f"v:{i},a:{i}" for i in range(len(qualities))),
-                "-hls_segment_filename", str(hls_dir / "%v" / "seg_%03d.ts"),
-                str(hls_dir / "%v" / "playlist.m3u8"),
-            ]
 
             # Create per-quality directories
             for q in qualities:
                 (hls_dir / q).mkdir(exist_ok=True)
-
-            ffmpeg_cmd += ["-progress", "pipe:1", "-nostats"]
 
             # Timeout scales with expected duration - 4 hours for very large files.
             # Streamed via Popen (see _run_ffmpeg_with_progress) instead of a single

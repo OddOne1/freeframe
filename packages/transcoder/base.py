@@ -36,6 +36,38 @@ class VideoMetadata:
     fps: float
 
 
+def has_audio_stream(probe_data: dict) -> bool:
+    """Does this ffprobe payload describe an input with an audio stream?
+
+    §237 — the HLS ladder mapped `a:0` unconditionally, so every silent
+    source (iOS ReplayKit screen recordings, stock footage, any muted
+    export) died before it encoded a single frame:
+
+        Stream map '' matches no streams.
+        Failed to set value 'a:0' for option 'map': Invalid argument
+
+    Reads the SAME `-show_streams -show_format` payload the metadata pass
+    already fetched. It must never cost a second ffprobe: the input is a
+    presigned URL to an object that can be 100 GB, and every probe of it is
+    a real range read over the network.
+
+    Deliberately "is there a stream ffmpeg's `a:0` selector would pick",
+    nothing more. A stream that exists but is unusable (zero channels, a
+    codec no encoder will take) still answers True, because that is exactly
+    what ffmpeg itself will do with `-map a:0` — keeping the two in step
+    means this function cannot turn a file that transcodes today into one
+    that takes a different path tomorrow. Judging usability would be audio
+    re-encoding policy, which belongs nowhere near stream detection.
+
+    An empty or unparsed payload answers False; the ONE caller treats
+    "ffprobe said nothing at all" as its own case and never asks.
+    """
+    streams = (probe_data or {}).get("streams") or []
+    return any(
+        isinstance(s, dict) and s.get("codec_type") == "audio" for s in streams
+    )
+
+
 def parse_ffprobe_metadata(probe_data: dict) -> dict:
     """Flatten an ffprobe JSON payload (from `-show_streams -show_format`)
     into a single dict covering both the plain MediaFile columns
