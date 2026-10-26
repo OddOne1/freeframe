@@ -28,6 +28,7 @@ from ..services.upload_policy import plan_parts, UploadTooLarge
 from ..services.s3_service import create_multipart_upload
 from .folders import _get_descendant_ids as _get_descendant_folder_ids
 from ..services.storage_prefix import lock_storage_prefix, prefix_for_project
+from ..services.asset_versions import add_next_version
 from ..services.asset_visibility import visible_assets
 from ..services import zip_export_service as zx
 from ..models.zip_export import ZipExport
@@ -654,32 +655,89 @@ def initiate_new_version(
     # while its message said "10GB limit" — two different wrong numbers in
     # five lines, which is what a second copy of a policy buys.
     #
-    # Before `db.add(version)` below, so a refusal leaves no version row.
+    # Before any row is written below — the prefix lock, the version
+    # insert — so a refusal leaves no version row.
     try:
         plan = plan_parts(body.file_size_bytes)
     except UploadTooLarge as e:
         raise HTTPException(status_code=413, detail=e.detail)
 
-    last_version = db.query(AssetVersion).filter(
-        AssetVersion.asset_id == asset_id,
-        AssetVersion.deleted_at.is_(None),
-    ).order_by(AssetVersion.version_number.desc()).first()
-    next_version_number = (last_version.version_number + 1) if last_version else 1
-
-    version = AssetVersion(
-        asset_id=asset_id,
-        version_number=next_version_number,
-        processing_status=ProcessingStatus.uploading,
-        created_by=current_user.id,
-        created_by_name=current_user.name,
-    )
-    db.add(version)
-    db.flush()
-
-    # Same lock-at-initiation as the new-asset path in upload.py. A
+    # ── Freeze the project's storage prefix (§14), in its OWN transaction ──
+    #
+    # Same lock-at-initiation as the new-asset path in upload.py — a
     # project whose first upload predates §14 locks here instead, which is
-    # exactly how one project ends up holding both key formats.
+    # exactly how one project ends up holding both key formats — but §236b
+    # moved it AHEAD of the version insert and gave it its own commit, to
+    # match `initiate_upload`.
+    #
+    # Two reasons, and only the second one is new here:
+    #
+    #  * §27's KEY SHARE deadlock does NOT apply to this endpoint. That
+    #    deadlock needs an INSERT carrying a foreign key to `projects`
+    #    (which takes KEY SHARE on the project row) racing a `FOR UPDATE`
+    #    on the same row. This endpoint inserts an `asset_versions` row
+    #    (FK -> assets) and a `media_files` row (FK -> asset_versions);
+    #    neither references `projects`, so there is no KEY SHARE to
+    #    deadlock against. That half of §27 is why the old order survived.
+    #
+    #  * The LATENCY half of §27 does apply, and that is the reason for the
+    #    move. Held to the end of the request, this `FOR UPDATE` on the
+    #    project row spans the S3 CreateMultipartUpload below — so new
+    #    versions of DIFFERENT files in one project serialised behind one
+    #    S3 round trip each, as did any `/upload/initiate` in that project
+    #    (its own prefix lock conflicts, and so does the KEY SHARE its
+    #    asset insert takes). Measured with a 0.2s stubbed S3: four
+    #    concurrent new-version uploads took 0.87s before this and 0.2s
+    #    after. See tests/test_asset_version_numbers.py.
+    #
+    # Committing here is safe for the same reason it is in upload.py:
+    # everything above is a read, so nothing else is pending, and a prefix
+    # locked for an upload that later fails costs nothing — it is a naming
+    # decision, and `lock_storage_prefix` is idempotent.
+    #
+    # It also has to come first for a second reason: the retry inside
+    # `add_next_version` rolls the transaction back, which would discard a
+    # prefix lock left pending here.
     project = lock_storage_prefix(db, asset.project_id)
+    db.commit()
+
+    # §236b — the asset row, LOCKED, re-read after that commit (a commit
+    # releases the lock, so it cannot be taken before it) and BEFORE the
+    # version number is computed.
+    #
+    # The number is `max(version_number) + 1` over all of this asset's
+    # rows, and `AssetVersion` has a unique constraint on
+    # (asset_id, version_number) spanning every row including soft-deleted
+    # ones. Two requests that read it at the same time pick the same number
+    # and one of them dies on the insert with an IntegrityError — a 500
+    # after the user has already picked a file. `POST /upload/initiate`
+    # takes this same lock on this same row (§236), which is what makes the
+    # two endpoints serialise against each other rather than only against
+    # themselves.
+    #
+    # Holding it across the `create_multipart_upload` round trip below is
+    # deliberate and is NOT what §27 warns about: that was the PROJECT row,
+    # shared by every upload in a batch. This is ONE asset, and the only
+    # requests that contend for it are two new versions of the same file at
+    # the same moment — precisely the pair that must be serialised.
+    #
+    # Re-read rather than reused: the 404 above ran before the commit, so
+    # the asset could have been deleted in the gap. Same 404 as above for
+    # that, which is also what `initiate_upload` answers.
+    asset = (
+        db.query(Asset)
+        .filter(Asset.id == asset_id, Asset.deleted_at.is_(None))
+        .with_for_update()
+        .first()
+    )
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    # §236b — SHARED with `/upload/initiate`, not copied. See
+    # services/asset_versions.py: `max()` over all rows so a deleted
+    # version's number is retired rather than reused, under this lock, with
+    # one retry that turns a collision into a 409 instead of a 500.
+    version = add_next_version(db, asset, current_user, locked=True)
 
     ext = os.path.splitext(body.original_filename)[1].lower()
     s3_key = f"raw/{prefix_for_project(project)}/{asset_id}/{version.id}/original{ext}"

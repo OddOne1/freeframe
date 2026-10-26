@@ -2,7 +2,6 @@ import logging
 import os
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import uuid
@@ -23,6 +22,7 @@ from ..services.upload_completion import (
     is_upload_gone, error_code_of, PART_REFUSAL_CODES,
 )
 from ..services.upload_policy import plan_parts, UploadTooLarge
+from ..services.asset_versions import next_version_number, add_next_version
 from ..services.permissions import get_project_member, require_project_role
 from ..models.project import ProjectRole
 from .site_settings import _get_or_create_settings
@@ -98,91 +98,22 @@ def _reconcile_file_size(media_file: MediaFile) -> None:
     )
 
 
-def _next_version_number(db: Session, asset_id) -> int:
-    """One more than the highest number this asset has EVER used (§236).
-
-    Over ALL rows, soft-deleted ones included. The old query filtered
-    `deleted_at IS NULL`, but the unique constraint
-    (`uq_asset_versions_asset_version`) spans every row there is — so
-    deleting the latest version made the next upload of that asset reuse
-    its number and die on the insert. Reproduced against real Postgres:
-    two versions, soft-delete v2, initiate -> `duplicate key value
-    violates unique constraint "uq_asset_versions_asset_version"`, i.e. a
-    500 for the user.
-
-    The numbers of deleted versions are therefore retired rather than
-    recycled, which is also the better answer for a reader: "v3" in a
-    comment keeps meaning the same upload after v2 is deleted.
-
-    `max()` rather than ORDER BY ... LIMIT 1 because the number, not the
-    row, is what is wanted; the index on asset_id serves both.
-    """
-    highest = (
-        db.query(func.max(AssetVersion.version_number))
-        .filter(AssetVersion.asset_id == asset_id)
-        .scalar()
-    )
-    return int(highest or 0) + 1
-
-
-def _add_next_version(db: Session, asset, current_user: User, locked: bool) -> AssetVersion:
-    """Insert the next `AssetVersion` for `asset`, flushed and ready.
-
-    `locked` says whether the caller holds `FOR UPDATE` on the asset row.
-    It does for an existing asset, and the lock is what makes two
-    concurrent initiates of the same asset pick different numbers.
-
-    ── Why there is a retry at all ─────────────────────────────────────
-    The lock covers this endpoint against itself, and nothing else.
-    `POST /assets/{id}/versions` (routers/assets.py) computes its version
-    number the same way and takes NO such lock, so an initiate here racing
-    a version upload there can still collide. That endpoint is out of
-    scope for §236, so this path absorbs the collision instead of
-    pretending it cannot happen.
-
-    ONE retry, and it is cheap: the collision surfaces on this `flush`,
-    which happens before `create_multipart_upload` is ever called, so a
-    retry costs a rollback and two small queries and can never leave an
-    orphaned multipart upload behind. Only the locked path retries — on
-    the unlocked one the asset row itself is new and pending in this
-    transaction, where a rollback would discard it and there is no second
-    writer that could collide anyway.
-    """
-    for attempt in (1, 2):
-        version = AssetVersion(
-            asset_id=asset.id,
-            version_number=_next_version_number(db, asset.id),
-            processing_status=ProcessingStatus.uploading,
-            created_by=current_user.id,
-            created_by_name=current_user.name,
-        )
-        db.add(version)
-        try:
-            db.flush()
-            return version
-        except IntegrityError:
-            db.rollback()
-            if not locked or attempt == 2:
-                logger.warning(
-                    "version number collision on asset %s (locked=%s, attempt %d)",
-                    asset.id, locked, attempt, exc_info=True,
-                )
-                raise HTTPException(
-                    status_code=409,
-                    detail="Another upload for this file just took the next version "
-                           "number. Please try again.",
-                )
-            # The rollback dropped the row lock, so take it again before
-            # reading the highest number a second time.
-            asset = (
-                db.query(Asset)
-                .filter(Asset.id == asset.id, Asset.deleted_at.is_(None))
-                .with_for_update()
-                .first()
-            )
-            if asset is None:
-                raise HTTPException(status_code=404, detail="Asset not found")
-    raise AssertionError("unreachable")
+# ── Version numbering lives in services/asset_versions.py (§236b) ────────
+#
+# `POST /assets/{asset_id}/versions` (routers/assets.py) is the endpoint the
+# web app's "upload a new version" button actually calls, and it computed
+# the next version number with its own copy of the two lines §236 fixed
+# here — unfiltered for soft-deleted rows, and unlocked. So the exact 500
+# §236 closed on this endpoint stayed open on that one. The logic is now
+# shared rather than copied a third time; see that module for why it is
+# `max()` over all rows and why there is a retry.
+#
+# The private names stay bound here, as aliases, because §236's tests and
+# any `patch("…routers.upload._add_next_version")` target them — and
+# because `initiate_upload` below calls them through these globals, so
+# patching either one still works exactly as it did.
+_next_version_number = next_version_number
+_add_next_version = add_next_version
 
 
 @router.post("/initiate", response_model=InitiateUploadResponse)
