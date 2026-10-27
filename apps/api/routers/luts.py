@@ -33,6 +33,7 @@ from ..schemas.lut import (
 )
 from ..services import s3_service
 from ..services.permissions import require_project_role, require_asset_access
+from ..services.asset_versions import live_version
 from .hls_proxy import proxy_url_for
 
 router = APIRouter(tags=["luts"])
@@ -1033,6 +1034,15 @@ def get_lut_export_url(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     require_asset_access(db, asset, current_user)
+
+    # §239 — `version_id` is client input that goes straight into the key
+    # of a rendered copy of THAT version's footage. Unchecked, a URL held
+    # from before the version was deleted still handed back the graded
+    # export of it. The export object itself is not deleted (§239 touches
+    # no storage at all), so this check is the whole of what stops it
+    # being served.
+    if not live_version(db, asset_id, version_id):
+        raise HTTPException(status_code=404, detail="Version not found")
 
     export_key = f"lut-exports/{asset.project_id}/{asset_id}/{version_id}/{export_id}.mp4"
     filename = s3_service.build_download_filename(asset.name, export_key)

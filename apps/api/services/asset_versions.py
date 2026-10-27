@@ -74,6 +74,48 @@ def next_version_number(db: Session, asset_id) -> int:
     return int(highest or 0) + 1
 
 
+def live_version(db: Session, asset_id, version_id) -> AssetVersion | None:
+    """The live version of `asset_id` with this id, or None (§239).
+
+    Three conditions, and all three are the SAME answer — None — on
+    purpose: a version id that does not exist, one that belongs to a
+    different asset, and one that has already been soft-deleted are
+    indistinguishable to the caller. Anything else is an oracle: a client
+    could tell a real id from an invented one, or learn that a version it
+    may not see used to exist. `retry-processing` already had exactly this
+    query inline and the share routes had it twice more; §239 needs it in
+    four new places, so it lives here.
+
+    Callers raise their own 404 — the message differs between "Version not
+    found" and a share route's deliberately vaguer wording, and that is
+    the caller's business.
+    """
+    return (
+        db.query(AssetVersion)
+        .filter(
+            AssetVersion.id == version_id,
+            AssetVersion.asset_id == asset_id,
+            AssetVersion.deleted_at.is_(None),
+        )
+        .first()
+    )
+
+
+def live_version_count(db: Session, asset_id) -> int:
+    """How many versions of this asset are not deleted (§239).
+
+    Read under the asset's `FOR UPDATE` lock by the delete-version route:
+    it is what "this is the last one" means, and two concurrent deletes of
+    the last two versions must not both read 2.
+    """
+    return (
+        db.query(func.count(AssetVersion.id))
+        .filter(AssetVersion.asset_id == asset_id, AssetVersion.deleted_at.is_(None))
+        .scalar()
+        or 0
+    )
+
+
 def add_next_version(db: Session, asset, current_user: User, locked: bool) -> AssetVersion:
     """Insert the next `AssetVersion` for `asset`, flushed and ready.
 

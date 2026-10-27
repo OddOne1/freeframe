@@ -10,7 +10,10 @@ interface ConfirmDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   title: string
-  description?: string
+  /** §239 — widened from `string` so a caller can append a server error
+   *  under the prose (the delete-version dialog stays open on a refusal
+   *  and shows what the server said). Plain strings are unaffected. */
+  description?: React.ReactNode
   confirmLabel?: string
   cancelLabel?: string
   variant?: 'danger' | 'default'

@@ -121,6 +121,34 @@ def require_asset_access(db: Session, asset: Asset, user: User) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
 
+def can_manage_version(db: Session, asset: Asset, version, user: User) -> bool:
+    """May this user act on ONE version of `asset` rather than on the asset?
+
+    The uploader of that version, the project owner, or a superadmin —
+    deliberately NOT editors in general. An editor can upload a new version
+    and can delete the whole asset, but reaching into a colleague's version
+    is a different act: it destroys the review history attached to that
+    upload while leaving the file in place.
+
+    Extracted in §239 rather than copied. `retry-processing` had this rule
+    inline (routers/assets.py), §239's delete-version route needs exactly
+    the same one, and the web computes it a third time for the menu — three
+    copies of a four-way condition is how two of them end up disagreeing
+    about whether "admin" means the project role or the global one. It is
+    the GLOBAL superadmin and the PROJECT owner: a project admin is not
+    included, which is the part a re-derivation gets wrong.
+
+    Ordered so the membership query is skipped for the two cases that need
+    no lookup, as the original did.
+    """
+    if version.created_by == user.id:
+        return True
+    if user.role == UserGlobalRole.superadmin:
+        return True
+    member = get_project_member(db, asset.project_id, user.id)
+    return member is not None and member.role == ProjectRole.owner
+
+
 def get_asset_share_permission(db: Session, asset: Asset, user: User) -> SharePermission:
     """Get the effective share permission for a user on an asset (highest wins)."""
     PERM_RANK = {

@@ -23,6 +23,7 @@ from ..schemas.folder import (
 from ..services.asset_visibility import usable_asset_filter
 from ..services.permissions import require_project_role, get_project_member, is_public_project
 from ..services.purge_service import purge_asset, purge_folder
+from ..services.storage_usage import storage_bytes_query
 
 router = APIRouter(tags=["folders"])
 
@@ -91,11 +92,11 @@ def _compute_item_count(db: Session, folder_id: uuid.UUID) -> int:
 def _compute_folder_total_size(db: Session, folder_id: uuid.UUID) -> int:
     """Recursively sum file sizes of every asset in this folder and all descendant folders."""
     all_folder_ids = [folder_id] + _get_descendant_ids(db, folder_id)
-    total = db.query(func.coalesce(func.sum(MediaFile.file_size_bytes), 0)).join(
-        AssetVersion, MediaFile.version_id == AssetVersion.id
-    ).join(Asset, AssetVersion.asset_id == Asset.id).filter(
+    # §239 — shared builder; `usable_asset_filter` still narrows on top of
+    # it. The two answer different questions (see storage_usage.py's
+    # docstring) and this site needs both.
+    total = storage_bytes_query(db).filter(
         Asset.folder_id.in_(all_folder_ids),
-        Asset.deleted_at.is_(None),
         usable_asset_filter(),
     ).scalar() or 0
     return int(total)
@@ -242,12 +243,9 @@ def get_folder_tree(
     # Batch-compute direct (non-recursive) file size per folder — recursive
     # rollup happens afterwards via _accumulate() once the tree is built.
     direct_sizes = dict(
-        db.query(Asset.folder_id, func.coalesce(func.sum(MediaFile.file_size_bytes), 0))
-        .join(AssetVersion, AssetVersion.asset_id == Asset.id)
-        .join(MediaFile, MediaFile.version_id == AssetVersion.id)
+        storage_bytes_query(db, Asset.folder_id)  # §239 — shared builder
         .filter(
             Asset.folder_id.in_(folder_ids),
-            Asset.deleted_at.is_(None),
             usable_asset_filter(),
         )
         .group_by(Asset.folder_id)

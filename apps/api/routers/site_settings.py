@@ -26,6 +26,7 @@ from ..services.owned_keys import (
     new_site_logo_key,
 )
 from ..services.schedule_window import is_valid_timezone
+from ..services.storage_usage import storage_bytes_query
 from .hls_proxy import proxy_url_for
 
 logger = logging.getLogger(__name__)
@@ -111,14 +112,15 @@ def _get_or_create_settings(db: Session) -> SiteSettings:
 
 
 def _platform_storage_used_bytes(db: Session) -> int:
-    """Sum of MediaFile.file_size_bytes across every non-deleted asset
-    platform-wide -- same aggregate the upload.py enforcement check uses,
-    just without a project filter."""
-    return db.query(func.coalesce(func.sum(MediaFile.file_size_bytes), 0)).join(
-        AssetVersion, MediaFile.version_id == AssetVersion.id
-    ).join(
-        Asset, AssetVersion.asset_id == Asset.id
-    ).filter(Asset.deleted_at.is_(None)).scalar() or 0
+    """Live stored bytes platform-wide -- the same aggregate the upload.py
+    enforcement check uses, just without a project filter.
+
+    §239 — and now literally the same query, from
+    services/storage_usage.py, so "what the admin page reports" and "what
+    the upload is refused against" cannot drift apart. Individually
+    deleted versions no longer count toward either.
+    """
+    return storage_bytes_query(db).scalar() or 0
 
 
 def _sniff_image_content_type(data: bytes, fallback: str) -> str:

@@ -61,6 +61,36 @@ def usable_asset_filter():
     return or_(has_usable_version, not_(has_any_version))
 
 
+def version_is_live(version_id_column):
+    """SQL condition: the version THIS row hangs off has not been deleted.
+
+    §239 — a version can now be deleted on its own, and decision 4 is that
+    its comments, approvals and annotations are left in the database
+    untouched and go unreachable WITH it. "Unreachable" is not automatic:
+    the listings that return them are scoped to the ASSET, not to a
+    version, so without this they would keep answering with the deleted
+    version's rows.
+
+    Applied to the child's own `version_id` column rather than joined, so
+    a caller does not have to restructure its query (and so the condition
+    reads the same at every call site):
+
+        query.filter(version_is_live(Comment.version_id))
+
+    `correlate_except` pins `asset_versions` inside the subquery for the
+    same reason `usable_asset_filter` does it: a caller that happens to
+    have `AssetVersion` in its own FROM would otherwise have it correlated
+    away, leaving a subquery with no FROM clause at all.
+    """
+    return (
+        select(literal_column("1"))
+        .select_from(AssetVersion)
+        .where(AssetVersion.id == version_id_column, AssetVersion.deleted_at.is_(None))
+        .correlate_except(AssetVersion)
+        .exists()
+    )
+
+
 def visible_assets(query, include_failed: bool = False):
     """Apply :func:`usable_asset_filter` to an existing ``Asset`` query.
 

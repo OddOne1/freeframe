@@ -18,7 +18,7 @@ from ..models.activity import Mention, Notification, NotificationType, AssetView
 from ..models.vote import Vote
 from ..schemas.asset import TranscriptionToggle, TranscriptionToggleResponse, AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, VoteToggleResponse, VoteRequest, TranscriptResponse, TranscriptSegment, CheckExistingRequest, CheckExistingResponse
 from ..schemas.notification import AssignmentUpdate
-from ..services.permissions import require_project_role, require_asset_access, can_access_asset, is_public_project, get_project_member, can_see_rating_aggregate
+from ..services.permissions import require_project_role, require_asset_access, can_access_asset, is_public_project, get_project_member, can_see_rating_aggregate, can_manage_version
 from ..services.s3_service import build_download_filename, get_s3_client
 from ..config import settings
 from .hls_proxy import create_hls_token, proxy_url_for
@@ -28,7 +28,7 @@ from ..services.upload_policy import plan_parts, UploadTooLarge
 from ..services.s3_service import create_multipart_upload
 from .folders import _get_descendant_ids as _get_descendant_folder_ids
 from ..services.storage_prefix import lock_storage_prefix, prefix_for_project
-from ..services.asset_versions import add_next_version
+from ..services.asset_versions import add_next_version, live_version, live_version_count
 from ..services.asset_visibility import visible_assets
 from ..services import zip_export_service as zx
 from ..models.zip_export import ZipExport
@@ -444,10 +444,18 @@ def get_project_zip_options(
         asset = db.query(Asset).filter(Asset.id == item.asset_id, Asset.deleted_at.is_(None)).first()
         if not asset or asset.project_id != project_id:
             continue
+        # §239 — `live_version`, so a client-supplied `version_id` naming a
+        # DELETED version (a stale picker, a bookmarked selection) is
+        # ignored rather than offered for download. It was an unqualified
+        # lookup by id alone: not only deleted versions but versions of
+        # OTHER assets resolved here, and the variant list returned was
+        # then computed from that foreign file's stored derivatives. The
+        # resolve path below (`_resolve_selection`) already got this right;
+        # only this options route did not.
         version = (
             zx.latest_ready_version(db, asset.id)
             if not item.version_id
-            else db.query(AssetVersion).filter(AssetVersion.id == item.version_id).first()
+            else live_version(db, asset.id, item.version_id)
         )
         if not version:
             continue
@@ -884,20 +892,15 @@ def retry_version_processing(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
-    version = db.query(AssetVersion).filter(
-        AssetVersion.id == version_id,
-        AssetVersion.asset_id == asset_id,
-        AssetVersion.deleted_at.is_(None),
-    ).first()
+    version = live_version(db, asset_id, version_id)
     if not version:
         raise HTTPException(status_code=404, detail="Version not found")
 
-    is_uploader = version.created_by == current_user.id
-    is_owner = False
-    if not is_uploader and current_user.role != UserGlobalRole.superadmin:
-        member = get_project_member(db, asset.project_id, current_user.id)
-        is_owner = member is not None and member.role == ProjectRole.owner
-    if not (is_uploader or is_owner or current_user.role == UserGlobalRole.superadmin):
+    # §239 — the rule itself moved to services/permissions.py unchanged,
+    # so this route and `delete_asset_version` below cannot drift apart
+    # about who "the uploader, the project owner, or an admin" is. The
+    # message stays this route's own.
+    if not can_manage_version(db, asset, version, current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the uploader, the project owner, or an admin can restart processing",
@@ -935,6 +938,146 @@ def retry_version_processing(
     vr = AssetVersionResponse.model_validate(version)
     vr.files = [MediaFileResponse.model_validate(f) for f in files]
     return vr
+
+
+@router.delete("/assets/{asset_id}/versions/{version_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_asset_version(
+    asset_id: uuid.UUID,
+    version_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Remove ONE version of an asset, keeping the asset and the rest of
+    its review history (§239).
+
+    SOFT delete only: `deleted_at` is stamped and not one byte is touched
+    in the bucket. Everything hanging off this version — its comments,
+    their annotations and attachments, its approvals, its media rows —
+    stays in the database untouched and becomes unreachable with the
+    version, because every read of those goes through a live version. The
+    version's bytes stop counting toward every storage figure immediately
+    (services/storage_usage.py); reclaiming them in the bucket is a
+    separate, later step, and nothing purges them today — see
+    scripts/report_trash_backlog.py.
+
+    `version_number` is NOT recycled. §236b retired it on purpose: the
+    unique constraint spans soft-deleted rows, and "v3" in a comment has
+    to keep meaning the same upload after v2 is deleted.
+
+    ── Order of the checks, which is the whole security of this route ──
+    404s first, permission second, state third. Mirrors
+    `retry-processing` above: an editor with no right to this version gets
+    the same "Version not found" for a version of a foreign asset as for
+    one that does not exist, and only someone who may act on it learns
+    which. The state 409s come last because they describe a version the
+    caller has already been shown to be allowed to see.
+    """
+    asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    version = live_version(db, asset_id, version_id)
+    if not version:
+        # Same answer for unknown, foreign, and already-deleted. Deleting
+        # twice is therefore a 404, not a 204: this route is NOT
+        # idempotent, and deliberately so — a second 204 would be an
+        # oracle telling a caller that an id it may not see exists.
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    # §239 — the SAME rule `retry-processing` uses, from
+    # services/permissions.py rather than written a second time here.
+    if not can_manage_version(db, asset, version, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the uploader, the project owner, or an admin can delete a version",
+        )
+
+    # ── The asset row, LOCKED — the same lock the two new-version
+    # endpoints take (§236/§236b, services/asset_versions.py) ──
+    #
+    # It is what makes this delete serialise against a new version of the
+    # same file and against another delete. Two things below need it:
+    #
+    #  * the "is this the last live version" count. Unlocked, two
+    #    concurrent deletes of the last two versions both read 2, both
+    #    pass, and the asset is left with no version at all — live in
+    #    every listing, unplayable, and `usable_asset_filter`'s
+    #    "no versions yet" branch would even keep showing it.
+    #  * the version's own state. Re-read under the lock so two concurrent
+    #    deletes of the SAME version give one 204 and one 404 rather than
+    #    two 204s and two audit trails of one deletion.
+    #
+    # Same row, same order as the version-creation path, so there is no
+    # lock-ordering cycle to deadlock on.
+    locked = (
+        db.query(Asset)
+        .filter(Asset.id == asset_id, Asset.deleted_at.is_(None))
+        .with_for_update()
+        .first()
+    )
+    if not locked:
+        # The asset was deleted out from under us while we waited.
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    version = live_version(db, asset_id, version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    if version.processing_status in (ProcessingStatus.uploading, ProcessingStatus.processing):
+        # An in-flight version has a writer that does not know about this
+        # row: the browser is still PUTting parts at S3, or a transcode
+        # task is still writing derivatives and will commit a status onto
+        # this row when it finishes. Deleting underneath either leaves a
+        # half-written object nothing points at, or a task that resurrects
+        # a status on a deleted row.
+        #
+        # So the user aborts or restarts first, and this answers with a
+        # code the web branches on rather than prose it would have to
+        # match on.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "version_in_flight",
+                "message": (
+                    "This version is still uploading or processing. "
+                    "Cancel or restart it first, then delete it."
+                ),
+            },
+        )
+
+    live_count = live_version_count(db, asset_id)
+    if live_count <= 1:
+        # The last live version. An asset with none would still be listed
+        # (see usable_asset_filter) with nothing to play, so this is the
+        # one case where the answer is "delete the asset instead" — which
+        # is what the client says when it sees this code.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "last_version",
+                "message": (
+                    "This is the only version of this file. Delete the asset "
+                    "instead if you want to remove it."
+                ),
+            },
+        )
+
+    version.deleted_at = datetime.now(timezone.utc)
+    db.commit()
+
+    # No ActivityLog row, matching `delete_asset` above, which writes none
+    # either — and `ActivityAction` has no member for a deletion, so an
+    # audit row here would mean inventing a log type for one route. A log
+    # line instead, which is what the sweeper and the purge do for the
+    # same kind of event.
+    # `live_count - 1` rather than a second count query: one read of that
+    # number per request, taken under the lock, is also what lets a test
+    # pin two concurrent deletes to the same instant by intercepting it.
+    logger.warning(
+        "Version %s (v%s) of asset %s soft-deleted by user %s; %d live version(s) remain",
+        version.id, version.version_number, asset_id, current_user.id,
+        live_count - 1,
+    )
 
 @router.patch("/assets/{asset_id}/assignment", response_model=AssetResponse)
 def update_assignment(

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useRef, type CSSProperties, type ElementType, type ReactNode } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback, type CSSProperties, type ElementType, type ReactNode } from 'react'
 import { useRouter, useSearchParams, usePathname } from 'next/navigation'
 import useSWR from 'swr'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
@@ -80,6 +80,7 @@ import { usePageTitle } from '@/hooks/use-page-title'
 import type {
   Project,
   AssetResponse,
+  AssetVersion,
   ProjectMember,
   FolderTreeNode,
   AssetStatus,
@@ -366,7 +367,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     if (!asset?.id) return
     api.post(`/assets/${asset.id}/seen`, {}).catch(() => {})
   }, [asset?.id])
-  const { currentVersion, isDrawingMode, focusedCommentId, playheadTime, seekTo, setFocusedCommentId, setActiveAnnotation } = useReviewStore()
+  const { currentVersion, setCurrentVersion, isDrawingMode, focusedCommentId, playheadTime, seekTo, setFocusedCommentId, setActiveAnnotation } = useReviewStore()
   const { user, isSuperAdmin } = useAuthStore()
   const startVersionUpload = useUploadStore((s) => s.startVersionUpload)
   const versionFileInputRef = useRef<HTMLInputElement>(null)
@@ -855,6 +856,53 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     } finally {
       setRetryingVersion(false)
     }
+  }
+
+  /**
+   * §239 — may this user delete THIS version?
+   *
+   * The same rule as `canRetryProcessing` above and as the server's
+   * `can_manage_version`: the uploader of that version, the project
+   * owner, or a superadmin. Per version rather than per page, because
+   * `created_by` differs row by row and an editor must not be offered a
+   * delete on a colleague's upload.
+   *
+   * It is an optimistic gate on the MENU only. The server re-decides it,
+   * and a refusal is shown rather than swallowed.
+   */
+  const canDeleteVersion = useCallback(
+    (version: AssetVersion) =>
+      Boolean(isSuperAdmin || currentRole === 'owner' || version.created_by === user?.id),
+    [isSuperAdmin, currentRole, user?.id],
+  )
+
+  /**
+   * Delete one version, then leave the page on a version that exists.
+   *
+   * The order matters. `setCurrentVersion` runs BEFORE the refetch: the
+   * player, the comment panel, the transcript and the approval bar all
+   * build their requests out of `currentVersion`, so leaving the deleted
+   * one selected for the length of a round trip is a window in which
+   * every one of them asks the server for a version that is now gone
+   * (§121/§122 are the same lesson from the asset-switching side).
+   *
+   * The next version is the highest-numbered REMAINING one, preferring a
+   * `ready` one — the same choice the provider makes on first load, so a
+   * delete and a reload land on the same version.
+   */
+  async function handleDeleteVersion(version: AssetVersion) {
+    if (!asset) return
+    await api.delete(`/assets/${asset.id}/versions/${version.id}`)
+    if (currentVersion?.id === version.id) {
+      const remaining = [...versions]
+        .filter((v) => v.id !== version.id)
+        .sort((a, b) => b.version_number - a.version_number)
+      setCurrentVersion(remaining.find((v) => v.processing_status === 'ready') ?? remaining[0] ?? null)
+    }
+    await refetchVersions()
+    // The comments of the deleted version are hidden with it server-side,
+    // so the panel has to be re-read rather than filtered here.
+    await refetchComments()
   }
 
   // Fetch all assets for navigation (1 of N)
@@ -1353,7 +1401,12 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                       <GitBranch className="h-3.5 w-3.5" />
                       Version
                     </span>
-                    <VersionSwitcher versions={versions} className="viewer-field-version" />
+                    <VersionSwitcher
+                      versions={versions}
+                      className="viewer-field-version"
+                      canDeleteVersion={canDeleteVersion}
+                      onDeleteVersion={handleDeleteVersion}
+                    />
                   </div>
                 )}
                 {displayStatus && (
@@ -1828,7 +1881,13 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               tab instead (same components, same handlers, same gating):
               "the buttons up top for version, draft, voting etc. should
               move to the comments/fields tab in mobile view". */}
-          {!phoneChrome && <VersionSwitcher versions={versions} />}
+          {!phoneChrome && (
+            <VersionSwitcher
+              versions={versions}
+              canDeleteVersion={canDeleteVersion}
+              onDeleteVersion={handleDeleteVersion}
+            />
+          )}
           {asset && canCompare(asset.asset_type, versions) && (
             <button
               onClick={openCompare}

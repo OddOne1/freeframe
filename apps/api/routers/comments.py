@@ -42,6 +42,8 @@ from ..services.permissions import (
     validate_share_link_with_session,
 )
 from ..services.share_identity import ANONYMOUS_MENTION, ShareAuthorStyles
+from ..services.asset_versions import live_version
+from ..services.asset_visibility import version_is_live
 from ..tasks.email_tasks import send_mention_email, send_comment_email
 from ..services.notification_prefs import should_create_notification, should_send_email
 from ..tasks.celery_app import send_task_safe
@@ -224,6 +226,12 @@ def list_comments(
         Comment.asset_id == asset_id,
         Comment.parent_id.is_(None),
         Comment.deleted_at.is_(None),
+        # §239 — a deleted version's comments are hidden WITH it. This
+        # listing is scoped to the asset and `version_id` is optional, so
+        # dropping the deleted version's own rows is the only thing that
+        # makes "hidden with the version" true for a caller that omits it
+        # (the app always sends it; the route does not require it).
+        version_is_live(Comment.version_id),
     )
     if version_id:
         query = query.filter(Comment.version_id == version_id)
@@ -242,6 +250,16 @@ def create_comment(
 ):
     asset = _get_asset(db, asset_id)
     require_asset_access(db, asset, current_user)
+
+    # §239 — the version has to be one of THIS asset's live versions.
+    # `version_id` is required by the schema and was written straight onto
+    # the row unchecked, so this route would file a comment against another
+    # asset's version (the share route has refused that since §234) or
+    # against a version someone had just deleted. 400 and the same message
+    # the share route uses: the version is not a valid target, and which of
+    # the three reasons it is not is none of the caller's business.
+    if not live_version(db, asset_id, body.version_id):
+        raise HTTPException(status_code=400, detail="Invalid comment target")
 
     comment = Comment(
         asset_id=asset_id,
@@ -300,6 +318,12 @@ def reply_to_comment(
     require_asset_access(db, asset, current_user)
     parent = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at.is_(None)).first()
     if not parent:
+        raise HTTPException(status_code=404, detail="Parent comment not found")
+    # §239 — a reply inherits the parent's version, so a parent on a
+    # DELETED version is how a new comment lands on one. The parent is not
+    # listed any more either, so the same answer as a missing parent is
+    # also the honest one.
+    if not live_version(db, asset_id, parent.version_id):
         raise HTTPException(status_code=404, detail="Parent comment not found")
 
     # Force body's version_id to match parent
@@ -606,11 +630,17 @@ def _share_comment_tree(db: Session, link: ShareLink, asset_id: uuid.UUID, depth
     object, not a second copy of the rule that could drift from it.
     """
     vis = _share_visibility_filter(link)
+    # §239 — and the deleted version's comments, at every level, for the
+    # same reason the visibility filter is applied at every level: a share
+    # listing is per ASSET, so a comment on a deleted version would
+    # otherwise still be published to the link.
+    live = version_is_live(Comment.version_id)
     top_level = db.query(Comment).filter(
         Comment.asset_id == asset_id,
         Comment.parent_id.is_(None),
         Comment.deleted_at.is_(None),
         vis,
+        live,
     ).order_by(Comment.created_at).all()
 
     replies_by_parent: dict[uuid.UUID, list[Comment]] = {}
@@ -623,6 +653,7 @@ def _share_comment_tree(db: Session, link: ShareLink, asset_id: uuid.UUID, depth
             Comment.parent_id.in_(ids),
             Comment.deleted_at.is_(None),
             vis,
+            live,
         ).order_by(Comment.created_at).all()
         for child in children:
             replies_by_parent.setdefault(child.parent_id, []).append(child)
@@ -886,6 +917,11 @@ def guest_comment(
             Comment.visibility == "public",
         ).first()
         if not parent:
+            raise HTTPException(status_code=400, detail="Invalid comment target")
+        # §239 — and its version must still be live: a reply takes the
+        # parent's `version_id` below, which is the one way a guest can
+        # post onto a deleted version.
+        if not live_version(db, asset.id, parent.version_id):
             raise HTTPException(status_code=400, detail="Invalid comment target")
 
     from ..models.asset import AssetVersion, ProcessingStatus

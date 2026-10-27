@@ -77,12 +77,44 @@ def main(argv=None) -> int:
         due_ids = [a.id for a in due_assets]
         bytes_due = 0
         if due_ids:
+            # §239 deliberately did NOT add `AssetVersion.deleted_at IS
+            # NULL` here, although it added it to all eight *quota* sites.
+            # This number answers the opposite question: not "what counts
+            # against a limit" but "how much would the purge free". And
+            # `purge_asset` removes every version row of the asset and
+            # clears `raw/.../{asset_id}/` by PREFIX — soft-deleted
+            # versions included — so filtering them out here would
+            # under-report the figure this script exists to produce, by
+            # exactly the bytes of the versions users deleted one at a
+            # time. Hence `services/storage_usage.storage_bytes_query` is
+            # not used here either; it is the quota aggregate, not this one.
             bytes_due = (
                 db.query(func.coalesce(func.sum(MediaFile.file_size_bytes), 0))
                 .join(AssetVersion, MediaFile.version_id == AssetVersion.id)
                 .filter(AssetVersion.asset_id.in_(due_ids))
                 .scalar()
             ) or 0
+
+        # ── Versions deleted on their own, inside assets that are LIVE ──
+        #
+        # §239 made a single version deletable. Nothing purges one: the
+        # sweep (`purge_expired`) selects on `Asset.deleted_at` and
+        # `Folder.deleted_at` only, so a soft-deleted version of a live
+        # asset is never due, never listed, and its bytes sit in the
+        # bucket indefinitely — while correctly counting toward nobody's
+        # quota. They are collected only if and when the whole asset is
+        # eventually deleted and purged. That is a deliberate gap (§239
+        # decision 3 defers freeing the bytes to a separate step), so this
+        # reports its size rather than leaving it invisible.
+        orphan_rows = (
+            db.query(func.count(AssetVersion.id), func.coalesce(func.sum(MediaFile.file_size_bytes), 0))
+            .select_from(AssetVersion)
+            .join(Asset, AssetVersion.asset_id == Asset.id)
+            .outerjoin(MediaFile, MediaFile.version_id == AssetVersion.id)
+            .filter(AssetVersion.deleted_at.isnot(None), Asset.deleted_at.is_(None))
+            .one()
+        )
+        orphan_versions, orphan_bytes = int(orphan_rows[0] or 0), int(orphan_rows[1] or 0)
 
         line = "─" * 72
         print()
@@ -98,6 +130,9 @@ def main(argv=None) -> int:
         print()
         print(f"  assets in trash in total     {in_trash_assets}")
         print(f"    - not yet due              {in_trash_assets - len(due_assets)}")
+        print()
+        print(f"  deleted VERSIONS of live assets  {orphan_versions}   ({_human(orphan_bytes)})")
+        print("    nothing purges these (§239); they count toward no quota.")
 
         if due_assets:
             oldest = due_assets[0].deleted_at

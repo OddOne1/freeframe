@@ -27,6 +27,7 @@ from ..services.permissions import get_project_member, require_project_role
 from ..models.project import ProjectRole
 from .site_settings import _get_or_create_settings
 from ..services.storage_prefix import lock_storage_prefix, prefix_for_project
+from ..services.storage_usage import storage_bytes_query
 from ..schemas.upload import (
     InitiateUploadRequest, InitiateUploadResponse,
     PresignPartRequest, PresignPartResponse,
@@ -148,28 +149,29 @@ def initiate_upload(
         raise HTTPException(status_code=404, detail="Project not found")
     require_project_role(db, body.project_id, current_user, ProjectRole.editor)
     
-    # Enforce per-project storage limit if set
+    # Enforce per-project storage limit if set.
+    #
+    # §239 — through `storage_bytes_query`, which carries the join and BOTH
+    # `deleted_at` predicates. This check used to filter only
+    # `Asset.deleted_at IS NULL`, so once a single version could be deleted
+    # (§239) a user who deleted one to make room would still be refused:
+    # its bytes went on counting against this limit forever.
     if project.storage_limit_bytes is not None:
-        current_storage = db.query(func.coalesce(func.sum(MediaFile.file_size_bytes), 0))\
-            .join(AssetVersion, MediaFile.version_id == AssetVersion.id)\
-            .join(Asset, AssetVersion.asset_id == Asset.id)\
-            .filter(Asset.project_id == project.id, Asset.deleted_at.is_(None))\
-            .scalar()
+        current_storage = storage_bytes_query(db).filter(
+            Asset.project_id == project.id,
+        ).scalar()
         if current_storage + body.file_size_bytes > project.storage_limit_bytes:
             raise HTTPException(status_code=400, detail="Project storage limit exceeded")
 
-    # Enforce platform-wide storage limit if set -- same aggregate pattern
-    # as the per-project check above, just without the project_id filter.
+    # Enforce platform-wide storage limit if set -- same aggregate as the
+    # per-project check above, just without the project_id filter, and now
+    # literally the same query builder rather than a second copy of it.
     # Independent of per-user/per-project limits entirely (task 12);
     # reuses the site_settings singleton rather than re-querying it a
     # different way.
     site_settings = _get_or_create_settings(db)
     if site_settings.total_storage_limit_bytes is not None:
-        platform_storage = db.query(func.coalesce(func.sum(MediaFile.file_size_bytes), 0))\
-            .join(AssetVersion, MediaFile.version_id == AssetVersion.id)\
-            .join(Asset, AssetVersion.asset_id == Asset.id)\
-            .filter(Asset.deleted_at.is_(None))\
-            .scalar()
+        platform_storage = storage_bytes_query(db).scalar()
         if platform_storage + body.file_size_bytes > site_settings.total_storage_limit_bytes:
             raise HTTPException(status_code=400, detail="Platform storage limit exceeded")
 

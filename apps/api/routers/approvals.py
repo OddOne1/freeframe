@@ -12,6 +12,8 @@ from ..models.activity import ActivityLog, ActivityAction, Notification, Notific
 from ..models.project import ProjectRole
 from ..schemas.approval import ApprovalCreate, ApprovalResponse
 from ..services.permissions import require_asset_access, require_project_role
+from ..services.asset_versions import live_version
+from ..services.asset_visibility import version_is_live
 from ..tasks.email_tasks import send_approval_email
 from ..services.notification_prefs import should_create_notification, should_send_email
 from ..tasks.celery_app import send_task_safe
@@ -35,7 +37,20 @@ def _upsert_approval(
     new_status: ApprovalStatus,
     note: str | None,
 ) -> Approval:
-    """Create or update an approval record for a user+version."""
+    """Create or update an approval record for a user+version.
+
+    §239 — the version is validated here rather than in each of the two
+    callers, which both pass `body.version_id` straight from the request.
+    It was not validated at all: an approval could be filed against a
+    version of a DIFFERENT asset (the row then carries this asset's id and
+    that version's, and `uq_approvals_version_user` is on the version, so
+    it would also collide with the real owner's approval) or against a
+    version that had just been deleted. 400, with no distinction between
+    the three reasons, matching what the comment routes answer.
+    """
+    if not live_version(db, asset.id, version_id):
+        raise HTTPException(status_code=400, detail="Invalid approval target")
+
     existing = db.query(Approval).filter(
         Approval.asset_id == asset.id,
         Approval.version_id == version_id,
@@ -148,4 +163,10 @@ def list_approvals(
     return db.query(Approval).filter(
         Approval.asset_id == asset_id,
         Approval.deleted_at.is_(None),
+        # §239 — approvals of a deleted version go with it. This listing is
+        # per asset and the client matches rows against the version it is
+        # showing, so a deleted version's approval would never be *used* —
+        # but it would still be handed out, version id and reviewer and
+        # all, which is not "hidden with the version".
+        version_is_live(Approval.version_id),
     ).all()

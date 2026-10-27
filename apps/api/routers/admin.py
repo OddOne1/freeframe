@@ -19,6 +19,7 @@ from ..schemas.auth import (
 )
 from ..schemas.project import ProjectUpdate, AdminProjectResponse, TransferOwnershipRequest
 from ..services.auth_service import bump_token_version
+from ..services.storage_usage import storage_bytes_query
 from .hls_proxy import proxy_url_for
 from .projects import apply_poster_urls
 
@@ -544,11 +545,12 @@ def list_all_projects(
         .group_by(Asset.project_id)
         .all()
     )
+    # §239 — shared builder (services/storage_usage.py), so the admin
+    # project list shows the same number the project page does and an
+    # individually deleted version stops counting in both.
     storage_query = (
-        db.query(Asset.project_id, func.coalesce(func.sum(MediaFile.file_size_bytes), 0))
-        .join(AssetVersion, AssetVersion.asset_id == Asset.id)
-        .join(MediaFile, MediaFile.version_id == AssetVersion.id)
-        .filter(Asset.project_id.in_(project_ids), Asset.deleted_at.is_(None))
+        storage_bytes_query(db, Asset.project_id)
+        .filter(Asset.project_id.in_(project_ids))
         .group_by(Asset.project_id)
         .all()
     )

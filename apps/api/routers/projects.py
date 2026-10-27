@@ -32,6 +32,7 @@ from ..tasks.email_tasks import send_project_added_email
 from ..tasks.celery_app import send_task_safe
 from ..services.s3_service import put_object, delete_object
 from ..services.storage_prefix import SlugUnavailable, claim_user_slug, is_locked
+from ..services.storage_usage import storage_bytes_query
 from .hls_proxy import proxy_url_for
 from ..config import settings
 
@@ -214,12 +215,12 @@ def list_projects(db: Session = Depends(get_db), current_user: User = Depends(ge
         .all()
     )
 
-    # Batch: storage bytes per project (sum of file sizes)
+    # Batch: storage bytes per project (sum of file sizes).
+    # §239 — shared builder, so an individually-deleted version stops
+    # counting here too. See services/storage_usage.py.
     storage_query = (
-        db.query(Asset.project_id, func.coalesce(func.sum(MediaFile.file_size_bytes), 0))
-        .join(AssetVersion, AssetVersion.asset_id == Asset.id)
-        .join(MediaFile, MediaFile.version_id == AssetVersion.id)
-        .filter(Asset.project_id.in_(all_project_ids), Asset.deleted_at.is_(None))
+        storage_bytes_query(db, Asset.project_id)
+        .filter(Asset.project_id.in_(all_project_ids))
         .group_by(Asset.project_id)
         .all()
     )
@@ -273,11 +274,19 @@ def get_project(project_id: uuid.UUID, db: Session = Depends(get_db), current_us
     resp.asset_count = db.query(func.count(Asset.id)).filter(
         Asset.project_id == project_id, Asset.deleted_at.is_(None),
     ).scalar() or 0
-    resp.storage_bytes = db.query(func.coalesce(func.sum(MediaFile.file_size_bytes), 0)).join(
-        AssetVersion, MediaFile.version_id == AssetVersion.id
-    ).join(Asset, AssetVersion.asset_id == Asset.id).filter(
-        Asset.project_id == project_id, Asset.deleted_at.is_(None),
-    ).scalar() or 0
+    # §239 — shared builder; a deleted version's bytes drop out of the
+    # figure the project page shows.
+    #
+    # `int(...)`, which the batched version of this query above already
+    # had and this one did not: Postgres `SUM(bigint)` is `numeric`, so
+    # psycopg2 hands back a `Decimal`. Assigning one to an already-built
+    # response model skips pydantic's coercion (validate_assignment is
+    # off), and this field went out as the JSON STRING "130048" instead of
+    # a number — a pre-existing bug on this endpoint only, found by §239's
+    # own figure test.
+    resp.storage_bytes = int(storage_bytes_query(db).filter(
+        Asset.project_id == project_id,
+    ).scalar() or 0)
     resp.member_count = db.query(func.count(ProjectMember.id)).filter(
         ProjectMember.project_id == project_id, ProjectMember.deleted_at.is_(None),
     ).scalar() or 0

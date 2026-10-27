@@ -32,6 +32,7 @@ from ..models.asset import AssetVersion, AssetType, MediaFile, ProcessingStatus
 from ..models.sidecar import SidecarFile
 from ..models.comment import Comment
 from ..services.asset_visibility import usable_asset_filter
+from ..services.asset_versions import live_version
 from ..models.zip_export import ZipExport, ZipExportStatus
 from ..services import zip_export_service as zx
 from ..services import zip_download, zip_stream
@@ -1945,6 +1946,14 @@ def get_share_export_status(
     asset = _get_asset(db, asset_id)
     _validate_asset_in_share(db, link, asset)
 
+    # §239 — same check as the signed-in twin (routers/luts.py): the
+    # `version_id` in this URL names the version whose footage was graded,
+    # and the rendered object outlives a soft delete. Without this, a
+    # visitor holding a poll URL from before the delete keeps getting the
+    # finished export of a version that is no longer in the link.
+    if not live_version(db, asset_id, version_id):
+        raise HTTPException(status_code=404, detail="Not found")
+
     export_key = f"lut-exports/{asset.project_id}/{asset_id}/{version_id}/{export_id}.mp4"
     try:
         s3_service.get_s3_client().head_object(
@@ -2395,10 +2404,15 @@ def get_share_zip_options(
     for item in body.items:
         asset = _get_asset(db, item.asset_id)
         _validate_asset_in_share(db, link, asset)
+        # §239 — `live_version`, the same fix as the signed-in twin of this
+        # route in routers/assets.py. A share visitor's selection is
+        # client input: an unqualified lookup by id resolved a DELETED
+        # version, and a version of an asset outside this link entirely,
+        # and then reported ITS downloadable variants.
         version = (
             zx.latest_ready_version(db, asset.id)
             if not item.version_id
-            else db.query(AssetVersion).filter(AssetVersion.id == item.version_id).first()
+            else live_version(db, asset.id, item.version_id)
         )
         if not version:
             continue
