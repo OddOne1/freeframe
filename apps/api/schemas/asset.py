@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from ..models.asset import AssetType, AssetStatus, ProcessingStatus, FileType, TranscriptionStatus
 from ..models.activity import NotificationType
 
@@ -41,6 +41,17 @@ class AssetVersionResponse(BaseModel):
     created_by: Optional[uuid.UUID] = None
     created_by_name: Optional[str] = None
     created_at: datetime
+    # §238 — WHICH stage a `failed` version failed at, decided by the
+    # server. "upload" means the upload never finished (nothing to
+    # process, no "Restart processing", and the empty row can be removed
+    # without burning its number); "processing" means the bytes are all
+    # there and a transcode failed, which is retryable exactly as before.
+    # None for every version that is not `failed`.
+    #
+    # Read off `AssetVersion.failure_stage` by `from_attributes` — see
+    # that property for why no expression over the other columns can
+    # stand in for it, and why the web is not allowed to try.
+    failure_stage: Optional[Literal["upload", "processing"]] = None
     files: list[MediaFileResponse] = []
     model_config = {"from_attributes": True}
 

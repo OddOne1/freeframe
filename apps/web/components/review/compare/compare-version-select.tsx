@@ -3,7 +3,7 @@
 import * as React from 'react'
 import { ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { versionStatusConfig } from '@/components/review/version-switcher'
+import { versionStatusFor } from '@/components/review/version-switcher'
 import type { AssetVersion } from '@/types'
 
 interface CompareVersionSelectProps {
@@ -63,7 +63,10 @@ export function CompareVersionSelect({ versions, value, onChange, accentClass, e
           )}
         >
           {sorted.map((v) => {
-            const status = versionStatusConfig[v.processing_status]
+            // §238 — the same label the switcher shows, from the one
+            // helper: a version whose upload never finished reads
+            // "Upload incomplete" here too rather than a red "Failed".
+            const status = versionStatusFor(v)
             const ready = v.processing_status === 'ready'
             // The version already shown on the other pane is disabled so the two
             // sides can't collapse onto the same version.

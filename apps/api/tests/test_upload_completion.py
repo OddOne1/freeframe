@@ -76,6 +76,20 @@ class World:
         self.version.processing_status = status
         self.version.processing_started_at = "untouched"
         self.version.deleted_at = None
+        # §238 — NULL until /upload/complete writes it, which is what
+        # `failure_stage` reads. A MagicMock attribute is a truthy object,
+        # so leaving it unset would make every version here look like one
+        # whose upload had finished.
+        self.version.upload_completed_at = None
+
+        # §238 — /upload/abort now locks the ASSET row before the version
+        # row (a cancel of a new version may remove that row and free its
+        # number, so it has to serialise against /upload/initiate the same
+        # way §239's delete does). That is one more `.first()` in the
+        # sequence below.
+        self.asset = MagicMock()
+        self.asset.id = self.version.asset_id
+        self.asset.deleted_at = None
 
         self.media_file = None
         if with_media_file:
@@ -90,9 +104,16 @@ class World:
 
         self.store = FakeMultipartStore()
         self.background = MagicMock()
-        mock_db.query.return_value.filter.return_value.first.side_effect = [
-            self.version, self.media_file,
-        ]
+        # The default is /complete's sequence, so a test that calls the
+        # router directly (rather than through the helpers below) keeps
+        # working as before. `complete()` and `abort()` each re-arm it
+        # with their own, because the two routes no longer read the same
+        # number of rows (§238).
+        self._rows(self.version, self.media_file)
+
+    def _rows(self, *rows):
+        """What successive `.first()` calls on the mock session return."""
+        self.db.query.return_value.filter.return_value.first.side_effect = list(rows)
 
     # ── storage state ──────────────────────────────────────────────────
 
@@ -118,13 +139,27 @@ class World:
             version_id=version_id or self.version.id,
             **({"parts": parts} if parts is not None else {}),
         )
+        self._rows(self.version, self.media_file)
         with patch("apps.api.services.s3_service.get_s3_client",
                    return_value=self.store):
             return upload_router.complete_upload(
                 body, self.background, db=self.db, current_user=self.user
             )
 
-    def abort(self, *, key=None, upload_id=UPLOAD_ID, version_id=None):
+    def abort(self, *, key=None, upload_id=UPLOAD_ID, version_id=None,
+              other_versions=0):
+        """`other_versions` is how many OTHER live versions the asset has.
+
+        0 — a FIRST upload, which is what every §236 test here is about
+        and whose behaviour §238 leaves exactly as it was: the row is
+        marked `failed` and the client deletes the asset it created.
+
+        Anything else sends the cancel down §238's remove-the-shell path.
+        What that path then does cannot be shown against a mocked session
+        — it asks the store about the key and the database about five
+        foreign keys — so it is tested against real Postgres and the fake
+        store in tests/test_incomplete_versions.py instead.
+        """
         from apps.api.routers import upload as upload_router
         from apps.api.schemas.upload import AbortUploadRequest
 
@@ -133,8 +168,13 @@ class World:
             upload_id=upload_id,
             version_id=version_id or self.version.id,
         )
+        # §238 — the version is read twice: once unlocked, to learn which
+        # asset to lock, and again under the two locks.
+        self._rows(self.version, self.asset, self.version, self.media_file)
         with patch("apps.api.services.s3_service.get_s3_client",
-                   return_value=self.store):
+                   return_value=self.store), \
+             patch.object(upload_router, "live_version_count",
+                          return_value=1 + other_versions):
             return upload_router.abort_upload(
                 body, db=self.db, current_user=self.user
             )
@@ -869,6 +909,12 @@ class TestTheErrorsReachTheWire:
             w.store = store
         if seed:
             w.seed_parts(seed)
+        # Over HTTP the route is reached by the app, not by `w.abort()`, so
+        # the row sequence has to be armed here — and /upload/abort reads
+        # one row more than /upload/complete since §238 (the asset row it
+        # locks first).
+        if path.endswith("/abort"):
+            w._rows(w.version, w.asset, w.version, w.media_file)
         app.dependency_overrides[get_current_user] = lambda: test_user
         try:
             with patch("apps.api.services.s3_service.get_s3_client",

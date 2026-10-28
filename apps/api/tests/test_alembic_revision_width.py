@@ -334,3 +334,31 @@ if __name__ == "__main__":
                 print(f"  FAIL  {name}: {exc}")
     print("\nOK" if not failures else f"\n{failures} FAILED")
     raise SystemExit(1 if failures else 0)
+
+
+# ── check 3: the chain still has exactly one head ──────────────────────────
+
+
+def test_the_chain_has_exactly_one_head():
+    """`alembic upgrade head` is ambiguous with two heads and refuses.
+
+    Two branches that each add a migration produce exactly that, and the
+    pre-merge routine in WORKFLOW.md asks for `alembic heads` to print one
+    line before any merge. This is that check, as a test: it needs no
+    database and no Alembic, so it runs in CI, in the container and on a
+    laptop — and it fails in the branch that caused it rather than on the
+    server after the merge.
+
+    A head is a revision nothing names as its parent. §238 added
+    `add_version_upload_completed_at`; whichever branch merges second
+    re-points its own `down_revision` at the other's id, and that is the
+    one-line change this test is here to require.
+    """
+    revisions = _revisions()
+    parents = {p for _f, ps, _s in revisions.values() for p in ps}
+    heads = sorted(rid for rid in revisions if rid not in parents)
+    assert len(heads) == 1, (
+        f"{len(heads)} heads: {heads}. `alembic upgrade head` cannot choose "
+        "between them — re-point the newer migration's down_revision at the "
+        "other head (see WORKFLOW.md's pre-merge routine)."
+    )

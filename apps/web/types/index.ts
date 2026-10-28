@@ -232,6 +232,24 @@ export interface AssetVersion {
    *  ever reported (an image, or a job not yet started) — distinct from 0,
    *  which means a running job that has not advanced. */
   processing_progress?: number | null;
+  /**
+   * §238 — which stage a `failed` version failed at, decided by the SERVER
+   * (`AssetVersion.failure_stage`). Null for anything not failed.
+   *
+   * "upload" — the upload never finished, so there is nothing to process:
+   * no "Restart processing", a neutral "Upload incomplete" rather than a
+   * red "Failed", and deleting it frees its version number.
+   * "processing" — the file is there and a transcode failed: retryable,
+   * exactly as before.
+   *
+   * NOT to be re-derived here from `processing_status` and friends: every
+   * expression the client could write is wrong for one of the two cases
+   * (see the property's own docstring on the server), and the two lead to
+   * opposite UI. Optional only so an older api that does not send it still
+   * parses — and then nothing is treated as an upload failure, which is
+   * the pre-§238 behaviour.
+   */
+  failure_stage?: "upload" | "processing" | null;
   created_by: string | null;
   created_by_name?: string | null;
   created_at: string;

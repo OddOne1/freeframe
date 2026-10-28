@@ -135,7 +135,53 @@ class AssetVersion(Base):
     # queued and are therefore never failed by the 45-minute silence rule,
     # only by the much longer STUCK_QUEUED_HOURS backstop.
     processing_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # §238 — when the UPLOAD finished, as opposed to when processing did.
+    #
+    # Written in the same transaction that moves the version out of
+    # `uploading` into `processing` (routers/upload.py's `complete_upload`,
+    # including its "the store already assembled this and the commit was
+    # lost" recovery path). NULL therefore means exactly one thing: no
+    # upload of this version has ever been completed.
+    #
+    # It exists because `failed` covers two situations that are not alike
+    # and that the UI has to answer differently (§238):
+    #
+    #   * the upload never finished — the user cancelled, the tab closed,
+    #     §215's sweeper reaped an abandoned session. There is nothing to
+    #     process, "Restart processing" is meaningless, and the empty row
+    #     may be removed without burning its version number;
+    #   * processing failed — the bytes are all in the bucket and a retry
+    #     is a real option.
+    #
+    # `processing_started_at` CANNOT answer that question, which is why
+    # this column is not derivable from what was already here:
+    # tasks/transcode_tasks.py fails a version at two points (no asset
+    # row, no media_file row) BEFORE it stamps `processing_started_at`, and
+    # /upload/complete deliberately clears that column to NULL on every
+    # dispatch (§219, "queued is not running"). So "failed and
+    # processing_started_at IS NULL" is true of real processing failures
+    # too. See `failure_stage` below for the only correct test.
+    upload_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def failure_stage(self) -> Optional[str]:
+        """Which stage this version failed at: "upload", "processing", or None.
+
+        §238 — computed HERE, once, and carried to the client by
+        `AssetVersionResponse` (which reads this attribute). The web must
+        not re-derive it: every expression it could write is one of the
+        wrong tests above, and the two answers lead to opposite UI (a red
+        "Failed" with Restart, versus a neutral "Upload incomplete" with
+        Delete).
+
+        Only a `failed` version has a stage at all. `uploading`,
+        `processing` and `ready` all answer None — a version still on its
+        way is not a failure of anything.
+        """
+        if self.processing_status != ProcessingStatus.failed:
+            return None
+        return "upload" if self.upload_completed_at is None else "processing"
 
 class FileType(str, PyEnum):
     image = "image"

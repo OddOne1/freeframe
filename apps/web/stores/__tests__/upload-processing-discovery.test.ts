@@ -106,6 +106,31 @@ describe('processing discovery', () => {
     expect(ids).toEqual(['a1', 'a2'])
   })
 
+  it('an abandoned UPLOAD it discovers does not read as 100% transferred', async () => {
+    // §238 — `/me/assets?processing=true` answers with `uploading` rows as
+    // well as `processing` ones, and every entry built here used to get a
+    // hardcoded `progress: 100`. That is where the owner's "Uploading
+    // 100%" row came from: a 77.7 MB upload from the previous day, no
+    // transfer happening, no way for this tab to continue it (the File is
+    // gone) — shown as a finished transfer.
+    //
+    // 0, not a guess: only `GET /upload/parts` knows how much of it the
+    // store holds, and that belongs to the resume path (§213).
+    const useStore = await freshStore()
+    ;(api.get as ReturnType<typeof vi.fn>).mockResolvedValue([asset('a1', 'uploading')])
+    await useStore.getState().fetchProcessing()
+    const row = useStore.getState().files[0]
+    expect(row.status).toBe('uploading')
+    expect(row.progress).toBe(0)
+  })
+
+  it('a processing one still reports a full transfer, because it had one', async () => {
+    const useStore = await freshStore()
+    ;(api.get as ReturnType<typeof vi.fn>).mockResolvedValue([asset('a1', 'processing', 42)])
+    await useStore.getState().fetchProcessing()
+    expect(useStore.getState().files[0].progress).toBe(100)
+  })
+
   it('a failed discovery leaves the panel usable', async () => {
     const useStore = await freshStore()
     ;(api.get as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('offline'))

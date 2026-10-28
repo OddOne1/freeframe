@@ -22,7 +22,13 @@ from ..services.upload_completion import (
     is_upload_gone, error_code_of, PART_REFUSAL_CODES,
 )
 from ..services.upload_policy import plan_parts, UploadTooLarge
-from ..services.asset_versions import next_version_number, add_next_version
+from ..services.asset_versions import (
+    SHELL_REMOVED,
+    next_version_number,
+    add_next_version,
+    live_version_count,
+    remove_upload_shell,
+)
 from ..services.permissions import get_project_member, require_project_role
 from ..models.project import ProjectRole
 from .site_settings import _get_or_create_settings
@@ -553,6 +559,18 @@ def complete_upload(
         _reconcile_file_size(media_file)
 
         version.processing_status = ProcessingStatus.processing
+        # §238 — THE UPLOAD IS FINISHED, recorded in the same transaction
+        # that says so by moving the status. Both ways in get here: the
+        # ordinary completion above, and the recovery path where
+        # `CompleteMultipartUpload` had already succeeded at the store and
+        # only this commit was lost (`already_assembled`).
+        #
+        # It is the one fact that distinguishes a later `failed` on this
+        # row — a transcode that broke, retryable — from a `failed` on a
+        # row that never got this far, which has nothing to retry. NULL
+        # means "no upload of this version ever completed", so it must be
+        # written exactly where completion becomes true and nowhere else.
+        version.upload_completed_at = datetime.now(timezone.utc)
         # §219 — DISPATCHED, not started. `processing` here means "queued":
         # the Celery task below may wait hours behind other transcodes, and
         # nothing touches this row while it does. NULL is what tells the
@@ -594,6 +612,14 @@ def complete_upload(
             "reporting %s and dispatching nothing",
             version.id, status_now.value,
         )
+        # §238 — nothing is written here either, deliberately. A version
+        # that is `processing` or `ready` with no `upload_completed_at`
+        # can only be a row from before that column existed, and the
+        # migration's backfill stamps every one of those from the status
+        # alone. This branch stays exactly what §236 made it: an
+        # idempotent READ. The one path that can still move a row into
+        # `processing` without a recorded completion is
+        # `retry-processing`, and that is where the stamp lives.
         return CompleteUploadResponse(
             status=status_now.value,
             asset_id=version.asset_id,
@@ -821,6 +847,12 @@ def abort_upload(
     treated as already gone, and `failed` answers 204 because a cancel
     repeated is still a cancel.
 
+    §238 — and a cancel of a NEW version of an existing file now REMOVES
+    that version's row rather than leaving it `failed`. See the end of
+    this function: an upload that never finished was never a version, and
+    leaving the row behind both showed a misleading "Failed" version and
+    burned its number for good.
+
     `processing`/`ready` get a 409 and NOTHING is touched — not the row,
     not the store. The deliberate difference from upstream, which treats
     an abort of an assembled upload as a completion and dispatches a
@@ -829,6 +861,41 @@ def abort_upload(
     sends it for a cancel, so a 409 is the honest answer and there is
     nothing to guess.
     """
+    # ── §238 — the ASSET row first, then the version ────────────────────
+    #
+    # A cancel of a NEW version now removes that version's row outright
+    # and frees its number (see the end of this function), so this
+    # endpoint has become one of the writers that must serialise against
+    # `/upload/initiate` and §239's delete — all of which take
+    # `SELECT … FOR UPDATE` on the ASSET row, and take it FIRST. Locking
+    # the version first and the asset second would make this the one path
+    # that acquires the two in the opposite order, which is a deadlock
+    # between a cancel and a new version of the same file.
+    #
+    # The unlocked peek is only to learn which asset to lock; every
+    # decision below is made from the re-read under the locks. A
+    # soft-deleted asset is simply not locked, and the cancel then falls
+    # back to §236's behaviour of marking the row `failed`.
+    peek = (
+        db.query(AssetVersion)
+        .filter(
+            AssetVersion.id == body.version_id,
+            AssetVersion.deleted_at.is_(None),
+        )
+        .first()
+    )
+    if peek is None:
+        # §236's answer, before any lock is taken: there is nothing to
+        # serialise against for a version that does not exist, and the
+        # message is the same one a mismatched key gets below.
+        raise HTTPException(status_code=404, detail="Upload not found")
+    locked_asset = (
+        db.query(Asset)
+        .filter(Asset.id == peek.asset_id, Asset.deleted_at.is_(None))
+        .with_for_update()
+        .first()
+    )
+
     # Locked for the same reason /complete is: the state check and the
     # status write must not straddle another request's transition.
     version = (
@@ -921,6 +988,44 @@ def abort_upload(
                 "Could not reach storage to cancel this upload. Please retry.",
             ),
             headers={"Retry-After": "5"},
+        )
+
+    # ── §238 — a cancelled NEW version leaves no row at all ─────────────
+    #
+    # What the owner reported: cancel a new-version upload and the file
+    # grows a v6 that reads "Failed", and the next upload becomes v7. The
+    # cancelled upload never was a version — the row exists because
+    # /upload/initiate writes it before any bytes move — so it is removed
+    # and its number is free again (soft-deleting it would retire the
+    # number: §236b's unique constraint spans deleted rows).
+    #
+    # Only when the asset has OTHER live versions. A FIRST upload's
+    # cancel keeps §236's behaviour exactly — the row goes `failed` and
+    # the client deletes the asset it just created, which is the only
+    # thing that removes the asset row at all. Removing the lone version
+    # here instead would leave a version-less asset listed with nothing
+    # to play (see `usable_asset_filter`).
+    others = max(0, live_version_count(db, version.asset_id) - 1)
+    if locked_asset is not None and others > 0:
+        outcome = remove_upload_shell(db, version)
+        if outcome == SHELL_REMOVED:
+            db.commit()
+            logger.warning(
+                "upload %s cancelled: version v%s of asset %s removed, its "
+                "number is free again (%d live version(s) remain)",
+                body.version_id, version.version_number, version.asset_id,
+                others,
+            )
+            return
+        # The store says the key is not empty, could not be asked, or
+        # something references the row. `remove_upload_shell` has logged
+        # which and changed nothing, so the cancel falls back to §236's
+        # answer: mark it failed. It is then a `failed` version like any
+        # other, and the version list offers the usual delete.
+        logger.warning(
+            "upload %s cancelled but version %s could not be removed (%s); "
+            "marking it failed instead",
+            body.version_id, version.id, outcome,
         )
 
     version.processing_status = ProcessingStatus.failed

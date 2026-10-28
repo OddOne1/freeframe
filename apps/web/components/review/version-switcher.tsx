@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { AlertCircle, Loader2, CheckCircle2, ChevronDown, Trash2 } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Loader2, CheckCircle2, ChevronDown, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useReviewStore } from '@/stores/review-store'
@@ -32,6 +32,39 @@ export const versionStatusConfig: Record<
     className: 'text-status-error',
     icon: <AlertCircle className="h-2.5 w-2.5" />,
   },
+}
+
+/**
+ * §238 — a `failed` version whose UPLOAD never finished.
+ *
+ * Deliberately not red and deliberately not the word "Failed": nothing
+ * broke, an upload was interrupted. Red "Failed" sent the owner looking
+ * for a processing problem that did not exist, and to a "Restart
+ * processing" that could never work. Amber is the same tone the app uses
+ * for "needs your attention, nothing is wrong", as `processing` does.
+ */
+export const uploadIncompleteStatus = {
+  label: 'Upload incomplete',
+  className: 'text-status-warning',
+  icon: <AlertTriangle className="h-2.5 w-2.5" />,
+}
+
+/**
+ * How to label THIS version — the status, unless the server says the
+ * failure was an incomplete upload (§238).
+ *
+ * A function rather than a sixth key on `versionStatusConfig`: that map is
+ * keyed by `processing_status`, which is a real enum with four values, and
+ * "upload incomplete" is not a fifth status. It is a failed version plus
+ * the server's `failure_stage`.
+ */
+export function versionStatusFor(
+  version: Pick<AssetVersion, 'processing_status' | 'failure_stage'>,
+) {
+  if (version.processing_status === 'failed' && version.failure_stage === 'upload') {
+    return uploadIncompleteStatus
+  }
+  return versionStatusConfig[version.processing_status]
 }
 
 interface VersionSwitcherProps {
@@ -105,7 +138,7 @@ export function VersionSwitcher({
             >
               {sorted.map((version) => {
                 const isActive = currentVersion?.id === version.id
-                const statusCfg = versionStatusConfig[version.processing_status]
+                const statusCfg = versionStatusFor(version)
                 const isDisabled =
                   version.processing_status === 'uploading' ||
                   version.processing_status === 'processing'
@@ -194,9 +227,24 @@ export function VersionSwitcher({
         title={`Delete v${pendingDelete?.version_number ?? ''}?`}
         description={
           <>
-            This version and the comments, annotations and approvals on it
-            will be hidden from this file. The other versions and their
-            comments are untouched. This cannot be undone from the app.
+            {/* §238 — an incomplete upload has no comments to hide and no
+                history to lose, and its number comes BACK. Saying the
+                §239 sentence over it would be false in both halves. */}
+            {pendingDelete?.failure_stage === 'upload' ? (
+              <>
+                This version was never fully uploaded, so there is nothing
+                in it to lose. Removing it frees v
+                {pendingDelete.version_number} for your next upload of this
+                file.
+              </>
+            ) : (
+              <>
+                This version and the comments, annotations and approvals on
+                it will be hidden from this file. The other versions and
+                their comments are untouched. This cannot be undone from
+                the app.
+              </>
+            )}
             {deleteError && (
               <span className="mt-2 block text-status-error">{deleteError}</span>
             )}

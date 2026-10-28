@@ -217,6 +217,23 @@ def build_world(session):
             processing_status=state,
             created_by=author.id,
             created_by_name=author.name,
+            # §238 — `ready` and `processing` versions have, by definition,
+            # a finished upload behind them: /upload/complete stamps this
+            # in the same transaction that sets those statuses. Only the
+            # `uploading` one (busy v2) keeps NULL.
+            #
+            # Not decoration: it is what makes a version here a REAL
+            # version rather than the empty shell of an upload that never
+            # finished. A test that flips one of them to `failed` (see
+            # `test_a_failed_version_is_deletable`) is then testing a
+            # processing failure, which is soft-deleted with its number
+            # retired — the §239 behaviour — rather than silently taking
+            # §238's hard-delete path.
+            upload_completed_at=(
+                datetime.now(timezone.utc)
+                if state in (ProcessingStatus.ready, ProcessingStatus.processing)
+                else None
+            ),
         )
         session.add(v)
         session.commit()

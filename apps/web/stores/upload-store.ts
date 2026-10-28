@@ -76,6 +76,30 @@ export interface UploadFile {
   assetId?: string
   versionId?: string
   uploadId?: string
+  /**
+   * §238 — the key this upload is writing to, remembered so a DISMISS can
+   * ask the server to clean up an upload that never finished.
+   *
+   * `/upload/abort` binds the key to the version and refuses a request
+   * whose key is not that version's (§236), so the client has to send the
+   * one the server gave it.
+   */
+  s3Key?: string
+  /**
+   * §238 — did THIS upload create its asset?
+   *
+   * The whole of why `removeFile` may delete an asset at all: a first
+   * upload's asset is created by `/upload/initiate`, so an asset left
+   * behind by one that failed is litter and dismissing the row is the
+   * only way to clear it. A NEW-VERSION upload's asset existed before and
+   * has every other version, comment and approval on it — deleting that
+   * is destroying someone's file, which is what this flag stops.
+   *
+   * OPTIONAL on purpose, and `undefined` is NOT `false` by accident: rows
+   * persisted by an older build have no flag at all, and the safe reading
+   * of "we do not know" is "do not delete anything". See `removeFile`.
+   */
+  createdAsset?: boolean
   createdAt: number // timestamp for grouping
   // Recent-window transfer rate and estimated time remaining, in bytes/sec
   // and seconds. Both undefined until enough samples exist to compute a rate
@@ -616,7 +640,15 @@ async function runChunkedUpload(params: {
       partSize = Number(initRes.part_size) > 0 ? Number(initRes.part_size) : CHUNK_SIZE
     }
 
-    updateFile(id, { uploadId: upload_id, assetId: asset_id, versionId: version_id })
+    // §238 — `s3Key` too. A dismiss of an upload that never finished sends
+    // these three to `/upload/abort` so the server can clear the empty
+    // version it created, and the key is the one the server chose.
+    updateFile(id, {
+      uploadId: upload_id,
+      assetId: asset_id,
+      versionId: version_id,
+      s3Key: s3_key,
+    })
 
     const totalChunks = Math.max(1, Math.ceil(file.size / partSize))
     const parts: Array<{ PartNumber: number; ETag: string }> = new Array(totalChunks)
@@ -909,7 +941,20 @@ function mergeHistoryAssets(
         fileType: file?.mime_type ?? mimeFromAssetType(a.asset_type),
         projectId: a.project_id,
         assetName: a.name,
-        progress: 100,
+        // §238 — 100 is right for everything this list discovers EXCEPT a
+        // version still at `uploading`, which `/me/assets?processing=true`
+        // returns too (its `in_flight` set is uploading + processing).
+        // A hardcoded 100 on one of those is where the uploads panel's
+        // "Uploading 100%" row came from: an upload abandoned the day
+        // before, with no transfer happening and no way for this tab to
+        // continue it (the File is gone), reading as a finished one.
+        //
+        // 0 rather than a guess: this browser has no idea how many bytes
+        // of someone else's interrupted upload are at the store, and the
+        // only thing that does know is `GET /upload/parts` — which belongs
+        // to the resume path (§213), not to a history row. See the §238
+        // report for the rest of that entry's story.
+        progress: v.processing_status === 'uploading' ? 0 : 100,
         // §113 — the real, persisted percent when the server has one. It used
         // to be a 0/100 guess from the status alone, so a rediscovered job
         // always read 0% however far along it actually was. `?? ` and not
@@ -953,6 +998,10 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
       progress: 0,
       processingProgress: 0,
       status: 'pending',
+      // §238 — this upload creates the asset (`/upload/initiate` does),
+      // so dismissing it later may clean that asset up. The new-version
+      // path below sets this to false for the opposite reason.
+      createdAsset: true,
       createdAt: Date.now(),
     }
 
@@ -1013,6 +1062,10 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
       processingProgress: 0,
       status: 'pending',
       assetId,
+      // §238 — the asset already existed and this is one more version of
+      // it. Dismissing this row must never delete it: that asset carries
+      // every other version, comment and approval of the file.
+      createdAsset: false,
       createdAt: Date.now(),
     }
     set((s) => ({ files: [entry, ...s.files], panelOpen: true }))
@@ -1101,6 +1154,11 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
       assetId: session.assetId,
       versionId: session.versionId,
       uploadId: session.uploadId,
+      s3Key: session.s3Key,
+      // §238 — the session remembers which kind of upload this was, and
+      // `versionOf` is exactly that question: set means "a new version of
+      // an existing asset", null means this upload created the asset.
+      createdAsset: !session.versionOf,
       createdAt: Date.now(),
     }
     set((st) => ({ files: [entry, ...st.files], panelOpen: true }))
@@ -1209,14 +1267,56 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
   removeFile: (fileId) => {
     const target = get().files.find((f) => f.id === fileId)
     set((s) => ({ files: s.files.filter((f) => f.id !== fileId) }))
+    const dead = target?.status === 'failed' || target?.status === 'cancelled'
+    // §238 — WHOSE asset is it?
+    //
     // A failed/cancelled upload already has a real asset+version row on the
     // backend (created by /upload/initiate before any bytes transfer), so
     // just dropping it from local state isn't enough — fetchHistory() would
     // fetch it right back from /me/assets on the next panel open or page
-    // reload. Soft-delete it the same way the asset browser's own delete
-    // does, so it actually disappears.
-    if (target?.assetId && (target.status === 'failed' || target.status === 'cancelled')) {
+    // reload.
+    //
+    // For a FIRST upload that asset is this upload's own leftover, and
+    // soft-deleting it (the same way the asset browser's own delete does)
+    // is the only way the user can clear it. That is what this did for
+    // every dismissal — including a new-version upload, whose `assetId` is
+    // the EXISTING asset. Dismissing a cancelled new version therefore
+    // deleted the whole file: every other version, every comment, every
+    // approval. Reported from production, and the reason `createdAsset`
+    // exists.
+    if (dead && target?.assetId && target.createdAsset === true) {
       api.delete(`/assets/${target.assetId}`).catch(() => {})
+    } else if (dead && target?.assetId) {
+      // A new-version upload — or a row persisted by a build that predates
+      // `createdAsset`, where the honest answer is "we do not know" and
+      // the safe one is the same: NEVER delete the asset.
+      //
+      // The empty version the upload left behind is still worth clearing,
+      // and `/upload/abort` is what does it: for a version of an asset
+      // that has others, the server removes the row and frees its number
+      // (§238). Only when this row still carries the three ids the server
+      // binds together — a persisted row from before this change has no
+      // `s3Key`, and then there is nothing safe to send. The version list
+      // shows such a version as "Upload incomplete" with a Delete, which
+      // is the way back.
+      if (target.versionId && target.s3Key && target.uploadId) {
+        api
+          .post('/upload/abort', {
+            s3_key: target.s3Key,
+            upload_id: target.uploadId,
+            version_id: target.versionId,
+          })
+          .catch(() => {})
+        void deleteSession(target.uploadId).catch(() => {})
+      }
+      // Remembered as dismissed, so the dismissal sticks across a reload
+      // without anything being deleted — the same mechanism a finished
+      // upload's dismissal uses below.
+      set((s) => ({
+        dismissedHistoryIds: s.dismissedHistoryIds.includes(target.assetId!)
+          ? s.dismissedHistoryIds
+          : [...s.dismissedHistoryIds, target.assetId!],
+      }))
     } else if (target?.assetId && target.status === 'complete') {
       // Ready/finished upload — the asset itself stays untouched (the user
       // still wants the file), but remember it was dismissed so fetchHistory()

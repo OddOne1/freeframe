@@ -28,7 +28,16 @@ from ..services.upload_policy import plan_parts, UploadTooLarge
 from ..services.s3_service import create_multipart_upload
 from .folders import _get_descendant_ids as _get_descendant_folder_ids
 from ..services.storage_prefix import lock_storage_prefix, prefix_for_project
-from ..services.asset_versions import add_next_version, live_version, live_version_count
+from ..services.asset_versions import (
+    SHELL_OBJECT_PRESENT,
+    SHELL_REMOVED,
+    SHELL_STORE_UNREACHABLE,
+    add_next_version,
+    live_version,
+    live_version_count,
+    note_upload_completed,
+    remove_upload_shell,
+)
 from ..services.asset_visibility import visible_assets
 from ..services import zip_export_service as zx
 from ..models.zip_export import ZipExport
@@ -906,6 +915,32 @@ def retry_version_processing(
             detail="Only the uploader, the project owner, or an admin can restart processing",
         )
 
+    if (
+        version.processing_status == ProcessingStatus.failed
+        and version.upload_completed_at is None
+    ):
+        # §238 — THE UPLOAD never finished, so there is nothing to
+        # process and a re-dispatch would hand the transcoder a key with
+        # no object at it. The version row and its media row exist
+        # because /upload/initiate creates them before any bytes move;
+        # that is all there is.
+        #
+        # A stable code rather than prose, like §239's two 409s: the web
+        # shows its own copy ("Upload didn't finish… Delete it and upload
+        # again") and must not have to match on a message. 409 rather than
+        # 400 — the request is well-formed, the version's state is what
+        # refuses it.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "upload_incomplete",
+                "message": (
+                    "This version was never fully uploaded, so there is "
+                    "nothing to process. Delete it and upload the file again."
+                ),
+            },
+        )
+
     if version.processing_status == ProcessingStatus.processing:
         # Guard against dispatching a second, concurrent transcode job for a
         # version that's still legitimately running — both jobs would write
@@ -927,6 +962,13 @@ def retry_version_processing(
     # been silent ever since, and it would be failed almost immediately --
     # while its replacement task sat perfectly healthily in the queue.
     version.processing_started_at = None
+    # §238 — this route is only reachable for a version whose upload
+    # finished (the 409 above is what makes that true rather than
+    # assumed), so a row that got here with no completion recorded is a
+    # row that predates the column and slipped past the migration's
+    # backfill. Stamping it now is what stops a SECOND failure of the same
+    # version reading as "the upload never finished".
+    note_upload_completed(version)
     db.commit()
     db.refresh(version)
 
@@ -950,8 +992,8 @@ def delete_asset_version(
     """Remove ONE version of an asset, keeping the asset and the rest of
     its review history (§239).
 
-    SOFT delete only: `deleted_at` is stamped and not one byte is touched
-    in the bucket. Everything hanging off this version — its comments,
+    SOFT delete for a real version: `deleted_at` is stamped and not one
+    byte is touched in the bucket. Everything hanging off this version — its comments,
     their annotations and attachments, its approvals, its media rows —
     stays in the database untouched and becomes unreachable with the
     version, because every read of those goes through a live version. The
@@ -963,6 +1005,15 @@ def delete_asset_version(
     `version_number` is NOT recycled. §236b retired it on purpose: the
     unique constraint spans soft-deleted rows, and "v3" in a comment has
     to keep meaning the same upload after v2 is deleted.
+
+    §238 — ONE exception, and it is the opposite of a version: a `failed`
+    version whose upload never completed (`failure_stage == "upload"`) is
+    an empty shell created by `/upload/initiate` before any bytes moved.
+    It is HARD-deleted, row and media row, so its number is free again —
+    see `remove_upload_shell`, which refuses unless the store confirms
+    the key holds no object. Nothing can reference such a version (there
+    was never anything to comment on), and if anything does, this falls
+    back to the soft delete.
 
     ── Order of the checks, which is the whole security of this route ──
     404s first, permission second, state third. Mirrors
@@ -1061,6 +1112,60 @@ def delete_asset_version(
                 ),
             },
         )
+
+    # ── §238 — an upload that never finished is removed, not retired ────
+    #
+    # `failed` with no `upload_completed_at` means /upload/complete never
+    # ran for this version: the row and its media row were created by
+    # /upload/initiate before any bytes moved, and that is all there is.
+    # Soft-deleting it would retire its version number (§236b: the unique
+    # constraint spans deleted rows), so a cancelled v6 would make the
+    # next upload of that file v7 forever — the thing the owner asked for
+    # by name.
+    #
+    # Everything the hard delete needs to be safe is in
+    # `remove_upload_shell`, under the asset lock taken above: the store
+    # is asked whether the key is really empty, and a row with anything
+    # hanging off it falls through to the soft delete below.
+    if version.failure_stage == "upload":
+        outcome = remove_upload_shell(db, version)
+        if outcome == SHELL_OBJECT_PRESENT:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "version_has_object",
+                    "message": (
+                        "Storage still holds this version's file, so it is not "
+                        "an empty upload. Nothing was deleted. Retry the upload "
+                        "of this version to finish it, or delete the whole file."
+                    ),
+                },
+            )
+        if outcome == SHELL_STORE_UNREACHABLE:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": "storage_unavailable",
+                    "message": (
+                        "Could not reach storage to check this version. Nothing "
+                        "was deleted. Please retry."
+                    ),
+                },
+                headers={"Retry-After": "5"},
+            )
+        if outcome == SHELL_REMOVED:
+            db.commit()
+            logger.warning(
+                "Version %s (v%s) of asset %s hard-deleted by user %s as an "
+                "incomplete upload; %d live version(s) remain and v%s is free "
+                "again",
+                version_id, version.version_number, asset_id, current_user.id,
+                live_count - 1, version.version_number,
+            )
+            return
+        # SHELL_NOT_EMPTY — it is not a shell after all. `remove_upload_shell`
+        # has logged what it found and changed nothing; the soft delete
+        # below is the right answer for a version that has content.
 
     version.deleted_at = datetime.now(timezone.utc)
     db.commit()

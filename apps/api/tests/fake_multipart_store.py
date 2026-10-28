@@ -44,9 +44,12 @@ Credentials and signing, bucket policy, CORS, versioning, storage classes,
 multipart ETag composition (a completed object's ETag here is a plain
 hex digest, not the `"<md5>-<n>"` composite AWS returns — nothing in
 §236 reads it; the size is the integrity signal, see
-`_assembled_at_store`), `ListMultipartUploads` (§215's sweeper has its own
-fakes), consistency delays, and part-size validation on upload (only on
-complete, which is where a real store enforces it).
+`_assembled_at_store`), consistency delays, and part-size validation on
+upload (only on complete, which is where a real store enforces it).
+
+`ListMultipartUploads` IS modelled since §238 (`list_multipart_uploads`
+below), which needs it to find the upload id of an abandoned upload by
+key — §215's sweeper still has its own fakes.
 """
 
 from __future__ import annotations
@@ -181,6 +184,43 @@ class FakeMultipartStore:
             del self._uploads[(Key, UploadId)]
         return {"ETag": f'"{hashlib.md5(Key.encode()).hexdigest()}"',
                 "Key": Key, "Bucket": Bucket}
+
+    def list_multipart_uploads(self, Bucket=None, Prefix="", MaxUploads=1000,
+                               KeyMarker=None, UploadIdMarker=None, **_):
+        """Every open upload under `Prefix` (§238).
+
+        Added for §238, which has to find the upload id of an abandoned
+        upload the way §215's sweeper does — by listing the store, because
+        nothing stores it. Paged on BOTH markers together, as the real API
+        is: one key can hold several open uploads, so `services/s3_service.py`'s
+        paginator sends back `NextKeyMarker` AND `NextUploadIdMarker`, and
+        a fake that only honoured the key marker would let a broken
+        paginator pass.
+        """
+        with self._lock:
+            self.calls.append(("list_multipart_uploads", Prefix))
+            open_uploads = sorted(
+                (k, u) for (k, u) in self._uploads
+                if k.startswith(Prefix or "")
+            )
+        after = (KeyMarker, UploadIdMarker)
+        if KeyMarker is not None:
+            open_uploads = [
+                (k, u) for (k, u) in open_uploads
+                if (k, u) > (after[0], after[1] or "")
+            ]
+        page = open_uploads[: int(MaxUploads)]
+        truncated = len(open_uploads) > len(page)
+        return {
+            "Uploads": [
+                {"Key": k, "UploadId": u,
+                 "Initiated": datetime.now(timezone.utc)}
+                for k, u in page
+            ],
+            "IsTruncated": truncated,
+            "NextKeyMarker": page[-1][0] if (truncated and page) else None,
+            "NextUploadIdMarker": page[-1][1] if (truncated and page) else None,
+        }
 
     def abort_multipart_upload(self, Bucket=None, Key=None, UploadId=None, **_):
         with self._lock:

@@ -23,6 +23,7 @@ import { SidecarMetadata } from '@/components/review/sidecar-metadata'
 import { CustomFieldInput } from '@/components/projects/asset-metadata'
 // ApprovalBar removed for now
 import { VersionSwitcher } from '@/components/review/version-switcher'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { ShareDialog } from '@/components/review/share-dialog'
 import { useReviewStore } from '@/stores/review-store'
 import { useAuthStore } from '@/stores/auth-store'
@@ -671,6 +672,18 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     currentVersion && (isSuperAdmin || currentRole === 'owner' || currentVersion.created_by === user?.id),
   )
 
+  // §238 — the "Delete this version" the Upload-didn't-finish panel
+  // offers. Its own confirm state, because the one in `VersionSwitcher`
+  // belongs to that menu; the delete itself is the SAME call
+  // (`handleDeleteVersion`), so the two cannot diverge about what
+  // deleting a version does.
+  const [confirmIncompleteDelete, setConfirmIncompleteDelete] = useState(false)
+  const [incompleteDeleteError, setIncompleteDeleteError] = useState<string | null>(null)
+  useEffect(() => {
+    setConfirmIncompleteDelete(false)
+    setIncompleteDeleteError(null)
+  }, [currentVersion?.id])
+
   const [statusOverride, setStatusOverride] = useState<AssetStatus | null>(null)
   useEffect(() => {
     setStatusOverride(null)
@@ -870,6 +883,19 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
    * It is an optimistic gate on the MENU only. The server re-decides it,
    * and a refusal is shown rather than swallowed.
    */
+  /**
+   * §238 — may this user delete the version they are LOOKING AT?
+   *
+   * `canDeleteVersion` below is the same rule; this is it applied to the
+   * current version, for the panel's own button. Optimistic, like the
+   * menu's: the server re-decides, and a refusal is shown rather than
+   * swallowed.
+   */
+  const canDeleteCurrentVersion = Boolean(
+    currentVersion &&
+      (isSuperAdmin || currentRole === 'owner' || currentVersion.created_by === user?.id),
+  )
+
   const canDeleteVersion = useCallback(
     (version: AssetVersion) =>
       Boolean(isSuperAdmin || currentRole === 'owner' || version.created_by === user?.id),
@@ -1032,6 +1058,10 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   }
 
   const versionReady = currentVersion?.processing_status === 'ready'
+  // §238 — THE SERVER'S verdict, not a guess from the other columns: this
+  // version's upload never finished, so there is nothing to process and
+  // nothing to restart. See `AssetVersion.failure_stage`.
+  const versionUploadIncomplete = currentVersion?.failure_stage === 'upload'
   const versionProcessing =
     currentVersion?.processing_status === 'processing' ||
     currentVersion?.processing_status === 'uploading'
@@ -1070,6 +1100,50 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                       {retryingVersion ? 'Restarting…' : 'Restart processing'}
                     </button>
                     {retryError && <p className="text-xs text-status-error">{retryError}</p>}
+                  </div>
+                )}
+              </>
+            ) : versionUploadIncomplete ? (
+              /* §238 — an upload that was interrupted, not a processing
+                 failure. No red, no "Restart processing" (the server
+                 refuses it with `upload_incomplete`, and rightly: there
+                 is no object to process). The way forward is to remove
+                 the empty version — which frees its number — and upload
+                 again. */
+              <>
+                <div className="h-12 w-12 rounded-full bg-status-warning/10 flex items-center justify-center">
+                  <Info className="h-6 w-6 text-status-warning" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-text-primary">
+                    Upload didn&apos;t finish
+                  </p>
+                  <p className="text-xs text-text-tertiary mt-1">
+                    This version was never fully uploaded, so there is
+                    nothing to process. Delete it and upload again.
+                  </p>
+                </div>
+                {canDeleteCurrentVersion && (
+                  <div className="flex flex-col items-center gap-2">
+                    {/* §239's rule, said here rather than discovered by
+                        pressing a button that can only 409: an asset's
+                        last version cannot be deleted on its own. */}
+                    {versions.length > 1 ? (
+                      <button
+                        onClick={() => {
+                          setIncompleteDeleteError(null)
+                          setConfirmIncompleteDelete(true)
+                        }}
+                        className="text-xs font-medium text-accent hover:underline"
+                      >
+                        Delete this version
+                      </button>
+                    ) : (
+                      <p className="text-xs text-text-tertiary max-w-[260px]">
+                        This is the only version, so it cannot be deleted on
+                        its own. Delete the file instead.
+                      </p>
+                    )}
                   </div>
                 )}
               </>
@@ -2289,6 +2363,47 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
       )
       )
       )}
+
+      {/* §238 — the confirm behind the panel's "Delete this version".
+          Same dialog component and same delete call as the version
+          menu's; different words, because an incomplete upload has no
+          comments to hide and its number comes back. */}
+      <ConfirmDialog
+        open={confirmIncompleteDelete}
+        onOpenChange={(open) => {
+          setConfirmIncompleteDelete(open)
+          if (!open) setIncompleteDeleteError(null)
+        }}
+        title={`Delete v${currentVersion?.version_number ?? ''}?`}
+        description={
+          <>
+            This version was never fully uploaded, so there is nothing in it
+            to lose. Removing it frees v{currentVersion?.version_number} for
+            your next upload of this file.
+            {incompleteDeleteError && (
+              <span className="mt-2 block text-status-error">
+                {incompleteDeleteError}
+              </span>
+            )}
+          </>
+        }
+        confirmLabel="Delete version"
+        variant="danger"
+        onConfirm={async () => {
+          if (!currentVersion) return
+          try {
+            await handleDeleteVersion(currentVersion)
+          } catch (err) {
+            // The server's own message — a 409 `version_has_object`, a
+            // 403, a 404 — read for themselves, and the dialog stays open
+            // when onConfirm throws.
+            setIncompleteDeleteError(
+              err instanceof Error ? err.message : 'Could not delete this version.',
+            )
+            throw err
+          }
+        }}
+      />
     </div>
   )
 }
