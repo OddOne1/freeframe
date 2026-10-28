@@ -29,8 +29,7 @@ import {
 import {
   cn,
   resolveApiMediaUrl,
-  trashExpiresAt,
-  formatTimeRemaining,
+  trashDeleteWarning,
   TRASH_RETENTION_DAYS,
 } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -63,9 +62,11 @@ import { useViewStore } from "@/stores/view-store";
 import { useRightPanelStore } from "@/stores/right-panel-store";
 import { useBreadcrumbStore } from "@/stores/breadcrumb-store";
 import { useMobileViewSettingsStore } from "@/stores/mobile-view-settings-store";
-import { useFolders, useTrash } from "@/hooks/use-folders";
+import { useFolders } from "@/hooks/use-folders";
+import { useOptionalToast } from "@/components/shared/toast";
 import { useShareLinks } from "@/hooks/use-share-links";
-import { FolderTree } from "@/components/projects/folder-tree";
+import { FolderTree, RecentlyDeletedEntry } from "@/components/projects/folder-tree";
+import { RecentlyDeleted } from "@/components/projects/recently-deleted";
 import { FolderNavigator } from "@/components/projects/folder-navigator";
 import {
   ShareLinksSection,
@@ -94,49 +95,23 @@ import type {
   ShareLink,
 } from "@/types";
 
-/**
- * When an item was deleted, and when it will be gone for good.
- *
- * The API returns only `deleted_at`; the expiry is derived from it and the
- * retention constant, which is why no new field was needed. The absolute
- * timestamp is shown alongside the countdown deliberately — "expires in 4
- * days" alone gives no way to check the maths or to reason about a
- * deletion someone else performed.
- *
- * Re-renders come from the once-a-minute tick in the parent.
- */
 /** §224 — 44px rows for the phone action menu, which is driven by a thumb. */
 const mobileMenuItemClass =
   "flex min-h-11 items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary cursor-pointer outline-none transition-colors";
 
-function TrashExpiry({ deletedAt }: { deletedAt: string | null }) {
-  const expiresAt = trashExpiresAt(deletedAt);
-  if (!deletedAt || !expiresAt) return null;
-
-  const deleted = new Date(deletedAt);
-  const remainingMs = expiresAt.getTime() - Date.now();
-  // Last day: this is about to be irreversible, so it stops being grey.
-  const urgent = remainingMs < 24 * 60 * 60 * 1000;
-
-  return (
-    <p className="text-2xs text-text-tertiary mt-0.5 pl-6">
-      <span title={deleted.toString()}>
-        Deleted{" "}
-        {deleted.toLocaleString(undefined, {
-          dateStyle: "medium",
-          timeStyle: "short",
-        })}
-      </span>
-      <span className="mx-1.5 text-text-tertiary/50">·</span>
-      <span
-        className={cn(urgent && "text-status-warning")}
-        title={`Permanently deleted after ${expiresAt.toLocaleString()}`}
-      >
-        {formatTimeRemaining(expiresAt)}
-      </span>
-    </p>
-  );
-}
+/**
+ * §241 item 3 — the Recently Deleted view moved out of this file, into
+ * `components/projects/recently-deleted.tsx`, because its filters ARE its
+ * SWR key and that belongs with the list.
+ *
+ * `TrashExpiry` went with it: the new row reads `expires_at` from the API
+ * rather than deriving it from `deleted_at` and a constant the web keeps a
+ * second copy of, and it prints the server's own `retention_days`. The
+ * once-a-minute countdown ticker went too — the remaining precision is
+ * whole days, which no re-render is needed to keep true.
+ * `trashExpiresAt` and `formatTimeRemaining` stay in lib/utils.ts for
+ * their other callers.
+ */
 
 export default function ProjectDetailPage() {
   const formatBytes = useFormatBytes()
@@ -262,10 +237,6 @@ export default function ProjectDetailPage() {
     name: string;
     kind: "asset" | "folder";
   } | null>(null);
-  // Drives the countdown re-render. Days-and-hours precision means once a
-  // minute is plenty; a per-second ticker would re-render this page 60×
-  // more often to display the same string.
-  const [, setCountdownTick] = React.useState(0);
   // §143 — bulk download opens the shared zip dialog.
   const [zipOpen, setZipOpen] = React.useState(false);
   const [zipAssetIds, setZipAssetIds] = React.useState<string[]>([]);
@@ -316,11 +287,16 @@ export default function ProjectDetailPage() {
     bulkMove,
     restoreAsset,
     restoreFolder,
+    restoreVersion,
     purgeAsset,
     purgeFolder,
   } = useFolders(projectId);
 
-  const { trash, mutateTrash } = useTrash(projectId);
+  // §241 — the trash list lives in `RecentlyDeleted`, which owns the
+  // filters that form its SWR key. This counter is how a purge completed
+  // out here tells it to re-read.
+  const [trashRefresh, setTrashRefresh] = React.useState(0);
+  const toast = useOptionalToast();
   const {
     shareLinks,
     toggleEnabled,
@@ -642,13 +618,6 @@ export default function ProjectDetailPage() {
   // courtesy.
   const canPurge = isProjectManager;
 
-  // Only while the trash is actually on screen — nothing else on this page
-  // shows a countdown, so an always-on interval would be pure wakeups.
-  React.useEffect(() => {
-    if (!showTrash) return;
-    const t = setInterval(() => setCountdownTick((n) => n + 1), 60_000);
-    return () => clearInterval(t);
-  }, [showTrash]);
   const canSeeShareLinks = isProjectManager || currentRole === "editor";
   const canComment = currentRole !== "viewer";
 
@@ -1033,21 +1002,30 @@ export default function ProjectDetailPage() {
     },
   };
 
+  /**
+   * Open Recently Deleted.
+   *
+   * §241 item 5 — no longer part of the folder tree's props: the entry
+   * that calls this moved out of the tree to the bottom of the sidebar,
+   * directly above Storage, and this page renders it in both layouts.
+   *
+   * replace, not push: Trash and Share Links aren't in the URL, so a
+   * history entry here would let Back restore the folder while leaving
+   * this view open (§29).
+   */
+  const handleShowTrash = React.useCallback(() => {
+    setShowTrash(true);
+    goToFolder(null, { replace: true });
+    setShowShareLinks(false);
+    setSelectedShareLink(null);
+  }, [goToFolder]);
+
   const folderTreeProps = {
     tree,
     projectName: project?.name || "Project",
     currentFolderId,
     showTrash,
     onSelectFolder: handleSelectFolder,
-    onShowTrash: () => {
-      setShowTrash(true);
-      // replace, not push: Trash and Share Links aren't in the URL,
-      // so a history entry here would let Back restore the folder
-      // while leaving this view open (§29).
-      goToFolder(null, { replace: true });
-      setShowShareLinks(false);
-      setSelectedShareLink(null);
-    },
     onCreateFolder: async (_name: string, parentId: string | null) => {
       setFolderDialogParentId(parentId);
       setFolderDialogOpen(true);
@@ -1123,6 +1101,16 @@ export default function ProjectDetailPage() {
 
         {/* Spacer */}
         <div className="flex-1" />
+
+        {/* §241 item 5 — Recently Deleted sits at the BOTTOM of the
+            sidebar, in the strip between Share Links and Storage, rather
+            than under the folder tree: it is not a folder, and in a
+            project with a deep tree it used to be pushed off the bottom
+            of whatever the tree had grown to. Same row, same active
+            state, same handler — only its place changed. */}
+        <div className="px-3 pb-2">
+          <RecentlyDeletedEntry active={showTrash} onSelect={handleShowTrash} />
+        </div>
 
        {/* Storage indicator — fixed height (89px) to match the global rail's
            bottom section (user avatar + collapse button, also 89px in its
@@ -1213,6 +1201,19 @@ export default function ProjectDetailPage() {
               {canSeeShareLinks && (
                 <ShareLinksSection {...shareLinksSectionProps} onSelect={close} />
               )}
+              {/* §241 item 5 — the same spot in the phone/tablet panel:
+                  last thing above Storage. Closing the panel is this
+                  layout's own business, which is why the handler is
+                  wrapped here rather than inside the entry. */}
+              <div className="px-3 py-2">
+                <RecentlyDeletedEntry
+                  active={showTrash}
+                  onSelect={() => {
+                    handleShowTrash();
+                    close();
+                  }}
+                />
+              </div>
               <ProjectStorageMeter
                 used={project?.storage_bytes ?? 0}
                 limit={project?.storage_limit_bytes ?? null}
@@ -1258,112 +1259,25 @@ export default function ProjectDetailPage() {
               onUpdate={mutateShareLinks}
             />
           ) : showTrash ? (
-            <div className="flex-1 overflow-y-auto">
-              <h2 className="text-sm font-medium text-text-primary mb-1">
-                Recently Deleted
-              </h2>
-              <p className="text-xs text-text-tertiary mb-3">
-                Items are permanently deleted {TRASH_RETENTION_DAYS} days
-                after they were removed.
-              </p>
-              {trash.folders.length === 0 && trash.assets.length === 0 ? (
-                <p className="text-xs text-text-tertiary">No deleted items</p>
-              ) : (
-                <div className="space-y-1">
-                  {trash.folders.map((item) => (
-                    <div
-                      key={item.id}
-                      className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg hover:bg-white/5"
-                    >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <FolderIcon className="h-4 w-4 text-text-tertiary shrink-0" />
-                          <span className="text-sm text-text-primary truncate">
-                            {item.name}
-                          </span>
-                          <span className="text-xs text-text-tertiary">
-                            Folder
-                          </span>
-                        </div>
-                        <TrashExpiry deletedAt={item.deleted_at} />
-                      </div>
-                      <div className="flex items-center gap-3 shrink-0">
-                        <button
-                          className="text-xs text-accent hover:underline"
-                          onClick={async () => {
-                            await restoreFolder(item.id);
-                            mutateTrash();
-                            mutateAssets();
-                            mutateSubfolders();
-                          }}
-                        >
-                          Restore
-                        </button>
-                        {canPurge && (
-                          <button
-                            className="text-xs text-status-error hover:underline"
-                            onClick={() =>
-                              setPendingPurge({
-                                id: item.id,
-                                name: item.name,
-                                kind: "folder",
-                              })
-                            }
-                          >
-                            Delete Permanently
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                  {trash.assets.map((item) => (
-                    <div
-                      key={item.id}
-                      className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg hover:bg-white/5"
-                    >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-sm text-text-primary truncate">
-                            {item.name}
-                          </span>
-                          <span className="text-xs text-text-tertiary capitalize">
-                            {item.type}
-                          </span>
-                        </div>
-                        <TrashExpiry deletedAt={item.deleted_at} />
-                      </div>
-                      <div className="flex items-center gap-3 shrink-0">
-                        <button
-                          className="text-xs text-accent hover:underline"
-                          onClick={async () => {
-                            await restoreAsset(item.id);
-                            mutateTrash();
-                            mutateAssets();
-                            mutateSubfolders();
-                          }}
-                        >
-                          Restore
-                        </button>
-                        {canPurge && (
-                          <button
-                            className="text-xs text-status-error hover:underline"
-                            onClick={() =>
-                              setPendingPurge({
-                                id: item.id,
-                                name: item.name,
-                                kind: "asset",
-                              })
-                            }
-                          >
-                            Delete Permanently
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            /* §241 item 3 — the whole view, rebuilt on §240's API: search,
+               kind / deleter / sort filters, the nested toggle, paging on
+               `total`, and per-row Restore / Delete Permanently rendered
+               from the server's own `can_restore` / `can_purge`. It owns
+               its filters because its filters ARE its SWR key. */
+            <RecentlyDeleted
+              projectId={projectId}
+              refreshToken={trashRefresh}
+              onRestoreAsset={restoreAsset}
+              onRestoreFolder={restoreFolder}
+              onRestoreVersion={restoreVersion}
+              onRestored={() => {
+                mutateAssets();
+                mutateSubfolders();
+                mutateTree();
+                mutateProject();
+              }}
+              onPurge={setPendingPurge}
+            />
           ) : (
             <AssetGrid
               assets={assets ?? []}
@@ -1433,7 +1347,16 @@ export default function ProjectDetailPage() {
                 mutateSubfolders();
               }}
               onFolderDelete={async (id) => {
-                await deleteFolder(id);
+                try {
+                  await deleteFolder(id);
+                } catch (err) {
+                  toast(
+                    err instanceof Error && err.message
+                      ? err.message
+                      : "Could not delete this folder.",
+                    "error",
+                  );
+                }
                 mutateAssets();
                 mutateSubfolders();
               }}
@@ -1977,7 +1900,7 @@ export default function ProjectDetailPage() {
           if (pendingPurge.kind === "folder") await purgeFolder(pendingPurge.id);
           else await purgeAsset(pendingPurge.id);
           setPendingPurge(null);
-          mutateTrash();
+          setTrashRefresh((n) => n + 1);
           mutateAssets();
           mutateSubfolders();
         }}
@@ -1989,14 +1912,29 @@ export default function ProjectDetailPage() {
           if (!open) setPendingBulkDelete(null);
         }}
         title={`Delete ${(pendingBulkDelete?.assetIds.length ?? 0) + (pendingBulkDelete?.folderIds.length ?? 0)} item${(pendingBulkDelete?.assetIds.length ?? 0) + (pendingBulkDelete?.folderIds.length ?? 0) !== 1 ? "s" : ""}?`}
-        description="This will move the selected items to the trash. You can restore them later from Recently Deleted."
+        description={trashDeleteWarning("selection")}
         confirmLabel="Delete"
         variant="danger"
         onConfirm={async () => {
           if (!pendingBulkDelete) return;
-          for (const id of pendingBulkDelete.folderIds) await deleteFolder(id);
-          for (const id of pendingBulkDelete.assetIds)
-            await api.delete(`/assets/${id}`);
+          // §241 item 5b — the grid does not offer this for a selection
+          // holding an item the server says the user cannot delete, so a
+          // 403 here is a race (someone else changed the project) rather
+          // than the normal case. Either way it is SHOWN, with the
+          // server's own sentence, instead of leaving the loop half done
+          // in silence.
+          try {
+            for (const id of pendingBulkDelete.folderIds) await deleteFolder(id);
+            for (const id of pendingBulkDelete.assetIds)
+              await api.delete(`/assets/${id}`);
+          } catch (err) {
+            toast(
+              err instanceof Error && err.message
+                ? err.message
+                : "Could not delete some of the selected items.",
+              "error",
+            );
+          }
           mutateAssets();
           mutateSubfolders();
           mutateTree();
@@ -2027,7 +1965,7 @@ export default function ProjectDetailPage() {
         open={assetToDelete !== null}
         onOpenChange={(open) => { if (!open) setAssetToDelete(null); }}
         title={`Delete "${assetToDelete?.name}"?`}
-        description="This will move the asset to the trash. You can restore it later from Recently Deleted."
+        description={trashDeleteWarning("asset")}
         confirmLabel="Delete"
         variant="danger"
         onConfirm={async () => {
@@ -2035,7 +1973,17 @@ export default function ProjectDetailPage() {
           try {
             await api.delete(`/assets/${assetToDelete.id}`);
             mutateAssets();
-          } catch {}
+          } catch (err) {
+            // §241 item 5b — this used to be swallowed, so a refused
+            // delete looked like a delete that worked until the grid
+            // failed to change. The server names who may delete it.
+            toast(
+              err instanceof Error && err.message
+                ? err.message
+                : "Could not delete this file.",
+              "error",
+            );
+          }
           setAssetToDelete(null);
         }}
       />

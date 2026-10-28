@@ -39,6 +39,9 @@ interface AssetCardProps {
   onDownload?: () => void
   onRename?: () => void
   onDelete?: () => void
+  /** §241 5b — forwarded to the menu, which renders Delete disabled with
+   *  this as its reason. */
+  deleteDeniedReason?: string | null
   /** Right-click anywhere on the card (§28). The grid owns the menu, since
    *  it is the only thing that knows the current multi-selection. */
   onContextMenu?: (e: React.MouseEvent) => void
@@ -84,6 +87,7 @@ export function AssetCard({
   onDownload,
   onRename,
   onDelete,
+  deleteDeniedReason,
   onContextMenu,
   fileSize,
   canVote = false,
@@ -267,6 +271,10 @@ export function AssetCard({
             <DropdownMenu.Root>
               <DropdownMenu.Trigger asChild>
                 <button
+                  // §241 5b — a name, so a screen reader and a test can
+                  // both reach the menu that holds Delete. The folder
+                  // card's checkbox got the same treatment in §227b.
+                  aria-label={`Options for ${asset.name}`}
                   onClick={(e) => e.stopPropagation()}
                   className="shrink-0 h-5 w-5 flex items-center justify-center rounded text-text-tertiary opacity-0 group-hover:opacity-100 hover:bg-bg-hover hover-none:opacity-100 hover:text-text-primary transition-all outline-none"
                 >
@@ -287,6 +295,7 @@ export function AssetCard({
                     onDownload={onDownload}
                     onRename={onRename}
                     onDelete={onDelete}
+                    deleteDeniedReason={deleteDeniedReason}
                     assetUrl={assetUrl}
                   />
                 </DropdownMenu.Content>

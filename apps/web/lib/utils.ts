@@ -172,6 +172,35 @@ export function formatEta(seconds: number): string {
  */
 export const TRASH_RETENTION_DAYS = 30
 
+/**
+ * What a delete confirmation says (§241 item 4), in ONE place.
+ *
+ * The old wording promised only that the item could be restored "later",
+ * which left out the one fact that matters: there is a deadline. Every asset and
+ * folder delete dialog in the app now says the same thing with the same
+ * number, and says it from here — four copies of a sentence is how one of
+ * them keeps promising "later" after the retention window changes.
+ *
+ * Deliberately NOT used for a VERSION: a soft-deleted version is never
+ * purged (`purge_expired` selects on assets and folders only), so
+ * promising a deadline there would be false. The version dialog has its
+ * own honest text in `version-switcher.tsx`.
+ */
+export function trashDeleteWarning(
+  target: 'asset' | 'folder' | 'selection',
+  days: number = TRASH_RETENTION_DAYS,
+): string {
+  const deadline = (it: string, they: string) =>
+    `You have ${days} days to restore ${it} from "Recently Deleted" before ${they} will be permanently deleted.`
+  if (target === 'folder') {
+    return `This will move the folder and everything inside it to the trash. ${deadline('it', 'it')}`
+  }
+  if (target === 'selection') {
+    return `This will move the selected items to the trash. ${deadline('them', 'they')}`
+  }
+  return `This will move the asset to the trash. ${deadline('it', 'it')}`
+}
+
 export function trashExpiresAt(deletedAt: string | null | undefined): Date | null {
   if (!deletedAt) return null
   const deleted = new Date(deletedAt)

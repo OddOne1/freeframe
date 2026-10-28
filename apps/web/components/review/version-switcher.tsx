@@ -2,9 +2,18 @@
 
 import * as React from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { AlertCircle, AlertTriangle, Loader2, CheckCircle2, ChevronDown, Trash2 } from 'lucide-react'
+import {
+  AlertCircle,
+  AlertTriangle,
+  Loader2,
+  CheckCircle2,
+  ChevronDown,
+  RotateCcw,
+  Trash2,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { useOptionalToast } from '@/components/shared/toast'
 import { useReviewStore } from '@/stores/review-store'
 import type { AssetVersion, AssetVersionStatus } from '@/types'
 
@@ -105,6 +114,96 @@ function NewVersionTag({ versionNumber }: { versionNumber: number }) {
   )
 }
 
+/**
+ * §241 item 1 — a version that was removed, still in the list.
+ *
+ * Red, the word "Removed", and NOT a selectable row: `disabled` is what
+ * stops both a click and the arrow keys landing on a version that has no
+ * media behind it (the server empties `files` for a deleted row, so a
+ * player pointed at it would have nothing to play and no thumbnail to
+ * show).
+ *
+ * The deleter's name is printed only when the server sent one — it fills
+ * `deleted_by_name` for callers §240 D allows it to and leaves it null for
+ * a reviewer, and a name is never assembled here from a member list.
+ */
+function RemovedVersionRow({
+  version,
+  restoring,
+  onRestore,
+}: {
+  version: AssetVersion
+  restoring: boolean
+  onRestore?: () => void
+}) {
+  const deletedAt = version.deleted_at ? new Date(version.deleted_at) : null
+  const who = version.deleted_by_name?.trim() || null
+  // Who and when, as one line under the row — the tooltip carries the
+  // exact timestamp, which a relative date cannot be checked against.
+  const detail = [
+    who ? `Removed by ${who}` : null,
+    deletedAt && !Number.isNaN(deletedAt.getTime())
+      ? deletedAt.toLocaleDateString(undefined, { dateStyle: 'medium' })
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
+  return (
+    <div className="flex items-stretch" data-testid={`removed-version-${version.version_number}`}>
+      <DropdownMenu.Item
+        disabled
+        aria-disabled="true"
+        title={detail || undefined}
+        className={cn(
+          'flex flex-1 flex-col items-start gap-0 ml-1 px-2.5 py-2 hover-none:min-h-11 rounded-lg text-sm outline-none',
+          onRestore ? 'mr-0' : 'mr-1',
+          'text-status-error cursor-not-allowed data-[disabled]:pointer-events-none',
+        )}
+      >
+        <span className="flex w-full items-center justify-between gap-3">
+          <span className="line-through">v{version.version_number}</span>
+          <span className="inline-flex items-center gap-1 text-[11px] uppercase">
+            <Trash2 className="h-2.5 w-2.5" />
+            Removed
+          </span>
+        </span>
+        {detail && (
+          <span className="text-[10px] leading-tight text-text-tertiary">{detail}</span>
+        )}
+      </DropdownMenu.Item>
+      {/* §240 C — only the deleter, the project owner and a superadmin get
+          this, and the server is the one that says so. Everyone else sees
+          the red row with no action at all. */}
+      {onRestore && version.can_restore && (
+        <DropdownMenu.Item
+          data-testid={`restore-version-${version.version_number}`}
+          aria-label={`Restore v${version.version_number}`}
+          title={`Restore v${version.version_number}`}
+          disabled={restoring}
+          onSelect={(e) => {
+            // The menu would close under the toast otherwise, and a second
+            // restore of the same row is a 404 the user did not ask for.
+            e.preventDefault()
+            onRestore()
+          }}
+          className={cn(
+            'flex items-center justify-center mr-1 px-2 hover-none:min-w-11 rounded-lg cursor-pointer outline-none transition-colors',
+            'text-accent hover:bg-accent/10',
+            restoring && 'opacity-40 cursor-wait',
+          )}
+        >
+          {restoring ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <RotateCcw className="h-3.5 w-3.5" />
+          )}
+        </DropdownMenu.Item>
+      )}
+    </div>
+  )
+}
+
 interface VersionSwitcherProps {
   versions: AssetVersion[]
   className?: string
@@ -136,6 +235,32 @@ interface VersionSwitcherProps {
    * empty) and nothing about this component changes.
    */
   newVersionIds?: ReadonlySet<string>
+  /**
+   * §241 item 1 — versions that were REMOVED, still listed.
+   *
+   * A deleted version used to vanish from the history, so "where did v2
+   * go" had no answer anywhere in the app. These rows stay in place, in
+   * red, marked "Removed", and are not selectable: there is no media
+   * behind them (the server empties `files`) and nothing to play.
+   *
+   * Kept as a SEPARATE list rather than mixed into `versions`: the live
+   * list drives the player, §242's arrivals and the selection, and a
+   * deleted row inside it would be a candidate for every one of those.
+   * Who may see the deleter's name and who may restore are the server's
+   * answers, carried on each row (`deleted_by_name`, `can_restore`).
+   */
+  removedVersions?: AssetVersion[]
+  /**
+   * Puts one removed version back. Rendered only for rows whose
+   * `can_restore` the server set — the deleter, the project owner or a
+   * superadmin; the uploader who did not delete it is NOT among them, so
+   * this is never re-derived from `created_by`.
+   *
+   * No confirm dialog: a restore is reversible and cheap. It reports with
+   * a toast either way, and the failure toast is the server's own message
+   * (a 409 `storage_limit` reads for itself).
+   */
+  onRestoreVersion?: (version: AssetVersion) => Promise<void>
 }
 
 export function VersionSwitcher({
@@ -144,9 +269,14 @@ export function VersionSwitcher({
   canDeleteVersion,
   onDeleteVersion,
   newVersionIds,
+  removedVersions,
+  onRestoreVersion,
 }: VersionSwitcherProps) {
   const currentVersion = useReviewStore((s) => s.currentVersion)
   const setCurrentVersion = useReviewStore((s) => s.setCurrentVersion)
+  // `useOptionalToast`, not `useToast`: this component is rendered by a
+  // dozen tests on its own and `useToast` throws without a provider.
+  const toast = useOptionalToast()
 
   const sorted = React.useMemo(
     () => [...versions].sort((a, b) => a.version_number - b.version_number),
@@ -163,6 +293,44 @@ export function VersionSwitcher({
 
   const [pendingDelete, setPendingDelete] = React.useState<AssetVersion | null>(null)
   const [deleteError, setDeleteError] = React.useState<string | null>(null)
+  const [restoring, setRestoring] = React.useState<string | null>(null)
+
+  /**
+   * The list the menu actually renders: live and removed versions in ONE
+   * numeric order, so a removed v2 sits between v1 and v3 where the user
+   * left it rather than in a separate block at the end.
+   */
+  const rows = React.useMemo(() => {
+    const removed = (removedVersions ?? []).filter((v) => v.deleted_at !== null)
+    const live = new Set(sorted.map((v) => v.id))
+    return [...sorted, ...removed.filter((v) => !live.has(v.id))]
+      .sort((a, b) => a.version_number - b.version_number)
+      .map((version) => ({ version, removed: !live.has(version.id) }))
+  }, [sorted, removedVersions])
+
+  const handleRestore = React.useCallback(
+    async (version: AssetVersion) => {
+      if (!onRestoreVersion) return
+      setRestoring(version.id)
+      try {
+        await onRestoreVersion(version)
+        toast(`v${version.version_number} restored`, 'success')
+      } catch (err) {
+        // The server's own sentence. A 409 `storage_limit` already says
+        // that the storage limit is what blocks it; a 403 and a 404 read
+        // for themselves too, and the client has nothing truer to add.
+        toast(
+          err instanceof Error && err.message
+            ? err.message
+            : 'Could not restore this version.',
+          'error',
+        )
+      } finally {
+        setRestoring(null)
+      }
+    },
+    [onRestoreVersion, toast],
+  )
 
   // Which rows may offer a delete at all. The LAST remaining version is
   // still listed with the control — disabled, carrying the reason —
@@ -173,10 +341,15 @@ export function VersionSwitcher({
   const isOnlyVersion = sorted.length <= 1
 
   // With one version and nothing to delete there is nothing a menu could
-  // show, so the trigger stays a plain label as before.
-  const hasMenu = sorted.length > 1 || offersDelete
+  // show, so the trigger stays a plain label as before. A removed version
+  // is a reason to open the menu even when only one live version is left:
+  // it is where "v2 was removed" is said at all.
+  const hasMenu = rows.length > 1 || offersDelete
 
-  if (sorted.length === 0) return null
+  // Nothing live and nothing removed: no list, no trigger. A removed-only
+  // asset cannot happen (the last version cannot be deleted), but the
+  // trigger below reads `sorted`, so the guard says which list it means.
+  if (rows.length === 0) return null
 
   return (
     <div className={cn('flex items-center gap-1.5', className)}>
@@ -184,7 +357,10 @@ export function VersionSwitcher({
       <DropdownMenu.Root>
         <DropdownMenu.Trigger asChild>
           <button className="inline-flex items-center justify-center gap-1 rounded-md px-2.5 py-1 hover-none:min-h-11 hover-none:px-4 bg-accent text-white text-xs font-medium hover:bg-accent/90 transition-colors outline-none">
-            v{currentVersion?.version_number ?? sorted[sorted.length - 1].version_number}
+            v
+            {currentVersion?.version_number ??
+              sorted[sorted.length - 1]?.version_number ??
+              rows[rows.length - 1].version.version_number}
             {newestArrival && <NewVersionDot versionNumber={newestArrival.version_number} />}
             {hasMenu && <ChevronDown className="h-3 w-3 opacity-70" />}
           </button>
@@ -196,7 +372,17 @@ export function VersionSwitcher({
               sideOffset={6}
               className="z-[100] min-w-[160px] rounded-xl border border-border bg-bg-elevated shadow-2xl py-1.5 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
             >
-              {sorted.map((version) => {
+              {rows.map(({ version, removed }) => {
+                if (removed) {
+                  return (
+                    <RemovedVersionRow
+                      key={version.id}
+                      version={version}
+                      restoring={restoring === version.id}
+                      onRestore={onRestoreVersion ? () => handleRestore(version) : undefined}
+                    />
+                  )
+                }
                 const isActive = currentVersion?.id === version.id
                 const statusCfg = versionStatusFor(version)
                 const isDisabled =
@@ -304,10 +490,15 @@ export function VersionSwitcher({
               </>
             ) : (
               <>
-                This version and the comments, annotations and approvals on
-                it will be hidden from this file. The other versions and
-                their comments are untouched. This cannot be undone from
-                the app.
+                {/* §241 item 4 — no deadline is promised here, because
+                    there is none: `purge_expired` selects on assets and
+                    folders only, so a soft-deleted VERSION is never due
+                    and never purged (§240's report says so in as many
+                    words). The 30-day sentence the asset and folder
+                    dialogs now carry would be false on this one. */}
+                This version will be removed. Its comments, annotations and
+                approvals are hidden with it. You can restore it from the
+                version list or from Recently Deleted.
               </>
             )}
             {deleteError && (

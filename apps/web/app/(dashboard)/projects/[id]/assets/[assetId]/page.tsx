@@ -30,6 +30,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { useComments } from '@/hooks/use-comments'
 import { useSSE } from '@/hooks/use-sse'
 import { useLiveVersions } from '@/hooks/use-live-versions'
+import { useDeletedVersions, shouldSelectRestored } from '@/hooks/use-deleted-versions'
 import { useLut } from '@/hooks/use-lut'
 import type { TranscriptResponse, TranscriptionToggleResponse, LutExportResponse } from '@/types'
 import { TechnicalMetadataList, formatBitrate } from '@/components/review/technical-metadata-list'
@@ -942,6 +943,21 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   )
 
   /**
+   * §241 item 1 — the REMOVED versions, on their own SWR key.
+   *
+   * The hook owns the only key that asks the server for deleted rows —
+   * asked for there and nowhere else, which `deleted-versions.test.tsx`
+   * pins by scanning the source. The provider's version read, the player,
+   * §242's live list and the share pages keep seeing live versions only. A viewer still gets the red rows
+   * (the route is open to anyone who may see the asset); what they do not
+   * get is a Restore, because the server sets `can_restore` false for them.
+   */
+  const { removedVersions, mutateRemovedVersions } = useDeletedVersions(
+    asset?.id,
+    Boolean(asset?.id),
+  )
+
+  /**
    * Delete one version, then leave the page on a version that exists.
    *
    * The order matters. `setCurrentVersion` runs BEFORE the refetch: the
@@ -967,6 +983,47 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     await refetchVersions()
     // The comments of the deleted version are hidden with it server-side,
     // so the panel has to be re-read rather than filtered here.
+    await refetchComments()
+    // §241 — a version just became a REMOVED row in the dropdown, which
+    // is a different list from the provider's.
+    await mutateRemovedVersions()
+  }
+
+  /**
+   * §241 item 2 — put one removed version back.
+   *
+   * No confirm dialog: it is reversible and cheap. The toast (success and
+   * the server's own failure message, including 409 `storage_limit`) is
+   * the `VersionSwitcher`'s, so every surface that renders the menu
+   * reports a restore the same way.
+   *
+   * Where it leaves the user: NOT on the restored version, unless that
+   * version is now the highest live one and ready — the same "highest
+   * ready" rule the provider applies on first load and `handleDeleteVersion`
+   * applies on the way out. Restoring an old v2 while someone is reviewing
+   * v7 must not move them.
+   *
+   * The live list is read once HERE rather than taken from `versions`: the
+   * closure's copy is the list from before the restore, and the restored
+   * row's `files` have to come from a response that no longer calls it
+   * deleted (the server empties `files` for a deleted row, so the player
+   * would be handed a version with no media).
+   */
+  async function handleRestoreVersion(version: AssetVersion) {
+    if (!asset) return
+    await api.post(`/assets/${asset.id}/versions/${version.id}/restore`)
+    let live: AssetVersion[] = []
+    try {
+      live = (await api.get<AssetVersion[]>(`/assets/${asset.id}/versions`)) ?? []
+    } catch {
+      // The restore itself succeeded; the lists below refresh anyway.
+    }
+    const restored = live.find((v) => v.id === version.id)
+    if (restored && shouldSelectRestored(restored, live)) setCurrentVersion(restored)
+    await refetchVersions()
+    await mutateRemovedVersions()
+    // Its comments and approvals come back with it, hidden server-side
+    // while it was deleted.
     await refetchComments()
   }
 
@@ -1520,6 +1577,8 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                       canDeleteVersion={canDeleteVersion}
                       onDeleteVersion={handleDeleteVersion}
                       newVersionIds={liveVersions.newVersionIds}
+                      removedVersions={removedVersions}
+                      onRestoreVersion={handleRestoreVersion}
                     />
                   </div>
                 )}
@@ -2001,6 +2060,8 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               canDeleteVersion={canDeleteVersion}
               onDeleteVersion={handleDeleteVersion}
               newVersionIds={liveVersions.newVersionIds}
+              removedVersions={removedVersions}
+              onRestoreVersion={handleRestoreVersion}
             />
           )}
           {asset && canCompare(asset.asset_type, versions) && (

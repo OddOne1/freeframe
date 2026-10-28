@@ -42,7 +42,6 @@ const TREE: FolderTreeNode[] = [
 function setup(overrides: Record<string, unknown> = {}) {
   const handlers: Record<string, ReturnType<typeof vi.fn> | undefined> = {
     onSelectFolder: vi.fn(),
-    onShowTrash: vi.fn(),
     onCreateFolder: vi.fn(async () => {}),
     onRenameFolder: vi.fn(async () => {}),
     onDeleteFolder: vi.fn(async () => {}),
@@ -57,7 +56,6 @@ function setup(overrides: Record<string, unknown> = {}) {
       currentFolderId={null}
       showTrash={false}
       onSelectFolder={handlers.onSelectFolder as never}
-      onShowTrash={handlers.onShowTrash as never}
       onCreateFolder={handlers.onCreateFolder as never}
       onRenameFolder={handlers.onRenameFolder as never}
       onDeleteFolder={handlers.onDeleteFolder as never}

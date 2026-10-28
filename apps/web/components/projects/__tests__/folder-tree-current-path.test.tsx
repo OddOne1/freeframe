@@ -46,7 +46,6 @@ const treeProps = (currentFolderId: string | null, tree: FolderTreeNode[] = TREE
   currentFolderId,
   showTrash: false,
   onSelectFolder: vi.fn(),
-  onShowTrash: vi.fn(),
   onCreateFolder: vi.fn().mockResolvedValue(undefined),
   onRenameFolder: vi.fn().mockResolvedValue(undefined),
   onDeleteFolder: vi.fn().mockResolvedValue(undefined),

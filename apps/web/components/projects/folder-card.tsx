@@ -3,13 +3,14 @@
 import React, { useCallback, useState } from 'react'
 import useSWR from 'swr'
 import { Folder, Film, Music, Image as ImageIcon, Images, MoreHorizontal, Pencil, Trash, Share2 } from 'lucide-react'
-import { cn, resolveApiMediaUrl } from '@/lib/utils'
+import { cn, resolveApiMediaUrl, trashDeleteWarning } from '@/lib/utils'
 import { dragCarriesFiles } from '@/hooks/use-file-drop-zone'
 import { useFormatBytes } from '@/hooks/use-byte-units'
 import { api } from '@/lib/api'
 import { usePointerGesture, cardKeyIntent } from '@/hooks/use-pointer-gesture'
 import { NameDialog } from './name-dialog'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { FOLDER_DELETE_DENIED, deleteBlocked } from './delete-permissions'
 import type { Folder as FolderType, AssetResponse } from '@/types'
 
 const assetTypeIcons = {
@@ -128,6 +129,7 @@ export function FolderCard({
   const [isDragOver, setIsDragOver] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const cannotDelete = deleteBlocked(folder.can_delete)
   const menuRef = React.useRef<HTMLDivElement>(null)
 
   // Close menu on outside click
@@ -279,10 +281,24 @@ export function FolderCard({
                       <Share2 className="h-3 w-3" /> Create share link
                     </button>
                   )}
+                  {/* §240 C2 / §241 item 5b — the server decides whether
+                      this folder may be deleted at all (`can_delete`: the
+                      whole subtree is the caller's own, or they are the
+                      project owner / a superadmin), and the row is
+                      disabled with that reason when it may not. An absent
+                      flag means an older listing: the action stays and the
+                      server's 403 is what the user is shown. */}
                   <button
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10"
+                    data-testid="folder-card-delete"
+                    disabled={cannotDelete}
+                    title={cannotDelete ? FOLDER_DELETE_DENIED : undefined}
+                    className={cn(
+                      'flex w-full items-center gap-2 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10',
+                      cannotDelete && 'opacity-40 cursor-not-allowed hover:bg-transparent',
+                    )}
                     onClick={(e) => {
                       e.stopPropagation()
+                      if (cannotDelete) return
                       setMenuOpen(false)
                       setDeleteOpen(true)
                     }}
@@ -316,7 +332,7 @@ export function FolderCard({
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
         title={`Delete "${folder.name}"?`}
-        description="This folder and all its contents will be moved to trash. You can restore them later."
+        description={trashDeleteWarning('folder')}
         confirmLabel="Delete"
         variant="danger"
         onConfirm={() => onDelete?.(folder.id)}

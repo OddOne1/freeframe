@@ -239,10 +239,13 @@ export function ProjectStorageMeter({
   fixedHeight?: boolean
 }) {
   const box = cn('border-t border-border shrink-0 p-2 space-y-1', fixedHeight && 'h-[89px]')
+  // §241 item 5 — the anchor the "Recently Deleted" row sits above, in
+  // both layouts. Named so a test can assert the order rather than a class.
+  const testId = 'project-storage-meter'
 
   if (limit === null) {
     return (
-      <div className={box}>
+      <div data-testid={testId} className={box}>
         <div className="flex flex-col gap-1 px-2.5 py-1.5">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-medium text-text-secondary">Storage</span>
@@ -260,7 +263,7 @@ export function ProjectStorageMeter({
   const isCritical = pct >= 90;
   const isWarning = pct >= 80;
   return (
-    <div className={box}>
+    <div data-testid={testId} className={box}>
       <div className="flex flex-col gap-1 px-2.5 py-1.5">
         <div className="flex items-center justify-between">
           <span className="text-[11px] font-medium text-text-secondary">Storage</span>

@@ -221,6 +221,18 @@ export interface Asset {
   avg_rating?: number | null;
   rating_count?: number;
   my_rating?: number | null;
+  /**
+   * §240 C2 — may the signed-in user delete THIS asset? Decided by the
+   * server (`can_delete_asset`: the uploader, the project owner, or a
+   * superadmin) and never re-derived here: an editor may now delete only
+   * what they uploaded, and the client has no way to know who that was
+   * for an asset whose uploader has been renamed or removed.
+   *
+   * Optional, and treated as "allowed" when absent, so a listing that
+   * does not carry it (a share page's grid) keeps offering what it did
+   * before and relies on the server's 403.
+   */
+  can_delete?: boolean;
 }
 
 export interface AssetVersion {
@@ -254,6 +266,22 @@ export interface AssetVersion {
   created_by_name?: string | null;
   created_at: string;
   deleted_at: string | null;
+  /**
+   * §240 D — who removed this version, as the SERVER chose to tell it.
+   *
+   * Filled only for callers allowed to see it (anyone who may restore the
+   * row, plus editors and above); a reviewer is told the version was
+   * removed, not by whom. Shown exactly as given — never assembled from a
+   * member list here, which is how a name the server withheld leaks back.
+   */
+  deleted_by_name?: string | null;
+  /**
+   * §240 C — may the signed-in user bring this version back? The deleter,
+   * the project owner, or a superadmin. Computed server-side by
+   * `can_restore_version`; the uploader of a version who did NOT delete it
+   * is NOT included, so this cannot be re-derived from `created_by`.
+   */
+  can_restore?: boolean;
   files?: MediaFile[];
 }
 
@@ -835,6 +863,10 @@ export interface Folder {
   updated_at: string
   item_count: number
   total_size_bytes: number
+  /** §240 C2 — see `Asset.can_delete`. For a folder the server's rule is
+   *  stricter: the whole subtree must be the caller's own, or they must be
+   *  the project owner or a superadmin. */
+  can_delete?: boolean
 }
 
 export interface FolderTreeNode {
@@ -843,6 +875,8 @@ export interface FolderTreeNode {
   parent_id: string | null
   item_count: number
   total_size_bytes: number
+  /** §240 C2 — batched for the whole tree by the server. */
+  can_delete?: boolean
   children: FolderTreeNode[]
 }
 
@@ -855,7 +889,62 @@ export interface TrashItem {
   deleted_at: string | null
 }
 
+/** The three things Recently Deleted can hold (§240 B). */
+export type TrashKind = 'asset' | 'folder' | 'version'
+
+/** What the trash listing can be sorted by. The API's own enum. */
+export type TrashSort = 'deleted_at' | 'name' | 'size' | 'expires_at'
+
+export interface TrashDeleter {
+  id: string
+  name: string
+}
+
+/**
+ * One row of `GET /projects/{id}/trash` (§240 B).
+ *
+ * Every permission is a FLAG the server computed — `can_restore` is
+ * "the deleter, the project owner or a superadmin", `can_purge` mirrors
+ * the purge routes (project owner/manager, and never a version). The web
+ * renders the action from the answer and re-derives neither.
+ */
+export interface TrashEntry {
+  id: string
+  kind: TrashKind
+  name: string
+  deleted_at: string | null
+  /** `deleted_at` + the retention window, computed by the API. */
+  expires_at: string | null
+  /** Null for a row deleted before §240 recorded deleters — "Unknown". */
+  deleted_by: TrashDeleter | null
+  original_folder_id: string | null
+  /** "Day 1 / Selects", or "" at the project root. */
+  original_path: string
+  size_bytes: number
+  can_restore: boolean
+  can_purge: boolean
+  /** Folders only: descendant folders plus every asset in the subtree. */
+  child_count: number
+  /** The asset's type, for a `version` row as well as an `asset` row. */
+  asset_type: string | null
+  /** `version` rows only: the LIVE asset this version belongs to. */
+  asset_id: string | null
+  version_number: number | null
+}
+
 export interface TrashResponse {
+  /** §240 — the merged list. Absent from a pre-§240 API. */
+  items?: TrashEntry[]
+  /** Every row the filters match for this caller, not just this page. */
+  total?: number
+  /** The retention window the SERVER uses; preferred over the web's own
+   *  `TRASH_RETENTION_DAYS` wherever a number is shown. */
+  retention_days?: number
+  deleters?: TrashDeleter[]
+  /** True when this caller's trash also holds rows with no recorded
+   *  deleter — the only reason to offer the "Unknown" filter. */
+  unknown_deleter_present?: boolean
+  // ── Pre-§240 keys, still sent, same shape ───────────────────────────
   folders: TrashItem[]
   assets: TrashItem[]
 }

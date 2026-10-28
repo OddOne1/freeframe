@@ -128,7 +128,11 @@ describe('VersionSwitcher delete', () => {
     expect(item).toHaveAttribute('title', expect.stringMatching(/uploading or processing/i))
   })
 
-  it('confirms with the version number, the comments and the undo warning', async () => {
+  // §241 item 4 — the dialog no longer claims the delete "cannot be
+  // undone": it can, from the version list or Recently Deleted. What it
+  // must NOT claim is a deadline, because a soft-deleted version is never
+  // purged.
+  it('confirms with the version number, the comments and where to undo it', async () => {
     const user = userEvent.setup()
     const versions = [version(1, ME), version(2, ME)]
     useReviewStore.getState().setCurrentVersion(versions[1])
@@ -147,7 +151,12 @@ describe('VersionSwitcher delete', () => {
 
     expect(await screen.findByText('Delete v2?')).toBeInTheDocument()
     expect(screen.getByText(/comments, annotations and approvals/i)).toBeInTheDocument()
-    expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/restore it from the version list or from Recently Deleted/i),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/cannot be undone/i)).not.toBeInTheDocument()
+    // No 30-day promise on a version: nothing purges one.
+    expect(screen.queryByText(/30 days/i)).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /delete version/i }))
     await waitFor(() => expect(onDelete).toHaveBeenCalledTimes(1))

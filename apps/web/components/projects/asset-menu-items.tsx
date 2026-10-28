@@ -3,6 +3,7 @@
 import * as React from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { Share2, Download, Link as LinkIcon, Pencil, Trash2 } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { menuItemClass, menuItemDangerClass } from '@/components/ui/cursor-menu'
 
 /**
@@ -23,11 +24,22 @@ export interface AssetMenuActions {
   onDownload?: () => void
   onRename?: () => void
   onDelete?: () => void
+  /** §240 C2 / §241 5b — why Delete is refused for THIS asset, when the
+   *  server's `can_delete` says it is. The entry is rendered disabled
+   *  carrying this sentence rather than withheld. */
+  deleteDeniedReason?: string | null
   /** Absent server-side rendering, where window.location has no origin. */
   assetUrl?: string | null
 }
 
-export function AssetMenuItems({ onShare, onDownload, onRename, onDelete, assetUrl }: AssetMenuActions) {
+export function AssetMenuItems({
+  onShare,
+  onDownload,
+  onRename,
+  onDelete,
+  deleteDeniedReason,
+  assetUrl,
+}: AssetMenuActions) {
   const canCopyUrl = Boolean(assetUrl)
   // A separator above nothing is a stray line; each group tracks whether
   // anything before it actually rendered.
@@ -73,7 +85,16 @@ export function AssetMenuItems({ onShare, onDownload, onRename, onDelete, assetU
         </DropdownMenu.Item>
       )}
       {onDelete && (
-        <DropdownMenu.Item onSelect={onDelete} className={menuItemDangerClass}>
+        <DropdownMenu.Item
+          data-testid="asset-menu-delete"
+          disabled={Boolean(deleteDeniedReason)}
+          title={deleteDeniedReason ?? undefined}
+          onSelect={deleteDeniedReason ? undefined : onDelete}
+          className={cn(
+            menuItemDangerClass,
+            deleteDeniedReason && 'opacity-40 cursor-not-allowed',
+          )}
+        >
           <Trash2 className="h-3.5 w-3.5" />
           Delete
         </DropdownMenu.Item>

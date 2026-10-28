@@ -153,7 +153,11 @@ describe('deleting it from the menu', () => {
     await user.click(screen.getByRole('button', { name: /^v1/ }))
     await user.click(await screen.findByTestId('delete-version-2'))
 
-    expect(await screen.findByText(/will be hidden from this file/i)).toBeInTheDocument()
+    // §241 item 4 reworded this: "hidden with it", not "hidden from this
+    // file", and it now says where to restore it from.
+    expect(
+      await screen.findByText(/comments, annotations and approvals are hidden with it/i),
+    ).toBeInTheDocument()
     expect(screen.queryByText(/frees v2/i)).not.toBeInTheDocument()
   })
 

@@ -19,7 +19,9 @@ import {
   menuItemDangerClass,
   type CursorMenuState,
 } from '@/components/ui/cursor-menu'
-import { cn } from '@/lib/utils'
+import { cn, trashDeleteWarning } from '@/lib/utils'
+import { useOptionalToast } from '@/components/shared/toast'
+import { FOLDER_DELETE_DENIED, deleteBlocked } from './delete-permissions'
 import { dragCarriesFiles } from '@/hooks/use-file-drop-zone'
 import { useFormatBytes } from '@/hooks/use-byte-units'
 import type { FolderTreeNode } from '@/types'
@@ -54,9 +56,12 @@ interface FolderTreeProps {
   tree: FolderTreeNode[]
   projectName: string
   currentFolderId: string | null // null = root
+  /** Whether the Recently Deleted view is the one on screen — the project
+   *  root row is not "current" while it is. The ENTRY that opens it is no
+   *  longer here (§241 item 5): it moved to the bottom of the sidebar, and
+   *  is exported below as `RecentlyDeletedEntry`. */
   showTrash: boolean
   onSelectFolder: (folderId: string | null) => void
-  onShowTrash: () => void
   onCreateFolder: (name: string, parentId: string | null) => Promise<void>
   onRenameFolder: (folderId: string, name: string) => Promise<void>
   onDeleteFolder: (folderId: string) => Promise<void>
@@ -105,6 +110,8 @@ function FolderNode({
   onDropItems,
 }: FolderNodeProps) {
   const formatBytes = useFormatBytes()
+  const toast = useOptionalToast()
+  const cannotDelete = deleteBlocked(node.can_delete)
   // §223 — the menu's open state IS its anchor point, because there is no
   // separate closed/open position to keep in step: `null` is closed, a
   // coordinate pair is open there. Same shape the grid's context menus
@@ -309,11 +316,37 @@ function FolderNode({
           </DropdownMenu.Item>
         )}
         <DropdownMenu.Separator className="my-1 border-t border-border" />
+        {/* §240 C2 / §241 item 5b — `can_delete` comes batched on every
+            tree node, so the tree can disable the entry with its reason
+            instead of offering a click that answers 403. §241 item 4 —
+            the confirmation says the deadline, in the same words the
+            dialogs use (one source, `trashDeleteWarning`). */}
         <DropdownMenu.Item
-          className={menuItemDangerClass}
+          data-testid={`folder-tree-delete-${node.id}`}
+          disabled={cannotDelete}
+          title={cannotDelete ? FOLDER_DELETE_DENIED : undefined}
+          className={cn(
+            menuItemDangerClass,
+            cannotDelete && 'opacity-40 cursor-not-allowed',
+          )}
           onSelect={() => {
-            if (confirm(`Delete folder "${node.name}" and all its contents?`)) {
-              void onDeleteFolder(node.id)
+            if (cannotDelete) return
+            if (
+              confirm(
+                `Delete folder "${node.name}" and all its contents?\n\n${trashDeleteWarning('folder')}`,
+              )
+            ) {
+              // The server re-decides, and a refusal is SHOWN: this used
+              // to be a floating promise, so a 403 reached the console and
+              // the user watched the folder not disappear.
+              void onDeleteFolder(node.id).catch((err: unknown) => {
+                toast(
+                  err instanceof Error && err.message
+                    ? err.message
+                    : 'Could not delete this folder.',
+                  'error',
+                )
+              })
             }
           }}
         >
@@ -352,7 +385,6 @@ export function FolderTree({
   currentFolderId,
   showTrash,
   onSelectFolder,
-  onShowTrash,
   onCreateFolder,
   onRenameFolder,
   onDeleteFolder,
@@ -465,20 +497,45 @@ export function FolderTree({
           onDropItems={onDropItems}
         />
       ))}
+    </div>
+  )
+}
 
-      {/* Recently Deleted */}
-      <div
-        className={cn(
-          'flex items-center gap-2 px-2 py-1 rounded-md text-[13px] cursor-pointer transition-colors mt-2',
-          showTrash
-            ? 'bg-accent/10 text-accent font-medium'
-            : 'text-text-tertiary hover:text-text-secondary hover:bg-bg-hover',
-        )}
-        onClick={onShowTrash}
-      >
-        <Trash2 className="h-3.5 w-3.5 shrink-0" />
-        <span>Recently Deleted</span>
-      </div>
+/**
+ * The "Recently Deleted" row (§241 item 5).
+ *
+ * It used to be the last child of the folder tree, which is where the
+ * owner's screenshots show it should NOT be: it is not a folder, and in a
+ * project with a deep tree it sat wherever the tree happened to end. Now
+ * it is rendered by the page at the bottom of the sidebar, in the strip
+ * directly above Storage, in the `xl`+ column and in the phone/tablet
+ * navigator panel alike.
+ *
+ * Exported from this file rather than moved to a new one so the row keeps
+ * living beside the tree it used to be part of — same markup, same active
+ * state, same icon. Only its parent changed.
+ */
+export function RecentlyDeletedEntry({
+  active,
+  onSelect,
+}: {
+  active: boolean
+  onSelect: () => void
+}) {
+  return (
+    <div
+      data-testid="recently-deleted-entry"
+      aria-current={active ? 'true' : undefined}
+      className={cn(
+        'flex items-center gap-2 px-2 py-1 hover-none:min-h-11 rounded-md text-[13px] cursor-pointer transition-colors',
+        active
+          ? 'bg-accent/10 text-accent font-medium'
+          : 'text-text-tertiary hover:text-text-secondary hover:bg-bg-hover',
+      )}
+      onClick={onSelect}
+    >
+      <Trash2 className="h-3.5 w-3.5 shrink-0" />
+      <span>Recently Deleted</span>
     </div>
   )
 }

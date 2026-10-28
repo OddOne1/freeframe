@@ -239,10 +239,6 @@ export function FolderNavigator({
                   treeProps.onSelectFolder(id)
                   setOpen(false)
                 }}
-                onShowTrash={() => {
-                  treeProps.onShowTrash()
-                  setOpen(false)
-                }}
               />
             </div>
             {extra && (

@@ -18,6 +18,12 @@ import { SortPopover } from './sort-popover'
 import { MoveToDialog } from './move-to-dialog'
 import { useViewStore } from '@/stores/view-store'
 import { usePointerGesture, cardKeyIntent } from '@/hooks/use-pointer-gesture'
+import {
+  ASSET_DELETE_DENIED,
+  BULK_DELETE_DENIED,
+  FOLDER_DELETE_DENIED,
+  deleteBlocked,
+} from './delete-permissions'
 import type { Asset, AssetStatus, User, Folder, FolderTreeNode } from '@/types'
 
 const assetTypeIcons: Record<string, React.ElementType> = {
@@ -656,6 +662,19 @@ export function AssetGrid({
   const selectedAssetList = () => Array.from(selectedAssetIds)
   const selectedFolderList = () => Array.from(selectedFolderIds)
 
+  /**
+   * §240 C2 / §241 item 5b — may this WHOLE selection be deleted?
+   *
+   * There is no bulk delete endpoint: the page loops `DELETE /assets/{id}`
+   * and `DELETE /folders/{id}` one id at a time, so a selection holding
+   * one forbidden item would half-succeed — some files gone, some 403, and
+   * nothing said about which. The action is therefore offered for the
+   * whole selection or not at all, with the reason on the control.
+   */
+  const bulkDeleteBlocked =
+    (assets ?? []).some((a) => selectedAssetIds.has(a.id) && deleteBlocked(a.can_delete)) ||
+    (folders ?? []).some((f) => selectedFolderIds.has(f.id) && deleteBlocked(f.can_delete))
+
   return (
     <div
       className="flex flex-col gap-3 relative"
@@ -853,6 +872,7 @@ export function AssetGrid({
                 onDownload={onAssetDownload ? () => onAssetDownload(asset) : undefined}
                 onRename={onAssetRename ? () => onAssetRename(asset) : undefined}
                 onDelete={onAssetDelete ? () => onAssetDelete(asset) : undefined}
+                deleteDeniedReason={deleteBlocked(asset.can_delete) ? ASSET_DELETE_DENIED : null}
                 onContextMenu={(e) => handleAssetContextMenu(asset, e)}
                 canVote={canVote}
                 onVote={onAssetVote ? (stars) => onAssetVote(asset, stars) : undefined}
@@ -999,8 +1019,21 @@ export function AssetGrid({
                         )}
                         {onFolderDelete && (
                           <DropdownMenu.Item
-                            onSelect={() => onFolderDelete(folder.id)}
-                            className="flex items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-status-error hover:bg-status-error/10 cursor-pointer outline-none transition-colors"
+                            data-testid={`folder-row-delete-${folder.id}`}
+                            disabled={deleteBlocked(folder.can_delete)}
+                            title={
+                              deleteBlocked(folder.can_delete) ? FOLDER_DELETE_DENIED : undefined
+                            }
+                            onSelect={
+                              deleteBlocked(folder.can_delete)
+                                ? undefined
+                                : () => onFolderDelete(folder.id)
+                            }
+                            className={cn(
+                              'flex items-center gap-2.5 mx-1 px-2.5 py-2 rounded-lg text-sm text-status-error hover:bg-status-error/10 cursor-pointer outline-none transition-colors',
+                              deleteBlocked(folder.can_delete) &&
+                                'opacity-40 cursor-not-allowed hover:bg-transparent',
+                            )}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                             Delete
@@ -1140,6 +1173,9 @@ export function AssetGrid({
                           onDownload={onAssetDownload ? () => onAssetDownload(asset) : undefined}
                           onRename={onAssetRename ? () => onAssetRename(asset) : undefined}
                           onDelete={onAssetDelete ? () => onAssetDelete(asset) : undefined}
+                          deleteDeniedReason={
+                            deleteBlocked(asset.can_delete) ? ASSET_DELETE_DENIED : null
+                          }
                           assetUrl={
                             typeof window !== 'undefined'
                               ? `${window.location.origin}/projects/${asset.project_id}/assets/${asset.id}`
@@ -1186,8 +1222,15 @@ export function AssetGrid({
           <Button
             variant="ghost"
             size="sm"
-            className="gap-1.5"
-            onClick={() => onBulkDelete?.(Array.from(selectedAssetIds), Array.from(selectedFolderIds))}
+            data-testid="bulk-delete"
+            className={cn('gap-1.5', bulkDeleteBlocked && 'opacity-40 cursor-not-allowed')}
+            disabled={bulkDeleteBlocked}
+            title={bulkDeleteBlocked ? BULK_DELETE_DENIED : undefined}
+            onClick={() =>
+              bulkDeleteBlocked
+                ? undefined
+                : onBulkDelete?.(Array.from(selectedAssetIds), Array.from(selectedFolderIds))
+            }
           >
             <Trash2 className="h-4 w-4" /> Delete
           </Button>
@@ -1234,6 +1277,11 @@ export function AssetGrid({
             onDownload={onAssetDownload ? () => onAssetDownload(contextMenu.asset as Asset) : undefined}
             onRename={onAssetRename ? () => onAssetRename(contextMenu.asset as Asset) : undefined}
             onDelete={onAssetDelete ? () => onAssetDelete(contextMenu.asset as Asset) : undefined}
+            deleteDeniedReason={
+              deleteBlocked((contextMenu.asset as Asset).can_delete)
+                ? ASSET_DELETE_DENIED
+                : null
+            }
             assetUrl={
               typeof window !== 'undefined' && contextMenu.asset
                 ? `${window.location.origin}/projects/${projectId}/assets/${contextMenu.asset.id}`
@@ -1278,8 +1326,18 @@ export function AssetGrid({
               <>
                 <DropdownMenu.Separator className="my-1 h-px bg-border mx-1" />
                 <DropdownMenu.Item
-                  className={menuItemDangerClass}
-                  onSelect={() => onBulkDelete(selectedAssetList(), selectedFolderList())}
+                  data-testid="bulk-delete-menu"
+                  disabled={bulkDeleteBlocked}
+                  title={bulkDeleteBlocked ? BULK_DELETE_DENIED : undefined}
+                  className={cn(
+                    menuItemDangerClass,
+                    bulkDeleteBlocked && 'opacity-40 cursor-not-allowed',
+                  )}
+                  onSelect={
+                    bulkDeleteBlocked
+                      ? undefined
+                      : () => onBulkDelete(selectedAssetList(), selectedFolderList())
+                  }
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                   Delete
