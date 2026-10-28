@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -20,14 +20,31 @@ from ..schemas.folder import (
     FolderTreeNode,
     FolderUpdate,
 )
+from ..services import trash_service
 from ..services.asset_visibility import usable_asset_filter
-from ..services.permissions import require_project_role, get_project_member, is_public_project
-from ..services.purge_service import purge_asset, purge_folder
+from ..services.permissions import (
+    can_delete_folder,
+    can_restore_asset,
+    can_restore_folder,
+    get_project_member,
+    is_project_owner_or_superadmin,
+    is_public_project,
+    require_project_role,
+)
+from ..services.purge_service import RETENTION_DAYS, purge_asset, purge_folder
 from ..services.storage_usage import storage_bytes_query
 
 router = APIRouter(tags=["folders"])
 
 MAX_FOLDER_DEPTH = 10
+
+#: The one answer every refused restore gets (§240 C). Deliberately
+#: generic and identical for assets, folders and versions: it names the
+#: rule, not who deleted the row, because "Eddie deleted this" is
+#: information a caller who may not restore it has not been shown.
+RESTORE_DENIED = (
+    "Only the person who deleted this, the project owner, or an admin can restore it"
+)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -101,10 +118,26 @@ def _compute_folder_total_size(db: Session, folder_id: uuid.UUID) -> int:
     ).scalar() or 0
     return int(total)
 
-def _folder_to_response(db: Session, folder: Folder) -> FolderResponse:
+def _folder_to_response(
+    db: Session,
+    folder: Folder,
+    current_user: User | None = None,
+    can_delete: bool | None = None,
+) -> FolderResponse:
+    """One folder, with its counts and §240's `can_delete`.
+
+    `can_delete` is passed in by a caller that computed the whole
+    project's map at once (`_can_delete_folder_map`); a single-folder
+    caller leaves it out and pays for one recursive query via
+    `can_delete_folder`. Default False when there is no caller.
+    """
     resp = FolderResponse.model_validate(folder)
     resp.item_count = _compute_item_count(db, folder.id)
     resp.total_size_bytes = _compute_folder_total_size(db, folder.id)
+    if can_delete is not None:
+        resp.can_delete = can_delete
+    elif current_user is not None:
+        resp.can_delete = can_delete_folder(db, folder, current_user)
     return resp
 
 def _get_descendant_ids_including_deleted(db: Session, folder_id: uuid.UUID) -> list[uuid.UUID]:
@@ -175,7 +208,7 @@ def create_folder(
     db.add(folder)
     db.commit()
     db.refresh(folder)
-    return _folder_to_response(db, folder)
+    return _folder_to_response(db, folder, current_user)
 
 @router.get("/projects/{project_id}/folders", response_model=list[FolderResponse])
 def list_folders(
@@ -200,7 +233,11 @@ def list_folders(
         query = query.filter(Folder.parent_id == uuid.UUID(parent_id))
 
     folders = query.order_by(Folder.created_at.desc()).all()
-    return [_folder_to_response(db, f) for f in folders]
+    deletable = _can_delete_folder_map(db, project_id, current_user)
+    return [
+        _folder_to_response(db, f, can_delete=deletable.get(f.id, False))
+        for f in folders
+    ]
 
 @router.get("/projects/{project_id}/folder-tree", response_model=list[FolderTreeNode])
 def get_folder_tree(
@@ -252,6 +289,9 @@ def get_folder_tree(
         .all()
     ) if folder_ids else {}
 
+    # §240 C2 — one map for the whole tree, not one query per node.
+    deletable = _can_delete_folder_map(db, project_id, current_user)
+
     # Build tree in Python
     folder_map: dict[uuid.UUID, FolderTreeNode] = {}
     for f in all_folders:
@@ -261,6 +301,7 @@ def get_folder_tree(
             parent_id=f.parent_id,
             item_count=(subfolder_counts.get(f.id, 0) + asset_counts.get(f.id, 0)),
             total_size_bytes=int(direct_sizes.get(f.id, 0)),
+            can_delete=deletable.get(f.id, False),
         )
 
     roots: list[FolderTreeNode] = []
@@ -319,7 +360,72 @@ def update_folder(
 
     db.commit()
     db.refresh(folder)
-    return _folder_to_response(db, folder)
+    return _folder_to_response(db, folder, current_user)
+
+def _can_delete_folder_map(
+    db: Session, project_id: uuid.UUID, user: User
+) -> dict[uuid.UUID, bool]:
+    """`can_delete` for EVERY live folder in the project, in two queries.
+
+    §240 C2's folder rule is recursive ("and everything live inside it, at
+    any depth, is theirs"), which is one query per folder if asked folder
+    by folder — an N+1 on the folder tree, which the tree endpoint builds
+    for the whole project at once. So the subtree test is done here
+    instead: load the folders (one query) and the folders that hold
+    somebody else's live asset (one grouped query), then settle every
+    folder bottom-up in Python. `folder_subtree_is_all_mine` in
+    services/permissions.py remains the single-folder answer and the two
+    agree by construction — same two conditions, same NULL handling.
+
+    An owner or superadmin short-circuits before either query: they may
+    delete anything.
+    """
+    rows = (
+        db.query(Folder.id, Folder.parent_id, Folder.created_by)
+        .filter(Folder.project_id == project_id, Folder.deleted_at.is_(None))
+        .all()
+    )
+    if is_project_owner_or_superadmin(db, project_id, user):
+        return {r.id: True for r in rows}
+
+    foreign_asset_folders = {
+        fid for (fid,) in db.query(Asset.folder_id)
+        .filter(
+            Asset.project_id == project_id,
+            Asset.deleted_at.is_(None),
+            Asset.folder_id.isnot(None),
+            Asset.created_by.is_distinct_from(user.id),
+        )
+        .distinct()
+        .all()
+    }
+
+    children: dict = {}
+    for r in rows:
+        children.setdefault(r.parent_id, []).append(r)
+
+    result: dict[uuid.UUID, bool] = {}
+
+    def settle(row) -> bool:
+        if row.id in result:
+            return result[row.id]
+        # Claimed before recursing: a corrupt parent cycle then resolves
+        # to False instead of recursing forever.
+        result[row.id] = False
+        mine = (
+            row.created_by is not None
+            and row.created_by == user.id
+            and row.id not in foreign_asset_folders
+            and all(settle(child) for child in children.get(row.id, []))
+        )
+        result[row.id] = mine
+        return mine
+
+    # Every row is settled, not only the roots, so a folder whose parent
+    # is missing from this project's live set is still answered.
+    for row in rows:
+        settle(row)
+    return result
 
 @router.delete("/folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_folder(
@@ -327,20 +433,54 @@ def delete_folder(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Move a folder and everything inside it to the trash.
+
+    §240 C2 — the permission is no longer "any editor". It is the project
+    owner or a superadmin, or the editor who created this folder AND
+    uploaded everything live inside it (`can_delete_folder`). Checked
+    BEFORE the cascade stamps anything: the check reads `created_by` on
+    rows the cascade is about to mark deleted, so running it afterwards
+    would be asking about a tree that has already changed.
+
+    §240 A — the cascade stamps `deleted_by`/`deleted_by_name` as well as
+    `deleted_at`, with the SAME deleter for every descendant: one click,
+    one person.
+
+    §240 — and it no longer touches rows that are ALREADY deleted. That
+    was the quiet bug behind the folder-restore regression: re-stamping an
+    asset somebody had trashed last week with today's timestamp made its
+    own deletion indistinguishable from this one, restarted its 30-day
+    clock, and overwrote whoever had deleted it. Leaving those rows alone
+    is what lets `restore_folder` below bring back exactly what this call
+    took away.
+    """
     folder = _get_folder(db, folder_id)
     require_project_role(db, folder.project_id, current_user, ProjectRole.editor)
+    if not can_delete_folder(db, folder, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Only the project owner can delete a folder that contains "
+                "other people's files"
+            ),
+        )
 
     now = datetime.now(timezone.utc)
+    stamp = {
+        "deleted_at": now,
+        "deleted_by": current_user.id,
+        "deleted_by_name": current_user.name,
+    }
 
     # Cascade soft-delete: folder + all descendants + their assets
     all_folder_ids = [folder_id] + _get_descendant_ids(db, folder_id)
 
-    db.query(Folder).filter(Folder.id.in_(all_folder_ids)).update(
-        {"deleted_at": now}, synchronize_session="fetch"
-    )
-    db.query(Asset).filter(Asset.folder_id.in_(all_folder_ids)).update(
-        {"deleted_at": now}, synchronize_session="fetch"
-    )
+    db.query(Folder).filter(
+        Folder.id.in_(all_folder_ids), Folder.deleted_at.is_(None)
+    ).update(stamp, synchronize_session="fetch")
+    db.query(Asset).filter(
+        Asset.folder_id.in_(all_folder_ids), Asset.deleted_at.is_(None)
+    ).update(stamp, synchronize_session="fetch")
 
     db.commit()
 
@@ -431,54 +571,181 @@ def bulk_move(
 
 # ─── Trash & Restore ─────────────────────────────────────────────────────────
 
+def _trash_path(db: Session, folder_id, cache: dict) -> str:
+    """Where a trashed row used to live: "Day 1 / Selects", or "" at the root.
+
+    Walks `parent_id` INCLUDING deleted folders — the whole point is to
+    describe a place that may not exist any more, so `_get_folder`'s
+    live-only lookup is wrong here. `cache` is per request: a cascade puts
+    hundreds of rows in the trash with the same handful of ancestors, and
+    this is the only per-row query in the listing. `seen` makes a corrupt
+    parent cycle end the walk rather than spin, matching
+    `folder_chain_is_live` in services/permissions.py.
+    """
+    if folder_id is None:
+        return ""
+    if folder_id in cache:
+        return cache[folder_id]
+    names: list[str] = []
+    current = folder_id
+    seen = set()
+    while current and current not in seen:
+        seen.add(current)
+        row = db.query(Folder.name, Folder.parent_id).filter(Folder.id == current).first()
+        if row is None:
+            break
+        names.append(row.name)
+        current = row.parent_id
+    path = " / ".join(reversed(names))
+    cache[folder_id] = path
+    return path
+
 @router.get("/projects/{project_id}/trash", response_model=dict)
 def list_trash(
     project_id: uuid.UUID,
-    skip: int = Query(0, ge=0),
+    q: Optional[str] = Query(None, max_length=255, description="Name search, case-insensitive substring"),
+    kind: str = Query("all", pattern="^(all|asset|folder|version)$"),
+    deleted_by: Optional[str] = Query(None, description="User uuid, or 'unknown' for rows with no recorded deleter"),
+    sort: str = Query("deleted_at", pattern="^(deleted_at|name|size|expires_at)$"),
+    order: Optional[str] = Query(None, pattern="^(asc|desc)$"),
     limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    include_nested: bool = Query(False, description="Also list rows that were deleted because their folder was"),
+    skip: int = Query(0, ge=0, description="Deprecated alias for offset (pre-§240 callers)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Recently Deleted: ONE merged, sorted, paginated list (§240 B).
+
+    The gate is unchanged — editor or above on the project, which is what
+    it was before §240 — but WHAT a caller sees now depends on who they
+    are, because `can_restore` is the only action this list offers and
+    §240 narrowed who may restore:
+
+      * an editor sees only what THEY deleted, since that is all they can
+        restore;
+      * the project owner and a superadmin see the whole project's trash,
+        including rows whose deleter is unknown (deleted before §240).
+
+    That rule lives in the SQL (services/trash_service.py), not in a
+    filter over the page, so `total`, the paging and the `deleters` list
+    are all correct for the caller asking.
+
+    `folders` and `assets` are kept, with their old shape, populated from
+    the rows of this same page — the pre-§240 web hook and its vitest
+    fixtures keep working unchanged. `skip` is kept as an alias for
+    `offset` for the same reason; `limit` now applies to the MERGED list
+    rather than separately to each kind, which is what made "page 2"
+    wrong before.
+    """
     require_project_role(db, project_id, current_user, ProjectRole.editor)
 
-    deleted_folders = (
-        db.query(Folder)
-        .filter(Folder.project_id == project_id, Folder.deleted_at.isnot(None))
-        .order_by(Folder.deleted_at.desc())
-        .offset(skip)
-        .limit(limit)
-        .all()
+    if deleted_by and deleted_by != trash_service.UNKNOWN_DELETER:
+        try:
+            uuid.UUID(str(deleted_by))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="deleted_by must be a user id or 'unknown'")
+
+    sees_whole_project = is_project_owner_or_superadmin(db, project_id, current_user)
+    filters = trash_service.TrashFilters(
+        project_id=project_id,
+        user_id=current_user.id,
+        sees_whole_project=sees_whole_project,
+        q=q,
+        kind=kind,
+        deleted_by=deleted_by,
+        include_nested=include_nested,
+        sort=sort,
+        order=order,
+        limit=limit,
+        # `skip` is only honoured when `offset` was left at its default,
+        # so a caller passing both does not get them added together.
+        offset=offset or skip,
+    )
+    rows, total = trash_service.list_trash(db, filters)
+    deleters, has_unknown = trash_service.list_deleters(db, filters)
+
+    # Both flags are per-caller, not per-row, apart from `can_restore`'s
+    # deleter clause and `can_purge`'s kind clause — so the role lookups
+    # happen once here rather than once per item.
+    #
+    # `can_purge` mirrors the purge endpoints below EXACTLY, including
+    # what they do not do: they are `require_project_role(admin)`, which
+    # has no superadmin bypass and no membership-free path, so a
+    # superadmin who is a member as an EDITOR is refused there and must
+    # be told so here. Owner and admin ("Manager") rank equally in that
+    # helper, which is why both are listed. And there is no purge route
+    # for a VERSION at all (§239 frees no bytes; purging is assets and
+    # folders only), so a version row never offers it.
+    member = get_project_member(db, project_id, current_user.id)
+    can_purge_here = member is not None and member.role in (
+        ProjectRole.owner,
+        ProjectRole.admin,
     )
 
-    deleted_assets = (
-        db.query(Asset)
-        .filter(Asset.project_id == project_id, Asset.deleted_at.isnot(None))
-        .order_by(Asset.deleted_at.desc())
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
+    path_cache: dict = {}
+
+    def _item(row: dict) -> dict:
+        return {
+            "id": str(row["id"]),
+            "kind": row["kind"],
+            "name": row["name"],
+            "deleted_at": row["deleted_at"].isoformat() if row["deleted_at"] else None,
+            "expires_at": (
+                trash_service.expires_at(row["deleted_at"]).isoformat()
+                if row["deleted_at"] else None
+            ),
+            "deleted_by": (
+                {"id": str(row["deleted_by"]), "name": row["deleted_by_name"] or ""}
+                if row["deleted_by"] else None
+            ),
+            "original_folder_id": (
+                str(row["original_folder_id"]) if row["original_folder_id"] else None
+            ),
+            "original_path": _trash_path(db, row["original_folder_id"], path_cache),
+            "size_bytes": int(row["size_bytes"] or 0),
+            "can_restore": sees_whole_project or (
+                row["deleted_by"] is not None and row["deleted_by"] == current_user.id
+            ),
+            "can_purge": can_purge_here and row["kind"] != "version",
+            "child_count": int(row["child_count"] or 0),
+            "asset_type": row["asset_type"],
+            "asset_id": str(row["asset_id"]) if row["asset_id"] else None,
+            "version_number": row["version_number"],
+        }
+
+    items = [_item(r) for r in rows]
 
     return {
+        "items": items,
+        "total": total,
+        "retention_days": RETENTION_DAYS,
+        "deleters": deleters,
+        "unknown_deleter_present": has_unknown,
+        # ── Legacy keys, unchanged shape, same page ──────────────────────
         "folders": [
             {
-                "id": str(f.id),
-                "name": f.name,
+                "id": str(r["id"]),
+                "name": r["name"],
                 "type": "folder",
-                "parent_id": str(f.parent_id) if f.parent_id else None,
-                "deleted_at": f.deleted_at.isoformat() if f.deleted_at else None,
+                "parent_id": (
+                    str(r["original_folder_id"]) if r["original_folder_id"] else None
+                ),
+                "deleted_at": r["deleted_at"].isoformat() if r["deleted_at"] else None,
             }
-            for f in deleted_folders
+            for r in rows if r["kind"] == "folder"
         ],
         "assets": [
             {
-                "id": str(a.id),
-                "name": a.name,
-                "type": a.asset_type,
-                "folder_id": str(a.folder_id) if a.folder_id else None,
-                "deleted_at": a.deleted_at.isoformat() if a.deleted_at else None,
+                "id": str(r["id"]),
+                "name": r["name"],
+                "type": r["asset_type"],
+                "folder_id": (
+                    str(r["original_folder_id"]) if r["original_folder_id"] else None
+                ),
+                "deleted_at": r["deleted_at"].isoformat() if r["deleted_at"] else None,
             }
-            for a in deleted_assets
+            for r in rows if r["kind"] == "asset"
         ],
     }
 
@@ -488,11 +755,21 @@ def restore_asset(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Take an asset back out of the trash.
+
+    §240 C — `can_restore_asset`, not `editor`: the person who deleted it,
+    the project owner, or a superadmin. The same `can_restore_deleted`
+    rule the folder restore below and the version restore in
+    routers/assets.py use, so all three cannot drift. A row whose
+    `deleted_by` is NULL (deleted before §240) is owner/superadmin only.
+    """
     asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.isnot(None)).first()
     if not asset:
         raise HTTPException(status_code=404, detail="Deleted asset not found")
 
     require_project_role(db, asset.project_id, current_user, ProjectRole.editor)
+    if not can_restore_asset(db, asset, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=RESTORE_DENIED)
 
     # If parent folder is deleted, move to root
     if asset.folder_id:
@@ -505,6 +782,11 @@ def restore_asset(
             asset.folder_id = None
 
     asset.deleted_at = None
+    # §240 A — a live row must never carry a deleter: the trash listing
+    # and the restore rule read nothing else, and a stale `deleted_by`
+    # would hand the next deletion's restore right to the wrong person.
+    asset.deleted_by = None
+    asset.deleted_by_name = None
     db.commit()
     return {"ok": True}
 
@@ -514,11 +796,29 @@ def restore_folder(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Take a folder, and what was deleted WITH it, back out of the trash.
+
+    §240 C — `can_restore_folder`, the same rule as the asset restore
+    above.
+
+    §240 — and only what was deleted with it. This route used to clear
+    `deleted_at` on EVERY deleted descendant and EVERY deleted asset
+    underneath, so restoring a folder also resurrected an asset somebody
+    had deliberately trashed a week earlier (verified against `main` with
+    a test before changing it). It now restores only rows carrying this
+    folder's own deletion stamp — the cascade in `delete_folder` writes
+    one `deleted_at` value for everything it touches and no longer
+    re-stamps rows that were already deleted, which is what makes that
+    timestamp a reliable "deleted by the same click" marker, for old rows
+    as well as new ones.
+    """
     folder = db.query(Folder).filter(Folder.id == folder_id, Folder.deleted_at.isnot(None)).first()
     if not folder:
         raise HTTPException(status_code=404, detail="Deleted folder not found")
 
     require_project_role(db, folder.project_id, current_user, ProjectRole.editor)
+    if not can_restore_folder(db, folder, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=RESTORE_DENIED)
 
     # If parent folder is deleted, restore to root
     if folder.parent_id:
@@ -530,17 +830,22 @@ def restore_folder(
         if not parent:
             folder.parent_id = None
 
-    # Restore folder and all its descendants + their assets
-    folder.deleted_at = None
+    # Read the stamp BEFORE clearing it — it is what identifies the rest
+    # of this deletion.
+    stamp = folder.deleted_at
+    cleared = {"deleted_at": None, "deleted_by": None, "deleted_by_name": None}
+
     descendant_ids = _get_descendant_ids_including_deleted(db, folder_id)
     all_ids = [folder_id] + descendant_ids
 
-    db.query(Folder).filter(Folder.id.in_(all_ids)).update(
-        {"deleted_at": None}, synchronize_session="fetch"
-    )
-    db.query(Asset).filter(Asset.folder_id.in_(all_ids), Asset.deleted_at.isnot(None)).update(
-        {"deleted_at": None}, synchronize_session="fetch"
-    )
+    db.query(Folder).filter(
+        Folder.id.in_(all_ids),
+        or_(Folder.id == folder_id, Folder.deleted_at == stamp),
+    ).update(cleared, synchronize_session="fetch")
+    db.query(Asset).filter(
+        Asset.folder_id.in_(all_ids),
+        Asset.deleted_at == stamp,
+    ).update(cleared, synchronize_session="fetch")
 
     db.commit()
     return {"ok": True}

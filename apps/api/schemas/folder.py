@@ -21,6 +21,11 @@ class FolderResponse(BaseModel):
     updated_at: datetime
     item_count: int = 0
     total_size_bytes: int = 0
+    # §240 C2 — may THIS caller move this folder to the trash: the project
+    # owner or a superadmin always, an editor only if the folder and
+    # everything live inside it is theirs. Computed server-side so the web
+    # renders the action from the answer.
+    can_delete: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -30,6 +35,10 @@ class FolderTreeNode(BaseModel):
     parent_id: Optional[uuid.UUID]
     item_count: int = 0
     total_size_bytes: int = 0
+    # §240 C2 — see FolderResponse.can_delete. Batched for the whole tree
+    # (see routers/folders.py's `_can_delete_folder_map`), not one
+    # recursive query per node.
+    can_delete: bool = False
     children: list["FolderTreeNode"] = []
 
 class AssetMoveRequest(BaseModel):

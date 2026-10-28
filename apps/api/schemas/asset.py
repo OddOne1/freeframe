@@ -53,6 +53,18 @@ class AssetVersionResponse(BaseModel):
     # stand in for it, and why the web is not allowed to try.
     failure_stage: Optional[Literal["upload", "processing"]] = None
     files: list[MediaFileResponse] = []
+    # §240 D — a version the user deleted stays VISIBLE in the history,
+    # marked removed. Null on every live version, which is what every
+    # existing caller sees and why the default call is unchanged.
+    #
+    # `deleted_by_name` is only filled for callers who may restore the
+    # row or who are editor+ — a reviewer sees that it was removed, not
+    # by whom. `can_restore` is computed SERVER-side by
+    # `can_restore_version`; the web must not re-derive it, because a
+    # re-derivation is how the menu and the route come to disagree.
+    deleted_at: Optional[datetime] = None
+    deleted_by_name: Optional[str] = None
+    can_restore: bool = False
     model_config = {"from_attributes": True}
 
 class AssetResponse(BaseModel):
@@ -83,6 +95,11 @@ class AssetResponse(BaseModel):
     avg_rating: Optional[float] = None
     rating_count: int = 0
     my_rating: Optional[int] = None
+    # §240 C2 — may THIS caller move this asset to the trash: the
+    # uploader, the project owner, or a superadmin. Computed server-side
+    # (`can_delete_asset`) so the web renders the action from the answer
+    # rather than guessing the rule.
+    can_delete: bool = False
     model_config = {"from_attributes": True}
 
 class AssetUpdate(BaseModel):

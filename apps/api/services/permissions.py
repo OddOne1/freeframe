@@ -143,10 +143,10 @@ def can_manage_version(db: Session, asset: Asset, version, user: User) -> bool:
     """
     if version.created_by == user.id:
         return True
-    if user.role == UserGlobalRole.superadmin:
-        return True
-    member = get_project_member(db, asset.project_id, user.id)
-    return member is not None and member.role == ProjectRole.owner
+    # §240 — the owner/superadmin half is now `is_project_owner_or_superadmin`
+    # below, shared with §240's delete and restore rules. Same two roles,
+    # same order (no membership query for a superadmin), no behaviour change.
+    return is_project_owner_or_superadmin(db, asset.project_id, user)
 
 
 def get_asset_share_permission(db: Session, asset: Asset, user: User) -> SharePermission:
@@ -383,3 +383,160 @@ def validate_share_link_with_session(
                 detail="Password required",
             )
     return link
+
+
+# ── Deleting and restoring: ONE rule each (§240) ───────────────────────────────
+#
+# §240 moved both decisions off `require_project_role(editor)`, which said
+# that any editor may delete and restore anything in the project. Four
+# routes and one listing flag now ask these functions instead, so there is
+# exactly one answer per question:
+#
+#   delete an asset    `can_delete_asset`    uploader / owner / superadmin
+#   delete a folder    `can_delete_folder`   owner / superadmin, or the
+#                                            editor who created it AND owns
+#                                            everything live inside it
+#   delete a version   `can_manage_version`  (§239, unchanged)
+#   restore anything   `can_restore_deleted` the deleter / owner / superadmin
+#
+# "owner" is the PROJECT owner and "admin" is the GLOBAL superadmin,
+# matching `can_manage_version`'s own note: a project `admin` ("Manager")
+# is NOT included, which is the part a re-derivation gets wrong.
+
+
+def is_project_owner_or_superadmin(db: Session, project_id: uuid.UUID, user: User) -> bool:
+    """The two roles that may act on anybody's content in a project.
+
+    Factored out of `can_manage_version` (which now calls it) so §239's
+    version rule, §240's delete rules and §240's restore rule cannot drift
+    on what "owner or admin" means.
+    """
+    if user.role == UserGlobalRole.superadmin:
+        return True
+    member = get_project_member(db, project_id, user.id)
+    return member is not None and member.role == ProjectRole.owner
+
+
+def can_restore_deleted(
+    db: Session,
+    project_id: uuid.UUID,
+    deleted_by: uuid.UUID | None,
+    user: User,
+) -> bool:
+    """THE restore rule (§240 C), for all three kinds of trashed row.
+
+    The user named in `deleted_by`, the project owner, or a superadmin —
+    and nobody else, editors included: an editor who did not delete it
+    cannot undo somebody else's decision.
+
+    `deleted_by IS NULL` is a row deleted before §240 (no backfill was
+    possible, see the migration). It falls through to owner/superadmin,
+    which is the safe direction: a NULL must never match a caller's id.
+    """
+    if deleted_by is not None and deleted_by == user.id:
+        return True
+    return is_project_owner_or_superadmin(db, project_id, user)
+
+
+def can_restore_asset(db: Session, asset: Asset, user: User) -> bool:
+    return can_restore_deleted(db, asset.project_id, asset.deleted_by, user)
+
+
+def can_restore_folder(db: Session, folder: Folder, user: User) -> bool:
+    return can_restore_deleted(db, folder.project_id, folder.deleted_by, user)
+
+
+def can_restore_version(db: Session, asset: Asset, version, user: User) -> bool:
+    """Who may restore ONE deleted version (§240 C).
+
+    The same `can_restore_deleted` rule as assets and folders, read off the
+    VERSION's own `deleted_by` and the ASSET's project. The route and the
+    `can_restore` flag in the version list and the trash listing all call
+    this one function — never a second copy of the condition.
+    """
+    return can_restore_deleted(db, asset.project_id, version.deleted_by, user)
+
+
+def can_delete_asset(db: Session, asset: Asset, user: User) -> bool:
+    """Who may move an asset to the trash (§240 C2).
+
+    The uploader, the project owner, or a superadmin. New behaviour: before
+    §240 any editor could delete any colleague's upload.
+
+    `created_by IS NULL` (the uploader's account was hard-deleted, or a
+    very old row) is nobody's match, so such an asset is owner/superadmin
+    territory — same direction as a NULL deleter above.
+    """
+    if asset.created_by is not None and asset.created_by == user.id:
+        return True
+    return is_project_owner_or_superadmin(db, asset.project_id, user)
+
+
+def folder_subtree_is_all_mine(db: Session, folder_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+    """Is every live thing inside this folder, at any depth, this user's?
+
+    ONE statement, not a walk: a recursive CTE collects the live subtree
+    (the folder itself and every live descendant folder) and the same
+    statement counts, over that subtree, the folders somebody else created
+    and the live assets somebody else uploaded. Two counts rather than
+    two queries so an editor deleting a deep folder costs one round trip
+    regardless of depth.
+
+    `IS DISTINCT FROM` and not `!=`: a NULL `created_by` (hard-deleted
+    account) is not this user's, and `created_by != :me` would answer NULL
+    for it and quietly drop it out of the count.
+
+    Deleted rows are ignored on purpose. A folder whose only foreign
+    content is already in the trash is, as far as this delete is
+    concerned, empty of other people's work — and the cascade no longer
+    touches rows that are already deleted (§240 A).
+    """
+    from sqlalchemy import and_, func, literal_column, select
+    from sqlalchemy.orm import aliased
+
+    roots = (
+        select(Folder.id.label("id"), Folder.created_by.label("created_by"))
+        .where(Folder.id == folder_id)
+        .cte("subtree", recursive=True)
+    )
+    child = aliased(Folder)
+    subtree = roots.union_all(
+        select(child.id, child.created_by).where(
+            child.parent_id == roots.c.id,
+            child.deleted_at.is_(None),
+        )
+    )
+
+    foreign_folders = func.count(literal_column("1")).filter(
+        subtree.c.created_by.is_distinct_from(user_id)
+    )
+    foreign_assets = func.count(literal_column("1")).filter(
+        and_(Asset.id.isnot(None), Asset.created_by.is_distinct_from(user_id))
+    )
+    row = db.execute(
+        select(foreign_folders, foreign_assets).select_from(
+            subtree.outerjoin(
+                Asset,
+                and_(Asset.folder_id == subtree.c.id, Asset.deleted_at.is_(None)),
+            )
+        )
+    ).one()
+    return row[0] == 0 and row[1] == 0
+
+
+def can_delete_folder(db: Session, folder: Folder, user: User) -> bool:
+    """Who may move a folder to the trash (§240 C2).
+
+    The project owner or a superadmin always. An editor only if the folder
+    is theirs AND everything live inside it, at any depth, is theirs too —
+    because deleting a folder deletes other people's files with it, which
+    is the one thing §240's delete rule exists to stop.
+
+    The cheap half is checked first: the recursive query only runs for an
+    editor who created this folder.
+    """
+    if is_project_owner_or_superadmin(db, folder.project_id, user):
+        return True
+    if folder.created_by is None or folder.created_by != user.id:
+        return False
+    return folder_subtree_is_all_mine(db, folder.id, user.id)

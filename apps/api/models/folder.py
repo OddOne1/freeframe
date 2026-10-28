@@ -37,6 +37,13 @@ class Folder(Base):
     deleted_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # §240 — see models/asset.py's Asset.deleted_by for the pair and its
+    # rules. A folder delete cascade-stamps its descendants with the SAME
+    # deleter as well as the same timestamp: one click, one person.
+    deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    deleted_by_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     __table_args__ = (
         Index(

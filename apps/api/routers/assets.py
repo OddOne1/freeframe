@@ -18,7 +18,16 @@ from ..models.activity import Mention, Notification, NotificationType, AssetView
 from ..models.vote import Vote
 from ..schemas.asset import TranscriptionToggle, TranscriptionToggleResponse, AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, VoteToggleResponse, VoteRequest, TranscriptResponse, TranscriptSegment, CheckExistingRequest, CheckExistingResponse
 from ..schemas.notification import AssignmentUpdate
-from ..services.permissions import require_project_role, require_asset_access, can_access_asset, is_public_project, get_project_member, can_see_rating_aggregate, can_manage_version
+from ..services.permissions import (
+    require_project_role, require_asset_access, can_access_asset, is_public_project,
+    get_project_member, can_see_rating_aggregate, can_manage_version,
+    # §240 — the delete and restore rules, one function each, shared with
+    # routers/folders.py so the two routers cannot answer differently.
+    can_delete_asset, can_restore_version,
+)
+from ..services.storage_usage import storage_bytes_query
+from ..models.site_settings import SiteSettings
+from .folders import RESTORE_DENIED
 from ..services.s3_service import build_download_filename, get_s3_client
 from ..config import settings
 from .hls_proxy import create_hls_token, proxy_url_for
@@ -56,6 +65,17 @@ logger = logging.getLogger(__name__)
 # check is a stand-in for "the Celery worker probably died mid-task".
 STUCK_PROCESSING_THRESHOLD_SECONDS = 30 * 60
 
+#: What a restore refused for want of space answers with (§240 C). The
+#: `code` is stable and the message is deliberately generic — which of the
+#: two limits was hit is an administrator's business, not the caller's.
+_STORAGE_LIMIT_DETAIL = {
+    "code": "storage_limit",
+    "message": (
+        "Restoring this version would exceed the storage limit. Free up space "
+        "and try again."
+    ),
+}
+
 def _build_asset_response(asset: Asset, db: Session, current_user: User | None = None) -> AssetResponse:
     """Build AssetResponse with latest version and its files."""
     latest_version = db.query(AssetVersion).filter(
@@ -88,6 +108,10 @@ def _build_asset_response(asset: Asset, db: Session, current_user: User | None =
         ).first()
         resp.has_unseen_version = (seen.last_seen_version_number if seen else 0) < latest_version.version_number
     resp.thumbnail_url = thumbnail_url
+    # §240 C2 — one lookup, on a single-asset response.
+    resp.can_delete = (
+        can_delete_asset(db, asset, current_user) if current_user is not None else False
+    )
     avg_row = db.query(func.avg(Vote.stars), func.count(Vote.id)).filter(Vote.asset_id == asset.id).first()
     avg_rating = round(float(avg_row[0]), 2) if avg_row and avg_row[0] is not None else None
     rating_count = int(avg_row[1]) if avg_row else 0
@@ -229,6 +253,15 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session, current_user: 
             asset_resp.avg_rating = None
             asset_resp.rating_count = 0
         asset_resp.my_rating = my_ratings.get(asset.id)
+        # §240 C2 — from the memberships already loaded above, so a grid
+        # of 200 assets costs no extra query. Same rule as
+        # `can_delete_asset`: uploader, project owner, superadmin — and a
+        # project `admin` is deliberately NOT included.
+        asset_resp.can_delete = current_user is not None and (
+            current_user.role == UserGlobalRole.superadmin
+            or (asset.created_by is not None and asset.created_by == current_user_id)
+            or asset.project_id in owner_project_ids
+        )
         result.append(asset_resp)
     return result
 
@@ -311,28 +344,68 @@ def delete_asset(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Move an asset to the trash.
+
+    §240 C2 — the permission is no longer "any editor". It is the
+    UPLOADER, the project owner, or a superadmin (`can_delete_asset`).
+    Before §240 any editor could delete any colleague's upload, which is
+    the behaviour the owner asked to end; existing editors will notice.
+
+    §240 A — `deleted_by`/`deleted_by_name` are written in the same
+    transaction as `deleted_at`, because an unattributed deletion cannot
+    be restored by the person who made it.
+    """
     asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     require_project_role(db, asset.project_id, current_user, ProjectRole.editor)
+    if not can_delete_asset(db, asset, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the uploader, the project owner, or an admin can delete this file",
+        )
     asset.deleted_at = datetime.now(timezone.utc)
+    asset.deleted_by = current_user.id
+    asset.deleted_by_name = current_user.name
     db.commit()
 
 @router.get("/assets/{asset_id}/versions", response_model=list[AssetVersionResponse])
 def list_asset_versions(
     asset_id: uuid.UUID,
+    include_deleted: bool = Query(
+        False, description="Also return soft-deleted versions, marked removed (§240 D)"
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """The versions of an asset, newest number first.
+
+    §240 D — with `include_deleted=true` the soft-deleted ones come too,
+    so a deleted version stays VISIBLE in the history (marked removed)
+    instead of silently vanishing, and the three people who may restore
+    it see that they can. Default behaviour is byte-for-byte what it was:
+    no deleted rows, and the three §240 fields are null/false on every
+    item.
+
+    A deleted version carries NO media: `files` is emptied, which is
+    where every s3 key, stream and thumbnail in this response comes from.
+    Its bytes no longer count toward any storage figure (§239) and its
+    object is not served to anyone — handing back a key would make
+    "deleted" mean "hidden from the list".
+
+    Share routes do not come through here at all (they have their own
+    version queries and are untouched by §240), so an anonymous
+    link-holder cannot ask for this.
+    """
     asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     require_asset_access(db, asset, current_user)
 
-    versions = db.query(AssetVersion).filter(
-        AssetVersion.asset_id == asset_id,
-        AssetVersion.deleted_at.is_(None),
-    ).order_by(AssetVersion.version_number.desc()).all()
+    query = db.query(AssetVersion).filter(AssetVersion.asset_id == asset_id)
+    if not include_deleted:
+        query = query.filter(AssetVersion.deleted_at.is_(None))
+    versions = query.order_by(AssetVersion.version_number.desc()).all()
 
     result = []
     version_ids = [v.id for v in versions]
@@ -341,11 +414,139 @@ def list_asset_versions(
     for f in all_files:
         files_by_version.setdefault(f.version_id, []).append(f)
 
+    # Who the deleter's NAME may be shown to: anyone who could restore the
+    # row, plus editors and above — the same people the trash listing is
+    # open to. A reviewer or viewer sees that a version was removed, not
+    # by whom. One membership lookup for the whole list.
+    member = get_project_member(db, asset.project_id, current_user.id)
+    is_editor_plus = current_user.role == UserGlobalRole.superadmin or (
+        member is not None
+        and member.role in (ProjectRole.owner, ProjectRole.admin, ProjectRole.editor)
+    )
+
     for v in versions:
         vr = AssetVersionResponse.model_validate(v)
+        # `from_attributes` would otherwise copy `deleted_by_name` off the
+        # row for EVERY caller — the field exists on the model, so it
+        # arrives without being asked for. Cleared first, then filled in
+        # below only for the callers §240 D allows it to.
+        vr.deleted_by_name = None
         vr.files = [MediaFileResponse.model_validate(f) for f in files_by_version.get(v.id, [])]
+        if v.deleted_at is not None:
+            vr.files = []
+            vr.deleted_at = v.deleted_at
+            vr.can_restore = can_restore_version(db, asset, v, current_user)
+            if vr.can_restore or is_editor_plus:
+                vr.deleted_by_name = v.deleted_by_name
         result.append(vr)
     return result
+
+@router.post("/assets/{asset_id}/versions/{version_id}/restore", response_model=dict)
+def restore_asset_version(
+    asset_id: uuid.UUID,
+    version_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Bring ONE deleted version back (§240 C).
+
+    Allowed for exactly three people, via the one shared rule
+    (`can_restore_version` → `can_restore_deleted`): the user who deleted
+    it, the project owner, or a superadmin. The same function computes the
+    `can_restore` flag in the version list and in the trash listing, so
+    the button and the route can never disagree.
+
+    ── Order of the checks, as in §239's delete ─────────────────────────
+    404s first, permission second, state third. "Unknown", "belongs to
+    another asset" and "is not deleted" all answer the same 404, so this
+    route is no oracle for version ids a caller may not see.
+
+    The asset row is locked FOR UPDATE (§236b/§239's lock, same row, same
+    order, so there is no cycle to deadlock on): without it, a restore
+    and a concurrent delete of the same version could both pass their
+    state check, and two concurrent restores would both add the version's
+    bytes to the quota figure they each read.
+
+    `version_number` is NOT reassigned. §236b retired it when the version
+    was deleted — the unique constraint spans soft-deleted rows, so
+    nothing can have taken it — and "v3" in a comment has to keep meaning
+    the same upload.
+    """
+    asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    def _deleted_version():
+        return (
+            db.query(AssetVersion)
+            .filter(
+                AssetVersion.id == version_id,
+                AssetVersion.asset_id == asset_id,
+                AssetVersion.deleted_at.isnot(None),
+            )
+            .first()
+        )
+
+    version = _deleted_version()
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    if not can_restore_version(db, asset, version, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=RESTORE_DENIED)
+
+    locked = (
+        db.query(Asset)
+        .filter(Asset.id == asset_id, Asset.deleted_at.is_(None))
+        .with_for_update()
+        .first()
+    )
+    if not locked:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    version = _deleted_version()
+    if not version:
+        # Somebody else restored it while we waited for the lock. Same
+        # 404 as every other "not a deleted version of this asset".
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    # ── Quota: these bytes start counting again ─────────────────────────
+    #
+    # A restore is an upload as far as storage is concerned, so it is
+    # refused by the same two limits in the same order, computed with the
+    # same builder as /upload/initiate (services/storage_usage.py, which
+    # already excludes this version — it is still deleted while we read).
+    #
+    # A stable `code` rather than prose: the web branches on it, and §239
+    # set that precedent for this route family.
+    returning_bytes = int(
+        db.query(func.coalesce(func.sum(MediaFile.file_size_bytes), 0))
+        .filter(MediaFile.version_id == version.id)
+        .scalar()
+        or 0
+    )
+    project = db.query(Project).filter(Project.id == asset.project_id).first()
+    if project is not None and project.storage_limit_bytes is not None:
+        current_bytes = storage_bytes_query(db).filter(
+            Asset.project_id == asset.project_id
+        ).scalar() or 0
+        if current_bytes + returning_bytes > project.storage_limit_bytes:
+            raise HTTPException(status_code=409, detail=_STORAGE_LIMIT_DETAIL)
+    site_settings = db.query(SiteSettings).first()
+    if site_settings is not None and site_settings.total_storage_limit_bytes is not None:
+        platform_bytes = storage_bytes_query(db).scalar() or 0
+        if platform_bytes + returning_bytes > site_settings.total_storage_limit_bytes:
+            raise HTTPException(status_code=409, detail=_STORAGE_LIMIT_DETAIL)
+
+    version.deleted_at = None
+    version.deleted_by = None
+    version.deleted_by_name = None
+    db.commit()
+
+    logger.warning(
+        "Version %s (v%s) of asset %s restored by user %s; %d byte(s) count again",
+        version.id, version.version_number, asset_id, current_user.id, returning_bytes,
+    )
+    return {"ok": True}
 
 @router.get("/assets/{asset_id}/stream", response_model=StreamUrlResponse)
 def get_stream_url(
@@ -1168,6 +1369,11 @@ def delete_asset_version(
         # below is the right answer for a version that has content.
 
     version.deleted_at = datetime.now(timezone.utc)
+    # §240 A — who deleted it, in the same transaction as the stamp. It is
+    # what makes this version restorable by this user (§240 C) and what
+    # the version list shows beside the removed row.
+    version.deleted_by = current_user.id
+    version.deleted_by_name = current_user.name
     db.commit()
 
     # No ActivityLog row, matching `delete_asset` above, which writes none

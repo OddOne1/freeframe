@@ -73,6 +73,18 @@ class Asset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # §240 — WHO deleted it, and the name that survives their account being
+    # hard-deleted (`created_by_name`'s pattern: snapshot once, never
+    # update; users.id is ON DELETE SET NULL per user_hard_delete_fk_policy).
+    #
+    # Both are written in the same transaction as `deleted_at` by every
+    # delete path, and both are cleared on restore — a live row must never
+    # carry a stale deleter, because the trash listing and the restore rule
+    # read nothing else. NULL means "deleted before §240", which is a real
+    # state with its own rule: only the project owner or a superadmin can
+    # restore such a row.
+    deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    deleted_by_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     __table_args__ = (
         Index("ix_assets_project_folder_deleted", "project_id", "folder_id", "deleted_at"),
@@ -163,6 +175,12 @@ class AssetVersion(Base):
     # too. See `failure_stage` below for the only correct test.
     upload_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # §240 — see Asset.deleted_by above; same pair, same rules. On a
+    # version it is also what makes a deleted version restorable by the
+    # person who deleted it (§240 C) while still being visible, marked
+    # removed, to everyone else in the version list.
+    deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    deleted_by_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     @property
     def failure_stage(self) -> Optional[str]:
