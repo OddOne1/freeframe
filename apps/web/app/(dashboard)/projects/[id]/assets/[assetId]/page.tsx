@@ -29,6 +29,7 @@ import { useReviewStore } from '@/stores/review-store'
 import { useAuthStore } from '@/stores/auth-store'
 import { useComments } from '@/hooks/use-comments'
 import { useSSE } from '@/hooks/use-sse'
+import { useLiveVersions } from '@/hooks/use-live-versions'
 import { useLut } from '@/hooks/use-lut'
 import type { TranscriptResponse, TranscriptionToggleResponse, LutExportResponse } from '@/types'
 import { TechnicalMetadataList, formatBitrate } from '@/components/review/technical-metadata-list'
@@ -364,12 +365,40 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   // card in a grid is not looking at it. Keyed on the asset id so navigating
   // between assets marks each one, and fire-and-forget because failing to
   // record a view must never break the viewer.
-  useEffect(() => {
-    if (!asset?.id) return
-    api.post(`/assets/${asset.id}/seen`, {}).catch(() => {})
+  //
+  // §242 — a named callback now, because there is a SECOND moment the same
+  // thing is true: a version that arrived while the page was open and that
+  // the user then selected. The endpoint records the asset's latest version
+  // and only ever moves forwards, so calling it again is idempotent.
+  const markAssetSeen = useCallback(() => {
+    const id = asset?.id
+    if (!id) return
+    api.post(`/assets/${id}/seen`, {}).catch(() => {})
   }, [asset?.id])
+  useEffect(() => {
+    markAssetSeen()
+  }, [markAssetSeen])
   const { currentVersion, setCurrentVersion, isDrawingMode, focusedCommentId, playheadTime, seekTo, setFocusedCommentId, setActiveAnnotation } = useReviewStore()
   const { user, isSuperAdmin } = useAuthStore()
+
+  /**
+   * §242 — the version list follows reality while this page is open, and
+   * says so when a version arrives from someone else.
+   *
+   * The refetch triggers and the diff both live in the hook; what the page
+   * owns is the three lines of SSE wiring below (the project channel is
+   * already connected here, so this adds no second EventSource) and handing
+   * `newVersionIds` to the switcher — which renders the same in the top bar
+   * and in the phone Fields tab, so BOTH call sites below get it.
+   */
+  const liveVersions = useLiveVersions({
+    assetId: asset?.id,
+    versions,
+    refetchVersions,
+    currentUserId: user?.id ?? null,
+    currentVersionNumber: currentVersion?.version_number ?? null,
+    onNewVersionSeen: markAssetSeen,
+  })
   const startVersionUpload = useUploadStore((s) => s.startVersionUpload)
   const versionFileInputRef = useRef<HTMLInputElement>(null)
   const setExtraCrumbs = useBreadcrumbStore((s) => s.setExtraCrumbs)
@@ -448,6 +477,16 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   // panel subscribes rather than polls: the event just invalidates the SWR
   // key above and the real transcript renders in place of "Transcribing…".
   useSSE(asset?.project_id, {
+    // §242 A1 — a version's status changed. `transcode_complete` carries
+    // `{asset_id, version_id}` and `transcode_failed` carries `{asset_id,
+    // error}`; neither says what the new status IS, so the answer comes
+    // from re-reading the list rather than from patching a row.
+    onTranscodeComplete: (data) => liveVersions.onVersionEvent(data.asset_id),
+    onTranscodeFailed: (data) => liveVersions.onVersionEvent(data.asset_id),
+    // Progress carries only a percentage, which this dropdown never shows.
+    // The hook ignores it unless it is evidence of a version the page has
+    // not heard of at all — see `onVersionProgress`.
+    onTranscodeProgress: (data) => liveVersions.onVersionProgress(data.asset_id),
     onTranscriptionComplete: (data) => {
       if (data.asset_id === asset?.id) mutateTranscript()
     },
@@ -1480,6 +1519,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                       className="viewer-field-version"
                       canDeleteVersion={canDeleteVersion}
                       onDeleteVersion={handleDeleteVersion}
+                      newVersionIds={liveVersions.newVersionIds}
                     />
                   </div>
                 )}
@@ -1960,6 +2000,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               versions={versions}
               canDeleteVersion={canDeleteVersion}
               onDeleteVersion={handleDeleteVersion}
+              newVersionIds={liveVersions.newVersionIds}
             />
           )}
           {asset && canCompare(asset.asset_type, versions) && (

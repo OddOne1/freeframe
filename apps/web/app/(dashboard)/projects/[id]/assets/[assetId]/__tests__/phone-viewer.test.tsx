@@ -94,8 +94,10 @@ vi.mock('@/stores/auth-store', () => ({
 }))
 const startVersionUpload = vi.fn()
 vi.mock('@/stores/upload-store', () => ({
+  // `files` as well as the starter: §242's useLiveVersions selects
+  // `s.files` to notice this tab's own upload for this asset finishing.
   useUploadStore: (sel: (s: unknown) => unknown) =>
-    sel ? sel({ startVersionUpload }) : { startVersionUpload },
+    sel ? sel({ startVersionUpload, files: [] }) : { startVersionUpload, files: [] },
 }))
 vi.mock('@/hooks/use-sse', () => ({ useSSE: () => {} }))
 vi.mock('@/hooks/use-comments', () => ({

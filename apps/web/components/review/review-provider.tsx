@@ -45,6 +45,24 @@ interface ReviewContextValue {
 
 // ─── Context ──────────────────────────────────────────────────────────────────
 
+/**
+ * Has anything the page RENDERS off the selected version changed?
+ *
+ * Guards the write above: `setCurrentVersion` with a freshly-parsed object
+ * is a new identity for every consumer of the store, and §242's fallback
+ * poll re-reads the list every 5s while a version is in flight. Compared
+ * field by field for that reason alone.
+ */
+function versionRowChanged(before: AssetVersion, after: AssetVersion): boolean {
+  return (
+    before.processing_status !== after.processing_status ||
+    (before.failure_stage ?? null) !== (after.failure_stage ?? null) ||
+    (before.processing_progress ?? null) !== (after.processing_progress ?? null) ||
+    (before.files?.length ?? 0) !== (after.files?.length ?? 0) ||
+    (before.files?.[0]?.id ?? null) !== (after.files?.[0]?.id ?? null)
+  );
+}
+
 const ReviewContext = createContext<ReviewContextValue | null>(null);
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
@@ -257,8 +275,36 @@ export function ReviewProvider({
     if (shareToken) return;
     try {
       const allVersions = await api.get<AssetVersion[]>(`/assets/${assetId}/versions`);
-      if (!mountedRef.current) return;
+      // Same §122 gate as fetchAsset: this is now called repeatedly while the
+      // page is open (§242), so a slow answer for the PREVIOUS asset landing
+      // after a fast one for this asset is no longer hypothetical.
+      if (!mountedRef.current || assetIdRef.current !== assetId) return;
       setVersions(allVersions ?? []);
+
+      /**
+       * §242 — the SELECTED version's own row, refreshed in place.
+       *
+       * `currentVersion` is a snapshot taken when it was chosen, and every
+       * consumer reads the status off that snapshot: the player renders
+       * media only for `processing_status === 'ready'`, the §238 panel
+       * reads `failure_stage`. A re-read that updated only the LIST left
+       * the dropdown fresh and the page itself stale — the "Processing
+       * asset" spinner still up over a version the dropdown already showed
+       * as DONE.
+       *
+       * The same version, by id, with new fields. NOT a re-pick of the
+       * newest or the newly-ready one: the user may be mid-comment on v7
+       * while v8 lands, and moving them is the one thing §242 must not do.
+       * A selected version that is no longer in the list is left alone —
+       * the delete flow (§239) already decides where to go in that case.
+       */
+      const current = useReviewStore.getState().currentVersion;
+      if (current) {
+        const fresh = (allVersions ?? []).find((v) => v.id === current.id);
+        if (fresh && versionRowChanged(current, fresh)) {
+          setCurrentVersionRef.current(fresh);
+        }
+      }
     } catch {
       // ignore
     }

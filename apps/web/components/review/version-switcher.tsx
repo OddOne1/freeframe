@@ -67,6 +67,44 @@ export function versionStatusFor(
   return versionStatusConfig[version.processing_status]
 }
 
+/**
+ * §242 — "a new version arrived while you were looking at this".
+ *
+ * On the TRIGGER, which is the only part of the switcher visible with the
+ * menu closed — and the whole point is to be seen without opening anything.
+ * White on the trigger's accent fill, because the grid's own new-version
+ * chip is `bg-accent` and an accent dot on an accent button is invisible;
+ * the ring is what keeps it readable over the lighter hover fill.
+ *
+ * Not a button and not focusable: it is a notice, and the thing to do about
+ * it (pick the version) is the menu it sits on.
+ */
+function NewVersionDot({ versionNumber }: { versionNumber: number }) {
+  const label = `New version v${versionNumber} available`
+  return (
+    <span
+      data-testid="new-version-dot"
+      title={label}
+      aria-label={label}
+      className="h-1.5 w-1.5 shrink-0 rounded-full bg-white ring-1 ring-white/70"
+    />
+  )
+}
+
+/** The same notice on the row itself, so an open list says WHICH version it
+ *  was. `bg-accent`/`text-accent-foreground` is the pair asset-card.tsx
+ *  uses for its unseen-version chip (§111). */
+function NewVersionTag({ versionNumber }: { versionNumber: number }) {
+  return (
+    <span
+      data-testid={`new-version-tag-${versionNumber}`}
+      className="rounded bg-accent px-1 py-px text-[10px] font-semibold uppercase leading-tight text-accent-foreground"
+    >
+      New
+    </span>
+  )
+}
+
 interface VersionSwitcherProps {
   versions: AssetVersion[]
   className?: string
@@ -86,6 +124,18 @@ interface VersionSwitcherProps {
   /** Performs the delete and refreshes the page's state. Throws on refusal;
    *  the message is shown in the dialog, which stays open. */
   onDeleteVersion?: (version: AssetVersion) => Promise<void>
+  /**
+   * §242 — versions that ARRIVED while the page has been open, were
+   * uploaded by someone else, and are ready to look at.
+   *
+   * A set rather than a flag because several can land in a row: the
+   * trigger shows ONE dot naming the newest of them, and each of their
+   * rows is tagged. Who qualifies is not this component's business — the
+   * diff against what the page knew at open, the own-upload exclusion and
+   * the clearing on selection all live in `useLiveVersions`. Omitted (or
+   * empty) and nothing about this component changes.
+   */
+  newVersionIds?: ReadonlySet<string>
 }
 
 export function VersionSwitcher({
@@ -93,6 +143,7 @@ export function VersionSwitcher({
   className,
   canDeleteVersion,
   onDeleteVersion,
+  newVersionIds,
 }: VersionSwitcherProps) {
   const currentVersion = useReviewStore((s) => s.currentVersion)
   const setCurrentVersion = useReviewStore((s) => s.setCurrentVersion)
@@ -101,6 +152,14 @@ export function VersionSwitcher({
     () => [...versions].sort((a, b) => a.version_number - b.version_number),
     [versions],
   )
+
+  // The newest of the arrivals — the one the dot's tooltip names. One dot
+  // for any number of them (§242 B5).
+  const newestArrival = React.useMemo(() => {
+    if (!newVersionIds || newVersionIds.size === 0) return null
+    const tagged = sorted.filter((v) => newVersionIds.has(v.id))
+    return tagged.length ? tagged[tagged.length - 1] : null
+  }, [sorted, newVersionIds])
 
   const [pendingDelete, setPendingDelete] = React.useState<AssetVersion | null>(null)
   const [deleteError, setDeleteError] = React.useState<string | null>(null)
@@ -126,6 +185,7 @@ export function VersionSwitcher({
         <DropdownMenu.Trigger asChild>
           <button className="inline-flex items-center justify-center gap-1 rounded-md px-2.5 py-1 hover-none:min-h-11 hover-none:px-4 bg-accent text-white text-xs font-medium hover:bg-accent/90 transition-colors outline-none">
             v{currentVersion?.version_number ?? sorted[sorted.length - 1].version_number}
+            {newestArrival && <NewVersionDot versionNumber={newestArrival.version_number} />}
             {hasMenu && <ChevronDown className="h-3 w-3 opacity-70" />}
           </button>
         </DropdownMenu.Trigger>
@@ -170,7 +230,12 @@ export function VersionSwitcher({
                         isDisabled && 'opacity-50 cursor-not-allowed',
                       )}
                     >
-                      <span>v{version.version_number}</span>
+                      <span className="inline-flex items-center gap-1.5">
+                        v{version.version_number}
+                        {newVersionIds?.has(version.id) && (
+                          <NewVersionTag versionNumber={version.version_number} />
+                        )}
+                      </span>
                       <span
                         className={cn('inline-flex items-center gap-1 text-[11px]', statusCfg.className)}
                         title={statusCfg.label}

@@ -62,9 +62,14 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/stores/auth-store', () => ({
   useAuthStore: () => ({ user: { id: 'u1', name: 'Tester', email: 't@e.com' } }),
 }))
-vi.mock('@/stores/upload-store', () => ({
-  useUploadStore: () => ({ files: [], startUpload: vi.fn() }),
-}))
+// Selector-aware, like the real store: §242's useLiveVersions reads
+// `s.files` through a selector to notice this tab's own upload finishing.
+vi.mock('@/stores/upload-store', () => {
+  const state = { files: [], startUpload: vi.fn(), startVersionUpload: vi.fn() }
+  return {
+    useUploadStore: (sel?: (s: typeof state) => unknown) => (sel ? sel(state) : state),
+  }
+})
 vi.mock('@/hooks/use-sse', () => ({ useSSE: () => {} }))
 vi.mock('@/hooks/use-comments', () => ({
   useComments: () => ({ comments: [], isLoading: false, mutate: vi.fn() }),
