@@ -422,6 +422,7 @@ def can_restore_deleted(
     project_id: uuid.UUID,
     deleted_by: uuid.UUID | None,
     user: User,
+    owner_or_superadmin: bool | None = None,
 ) -> bool:
     """THE restore rule (§240 C), for all three kinds of trashed row.
 
@@ -432,10 +433,17 @@ def can_restore_deleted(
     `deleted_by IS NULL` is a row deleted before §240 (no backfill was
     possible, see the migration). It falls through to owner/superadmin,
     which is the safe direction: a NULL must never match a caller's id.
+
+    `owner_or_superadmin` lets a caller asking about many rows of ONE
+    project pass `is_project_owner_or_superadmin` in, computed once, so a
+    list does not repeat the membership lookup per row (§240b). Left
+    None, it is looked up here as before.
     """
     if deleted_by is not None and deleted_by == user.id:
         return True
-    return is_project_owner_or_superadmin(db, project_id, user)
+    if owner_or_superadmin is None:
+        owner_or_superadmin = is_project_owner_or_superadmin(db, project_id, user)
+    return owner_or_superadmin
 
 
 def can_restore_asset(db: Session, asset: Asset, user: User) -> bool:
@@ -446,7 +454,13 @@ def can_restore_folder(db: Session, folder: Folder, user: User) -> bool:
     return can_restore_deleted(db, folder.project_id, folder.deleted_by, user)
 
 
-def can_restore_version(db: Session, asset: Asset, version, user: User) -> bool:
+def can_restore_version(
+    db: Session,
+    asset: Asset,
+    version,
+    user: User,
+    owner_or_superadmin: bool | None = None,
+) -> bool:
     """Who may restore ONE deleted version (§240 C).
 
     The same `can_restore_deleted` rule as assets and folders, read off the
@@ -454,7 +468,9 @@ def can_restore_version(db: Session, asset: Asset, version, user: User) -> bool:
     `can_restore` flag in the version list and the trash listing all call
     this one function — never a second copy of the condition.
     """
-    return can_restore_deleted(db, asset.project_id, version.deleted_by, user)
+    return can_restore_deleted(
+        db, asset.project_id, version.deleted_by, user, owner_or_superadmin
+    )
 
 
 def can_delete_asset(db: Session, asset: Asset, user: User) -> bool:

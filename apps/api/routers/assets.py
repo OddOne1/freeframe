@@ -23,7 +23,7 @@ from ..services.permissions import (
     get_project_member, can_see_rating_aggregate, can_manage_version,
     # §240 — the delete and restore rules, one function each, shared with
     # routers/folders.py so the two routers cannot answer differently.
-    can_delete_asset, can_restore_version,
+    can_delete_asset, can_restore_version, is_project_owner_or_superadmin,
 )
 from ..services.storage_usage import storage_bytes_query
 from ..models.site_settings import SiteSettings
@@ -396,6 +396,12 @@ def list_asset_versions(
     Share routes do not come through here at all (they have their own
     version queries and are untouched by §240), so an anonymous
     link-holder cannot ask for this.
+
+    §240b — a removed version is shown ONLY to someone who may restore it
+    (`can_restore_version`: the deleter, the project owner, a superadmin).
+    Everyone else gets the live versions and nothing that says a removed
+    one exists. The rows are dropped before the media query, so nothing
+    is fetched or built for them.
     """
     asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.is_(None)).first()
     if not asset:
@@ -407,22 +413,24 @@ def list_asset_versions(
         query = query.filter(AssetVersion.deleted_at.is_(None))
     versions = query.order_by(AssetVersion.version_number.desc()).all()
 
+    if any(v.deleted_at is not None for v in versions):
+        # One membership lookup for the whole list, handed to the shared
+        # rule rather than re-derived here.
+        owner_or_superadmin = is_project_owner_or_superadmin(
+            db, asset.project_id, current_user
+        )
+        versions = [
+            v for v in versions
+            if v.deleted_at is None
+            or can_restore_version(db, asset, v, current_user, owner_or_superadmin)
+        ]
+
     result = []
     version_ids = [v.id for v in versions]
     all_files = db.query(MediaFile).filter(MediaFile.version_id.in_(version_ids)).all() if version_ids else []
     files_by_version: dict = {}
     for f in all_files:
         files_by_version.setdefault(f.version_id, []).append(f)
-
-    # Who the deleter's NAME may be shown to: anyone who could restore the
-    # row, plus editors and above — the same people the trash listing is
-    # open to. A reviewer or viewer sees that a version was removed, not
-    # by whom. One membership lookup for the whole list.
-    member = get_project_member(db, asset.project_id, current_user.id)
-    is_editor_plus = current_user.role == UserGlobalRole.superadmin or (
-        member is not None
-        and member.role in (ProjectRole.owner, ProjectRole.admin, ProjectRole.editor)
-    )
 
     for v in versions:
         vr = AssetVersionResponse.model_validate(v)
@@ -433,11 +441,12 @@ def list_asset_versions(
         vr.deleted_by_name = None
         vr.files = [MediaFileResponse.model_validate(f) for f in files_by_version.get(v.id, [])]
         if v.deleted_at is not None:
+            # Only rows the caller may restore are left (§240b), so the
+            # flag is true and the deleter's name is theirs to see.
             vr.files = []
             vr.deleted_at = v.deleted_at
-            vr.can_restore = can_restore_version(db, asset, v, current_user)
-            if vr.can_restore or is_editor_plus:
-                vr.deleted_by_name = v.deleted_by_name
+            vr.can_restore = True
+            vr.deleted_by_name = v.deleted_by_name
         result.append(vr)
     return result
 

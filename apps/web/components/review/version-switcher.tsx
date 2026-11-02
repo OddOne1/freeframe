@@ -123,9 +123,10 @@ function NewVersionTag({ versionNumber }: { versionNumber: number }) {
  * player pointed at it would have nothing to play and no thumbnail to
  * show).
  *
- * The deleter's name is printed only when the server sent one — it fills
- * `deleted_by_name` for callers §240 D allows it to and leaves it null for
- * a reviewer, and a name is never assembled here from a member list.
+ * §240b — the server sends a removed row only to someone who may restore
+ * it (the deleter, the project owner, a superadmin); everyone else gets no
+ * row at all, and nothing here filters. The deleter's name is printed
+ * only when the server sent one, never assembled from a member list.
  */
 function RemovedVersionRow({
   version,
@@ -173,8 +174,9 @@ function RemovedVersionRow({
         )}
       </DropdownMenu.Item>
       {/* §240 C — only the deleter, the project owner and a superadmin get
-          this, and the server is the one that says so. Everyone else sees
-          the red row with no action at all. */}
+          this, and the server is the one that says so. Since §240b they
+          are also the only ones sent the row; the flag is still read
+          rather than assumed. */}
       {onRestore && version.can_restore && (
         <DropdownMenu.Item
           data-testid={`restore-version-${version.version_number}`}

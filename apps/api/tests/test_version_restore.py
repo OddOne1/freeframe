@@ -185,8 +185,12 @@ class TestWhoMayRestore:
                 assert predicate is False
                 continue
             body = versions(client, world, actor=actor, include_deleted=True).json()
-            flag = [v for v in body if v["version_number"] == 2][0]["can_restore"]
-            assert flag == predicate, actor
+            rows = [v for v in body if v["version_number"] == 2]
+            # §240b — the same predicate decides whether the row is there
+            # at all, and a row that is there can be restored.
+            assert bool(rows) == predicate, actor
+            if rows:
+                assert rows[0]["can_restore"] is True, actor
 
 
 # ── 404s before permission ────────────────────────────────────────────────
@@ -477,31 +481,6 @@ class TestTheVersionList:
         for needle in ("s3_key", "raw/", "processed/", ".m3u8", "token="):
             assert needle not in blob, needle
 
-    def test_the_deleters_name_is_hidden_from_a_reviewer(self, client, world):
-        from apps.api.models.project import ProjectMember, ProjectRole
-
-        delete_v2(client, world)
-        session = world["session"]
-        session.query(ProjectMember).filter(
-            ProjectMember.project_id == world["project"].id,
-            ProjectMember.user_id == world["viewer"].id,
-        ).update({"role": ProjectRole.reviewer})
-        session.commit()
-        body = versions(client, world, actor="viewer", include_deleted=True).json()
-        removed = [v for v in body if v["version_number"] == 2][0]
-        assert removed["deleted_at"] is not None     # they see it was removed
-        assert removed["deleted_by_name"] is None    # not by whom
-        assert removed["can_restore"] is False
-
-    def test_an_editor_who_did_not_delete_it_sees_it_without_an_action(self, client, world):
-        delete_v2(client, world)
-        body = versions(client, world, actor="editor_b", include_deleted=True).json()
-        removed = [v for v in body if v["version_number"] == 2][0]
-        assert removed["deleted_at"] is not None
-        assert removed["can_restore"] is False
-        # editor_b is editor+, so the name is theirs to see.
-        assert removed["deleted_by_name"] == world["editor_a"].name
-
     def test_after_a_restore_the_row_is_a_normal_version_again(self, client, world):
         delete_v2(client, world)
         assert restore(client, world, "editor_a").status_code == 200
@@ -527,3 +506,143 @@ class TestTheVersionList:
                     p.name for p in getattr(route, "dependant", None).query_params
                 } if getattr(route, "dependant", None) else set()
                 assert "include_deleted" not in params, route.path
+
+
+# ── §240b — a removed version is shown only to who may restore it ─────────
+
+def _set_role(world, actor, role):
+    from apps.api.models.project import ProjectMember
+
+    session = world["session"]
+    session.query(ProjectMember).filter(
+        ProjectMember.project_id == world["project"].id,
+        ProjectMember.user_id == world[actor].id,
+    ).update({"role": role})
+    session.commit()
+
+
+def _numbers(client, world, actor, **params):
+    r = versions(client, world, actor=actor, **params)
+    assert r.status_code == 200, (actor, r.text)
+    return [v["version_number"] for v in r.json()], r.json()
+
+
+class TestRemovedVersionsOnlyForWhoMayRestore:
+    """The rule (owner decision, 2026-11-02): the deleter, the project
+    owner and a superadmin see the red row; everybody else sees the live
+    versions and nothing else. `role` is what `editor_b`/`viewer` are
+    turned into for the case — the cast has no Manager or reviewer."""
+
+    CASES = [
+        # actor,       role override,  sees v2
+        ("editor_a",   None,           True),    # the deleter
+        ("owner",      None,           True),
+        ("superadmin", None,           True),    # global superadmin, editor member
+        ("editor_b",   None,           False),   # another editor
+        ("editor_b",   "admin",        False),   # project admin ("Manager")
+        ("viewer",     "reviewer",     False),
+        ("viewer",     None,           False),
+    ]
+
+    @pytest.mark.parametrize("actor,role,sees", CASES)
+    def test_each_role(self, client, world, actor, role, sees):
+        from apps.api.models.project import ProjectRole
+
+        if role:
+            _set_role(world, actor, ProjectRole[role])
+        delete_v2(client, world)
+        numbers, body = _numbers(client, world, actor, include_deleted=True)
+        assert numbers == ([3, 2, 1] if sees else [3, 1]), (actor, role)
+        live = [v for v in body if v["deleted_at"] is None]
+        assert [v["version_number"] for v in live] == [3, 1]
+        for v in live:
+            assert v["files"] and v["can_restore"] is False
+        if sees:
+            removed = [v for v in body if v["version_number"] == 2][0]
+            assert removed["can_restore"] is True
+            assert removed["deleted_by_name"] == world["editor_a"].name
+            assert removed["files"] == []
+
+    @pytest.mark.parametrize("actor,role,sees", CASES)
+    def test_the_default_call_is_the_same_for_everyone(self, client, world, actor, role, sees):
+        from apps.api.models.project import ProjectRole
+
+        if role:
+            _set_role(world, actor, ProjectRole[role])
+        before, _ = _numbers(client, world, actor)
+        delete_v2(client, world)
+        after, body = _numbers(client, world, actor)
+        assert before == [3, 2, 1]
+        assert after == [3, 1]
+        for v in body:
+            assert v["deleted_at"] is None
+            assert v["deleted_by_name"] is None
+            assert v["can_restore"] is False
+
+    @pytest.mark.parametrize(
+        "actor,role,sees",
+        [
+            ("owner", None, True),
+            ("superadmin", None, True),
+            ("editor_a", None, False),   # deleted it, but nothing says so
+            ("editor_b", None, False),
+            ("editor_b", "admin", False),
+            ("viewer", None, False),
+        ],
+    )
+    def test_a_version_with_no_recorded_deleter_is_owner_and_superadmin_only(
+        self, client, world, actor, role, sees
+    ):
+        from datetime import datetime, timezone
+
+        from apps.api.models.asset import AssetVersion
+        from apps.api.models.project import ProjectRole
+
+        if role:
+            _set_role(world, actor, ProjectRole[role])
+        session = world["session"]
+        session.query(AssetVersion).filter(AssetVersion.id == version_of(world, 2).id).update(
+            {"deleted_at": datetime.now(timezone.utc), "deleted_by": None,
+             "deleted_by_name": None}
+        )
+        session.commit()
+        numbers, _ = _numbers(client, world, actor, include_deleted=True)
+        assert numbers == ([3, 2, 1] if sees else [3, 1]), actor
+
+    def test_the_owners_deletion_is_hidden_from_the_uploader(self, client, world):
+        """editor_a uploaded v2; the owner deleted it. Uploading is not
+        restoring, so editor_a no longer sees it."""
+        delete_v2(client, world, actor="owner")
+        assert _numbers(client, world, "editor_a", include_deleted=True)[0] == [3, 1]
+        assert _numbers(client, world, "owner", include_deleted=True)[0] == [3, 2, 1]
+
+    def test_the_rule_is_read_off_the_version_not_the_asset(self, client, world):
+        """The asset is live (`asset.deleted_by` is NULL), so a check made
+        against the asset would hide v2 from its deleter."""
+        delete_v2(client, world)
+        assert world["assets"][MULTI].deleted_by is None
+        assert _numbers(client, world, "editor_a", include_deleted=True)[0] == [3, 2, 1]
+
+    def test_one_owner_lookup_for_the_whole_list(self, client, world):
+        """Two removed rows, each deleted by somebody else: the
+        owner/superadmin answer is looked up once, not per row."""
+        from apps.api.services import permissions
+
+        delete_v2(client, world)
+        r = client.delete(
+            f"/assets/{world['assets'][MULTI].id}/versions/{version_of(world, 1).id}",
+            headers=auth_header(world["editor_a"]),
+        )
+        assert r.status_code == 204, r.text
+        calls = []
+        real = permissions.is_project_owner_or_superadmin
+
+        def counting(*a, **kw):
+            calls.append(a)
+            return real(*a, **kw)
+
+        with patch("apps.api.routers.assets.is_project_owner_or_superadmin", counting), \
+                patch("apps.api.services.permissions.is_project_owner_or_superadmin", counting):
+            numbers, _ = _numbers(client, world, "owner", include_deleted=True)
+        assert numbers == [3, 2, 1]
+        assert len(calls) == 1

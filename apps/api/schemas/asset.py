@@ -57,9 +57,9 @@ class AssetVersionResponse(BaseModel):
     # marked removed. Null on every live version, which is what every
     # existing caller sees and why the default call is unchanged.
     #
-    # `deleted_by_name` is only filled for callers who may restore the
-    # row or who are editor+ — a reviewer sees that it was removed, not
-    # by whom. `can_restore` is computed SERVER-side by
+    # §240b — a deleted row is returned ONLY to a caller who may restore
+    # it, so on every deleted row that arrives `can_restore` is true and
+    # `deleted_by_name` is filled. `can_restore` is computed SERVER-side by
     # `can_restore_version`; the web must not re-derive it, because a
     # re-derivation is how the menu and the route come to disagree.
     deleted_at: Optional[datetime] = None

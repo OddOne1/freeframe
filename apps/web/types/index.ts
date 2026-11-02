@@ -269,10 +269,9 @@ export interface AssetVersion {
   /**
    * §240 D — who removed this version, as the SERVER chose to tell it.
    *
-   * Filled only for callers allowed to see it (anyone who may restore the
-   * row, plus editors and above); a reviewer is told the version was
-   * removed, not by whom. Shown exactly as given — never assembled from a
-   * member list here, which is how a name the server withheld leaks back.
+   * §240b — a removed row reaches only a caller who may restore it, and
+   * always with this filled. Shown exactly as given — never assembled
+   * from a member list here.
    */
   deleted_by_name?: string | null;
   /**
