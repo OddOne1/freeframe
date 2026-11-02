@@ -2012,8 +2012,6 @@
 
     // ── Item 3 + 6: folder picking, per-device and with recents ──
 
-    /** Opens the native picker, optionally rooted inside `device`, and
-     *  records the result as that device's recent folder. */
     /** §243 C — main refused a path that is inside one of macOS's own
      *  volumes. Said out loud, in the box every other "that can't be a
      *  source/destination" message already uses. */
@@ -2037,6 +2035,8 @@
       return false;
     }
 
+    /** Opens the native picker, optionally rooted inside `device`, and
+     *  records the result as that device's recent folder. */
     async function pickFolder({ title, device = null, role = null }) {
       const folder = await window.freeframe.chooseFolder(title, device || undefined);
       if (handledRefusal(folder)) return null;

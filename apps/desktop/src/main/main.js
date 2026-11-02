@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { listVolumes, scanVolumes, pathInsideSystemVolume } = require("./volumes");
+const { listVolumes, scanVolumes, pathInsideSystemVolume, annotateSharedContainers } = require("./volumes");
 const { runCopyJob } = require("./copy-engine");
 const presets = require("./presets");
 const settings = require("./settings");
@@ -380,11 +380,20 @@ let cachedVolumes = [];
 // for every source and destination the app is handed.
 let cachedSystemMounts = [];
 
-/** One scan, two caches: what the app offers, and what it refuses. */
+/** One scan, two caches: what the app offers, and what it refuses.
+ *
+ * ONE call to scanVolumes(), and the filtered list is derived from its
+ * result — not a second listVolumes() call. That is not tidiness: a scan
+ * shells out to `diskutil` once per mounted volume plus once for the
+ * container list, which is the cost the comment on cachedVolumes above is
+ * about ("a network share can make that take over a second"), and this
+ * runs on every volumes:list and every /Volumes watcher event. Measured
+ * on the owner's Mac with four volumes mounted: 5 diskutil spawns and
+ * 700 ms one way, 10 and 1388 ms the other. */
 async function refreshVolumeCaches() {
   const all = await scanVolumes();
   cachedSystemMounts = all.filter((v) => v.isSystem).map((v) => v.mountPoint);
-  cachedVolumes = await listVolumes();
+  cachedVolumes = annotateSharedContainers(all.filter((v) => !v.isSystem));
   return cachedVolumes;
 }
 

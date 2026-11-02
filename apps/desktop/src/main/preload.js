@@ -153,12 +153,16 @@ contextBridge.exposeInMainWorld("freeframe", {
   // defaultPath roots the native dialog inside one device (item 3) —
   // omitted for the general header buttons, supplied for the per-device
   // context-menu entries.
+  // §243 — resolves `{ refused: true, reason }` instead of a path when the
+  // chosen folder is inside one of macOS's own volumes. Main decides that,
+  // not the renderer.
   chooseFolder: (title, defaultPath) =>
     ipcRenderer.invoke("dialog:choose-folder", { title, defaultPath }),
 
   /** Same panel, but individual files are selectable too. Resolves
    *  { kind: "dir" | "files", paths } — the caller has to branch, so the
-   *  kind is returned rather than inferred from the shape. */
+   *  kind is returned rather than inferred from the shape. Or
+   *  { refused: true, reason }, as chooseFolder above. */
   chooseSource: (title, defaultPath) =>
     ipcRenderer.invoke("dialog:choose-folder", { title, defaultPath, allowFiles: true }),
 

@@ -26,9 +26,9 @@ const execFileAsync = promisify(execFile);
  * @property {string|null} fileSystem
  */
 
-/** Runs `diskutil info -plist <mountPoint>` and converts the result to JSON
- * via `plutil` (also built into macOS) instead of pulling in a plist
- * parser dependency just for this one call site.
+/** Converts a plist (as `diskutil -plist` prints it) to JSON via `plutil`
+ * (also built into macOS) instead of pulling in a plist parser dependency
+ * just for these two call sites.
  *
  * BUG FIXED 2026-08-01: this originally piped diskutil's XML into plutil
  * via execFile's `{ input: ... }` option — that option only exists on the
@@ -53,6 +53,7 @@ async function plistToJson(plistXml) {
   }
 }
 
+/** What `diskutil` knows about one mount point. */
 async function getDiskutilInfo(mountPoint) {
   const { stdout: plistXml } = await execFileAsync("diskutil", ["info", "-plist", mountPoint]);
   return plistToJson(plistXml);

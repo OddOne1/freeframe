@@ -258,6 +258,19 @@ check(pathInsideSystemVolume("/Volumes/Recovery", []) === null, "with no system 
   } else {
     check(true, `external/removable volumes still offered: ${names(ext)}`);
   }
+  // A real SMB share turned up on the owner's Mac mid-review, which is the
+  // one case the derived fixture above could only approximate: diskutil
+  // describes a network mount so poorly that scanVolumes() takes its
+  // best-effort branch. It must still be offered.
+  const net = offered.filter((v) => v.type === "network");
+  if (!net.length) {
+    console.log("  SKIP  no network mount attached");
+  } else {
+    check(
+      net.every((v) => v.freeBytes > 0),
+      `a real network share is still offered, with real numbers: ${net.map((v) => `${v.name} ${v.freeBytes}`).join(", ")}`,
+    );
+  }
   check(
     offered.every((v) => v.isSystem === false),
     "nothing offered is flagged as a system volume",
