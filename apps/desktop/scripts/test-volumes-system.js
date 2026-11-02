@@ -21,6 +21,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 
+const { pruneRecents } = require(path.join(__dirname, "..", "src", "main", "recents-prune.js"));
 const {
   isSystemVolume,
   pathInsideSystemVolume,
@@ -216,10 +217,107 @@ check(
 check(pathInsideSystemVolume("", mounts) === null && pathInsideSystemVolume(null, mounts) === null, "nothing is not a system path");
 check(pathInsideSystemVolume("/Volumes/Recovery", []) === null, "with no system volumes known, nothing is refused");
 
+console.log("\nC — remembered folders inside a system volume are forgotten");
+// The real predicate resolves symlinks and is async; this is the same
+// decision made synchronously against a fixed list of mounts.
+const mounted = ["/Volumes/Recovery", "/Volumes/Preboot"];
+const isSystemPath = async (p) => pathInsideSystemVolume(p, mounted);
+const ROLES = ["source", "destination"];
+
+(async () => {
+  const before = {
+    "/Volumes/Macintosh HD": {
+      source: ["/Volumes/Recovery/staging", "/Users/me/Movies"],
+      destination: ["/Volumes/Recovery", "/Users/me/Archive"],
+    },
+    // Recents were keyed by mount point, so a pre-release session could
+    // have filed folders under the system volume itself.
+    "/Volumes/Recovery": { source: ["/Volumes/Recovery/staging"], destination: ["/Volumes/Recovery"] },
+    "/Volumes/ODDONE_01": { destination: ["/Volumes/ODDONE_01/DAY_01"] },
+    // A project selection is not a path and must survive untouched.
+    "freeframe://p1": { destination: [{ id: "f1", name: "Dailies" }] },
+  };
+  const { recents: after, pruned } = await pruneRecents(before, ROLES, isSystemPath);
+
+  // Two under "Macintosh HD" (one per role) plus the two filed under the
+  // Recovery device itself.
+  check(pruned === 4, "every entry inside a system volume is counted as pruned", `pruned=${pruned}`);
+  check(
+    JSON.stringify(after["/Volumes/Macintosh HD"]) ===
+      JSON.stringify({ source: ["/Users/me/Movies"], destination: ["/Users/me/Archive"] }),
+    "the real folders on a real drive survive, the Recovery ones do not",
+    JSON.stringify(after["/Volumes/Macintosh HD"]),
+  );
+  check(!("/Volumes/Recovery" in after), "a device that IS a system volume loses its whole history");
+
+  // …and for the right reason. Above, every folder filed under the Recovery
+  // device also *lived* inside it, so the device would disappear anyway as
+  // its entries were pruned one by one. Here the remembered folders are
+  // perfectly good paths on the boot disk — only the device key is a system
+  // volume — so nothing but the device rule can drop them. (Found by
+  // mutation C.)
+  const keyedUnderSystem = await pruneRecents(
+    { "/Volumes/Recovery": { source: ["/Users/me/Movies"], destination: ["/Users/me/Archive"] } },
+    ROLES,
+    isSystemPath,
+  );
+  check(
+    Object.keys(keyedUnderSystem.recents).length === 0 && keyedUnderSystem.pruned === 2,
+    "a history filed UNDER a system volume goes too, even where the folders themselves are fine",
+    JSON.stringify(keyedUnderSystem),
+  );
+  check(
+    JSON.stringify(after["/Volumes/ODDONE_01"]) === JSON.stringify({ destination: ["/Volumes/ODDONE_01/DAY_01"] }),
+    "an untouched drive is returned unchanged",
+  );
+  check(
+    JSON.stringify(after["freeframe://p1"]) === JSON.stringify({ destination: [{ id: "f1", name: "Dailies" }] }),
+    "a FreeFrame project selection is left alone — it is not a filesystem path",
+  );
+
+  // Surviving the walk is not enough: a project selection must never be
+  // HANDED to the path predicate in the first place. Both the real
+  // predicate and the one above happen to ignore non-strings, so without
+  // this the string check could be deleted and every assertion would still
+  // pass. (Found by mutation B.)
+  const asked = [];
+  await pruneRecents(before, ROLES, async (p) => {
+    asked.push(p);
+    return pathInsideSystemVolume(p, mounted);
+  });
+  check(
+    asked.every((p) => typeof p === "string"),
+    "the path predicate is only ever asked about strings",
+    `asked about: ${asked.map((p) => typeof p).join(", ")}`,
+  );
+
+  const clean = { "/Volumes/ODDONE_01": { source: ["/Volumes/ODDONE_01/DAY_01"] } };
+  const untouched = await pruneRecents(clean, ROLES, isSystemPath);
+  check(untouched.pruned === 0, "nothing to prune reports nothing, so the caller skips the write");
+
+  const allGone = await pruneRecents(
+    { "/Volumes/Macintosh HD": { source: ["/Volumes/Recovery/a"] } },
+    ROLES,
+    isSystemPath,
+  );
+  check(
+    !("/Volumes/Macintosh HD" in allGone.recents),
+    "a device left with nothing is dropped, not kept as an empty object",
+  );
+
+  const noMounts = await pruneRecents(before, ROLES, async () => false);
+  check(
+    JSON.stringify(noMounts.recents) === JSON.stringify(before) && noMounts.pruned === 0,
+    "with no system volume mounted, nothing is forgotten — fail-open here too",
+  );
+
+  await live();
+})();
+
 // ── Against the real machine this was found on ──
 // Skipped with a note rather than failed where the drives aren't attached,
 // so the suite still means something on another Mac.
-(async () => {
+async function live() {
   console.log("\nthis Mac, right now");
   const all = await scanVolumes();
   const offered = await listVolumes();
@@ -278,4 +376,4 @@ check(pathInsideSystemVolume("/Volumes/Recovery", []) === null, "with no system 
 
   console.log(`\n${fail === 0 ? "ALL PASS" : fail + " FAILED"}`);
   process.exit(fail === 0 ? 0 : 1);
-})();
+}

@@ -6,6 +6,7 @@ const fsp = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { listVolumes, scanVolumes, pathInsideSystemVolume, annotateSharedContainers } = require("./volumes");
+const { pruneRecents } = require("./recents-prune");
 const { runCopyJob } = require("./copy-engine");
 const presets = require("./presets");
 const settings = require("./settings");
@@ -2335,7 +2336,41 @@ async function writeRecents(recents) {
   return recents;
 }
 
-ipcMain.handle("recent-folders:get", async () => readRecents());
+/**
+ * §243 — drop remembered folders that point into one of macOS's own
+ * volumes.
+ *
+ * The filter and the refusal together mean a system volume can no longer
+ * be chosen; this is about the ones chosen BEFORE this release. Such an
+ * entry still showed up in a device's per-role recents submenu, and
+ * picking it was refused with a worded message — correct, but a menu item
+ * that exists only to say no is not worth keeping.
+ *
+ * Only prunes against system volumes that are mounted RIGHT NOW, which is
+ * deliberate and matches the fail-open rule the rest of §243 follows: a
+ * path is forgotten because macOS currently says that volume is its own,
+ * never because the string looks like it might be. With nothing mounted
+ * there, the entry survives as the ordinary stale path it has always been.
+ *
+ * The walk itself is recents-prune.js, so it can be tested without
+ * Electron; this supplies the live "is it a system path" answer.
+ *
+ * @returns {Promise<{recents: object, pruned: number}>}
+ */
+async function pruneSystemRecents(recents) {
+  if (!cachedVolumes.length) await refreshVolumeCaches().catch(() => {});
+  if (!cachedSystemMounts.length) return { recents, pruned: 0 };
+  return pruneRecents(recents, RECENT_ROLES, systemVolumeContaining);
+}
+
+ipcMain.handle("recent-folders:get", async () => {
+  const { recents, pruned } = await pruneSystemRecents(await readRecents());
+  // Persisted, not just hidden: otherwise the entry comes back on the next
+  // read and the menu item reappears. writeRecents already swallows its own
+  // failures — losing the pruning is better than failing the menu.
+  if (pruned) await writeRecents(recents);
+  return recents;
+});
 
 ipcMain.handle("recent-folders:remember", async (_event, { device, role, folder } = {}) => {
   const recents = await readRecents();
@@ -2343,6 +2378,11 @@ ipcMain.handle("recent-folders:remember", async (_event, { device, role, folder 
   // it was never used for, which is the bug being fixed.
   if (!RECENT_ROLES.includes(role)) return recents;
   if (typeof device !== "string" || !device || !isRecentEntry(folder)) return recents;
+  // §243 — never record one in the first place. The pickers and copy:start
+  // already refuse these paths, so reaching here means something went round
+  // them, and a recents file is not the place to find out.
+  if (await systemVolumeContaining(device)) return recents;
+  if (typeof folder === "string" && (await systemVolumeContaining(folder))) return recents;
 
   const entry = recents[device] || (recents[device] = {});
   // Re-picking a folder promotes it rather than duplicating it. Compared by

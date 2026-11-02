@@ -124,7 +124,32 @@ const check = (ok, label, detail = "") => {
     check(normal === "accepted", "an ordinary source and destination are accepted", normal);
     await ev(`window.freeframe.cancelCopy ? true : true`);
 
-    console.log("\n5. §243 B — shared container, said once");
+    console.log("\n5. a system path is never remembered as a recent folder");
+    if (!haveRecovery) {
+      console.log("  SKIP  needs a mounted system volume");
+    } else {
+      // Deliberately exercises the REMEMBER side rather than seeding the
+      // recents file: this asserts nothing is written, so it cannot leave
+      // anything behind in the owner's real userData.
+      const recents = await ev(`
+        window.freeframe.rememberFolder(${JSON.stringify(systemMount)}, "destination",
+          ${JSON.stringify(systemMount + "/staging")})
+          .then(r => JSON.stringify(r))
+      `);
+      check(
+        !recents.includes("/Volumes/Recovery"),
+        "remembering a folder inside Recovery is a no-op, under the system volume or anywhere else",
+        recents.slice(0, 200),
+      );
+      const afterGet = await ev(`window.freeframe.getRecentFolders().then(r => JSON.stringify(r))`);
+      check(
+        !afterGet.includes("/Volumes/Recovery"),
+        "and reading the recents back returns nothing inside it",
+        afterGet.slice(0, 200),
+      );
+    }
+
+    console.log("\n6. §243 B — shared container, said once");
     await ev(`
       (() => {
         volumes = [
