@@ -71,7 +71,17 @@ pnpm test:ff-ui     # project tiles, sign-in screen, folder picker, project-as-s
 pnpm test:ff-source # pulls a real folder DOWN from the live API and verifies it
 pnpm test:upload    # uploads real files and proves server-side what landed
 pnpm test:packaged  # builds a real .app and runs the same suite against it
+pnpm test:volumes   # §243: macOS's own volumes are never offered or accepted
 ```
+
+**`test:volumes` is driven by real `diskutil` output.** `scripts/fixtures/volumes-243/`
+holds `diskutil info -plist` and `diskutil apfs list -plist` captured from a real
+Mac, Recovery and boot volume included, because the thing that makes the bug
+possible is a detail of that output: `diskutil info` on `/Volumes/Recovery` looks
+exactly like a normal internal volume, and only `diskutil apfs list` states the
+volume's APFS *role*. The filter is fail-open — a volume macOS can't positively
+identify stays listed, since a card that never appears is worse than a tile
+nobody clicks.
 
 **`test:upload` is the one that catches "it said it worked".** It uploads a
 real file per asset type and then asks the *server* what exists, because

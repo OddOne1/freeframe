@@ -1,0 +1,110 @@
+{
+ "Containers": [
+  {
+   "APFSContainerUUID": "42D1358A-C6D4-4D4E-AAC8-C1C760B31BE6",
+   "CapacityCeiling": 994662584320,
+   "CapacityFree": 117842866176,
+   "ContainerReference": "disk3",
+   "DesignatedPhysicalStore": "disk0s2",
+   "PhysicalStores": [
+    {
+     "DeviceIdentifier": "disk0s2",
+     "DiskUUID": "6076C39D-2188-4A73-B97D-8225B1755D40",
+     "Size": 994662584320
+    }
+   ],
+   "Volumes": [
+    {
+     "APFSVolumeUUID": "3902151E-5FE6-4CA5-ACE0-B94B79F02066",
+     "CapacityInUse": 13661298688,
+     "CapacityQuota": 0,
+     "CapacityReserve": 0,
+     "CryptoMigrationOn": false,
+     "DeviceIdentifier": "disk3s1",
+     "Encryption": true,
+     "FileVault": true,
+     "Locked": false,
+     "Name": "Macintosh HD",
+     "Roles": [
+      "System"
+     ]
+    },
+    {
+     "APFSVolumeUUID": "92A40ACB-BAEB-4BCA-A3D2-DFDB36090E74",
+     "CapacityInUse": 10966499328,
+     "CapacityQuota": 0,
+     "CapacityReserve": 0,
+     "CryptoMigrationOn": false,
+     "DeviceIdentifier": "disk3s2",
+     "Encryption": false,
+     "FileVault": false,
+     "Locked": false,
+     "Name": "Preboot",
+     "Roles": [
+      "Preboot"
+     ]
+    },
+    {
+     "APFSVolumeUUID": "909CF2D8-2012-4C02-985F-2D39FAA93C63",
+     "CapacityInUse": 3066351616,
+     "CapacityQuota": 0,
+     "CapacityReserve": 0,
+     "CryptoMigrationOn": false,
+     "DeviceIdentifier": "disk3s3",
+     "Encryption": false,
+     "FileVault": false,
+     "Locked": false,
+     "Name": "Recovery",
+     "Roles": [
+      "Recovery"
+     ]
+    },
+    {
+     "APFSVolumeUUID": "3C1EC75A-FFB3-4C1C-A416-7810DC677E02",
+     "CapacityInUse": 51191808,
+     "CapacityQuota": 0,
+     "CapacityReserve": 0,
+     "CryptoMigrationOn": false,
+     "DeviceIdentifier": "disk3s4",
+     "Encryption": false,
+     "FileVault": false,
+     "Locked": false,
+     "Name": "Update",
+     "Roles": [
+      "Update"
+     ]
+    },
+    {
+     "APFSVolumeUUID": "3E51CF3D-CD0A-4CC9-ADFF-1FFA543A2372",
+     "CapacityInUse": 841351069696,
+     "CapacityQuota": 0,
+     "CapacityReserve": 0,
+     "CryptoMigrationOn": false,
+     "DeviceIdentifier": "disk3s5",
+     "Encryption": true,
+     "FileVault": true,
+     "Locked": false,
+     "Name": "Data",
+     "Roles": [
+      "Data"
+     ]
+    },
+    {
+     "APFSVolumeUUID": "9F557534-8CCE-45C7-BE63-EA23BC313AB7",
+     "CapacityInUse": 7516622848,
+     "CapacityQuota": 0,
+     "CapacityReserve": 0,
+     "CryptoMigrationOn": false,
+     "DeviceIdentifier": "disk3s6",
+     "Encryption": false,
+     "FileVault": false,
+     "Locked": false,
+     "Name": "VM",
+     "Roles": [
+      "VM"
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -1475,12 +1475,26 @@
     function storageMeta(entry, role) {
       const { totalBytes: total, freeBytes: free } = entry;
       if (free == null) return entry.mountPoint;
-      if (role === "dest") return `${formatBytes(free)} free`;
+      // §243 B — several APFS volumes in one container draw on ONE pool of
+      // free space, and statfs honestly reports that whole pool for each of
+      // them. Two tiles each promising "117.9 GB free" would be two claims
+      // on the same 117.9 GB. One word, no redesign: the tooltip (set from
+      // sharedSpaceNote below) names the other volumes.
+      const shared = (entry.sharesSpaceWith && entry.sharesSpaceWith.length) ? " (shared)" : "";
+      if (role === "dest") return `${formatBytes(free)} free${shared}`;
       if (total == null) return entry.mountPoint;
       const used = Math.max(0, total - free);
       if (role === "source") return `${formatBytes(used)} used`;
       // Two lines, not a separator — see .tile-meta.two-line for why.
-      return `${formatBytes(used)} used\n${formatBytes(free)} free`;
+      return `${formatBytes(used)} used\n${formatBytes(free)} free${shared}`;
+    }
+
+    /** The tooltip behind that "(shared)". */
+    function sharedSpaceNote(entry) {
+      const others = entry.sharesSpaceWith || [];
+      if (!others.length) return null;
+      const list = others.length === 1 ? others[0] : `${others.slice(0, -1).join(", ")} and ${others[others.length - 1]}`;
+      return `${entry.mountPoint}\nFree space is shared with ${list} — they are on one APFS container, so it is one pool, not one each.`;
     }
 
     // User-supplied volume and file names land in the DOM, and this renderer
@@ -2000,8 +2014,32 @@
 
     /** Opens the native picker, optionally rooted inside `device`, and
      *  records the result as that device's recent folder. */
+    /** §243 C — main refused a path that is inside one of macOS's own
+     *  volumes. Said out loud, in the box every other "that can't be a
+     *  source/destination" message already uses. */
+    function showRefusal(reason) {
+      const box = $("summary");
+      box.replaceChildren(
+        el("div", { class: "head" }, [el("h3", { class: "bad", text: "That isn't a drive you can use" })]),
+        el("div", { class: "verdict bad", text: reason })
+      );
+      box.style.display = "block";
+    }
+
+    /** Both pickers and the OS drop get the same `{ refused, reason }`
+     *  shape back from main. True means it was handled and the caller
+     *  stops. */
+    function handledRefusal(res) {
+      if (res && res.refused) {
+        showRefusal(res.reason || "macOS owns that volume.");
+        return true;
+      }
+      return false;
+    }
+
     async function pickFolder({ title, device = null, role = null }) {
       const folder = await window.freeframe.chooseFolder(title, device || undefined);
+      if (handledRefusal(folder)) return null;
       if (!folder) return null;
       if (!extraFolders.includes(folder) && !volumes.some((v) => v.mountPoint === folder)) {
         extraFolders.push(folder);
@@ -2022,6 +2060,7 @@
      */
     async function pickSource({ title, device = null }) {
       const res = await window.freeframe.chooseSource(title, device || undefined);
+      if (handledRefusal(res)) return null;
       if (!res || !res.paths || !res.paths.length) return null;
       applySourceSelection(res, device);
       return res;
@@ -2913,7 +2952,7 @@
         el("div", {
           class: metaText.includes("\n") ? "tile-meta two-line" : "tile-meta",
           text: metaText,
-          title: entry.mountPoint,
+          title: sharedSpaceNote(entry) || entry.mountPoint,
         }),
       ]);
 
@@ -4645,6 +4684,7 @@
         // main stats them: only it can tell a folder from a file, and the
         // two mean different things on the source side.
         const sel = await window.freeframe.classifyPaths(paths);
+        if (handledRefusal(sel)) return;
         if (!sel) return;
 
         if (role === "source") {

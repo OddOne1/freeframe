@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { listVolumes } = require("./volumes");
+const { listVolumes, scanVolumes, pathInsideSystemVolume } = require("./volumes");
 const { runCopyJob } = require("./copy-engine");
 const presets = require("./presets");
 const settings = require("./settings");
@@ -374,13 +374,72 @@ let volumeDebounce = null;
 // what the watcher below already notices.
 let cachedVolumes = [];
 
+// §243 C — the mount points of macOS's own volumes (Recovery, Preboot,
+// VM, Update…). Kept beside cachedVolumes and refreshed by the same
+// scan, because the guard below has to answer "is this path inside one"
+// for every source and destination the app is handed.
+let cachedSystemMounts = [];
+
+/** One scan, two caches: what the app offers, and what it refuses. */
+async function refreshVolumeCaches() {
+  const all = await scanVolumes();
+  cachedSystemMounts = all.filter((v) => v.isSystem).map((v) => v.mountPoint);
+  cachedVolumes = await listVolumes();
+  return cachedVolumes;
+}
+
 async function volumesForKeys() {
   // Cold start only: the renderer populates this via volumes:list on
   // load, so in practice this await never happens for a real job.
   if (!cachedVolumes.length) {
-    cachedVolumes = await listVolumes().catch(() => []);
+    await refreshVolumeCaches().catch(() => {});
   }
   return cachedVolumes;
+}
+
+/**
+ * §243 C — a source or destination inside one of macOS's own volumes,
+ * refused in the MAIN process.
+ *
+ * The filter in volumes.js stops those tiles being offered; this stops
+ * the path arriving any other way — the native picker (which happily
+ * navigates into /Volumes/Recovery), an OS drag-and-drop, a remembered
+ * recent folder from before this release, or a renderer bug. Enforced
+ * here for the same reason the internal-drive eject refusal is: a guard
+ * that only exists in the UI is a guard the next caller walks past.
+ *
+ * Symlinks are resolved first, so "~/shortcut-to-recovery" is judged by
+ * where it actually lands rather than by how it is spelled. An
+ * unresolvable path falls back to its literal form — the copy engine
+ * would fail on it anyway, and refusing to answer is worse than
+ * answering about the string.
+ *
+ * @returns {Promise<string|null>} the system mount point the path is
+ *          inside, or null when the path is fine.
+ */
+async function systemVolumeContaining(p) {
+  if (typeof p !== "string" || !p || p.startsWith("freeframe://")) return null;
+  if (!cachedVolumes.length) await refreshVolumeCaches().catch(() => {});
+  if (!cachedSystemMounts.length) return null;
+  let resolved;
+  try {
+    resolved = await fsp.realpath(p);
+  } catch {
+    resolved = path.resolve(p);
+  }
+  return pathInsideSystemVolume(resolved, cachedSystemMounts);
+}
+
+/** The same check over a bag of paths, phrased for a human.
+ *  @returns {Promise<string|null>} the refusal message, or null. */
+async function systemVolumeRefusal(paths) {
+  for (const p of paths) {
+    const mount = await systemVolumeContaining(p);
+    if (mount) {
+      return `"${path.basename(mount)}" is part of macOS, not a drive to copy to or from. Pick a folder on your own disk, a card, or an external drive.`;
+    }
+  }
+  return null;
 }
 
 function startVolumeWatcher() {
@@ -392,7 +451,7 @@ function startVolumeWatcher() {
         // Refresh the cache here rather than waiting for the renderer to
         // ask: a job submitted right after a drive is plugged in should
         // key off the drive that is actually there now.
-        listVolumes().then((v) => { cachedVolumes = v; }).catch(() => {});
+        refreshVolumeCaches().catch(() => {});
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send("volumes:changed");
         }
@@ -439,11 +498,7 @@ function createWindow() {
 // yet triggers macOS's removable-volume permission prompt on its own —
 // that fires the first time this app actually reads file contents from a
 // removable volume, not on directory listing/diskutil info.
-ipcMain.handle("volumes:list", async () => {
-  const v = await listVolumes();
-  cachedVolumes = v;
-  return v;
-});
+ipcMain.handle("volumes:list", async () => refreshVolumeCaches());
 
 // Eject / disconnect. Finder makes the same distinction and users already
 // have the vocabulary: physical media is "ejected", a network share is
@@ -1182,6 +1237,12 @@ ipcMain.handle("freeframe:upload", async (event, { sourcePath, sourceFiles, proj
     throw new Error("Source and project are required");
   }
 
+  // §243 C — never read footage out of macOS's own volumes.
+  {
+    const refusal = await systemVolumeRefusal([sourcePath, ...pickedFiles]);
+    if (refusal) throw new Error(refusal);
+  }
+
   // §212 — a sourcePath that is a FILE, not a directory.
   //
   // The renderer collapses a single-file selection into `setSource(files[0])`
@@ -1755,6 +1816,19 @@ ipcMain.handle("copy:start", async (event, payload) => {
 
   if (!sourcePath && !(sourceFiles && sourceFiles.length)) throw new Error("No source selected");
   if (nodes.length === 0) throw new Error("No destination selected");
+
+  // §243 C — the backstop. Whatever route a path took to get here (the
+  // picker, a drop, a remembered recent folder, a renderer bug), a source
+  // or destination inside Recovery/Preboot/VM/Update is refused before a
+  // byte moves. The copy engine itself is untouched.
+  {
+    const refusal = await systemVolumeRefusal([
+      sourcePath,
+      ...(sourceFiles || []),
+      ...nodes.map((n) => n.path),
+    ]);
+    if (refusal) throw new Error(refusal);
+  }
 
   // Item 3 — a project as the source. The engine takes a source *provider*
   // rather than only a path, so this is a different kind of source, not a
@@ -2349,6 +2423,11 @@ ipcMain.handle("dialog:choose-folder", async (_event, { title, defaultPath, allo
   }
   const result = await dialog.showOpenDialog(mainWindow, options);
   if (result.canceled || result.filePaths.length === 0) return null;
+  // §243 C — the native panel will happily navigate into /Volumes/Recovery
+  // even though no tile offers it. `{ refused }` rather than a silent null:
+  // a picker that closes and does nothing reads as a bug.
+  const refusal = await systemVolumeRefusal(result.filePaths);
+  if (refusal) return { refused: true, reason: refusal };
   // Single path for the folder-only case, so every existing caller is
   // unchanged. When files were allowed, the caller gets the full
   // selection plus what it actually is, since it has to branch on that.
@@ -2365,6 +2444,10 @@ ipcMain.handle("dialog:choose-folder", async (_event, { title, defaultPath, allo
 
 /** Split a mixed list of dropped/selected paths into one source shape. */
 async function classifyPaths(paths) {
+  // §243 C — the drag-and-drop route in. Same refusal shape as the picker,
+  // so the renderer has one case to handle rather than two.
+  const refusal = await systemVolumeRefusal(paths);
+  if (refusal) return { refused: true, reason: refusal };
   const stats = await Promise.all(paths.map((p) => fsp.stat(p).catch(() => null)));
   const dirs = paths.filter((_, i) => stats[i] && stats[i].isDirectory());
   const files = paths.filter((_, i) => stats[i] && stats[i].isFile());
