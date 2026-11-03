@@ -5,7 +5,8 @@ alembic==1.13.3
 psycopg2-binary==2.9.11
 pydantic==2.9.2
 pydantic-settings==2.5.2
-python-jose[cryptography]==3.5.0
+# §245 — replaced python-jose (unmaintained). HS256 only, so no [crypto] extra.
+PyJWT==2.15.1
 bcrypt==4.2.0
 python-multipart==0.0.12
 boto3==1.35.30
@@ -16,10 +17,11 @@ pytest==8.4.2
 pytest-asyncio==0.24.0
 email-validator==2.3.0
 jinja2==3.1.6
-# Pinned explicitly rather than relying on python-jose[cryptography] to pull
-# it in transitively: it encrypts stored mail credentials at rest
-# (services/secrets_service.py), so it should not silently disappear if that
-# package ever reorganizes its extras.
+# Pinned explicitly because our own code imports it directly: Fernet
+# encrypts stored mail credentials and TOTP secrets at rest
+# (services/secrets_service.py, services/totp_service.py,
+# services/crypto_service.py). Nothing else in this file pulls it in since
+# python-jose was replaced by PyJWT (§245), so this line is what keeps it.
 cryptography==43.0.1
 kombu==5.4.2
 # §124 — imported DIRECTLY by our own code (botocore in s3_service and

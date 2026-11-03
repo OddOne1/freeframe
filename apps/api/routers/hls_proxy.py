@@ -17,7 +17,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
-from jose import jwt, JWTError
+import jwt
+from jwt import InvalidTokenError
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 
@@ -48,7 +49,7 @@ def _verify_hls_token(token: str) -> str:
         if payload.get("sub") != "hls":
             raise HTTPException(status_code=403, detail="Invalid token type")
         return payload["pfx"]
-    except JWTError:
+    except InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 

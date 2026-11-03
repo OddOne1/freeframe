@@ -344,7 +344,7 @@ class TestTheResponseSignsOnlyOwnedKeys:
     def test_a_signed_logo_token_is_scoped_to_the_logo_directory(self):
         """What the check is actually worth: the token minted for a legitimate
         key reaches that project's logo directory and nothing above it."""
-        from jose import jwt
+        import jwt
 
         from apps.api.config import settings
         from apps.api.routers.branding import _branding_to_response
@@ -803,7 +803,7 @@ class TestTheColumnDoesNotTakeAnUnownedKey:
         """End to end: the upload route issues a key, the PUT accepts it, and
         the URL that comes back is one the proxy would honour for exactly that
         project's logo directory."""
-        from jose import jwt
+        import jwt
 
         from apps.api.config import settings
 

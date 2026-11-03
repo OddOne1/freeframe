@@ -117,7 +117,7 @@ class TestThePendingTokenRecordsItsOrigin:
         token from before this change is an old PASSWORD login."""
         from datetime import datetime, timedelta, timezone
 
-        from jose import jwt
+        import jwt
 
         from apps.api.config import settings
         from apps.api.services.auth_service import TWOFA_PENDING_TOKEN_TYPE

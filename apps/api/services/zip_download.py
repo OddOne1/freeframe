@@ -38,7 +38,8 @@ from typing import Optional
 from urllib.parse import quote
 
 from fastapi import HTTPException
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -83,7 +84,7 @@ def verify_download_token(token: str, export_id) -> None:
     """
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-    except JWTError:
+    except InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     if payload.get("sub") != TOKEN_SUBJECT:
         raise HTTPException(status_code=403, detail="Invalid token type")

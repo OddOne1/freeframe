@@ -11,7 +11,8 @@ Separate limits for read (GET/HEAD/OPTIONS) vs write (POST/PUT/PATCH/DELETE).
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from jose import jwt, JWTError
+import jwt
+from jwt import InvalidTokenError
 
 from ..config import settings
 from ..services.redis_service import get_redis
@@ -65,6 +66,8 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
             try:
+                # Only expiry is relaxed: the signature is still verified, so a
+                # forged `sub` cannot pick another user's bucket.
                 payload = jwt.decode(
                     token, settings.jwt_secret,
                     algorithms=[settings.jwt_algorithm],
@@ -73,7 +76,7 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
                 user_id = payload.get("sub")
                 if user_id:
                     return f"user:{user_id}"
-            except JWTError:
+            except InvalidTokenError:
                 pass
 
         # Fall back to IP

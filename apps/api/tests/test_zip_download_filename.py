@@ -566,7 +566,7 @@ def test_the_streamed_link_lives_for_the_download_link_setting():
     from datetime import datetime, timezone
     from urllib.parse import parse_qs, urlparse
 
-    from jose import jwt
+    import jwt
 
     from apps.api.config import settings
 

@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import uuid
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError
 import bcrypt
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -137,11 +138,13 @@ def decode_2fa_pending_claims(token: str) -> Optional[dict]:
     token would satisfy the 2FA step and complete a login it was never
     issued for.
     """
-    # Guarded before decode_token, not inside the try: python-jose raises
-    # AttributeError (not JWTError) on a None/empty token, which escapes
-    # decode_token's except and surfaces as a 500 instead of a 401. Reached
-    # by a caller that has neither a session nor a pending token — §192's
-    # authenticated fallback path made that combination possible.
+    # Reached by a caller that has neither a session nor a pending token —
+    # §192's authenticated fallback path made that combination possible.
+    # Added because python-jose raised AttributeError (not JWTError) on a
+    # None token, which escaped decode_token's except as a 500. PyJWT (§245)
+    # raises DecodeError for None, "" and non-strings, which decode_token
+    # already turns into None, so this guard is no longer load-bearing; it
+    # stays as the cheap, explicit statement that "no token" is "no claims".
     if not token:
         return None
     payload = decode_token(token)
@@ -174,7 +177,7 @@ def pending_token_via(token: str) -> str:
 def decode_token(token: str) -> Optional[dict]:
     try:
         return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-    except JWTError:
+    except InvalidTokenError:
         return None
 
 def get_user_by_email(db: Session, email: str) -> Optional[User]:

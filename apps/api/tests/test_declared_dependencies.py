@@ -56,7 +56,7 @@ ALIAS = {
     "dotenv": "python-dotenv",
     "email_validator": "email-validator",
     "faster_whisper": "faster-whisper",
-    "jose": "python-jose",
+    "jwt": "pyjwt",
     "multipart": "python-multipart",
     "pillow_avif": "pillow-avif-plugin",
     "psycopg2": "psycopg2-binary",

@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pyotp
 import pytest
-from jose import jwt
+import jwt
 
 from apps.api.config import settings
 from apps.api.middleware.auth import get_current_user, get_optional_user
