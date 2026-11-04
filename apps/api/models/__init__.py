@@ -15,3 +15,7 @@ from .email_settings import EmailSettings
 from .sidecar import SidecarFile, SidecarType
 from .zip_export import ZipExport, ZipExportStatus
 from .object_checksum import ObjectChecksum
+from .snippet import (
+    SnippetProjectSettings, SnippetSpeaker, SnippetTrackSpeaker, TranscriptSegment,
+    TranscriptWord, TranscriptEdit, SnippetJob, Snippet,
+)
