@@ -7,8 +7,18 @@ pydantic==2.9.2
 pydantic-settings==2.5.2
 # §245 — replaced python-jose (unmaintained). HS256 only, so no [crypto] extra.
 PyJWT==2.15.1
-bcrypt==4.2.0
-python-multipart==0.0.12
+# §246 — stays on 4.x ON PURPOSE. bcrypt 5.0 raises ValueError for a password
+# over 72 bytes instead of truncating, and hash_password/verify_password and
+# routers/share.py cut at 72 CHARACTERS, not bytes: a non-ASCII password can
+# reach bcrypt at up to ~288 bytes. On 5.x that is a 500 when it is set and a
+# failed login afterwards. A byte-safe truncation has to land before 5.x.
+bcrypt==4.3.0
+# §246 — since 0.0.13 the import name is `python_multipart`. fastapi 0.115.0
+# and starlette 0.38.6 still import the old `multipart` name, which this
+# version keeps as a shim (it emits a PendingDeprecationWarning, not a
+# DeprecationWarning). tests/test_dependency_compat_246.py proves real
+# multipart POSTs through the app with it.
+python-multipart==0.0.32
 boto3==1.35.30
 celery[redis]==5.4.0
 redis==5.1.0
@@ -22,18 +32,29 @@ jinja2==3.1.6
 # (services/secrets_service.py, services/totp_service.py,
 # services/crypto_service.py). Nothing else in this file pulls it in since
 # python-jose was replaced by PyJWT (§245), so this line is what keeps it.
-cryptography==43.0.1
+# §246 — 43.0.1 -> 50.0.2. We use Fernet and HKDF(...).derive() only; nothing
+# either touches was removed in between. Old ciphertexts are proven readable
+# by the golden values in tests/test_dependency_compat_246.py.
+cryptography==50.0.2
 kombu==5.4.2
-# §124 — imported DIRECTLY by our own code (botocore in s3_service and
-# email_service, starlette in two middlewares) while only ever arriving as
-# someone else's transitive dependency. Both are bounded today by boto3 and
-# fastapi respectively, so neither is currently broken — but that is exactly
-# the shape that broke transcription: code importing a package nothing in
-# this file declares, held up by another package's private choices. Left
-# unpinned so pip keeps resolving them jointly with their parents; the point
-# is that the dependency is now stated.
-botocore
-starlette
+# §124 — imported DIRECTLY by our own code (botocore in s3_service,
+# email_service, routers/upload.py, scripts/reconcile_file_sizes.py and the
+# transcoder; starlette in four middlewares) while only ever arriving as
+# someone else's transitive dependency. That is the shape that broke
+# transcription: code importing a package nothing in this file declares,
+# held up by another package's private choices.
+#
+# §124 left them UNPINNED so pip would resolve them jointly with boto3 and
+# fastapi. §246 pins them for the opposite reason: unpinned, every
+# --no-cache rebuild resolves them afresh, so the image can change behaviour
+# with no change in this repo. The versions are EXACTLY what the production
+# api container ran on 2026-11-04 (pip freeze after the §245 deploy), so the
+# pin itself changes nothing in production. Both sit inside their parents'
+# ranges (boto3 1.35.30 wants botocore >=1.35.30,<1.36; fastapi 0.115.0 wants
+# starlette >=0.37.2,<0.39). Moving either is part of a boto3 or fastapi
+# upgrade, not something to do on its own.
+botocore==1.35.99
+starlette==0.38.6
 # Speech-to-text (CTranslate2-based; CPU-only in this deployment).
 # Pulls in ctranslate2 + tokenizers + onnxruntime -- this meaningfully
 # increases the api-family image size, which is why transcription runs in
@@ -55,18 +76,33 @@ faster-whisper==1.0.3
 # performs no longer depends on another package's private choices, matching
 # what the cryptography pin above already does for the same reason.
 huggingface-hub>=0.24,<1.0
-requests==2.32.3
+# §246 — patch bump within 2.32.x (2.32.4 fixed a netrc credential leak).
+requests==2.32.5
 
 # Poster thumbnails (§19c). Project posters were stored exactly as
 # uploaded -- up to 10MB of full-resolution original -- and then fetched
 # in full to render a 32px table icon and a grid of small cards. This is
 # the only pixel-level image work in the API; exiftool (already present)
 # reads metadata, not pixels.
+#
+# §246 — deliberately NOT bumped. The newest 11.x (11.3.0) resolves and
+# works, but pip-audit lists every advisory against 10.4.0 against 11.3.0
+# too, plus six more: every fix is in 12.1.1-13.0.0. Moving to 11.x would
+# change the decoder for no security gain. The real fix is Pillow 13.x, which
+# is a major with removals and gets its own branch (see the §246 report).
+# Worth knowing for that branch: Image.open() in _build_poster_thumbnail
+# sniffs EVERY format Pillow knows, not just the four poster MIME types, so a
+# decoder bug in any format is reachable from a poster upload.
 Pillow==10.4.0
-# AVIF decoding for poster uploads (§19d). Core Pillow ships no AVIF codec,
+# AVIF decoding for poster uploads (§19d). Core Pillow 10.4.0 ships no AVIF codec,
 # so this plugin is what makes Image.open() accept one; it registers itself
 # on import (see routers/projects.py). Verified against the pinned
 # Pillow 10.4.0, with a manylinux_2_28_x86_64 wheel for the server.
+#
+# §246 — 1.6.0 is still the newest release. Note for the Pillow 13 branch:
+# Pillow's own wheels decode AVIF from 11.3.0 on, and once imported this
+# plugin REPLACES that handler (verified on 11.3.0: Image.OPEN["AVIF"] moves
+# from PIL.AvifImagePlugin to pillow_avif.AvifImagePlugin).
 pillow-avif-plugin==1.6.0
 
 # §182 — the IANA zone database, for `zoneinfo` (services/schedule_window.py).

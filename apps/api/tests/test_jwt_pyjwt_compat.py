@@ -387,4 +387,6 @@ def test_requirements_pin_pyjwt_and_not_jose():
     reqs = [line for line in lines if line and not line.startswith("#")]
     assert "PyJWT==2.15.1" in reqs
     assert not any(line.lower().startswith("python-jose") for line in reqs)
-    assert "cryptography==43.0.1" in reqs
+    # Still declared after jose left (Fernet needs it). The exact version is
+    # §246's to own: tests/test_dependency_compat_246.py.
+    assert any(line.startswith("cryptography==") for line in reqs)

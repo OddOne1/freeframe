@@ -58,6 +58,10 @@ ALIAS = {
     "faster_whisper": "faster-whisper",
     "jwt": "pyjwt",
     "multipart": "python-multipart",
+    # §246 — the import name since python-multipart 0.0.13; `multipart` above
+    # is now its compatibility shim. Our own code imports neither today
+    # (fastapi/starlette do), but either name must map to the same package.
+    "python_multipart": "python-multipart",
     "pillow_avif": "pillow-avif-plugin",
     "psycopg2": "psycopg2-binary",
     "pydantic_settings": "pydantic-settings",
