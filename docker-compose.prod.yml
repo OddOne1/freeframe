@@ -152,6 +152,30 @@ services:
       dockerfile: apps/api/Dockerfile.prod
     env_file:
       - .env.prod
+    # SocialSnippet runs a medium Whisper pass per audio track here, which can
+    # hold every core it is given for a long time. Three brakes keep the
+    # transcodes on `worker` first in line:
+    #   cpuset     -- pinned to CPU node 1 (12-23 physical, 36-47 are their
+    #                 hyperthreads). The DEFAULT ASSUMES A 2-SOCKET HOST: on
+    #                 a machine without CPUs 12-23 the container will not
+    #                 start. Set TRANSCRIBE_CPUSET in .env.prod there.
+    #   cpu_shares -- 256 against the default 1024, so under contention the
+    #                 kernel hands `worker` four times this container's share.
+    #   mem_limit  -- a hard ceiling; a runaway job is OOM-killed here rather
+    #                 than pushing the transcoder or Postgres into swap.
+    cpuset: "${TRANSCRIBE_CPUSET:-12-23}"
+    cpu_shares: ${TRANSCRIBE_CPU_SHARES:-256}
+    mem_limit: ${TRANSCRIBE_MEM_LIMIT:-20g}
+    # Names match apps/api/config.py (pydantic-settings, no prefix, matched
+    # case-insensitively). These override the same keys from env_file, but
+    # each one is interpolated from --env-file .env.prod first, so a value
+    # set there still wins over the default after the `:-`.
+    environment:
+      - SNIPPET_WHISPER_MODEL_SIZE=${SNIPPET_WHISPER_MODEL_SIZE:-medium}
+      - SNIPPET_WHISPER_CPU_THREADS=${SNIPPET_WHISPER_CPU_THREADS:-10}
+      - WHISPER_OFFLINE=${WHISPER_OFFLINE:-false}
+      - SNIPPET_GATE_MARGIN_DB=${SNIPPET_GATE_MARGIN_DB:-6.0}
+      - SNIPPET_GATE_MIN_KEEP_RATIO=${SNIPPET_GATE_MIN_KEEP_RATIO:-0.5}
     depends_on:
       postgres:
         condition: service_healthy
