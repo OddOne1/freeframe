@@ -38,6 +38,9 @@ STDLIB = {
     "subprocess", "sys", "tempfile", "textwrap", "threading", "time",
     "traceback", "types", "typing", "unittest", "urllib", "uuid", "warnings",
     "xml", "zipfile", "zlib",
+    # SocialSnippet's RMS reader (services/snippet_transcribe.py) reads PCM
+    # with these two instead of numpy, which is not a declared dependency.
+    "array", "wave",
     # §182 — stdlib since 3.9. The `tzdata` PyPI package in requirements.txt
     # is NOT this module: it is the data zoneinfo reads when the host has no
     # system zone database, and is declared there for that reason.

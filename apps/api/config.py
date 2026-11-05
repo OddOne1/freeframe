@@ -337,6 +337,26 @@ class Settings(BaseSettings):
     # exist and would silently break every non-English upload.
     whisper_model_size: str = "small"
     whisper_compute_type: str = "int8"  # int8 is the sane CPU default; float32 is far slower
+    # When True the model is loaded with local_files_only=True: no network
+    # call to the Hugging Face hub at all, so the checkpoint must already be
+    # in HF_HOME. Off by default so the first run on a fresh volume can still
+    # download it. Applies to every transcription, not only SocialSnippet.
+    whisper_offline: bool = False
+
+    # SocialSnippet transcription (tasks/transcribe_tasks.py, the per-track
+    # pipeline). Used ONLY for assets inside a SocialSnippet-enabled
+    # project's source folder; every other asset keeps whisper_model_size
+    # above. Same multilingual rule: never a ".en" checkpoint.
+    snippet_whisper_model_size: str = "medium"
+    # Passed to WhisperModel(cpu_threads=...). The transcription worker runs
+    # at concurrency 1, so this is the whole CPU budget of one job.
+    snippet_whisper_cpu_threads: int = 8
+    # Bleed gate: a word on track T is kept only if T's level over the word
+    # is within this many dB of the loudest transcribed track.
+    snippet_gate_margin_db: float = 6.0
+    # ...and a segment is dropped when fewer than this share of its words
+    # survive the gate.
+    snippet_gate_min_keep_ratio: float = 0.5
 
     # Email settings - supports AWS SES or any SMTP server
     # If mail_provider is "ses", uses AWS SES with aws_mail_* credentials
