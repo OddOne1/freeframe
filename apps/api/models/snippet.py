@@ -95,7 +95,30 @@ class SnippetStatus(str, PyEnum):
 #: The export shapes a project can default to. `export_aspect`, never
 #: `aspect_ratio`: `ShareLinkAppearance.aspect_ratio` already means the
 #: thumbnail-card layout on a share page, which is unrelated.
-EXPORT_ASPECTS = ("9:16", "1:1", "4:5", "16:9")
+#:
+#: Portrait and landscape first, then square, then the four-step ones. The
+#: longest is four characters, so `String(5)` below holds every one of them;
+#: a value like "2.39:1" would not fit, and widening the column is a
+#: migration, so check the width when adding to this list.
+EXPORT_ASPECTS = ("9:16", "16:9", "1:1", "4:5", "3:4", "4:3")
+
+#: The CHECK body for `export_aspect`, built from EXPORT_ASPECTS so the two
+#: cannot come to disagree. The migration spells the same list out by hand
+#: on purpose — a migration must not change when a model does — and
+#: tests/test_socialsnippet_data.py compares the two.
+EXPORT_ASPECT_CHECK = "export_aspect IN ({})".format(
+    ", ".join("'%s'" % a for a in EXPORT_ASPECTS)
+)
+
+#: Where a snippet came from. A string with a CHECK rather than a Postgres
+#: enum, for the reason given on `SnippetJob.stage`: every new enum value is
+#: a migration of its own, and this list will grow as the pipeline does.
+SNIPPET_SOURCES = ("keyword", "llm", "import", "manual")
+
+#: As EXPORT_ASPECT_CHECK, for `snippets.source`.
+SNIPPET_SOURCE_CHECK = "source IN ({})".format(
+    ", ".join("'%s'" % s for s in SNIPPET_SOURCES)
+)
 
 #: The generated search column. `simple`: no language-specific stemming,
 #: because the content is multilingual. The migration repeats this string
@@ -241,7 +264,7 @@ class SnippetProjectSettings(Base):
             name="ck_snippet_settings_retention_positive",
         ),
         CheckConstraint(
-            "export_aspect IN ('9:16', '1:1', '4:5', '16:9')",
+            EXPORT_ASPECT_CHECK,
             name="ck_snippet_settings_export_aspect",
         ),
     )
@@ -482,6 +505,19 @@ class Snippet(AssetBound, Base):
     topics: Mapped[list[str]] = mapped_column(
         _TopicsType, nullable=False, default=list, server_default="{}"
     )
+    #: How this candidate came to exist. See SNIPPET_SOURCES.
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="keyword", server_default="keyword"
+    )
+    #: WHICH implementation produced it, where `source` is only the kind of
+    #: implementation: "yake-lite", "claude", "gpt", "hand". Free text and
+    #: deliberately unconstrained — model and library names change faster
+    #: than migrations do, and nothing branches on this value. Nullable: an
+    #: imported clip has no generator at all.
+    generator: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    #: NULL means "not scored", which is not 0.0. A clip that came in by
+    #: import or by hand never goes through the scorer, so every reader has
+    #: to handle the absence rather than treat it as a bad score.
     quality_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     viral_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     status: Mapped[SnippetStatus] = mapped_column(
@@ -494,6 +530,12 @@ class Snippet(AssetBound, Base):
 
     __table_args__ = (
         CheckConstraint("start_ms >= 0 AND end_ms > start_ms", name="ck_snippets_times"),
+        CheckConstraint(SNIPPET_SOURCE_CHECK, name="ck_snippets_source"),
+        # The timeline read: one file's clips in playback order. Its leading
+        # column makes `ix_snippets_media_file_id` (from `index=True` above)
+        # redundant, and that index is left in place anyway: this change only
+        # adds, and an unused index costs writes, not correctness.
+        Index("ix_snippets_media_file_id_start_ms", "media_file_id", "start_ms"),
     )
 
     @classmethod

@@ -18,6 +18,19 @@ so `purge_service.purge_asset`, which deletes media_files rows and knows
 nothing about these tables, keeps working unchanged. FKs to `users` are SET
 NULL, matching user_hard_delete_fk_policy. See models/snippet.py.
 
+── Value lists ───────────────────────────────────────────────────────────
+`snippet_project_settings.export_aspect` and `snippets.source` are varchars
+with a CHECK, not Postgres enums: a new allowed value then costs a
+constraint, not an ALTER TYPE. Both lists are written out BY HAND here
+rather than imported from models/snippet.py (EXPORT_ASPECTS,
+SNIPPET_SOURCES) — a migration must not change when a model does — so
+tests/test_socialsnippet_data.py compares the two copies and fails if they
+drift apart.
+
+`snippets.quality_score` and `.viral_score` are nullable, and NULL means
+"not scored" rather than zero: an imported or hand-made clip never reaches
+the scorer.
+
 Revision ID: add_socialsnippet_data
 Revises: add_deleted_by_240
 """
@@ -76,7 +89,7 @@ def upgrade() -> None:
             name="ck_snippet_settings_retention_positive",
         ),
         sa.CheckConstraint(
-            "export_aspect IN ('9:16', '1:1', '4:5', '16:9')",
+            "export_aspect IN ('9:16', '16:9', '1:1', '4:5', '3:4', '4:3')",
             name="ck_snippet_settings_export_aspect",
         ),
     )
@@ -214,19 +227,35 @@ def upgrade() -> None:
         sa.Column("title", sa.String(255), nullable=True),
         sa.Column("quote", sa.Text(), nullable=True),
         sa.Column("topics", postgresql.ARRAY(sa.Text()), nullable=False, server_default=sa.text("'{}'")),
+        sa.Column("source", sa.String(16), nullable=False, server_default="keyword"),
+        sa.Column("generator", sa.String(64), nullable=True),
+        # NULL = not scored. See the docstring.
         sa.Column("quality_score", sa.Float(), nullable=True),
         sa.Column("viral_score", sa.Float(), nullable=True),
         sa.Column("status", _enum("snippetstatus"), nullable=False, server_default="suggested"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=_now()),
         sa.CheckConstraint("start_ms >= 0 AND end_ms > start_ms", name="ck_snippets_times"),
+        sa.CheckConstraint(
+            "source IN ('keyword', 'llm', 'import', 'manual')", name="ck_snippets_source"
+        ),
     )
     op.create_index("ix_snippets_media_file_id", "snippets", ["media_file_id"])
     op.create_index("ix_snippets_speaker_id", "snippets", ["speaker_id"])
+    # One file's clips in playback order. Leading column makes
+    # ix_snippets_media_file_id redundant; it is kept, because the model
+    # still declares it and the drift check compares the two.
+    op.create_index(
+        "ix_snippets_media_file_id_start_ms", "snippets", ["media_file_id", "start_ms"]
+    )
 
 
 def downgrade() -> None:
     # Reverse order of creation; dropping a table drops its own indexes and
-    # constraints, including the conditional trigram index.
+    # constraints, including the conditional trigram index, the two CHECKs on
+    # `snippets` and `ix_snippets_media_file_id_start_ms`. `source` and
+    # `generator` go with the table too: this migration CREATES snippets
+    # rather than altering it, so there is nothing of them to undo
+    # separately.
     for table in (
         "snippets",
         "snippet_jobs",

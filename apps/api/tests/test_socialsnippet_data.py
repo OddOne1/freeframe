@@ -9,9 +9,11 @@ Two halves:
 
 * Real Postgres, skipped without TEST_DATABASE_URL — the soft-delete helper
   (`models/snippet.py::live_media_file_clause`, via `AssetBound.live`) leaves
-  out rows of a deleted asset for EVERY asset-bound table, and the
-  media_files cascade that keeps `purge_asset` working holds. A mocked
-  session cannot answer either: both are about what Postgres does.
+  out rows of a deleted asset for EVERY asset-bound table, the media_files
+  cascade that keeps `purge_asset` working holds, and the CHECKs on
+  `export_aspect` and `snippets.source` admit exactly the listed values and
+  nothing else. A mocked session cannot answer any of it: all of it is about
+  what Postgres does.
 
     docker run -d --name ffsnip-pg -e POSTGRES_USER=freeframe \\
       -e POSTGRES_PASSWORD=freeframe -e POSTGRES_DB=freeframe \\
@@ -130,6 +132,45 @@ def test_the_export_setting_is_not_called_aspect_ratio():
         )
         assert "export_aspect" in code, path.name
         assert not re.search(r"[\"']aspect_ratio[\"']|\baspect_ratio\s*[:=]", code), path.name
+
+
+def test_the_model_and_the_migration_list_the_same_export_aspects():
+    """The migration writes the list out by hand (it must not change when the
+    model does), so SOMETHING has to compare the two copies — otherwise
+    adding a shape to one of them is a silent one-sided change."""
+    from apps.api.models.snippet import EXPORT_ASPECTS
+
+    expected = ("9:16", "16:9", "1:1", "4:5", "3:4", "4:3")
+    assert EXPORT_ASPECTS == expected
+    body = re.search(r"export_aspect IN \(([^)]*)\)", NEW_MIGRATION.read_text())
+    assert body, "no export_aspect CHECK found in the migration"
+    assert tuple(re.findall(r"'([^']+)'", body.group(1))) == expected
+
+
+def test_the_model_and_the_migration_list_the_same_snippet_sources():
+    from apps.api.models.snippet import SNIPPET_SOURCES
+
+    expected = ("keyword", "llm", "import", "manual")
+    assert SNIPPET_SOURCES == expected
+    body = re.search(r"source IN \(([^)]*)\)", NEW_MIGRATION.read_text())
+    assert body, "no source CHECK found in the migration"
+    assert tuple(re.findall(r"'([^']+)'", body.group(1))) == expected
+
+
+def test_every_export_aspect_fits_the_declared_column_width():
+    """A value longer than the varchar would be rejected at runtime, not
+    here, so the width is checked against the list rather than assumed."""
+    from apps.api.models.snippet import EXPORT_ASPECTS, SnippetProjectSettings
+
+    model_width = SnippetProjectSettings.__table__.c.export_aspect.type.length
+    longest = max(len(a) for a in EXPORT_ASPECTS)
+    assert longest <= model_width, (longest, model_width)
+
+    # And the migration declares the same width as the model.
+    src = NEW_MIGRATION.read_text()
+    declared = re.search(r'"export_aspect",\s*sa\.String\((\d+)\)', src)
+    assert declared, "could not find the export_aspect column in the migration"
+    assert int(declared.group(1)) == model_width
 
 
 # ── (c) the soft-delete helper, compiled ───────────────────────────────────
@@ -367,3 +408,163 @@ def test_speaker_names_are_unique_per_project_ignoring_case(session):
     session.add(SnippetSpeaker(project_id=world["project"].id, name="ANNA"))
     with pytest.raises(IntegrityError):
         session.flush()
+
+
+# ── (d) the schema rules, against Postgres ─────────────────────────────────
+
+
+@realdb
+def test_every_listed_export_aspect_is_accepted_and_an_unlisted_one_is_not(session):
+    """All six go in; 2:3 does not. 2:3 is a real aspect ratio and still not
+    one of ours — the CHECK is a list of supported shapes, not a test for
+    whether a string looks like a ratio."""
+    from sqlalchemy.exc import IntegrityError
+
+    from apps.api.models.snippet import EXPORT_ASPECTS, SnippetProjectSettings
+
+    world = _world(session)
+    pid = world["project"].id
+    row = session.get(SnippetProjectSettings, pid)
+    assert row is not None
+
+    for aspect in EXPORT_ASPECTS:
+        with session.begin_nested():
+            row.export_aspect = aspect
+            session.flush()
+        session.expire(row)
+        assert row.export_aspect == aspect, aspect
+
+    with pytest.raises(IntegrityError) as exc:
+        with session.begin_nested():
+            row.export_aspect = "2:3"
+            session.flush()
+    assert "ck_snippet_settings_export_aspect" in str(exc.value)
+
+
+@realdb
+def test_export_aspect_defaults_to_portrait_in_the_database(session):
+    """The DEFAULT Postgres holds, not the model's python-side one: a row
+    written by raw SQL — a backfill, a psql session — gets 9:16 as well."""
+    from sqlalchemy import text
+
+    from apps.api.models.project import Project
+
+    world = _world(session)
+    other = Project(name=f"SNIP-{uuid.uuid4().hex[:8]}", created_by=world["user"].id)
+    session.add(other)
+    session.flush()
+    session.execute(
+        text("INSERT INTO snippet_project_settings (project_id) VALUES (:p)"), {"p": other.id}
+    )
+    got = session.execute(
+        text("SELECT export_aspect FROM snippet_project_settings WHERE project_id = :p"),
+        {"p": other.id},
+    ).scalar()
+    assert got == "9:16"
+
+
+@realdb
+def test_snippet_source_admits_the_listed_kinds_and_rejects_anything_else(session):
+    """`generator` is free text and takes whatever the implementation is
+    called; `source` is the closed list."""
+    from sqlalchemy.exc import IntegrityError
+
+    from apps.api.models.snippet import SNIPPET_SOURCES, Snippet
+
+    world = _world(session)
+    mf = world["kept"]["media_file"].id
+
+    generators = {"keyword": "yake-lite", "llm": "claude", "import": None, "manual": "hand"}
+    for i, kind in enumerate(SNIPPET_SOURCES):
+        with session.begin_nested():
+            row = Snippet(
+                media_file_id=mf, start_ms=10_000 + i * 100, end_ms=10_050 + i * 100,
+                source=kind, generator=generators[kind],
+            )
+            session.add(row)
+            session.flush()
+        session.expire(row)
+        assert (row.source, row.generator) == (kind, generators[kind]), kind
+
+    # Omitting it is the keyword pipeline, the common case.
+    with session.begin_nested():
+        implied = Snippet(media_file_id=mf, start_ms=20_000, end_ms=20_500)
+        session.add(implied)
+        session.flush()
+    session.expire(implied)
+    assert implied.source == "keyword"
+    assert implied.generator is None
+
+    # Last DB action of the test: the failed INSERT leaves the object
+    # pending, and a later flush would retry it.
+    with pytest.raises(IntegrityError) as exc:
+        with session.begin_nested():
+            session.add(
+                Snippet(media_file_id=mf, start_ms=30_000, end_ms=30_500, source="vibes")
+            )
+            session.flush()
+    assert "ck_snippets_source" in str(exc.value)
+
+
+@realdb
+def test_both_scores_may_be_null_meaning_not_scored(session):
+    """NULL is the state of a clip the scorer has not reached, and of one it
+    never will (import, hand). 0.0 would claim it scored badly."""
+    from sqlalchemy import text
+
+    from apps.api.models.snippet import Snippet
+
+    world = _world(session)
+    mf = world["kept"]["media_file"].id
+
+    unscored = Snippet(media_file_id=mf, start_ms=40_000, end_ms=40_500, source="manual")
+    session.add(unscored)
+    session.flush()
+    session.expire(unscored)
+    assert unscored.quality_score is None
+    assert unscored.viral_score is None
+
+    # A real score still goes in, 0.0 among them, and reads back as itself
+    # rather than as NULL.
+    unscored.quality_score = 0.0
+    unscored.viral_score = 0.75
+    session.flush()
+    session.expire(unscored)
+    assert unscored.quality_score == 0.0
+    assert unscored.viral_score == 0.75
+
+    # And the columns really are nullable in the database, not merely unset
+    # on these rows.
+    nullable = dict(
+        session.execute(
+            text(
+                "SELECT column_name, is_nullable FROM information_schema.columns "
+                "WHERE table_name = 'snippets' "
+                "AND column_name IN ('quality_score', 'viral_score', 'generator', 'source')"
+            )
+        ).all()
+    )
+    assert nullable == {
+        "quality_score": "YES", "viral_score": "YES", "generator": "YES", "source": "NO",
+    }
+
+
+@realdb
+def test_the_timeline_index_on_file_and_start_exists_in_that_order(session):
+    """One file's clips in playback order. Column ORDER is the point: an
+    index on (start_ms, media_file_id) would not serve that read, so the
+    order is asserted rather than the mere presence of both names."""
+    from sqlalchemy import text
+
+    indexdef = session.execute(
+        text(
+            "SELECT indexdef FROM pg_indexes "
+            "WHERE tablename = 'snippets' AND indexname = :n"
+        ),
+        {"n": "ix_snippets_media_file_id_start_ms"},
+    ).scalar()
+    assert indexdef, "ix_snippets_media_file_id_start_ms is missing"
+    # Read the parenthesised column list, not the whole statement: the index
+    # NAME contains both column names too.
+    columns = re.search(r"\(([^)]*)\)\s*$", indexdef).group(1)
+    assert [c.strip() for c in columns.split(",")] == ["media_file_id", "start_ms"]
