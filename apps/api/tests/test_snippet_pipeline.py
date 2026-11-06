@@ -341,10 +341,47 @@ def reset_jobs(w):
     db.close()
 
 
-ALL_DONE = {"plan", "transcribe:track0", "transcribe:track1", "gate", "store"}
+# `detect` runs after `store` and makes `snippets` rows from the stored
+# transcript. It is in this set because a healthy run reaches it; what makes
+# it different from the others -- a failure there does NOT fail the
+# transcription -- is covered in test_snippet_detect.py.
+ALL_DONE = {"plan", "transcribe:track0", "transcribe:track1", "gate", "store", "detect"}
 
 
 # ── the full run ─────────────────────────────────────────────────────────
+
+
+def test_a_broken_detect_stage_does_not_fail_the_transcription(
+    Session, two_track_source, stub, monkeypatch,
+):
+    """`detect` is the one stage allowed to fail quietly.
+
+    By the time it runs the transcript is stored and the file is `ready`, so
+    a clip suggester that falls over must not undo a good transcription. Its
+    error is recorded on its own row and the run still succeeds. The rest of
+    the detect behaviour lives in test_snippet_detect.py.
+    """
+    from apps.api.tasks import transcribe_tasks
+
+    monkeypatch.setattr(
+        transcribe_tasks, "detect_snippets",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("suggester fell over")),
+    )
+    w = _build_world(Session, two_track_source)
+    assert run(w) is None, "the task still succeeded"
+
+    j = jobs(w)
+    assert j["detect"][0] == "failed"
+    assert "suggester fell over" in j["detect"][2]
+    # Every OTHER stage is done, and the transcript is in place.
+    assert {stage for stage, (status, _a, _e) in j.items() if status == "done"} == (
+        ALL_DONE - {"detect"}
+    )
+    assert segments(w), "the stored transcript survived"
+    assert media(w).status == "ready"
+    assert [kind for kind, _payload in w.events if kind == "transcription_complete"] == [
+        "transcription_complete"
+    ], "the completion event was still published"
 
 
 def test_full_run_records_every_stage_and_writes_gated_segments(Session, two_track_source, stub):

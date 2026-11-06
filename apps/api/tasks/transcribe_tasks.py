@@ -39,9 +39,10 @@ from ..models.asset import Asset, AssetVersion, MediaFile, TranscriptionStatus
 from ..models.folder import Folder
 from ..models.project import Project
 from ..models.snippet import (
-    SegmentStatus, SnippetJob, SnippetJobStatus, SnippetProjectSettings,
-    SnippetSpeaker, SnippetTrackSpeaker, TranscriptSegment, TranscriptWord,
+    SegmentStatus, Snippet, SnippetJob, SnippetJobStatus, SnippetProjectSettings,
+    SnippetSpeaker, SnippetStatus, SnippetTrackSpeaker, TranscriptSegment, TranscriptWord,
 )
+from ..services.snippet_detect import detect_snippets
 from ..services.snippet_transcribe import (
     audio_streams_from_ffprobe, build_initial_prompt, combined_segments,
     dominant_language, folder_in_scope, gate_words_by_track, rms_profile,
@@ -163,8 +164,16 @@ def _extract_audio(input_path: str, output_path: str) -> None:
 #   gate                 drop words that are another mic's bleed -> snippet/gated.json
 #   store                transcript_segments + transcript_words, transcript.json,
 #                        captions.vtt, MediaFile columns
+#   detect               `snippets` rows from the stored transcript, no model
 #
-# Every stage writes its output to S3 before it is marked done, so a retry
+# `detect` is the one stage whose failure does NOT fail the transcription:
+# the transcript is already stored and useful by then, and a clip suggester
+# that cannot suggest is not a reason to mark a good transcript failed. Its
+# error is recorded on its own snippet_jobs row and the task carries on.
+# It writes nothing to S3 either, so it has no stored output to resume
+# from -- re-running it is cheap and replaces its own rows.
+#
+# Every OTHER stage writes its output to S3 before it is marked done, so a retry
 # (Celery's, or a redelivery after the worker was killed) loads a finished
 # stage's output instead of redoing it. Once a stage actually runs, every
 # stage after it runs too: a re-transcribed track makes the old gate output
@@ -176,6 +185,7 @@ def _extract_audio(input_path: str, output_path: str) -> None:
 SNIPPET_STAGE_PLAN = "plan"
 SNIPPET_STAGE_GATE = "gate"
 SNIPPET_STAGE_STORE = "store"
+SNIPPET_STAGE_DETECT = "detect"
 #: RMS frame length for the bleed gate. 100 ms resolves single words (most
 #: are 200-600 ms long) while keeping a two-hour profile at 72,000 values.
 SNIPPET_RMS_FRAME_MS = 100
@@ -662,6 +672,138 @@ def _stage_store(db, media_file, media_file_id, gated_data, output_prefix):
     return language, len(segments), len(seg_rows), len(word_rows)
 
 
+# ── detect ───────────────────────────────────────────────────────────────────
+
+
+def snippet_words_by_track(db, media_file_id) -> dict:
+    """``{track: {"speaker", "speaker_id", "words": [...]}}`` for one file.
+
+    Reached through `TranscriptSegment.live`, so a soft-deleted asset's
+    transcript is invisible here exactly as it is everywhere else -- that
+    rule has one implementation (models/snippet.py), and this is a caller of
+    it, not a second copy.
+
+    Words come back ordered by (track, segment seq, word idx), which is what
+    services/snippet_detect.py expects.
+    """
+    segments = (
+        TranscriptSegment.live(db)
+        .filter(TranscriptSegment.media_file_id == media_file_id)
+        .order_by(TranscriptSegment.track_index, TranscriptSegment.seq)
+        .all()
+    )
+    if not segments:
+        return {}
+
+    names = {
+        speaker_id: name
+        for speaker_id, name in db.query(SnippetSpeaker.id, SnippetSpeaker.name).all()
+    }
+    words_by_segment: dict = {}
+    for word in (
+        db.query(TranscriptWord)
+        .filter(TranscriptWord.segment_id.in_([s.id for s in segments]))
+        .order_by(TranscriptWord.segment_id, TranscriptWord.idx)
+        .all()
+    ):
+        words_by_segment.setdefault(word.segment_id, []).append(word)
+
+    tracks: dict = {}
+    for segment in segments:
+        track = tracks.setdefault(segment.track_index, {
+            "speaker": None, "speaker_id": None, "words": [],
+        })
+        if segment.speaker_id is not None and track["speaker_id"] is None:
+            track["speaker_id"] = segment.speaker_id
+            track["speaker"] = names.get(segment.speaker_id)
+        for word in words_by_segment.get(segment.id, []):
+            track["words"].append({
+                "start_ms": word.start_ms, "end_ms": word.end_ms, "word": word.word,
+            })
+    return tracks
+
+
+def replace_keyword_snippets(db, media_file_id, rows) -> dict:
+    """Swap this file's generated suggestions for `rows`.
+
+    What is deleted is ONLY `source='keyword'` AND `status='suggested'`.
+    Everything else survives a re-run, and each exclusion is deliberate:
+
+      * source `import` or `manual` did not come from this detector, so it
+        is not the detector's to replace;
+      * a keyword row somebody APPROVED or REJECTED is a decision. Deleting
+        it would either lose an approved clip or re-suggest one that was
+        already turned down.
+
+    Returns {"removed": n, "created": m}.
+    """
+    removed = (
+        db.query(Snippet)
+        .filter(
+            Snippet.media_file_id == media_file_id,
+            Snippet.source == "keyword",
+            Snippet.status == SnippetStatus.suggested,
+        )
+        .delete(synchronize_session=False)
+    )
+    for row in rows:
+        db.add(Snippet(
+            id=uuid.uuid4(),
+            media_file_id=media_file_id,
+            speaker_id=row.get("speaker_id"),
+            start_ms=row["start_ms"],
+            end_ms=row["end_ms"],
+            title=row.get("title"),
+            quote=row.get("quote"),
+            topics=list(row.get("topics") or []),
+            quality_score=row.get("quality_score"),
+            viral_score=row.get("viral_score"),
+            status=SnippetStatus.suggested,
+            source=row.get("source") or "keyword",
+            generator=row.get("generator"),
+        ))
+    db.commit()
+    return {"removed": removed or 0, "created": len(rows)}
+
+
+def run_detect_for_media_file(db, media_file_id) -> dict:
+    """Detect and store this file's clip suggestions. Raises on failure.
+
+    The whole of the detect stage, without the snippet_jobs bookkeeping, so
+    scripts/snippet_detect.py runs exactly what the pipeline runs.
+    """
+    tracks = snippet_words_by_track(db, media_file_id)
+    rows = detect_snippets({"media_file_id": str(media_file_id), "tracks": tracks})
+    result = replace_keyword_snippets(db, media_file_id, rows)
+    result["tracks"] = sorted(tracks)
+    return result
+
+
+def _stage_detect(db, media_file_id):
+    """The detect stage: never raises, so transcription cannot fail here.
+
+    A failure is recorded on the stage's own row (status failed, the message
+    in `error`) and None comes back; the caller logs it and goes on to
+    announce a finished transcription, because the transcript IS finished.
+    """
+    job = _snippet_job(db, media_file_id, SNIPPET_STAGE_DETECT)
+    try:
+        _job_start(db, job)
+        result = run_detect_for_media_file(db, media_file_id)
+        job = _snippet_job(db, media_file_id, SNIPPET_STAGE_DETECT)
+        _job_done(db, job)
+        return result
+    except Exception as exc:  # noqa: BLE001 -- deliberately swallowed; see above
+        logger.exception("SocialSnippet detect failed for media file %s", media_file_id)
+        try:
+            db.rollback()
+            _job_fail(db, media_file_id, SNIPPET_STAGE_DETECT, f"{type(exc).__name__}: {exc}")
+        except Exception:
+            logger.exception("Could not record the detect failure for media file %s",
+                             media_file_id)
+        return None
+
+
 def _run_snippet_pipeline(task, db, asset, version, media_file):
     # §173 — plain values, captured before anything can roll back and
     # expire the instances.
@@ -752,6 +894,25 @@ def _run_snippet_pipeline(task, db, asset, version, media_file):
             "SocialSnippet asset %s version %s: %d segment row(s), %d word(s), language=%s",
             asset_id, version_id, rows, words, language,
         )
+
+        # The transcript is stored and the file is `ready` at this point.
+        # detect runs last and swallows its own failures, so a broken
+        # suggester leaves a perfectly good transcript alone -- the reason
+        # `stage` is NOT moved to detect here: nothing after this line may
+        # be attributed to it by the outer handler.
+        detected = _stage_detect(db, media_file_id)
+        if detected is None:
+            logger.warning(
+                "SocialSnippet detect did not finish for asset %s version %s; "
+                "the transcript is stored and the file stays ready",
+                asset_id, version_id,
+            )
+        else:
+            logger.info(
+                "SocialSnippet detect asset %s: %d suggestion(s) created, %d replaced",
+                asset_id, detected["created"], detected["removed"],
+            )
+
         _publish_event(project_id, "transcription_complete", {
             "asset_id": asset_id,
             "version_id": version_id,
