@@ -1,9 +1,9 @@
 """Turn SocialSnippet on for a project, and find the ids its other scripts need.
 
-There is no UI and no endpoint for `snippet_project_settings` yet, so this
-script is the only way to configure a project. It also lists the project's
-files with their media-file ids, which is what
-snippet_set_track_speaker.py asks for.
+The same settings can be changed over HTTP (PATCH
+/projects/{id}/snippet/settings, routers/snippet.py); both go through
+services/snippet_admin.py. This script also lists the project's files with
+their media-file ids, which is what snippet_set_track_speaker.py asks for.
 
 Run on the server, from the repo root:
 
