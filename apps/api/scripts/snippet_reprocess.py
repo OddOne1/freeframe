@@ -33,106 +33,12 @@ which runs one job at a time: a project's worth is hours of queue.
 import argparse
 import sys
 import uuid
-from dataclasses import dataclass
-from typing import Callable, Optional
 
 from apps.api.database import SessionLocal
-from apps.api.models.asset import Asset, AssetType, AssetVersion, MediaFile, TranscriptionStatus
-from apps.api.models.snippet import SnippetJob
-
-
-@dataclass
-class Candidate:
-    asset_id: str
-    asset_name: str
-    version_id: Optional[str]
-    media_file_id: Optional[str]
-    enqueue: bool
-    reason: str
-
-
-def _latest_live_version(db, asset_id):
-    return (
-        db.query(AssetVersion)
-        .filter(AssetVersion.asset_id == asset_id, AssetVersion.deleted_at.is_(None))
-        .order_by(AssetVersion.version_number.desc())
-        .first()
-    )
-
-
-def find_candidates(db, project_id=None, asset_id=None) -> list:
-    """Every asset of the project (or the one asset), with what would happen to it."""
-    from apps.api.tasks.transcribe_tasks import _edited_segment_count, _snippet_settings_for
-
-    query = db.query(Asset).filter(Asset.deleted_at.is_(None))
-    if asset_id is not None:
-        query = query.filter(Asset.id == asset_id)
-    else:
-        query = query.filter(Asset.project_id == project_id)
-    assets = query.order_by(Asset.name).all()
-
-    out = []
-    for asset in assets:
-        def _skip(reason, version=None, media_file=None):
-            out.append(Candidate(
-                str(asset.id), asset.name,
-                str(version.id) if version else None,
-                str(media_file.id) if media_file else None,
-                False, reason,
-            ))
-
-        if asset.asset_type not in (AssetType.video, AssetType.audio):
-            _skip(f"not video or audio ({asset.asset_type.value})")
-            continue
-        if _snippet_settings_for(db, asset) is None:
-            _skip("SocialSnippet is not enabled for this project, or the asset is outside its source folder")
-            continue
-        version = _latest_live_version(db, asset.id)
-        media_file = (
-            db.query(MediaFile).filter(MediaFile.version_id == version.id).first()
-            if version else None
-        )
-        if media_file is None:
-            _skip("no media file", version)
-            continue
-        if not asset.transcription_enabled:
-            _skip("transcription is turned off for this file", version, media_file)
-            continue
-        if media_file.transcription_status == TranscriptionStatus.processing:
-            _skip("a transcription is already running", version, media_file)
-            continue
-        edited = _edited_segment_count(db, media_file.id)
-        if edited:
-            _skip(f"{edited} edited transcript segment(s); merging is not implemented yet",
-                  version, media_file)
-            continue
-        out.append(Candidate(str(asset.id), asset.name, str(version.id), str(media_file.id),
-                             True, "queue"))
-    return out
-
-
-def reprocess(db, candidates, enqueue: Callable) -> int:
-    """Reset each candidate's stages and queue it. Returns how many were queued.
-
-    `enqueue(asset_id, version_id)` returns the Celery result.
-    """
-    queued = 0
-    for c in candidates:
-        if not c.enqueue:
-            continue
-        media_file_id = uuid.UUID(c.media_file_id)
-        db.query(SnippetJob).filter(SnippetJob.media_file_id == media_file_id) \
-            .delete(synchronize_session=False)
-        db.commit()
-        result = enqueue(c.asset_id, c.version_id)
-        # Same as the per-file toggle: the id makes the run revocable.
-        media_file = db.query(MediaFile).filter(MediaFile.id == media_file_id).first()
-        media_file.transcription_task_id = result.id
-        media_file.transcription_status = TranscriptionStatus.processing
-        media_file.transcription_progress = 0
-        db.commit()
-        queued += 1
-    return queued
+# The scope and skip rules and the reset-then-queue are services/snippet_admin.py's,
+# shared with POST /projects/{id}/snippet/process. Re-exported here under the
+# names this script has always had.
+from apps.api.services.snippet_admin import Candidate, find_candidates, reprocess  # noqa: F401
 
 
 def main(argv=None) -> int:

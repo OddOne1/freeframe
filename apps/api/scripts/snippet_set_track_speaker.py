@@ -27,16 +27,17 @@ import argparse
 import sys
 import uuid
 
-from sqlalchemy import func
-
 from apps.api.database import SessionLocal
 from apps.api.models.asset import Asset, AssetVersion, MediaFile
-from apps.api.models.snippet import SnippetSpeaker, SnippetTrackSpeaker, TranscriptSegment
+from apps.api.models.snippet import SnippetSpeaker, SnippetTrackSpeaker
+from apps.api.services import snippet_admin
+from apps.api.services.snippet_admin import SnippetAdminError
 from apps.api.services.snippet_transcribe import select_tracks
 
-
-class ScriptError(Exception):
-    """A problem with the arguments or the data, reported without a traceback."""
+#: The no-traceback error every SocialSnippet script prints. The same class
+#: as the service's, so a rule refused in services/snippet_admin.py reaches
+#: the operator as a message, and the routes answer it as a 422.
+ScriptError = SnippetAdminError
 
 
 def _media_file_and_project(db, media_file_id):
@@ -51,62 +52,30 @@ def _media_file_and_project(db, media_file_id):
 
 
 def _audio_streams(media_file):
-    streams = (media_file.technical_metadata or {}).get("audio_streams")
-    return streams if isinstance(streams, list) else None
+    return snippet_admin.audio_streams(media_file)
 
 
 def find_or_create_speaker(db, project_id, name: str):
-    """(speaker, created). Same project, same name ignoring case = same speaker."""
-    clean = " ".join((name or "").split())
-    if not clean:
-        raise ScriptError("--name must not be empty.")
-    if len(clean) > 255:
-        raise ScriptError("--name is longer than 255 characters.")
-    speaker = (
-        db.query(SnippetSpeaker)
-        .filter(SnippetSpeaker.project_id == project_id,
-                func.lower(SnippetSpeaker.name) == clean.lower())
-        .first()
-    )
-    if speaker is not None:
-        return speaker, False
-    speaker = SnippetSpeaker(id=uuid.uuid4(), project_id=project_id, name=clean)
-    db.add(speaker)
-    db.flush()
-    return speaker, True
+    """(speaker, created). Same project, same name ignoring case = same speaker.
+
+    The rule itself is services/snippet_admin.py's; the routes call it too.
+    """
+    return snippet_admin.find_or_create_speaker(db, project_id, name)
 
 
 def set_track_speaker(db, media_file_id, track: int, name: str) -> dict:
     if track < 0:
         raise ScriptError("--track must be 0 or more.")
     media_file, project_id = _media_file_and_project(db, media_file_id)
-    streams = _audio_streams(media_file)
-    if streams is not None:
-        known = sorted(s.get("audio_index") for s in streams
-                       if isinstance(s, dict) and isinstance(s.get("audio_index"), int))
-        if track not in known:
-            raise ScriptError(f"This file's audio tracks are {known}; there is no track {track}.")
+    # Checked before the speaker is created, so a wrong --track leaves no
+    # new speaker behind in the roster.
+    known = snippet_admin.known_audio_tracks(media_file)
+    if known is not None and track not in known:
+        raise ScriptError(f"This file's audio tracks are {known}; there is no track {track}.")
 
     speaker, created = find_or_create_speaker(db, project_id, name)
-    row = (
-        db.query(SnippetTrackSpeaker)
-        .filter(SnippetTrackSpeaker.media_file_id == media_file.id,
-                SnippetTrackSpeaker.track_index == track)
-        .first()
-    )
-    previous = row.speaker_id if row is not None else None
-    if row is None:
-        db.add(SnippetTrackSpeaker(media_file_id=media_file.id, track_index=track,
-                                   speaker_id=speaker.id))
-    else:
-        row.speaker_id = speaker.id
-
-    relabelled = (
-        db.query(TranscriptSegment)
-        .filter(TranscriptSegment.media_file_id == media_file.id,
-                TranscriptSegment.track_index == track)
-        .update({TranscriptSegment.speaker_id: speaker.id}, synchronize_session=False)
-    )
+    result = snippet_admin.assign_track_speaker(db, media_file, track, speaker)
+    previous = result["previous_speaker_id"]
     db.commit()
     return {
         "media_file_id": str(media_file.id),
@@ -115,7 +84,7 @@ def set_track_speaker(db, media_file_id, track: int, name: str) -> dict:
         "speaker_name": speaker.name,
         "speaker_created": created,
         "previous_speaker_id": str(previous) if previous else None,
-        "segments_relabelled": relabelled,
+        "segments_relabelled": result["segments_relabelled"],
     }
 
 

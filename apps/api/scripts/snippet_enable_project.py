@@ -51,19 +51,21 @@ import sys
 import uuid
 from typing import Optional
 
-from sqlalchemy import func, null
+from sqlalchemy import func
 
 from apps.api.database import SessionLocal
-from apps.api.models.asset import Asset, AssetVersion, MediaFile
+from apps.api.models.asset import Asset, MediaFile
 from apps.api.models.folder import Folder
 from apps.api.models.project import Project
 from apps.api.models.snippet import EXPORT_ASPECTS, SnippetProjectSettings, SnippetSpeaker
+from apps.api.services import snippet_admin
 from apps.api.services.snippet_transcribe import folder_in_scope
 
-# The case-insensitive "same speaker" rule and the no-traceback error type
-# are imported, not copied: snippet_set_track_speaker.py creates speakers
-# too, and two copies of that rule is how the two scripts come to disagree
-# about whether "anna" and "Anna" are one person.
+# The case-insensitive "same speaker" rule, the settings defaults and
+# validation, and the no-traceback error type are imported, not copied:
+# snippet_set_track_speaker.py and routers/snippet.py do the same things,
+# and two copies of a rule is how two callers come to disagree about
+# whether "anna" and "Anna" are one person.
 from apps.api.scripts.snippet_set_track_speaker import ScriptError, find_or_create_speaker
 
 #: What `export_retention_days = NULL` means, spelled out for the operator:
@@ -78,7 +80,7 @@ SUGGEST_LIMIT = 20
 
 
 def _clean(text: Optional[str]) -> str:
-    return " ".join((text or "").split())
+    return snippet_admin.clean_text(text)
 
 
 def resolve_project(db, project_id=None, project_name=None) -> Project:
@@ -234,29 +236,8 @@ _SHOWN = (
 
 
 def current_values(row: Optional[SnippetProjectSettings]) -> dict:
-    """The row's values, or what a new row would start as.
-
-    The defaults repeat the model's `default=`, because with no row the
-    reader still has to be told what the project behaves as: no row is the
-    same as disabled with everything else at its default.
-    """
-    if row is None:
-        return {
-            "exists": False,
-            "enabled": False,
-            "source_folder_id": None,
-            "export_retention_days": 30,
-            "export_aspect": "9:16",
-            "caption_font": None,
-        }
-    return {
-        "exists": True,
-        "enabled": row.enabled,
-        "source_folder_id": row.source_folder_id,
-        "export_retention_days": row.export_retention_days,
-        "export_aspect": row.export_aspect,
-        "caption_font": row.caption_font,
-    }
+    """The row's values, or what a new row would start as (services/snippet_admin.py)."""
+    return snippet_admin.current_values(row)
 
 
 def plan_changes(db, project: Project, args) -> tuple:
@@ -289,21 +270,14 @@ def plan_changes(db, project: Project, args) -> tuple:
     if args.retention_forever:
         after["export_retention_days"] = None
     elif args.retention_days is not None:
-        if args.retention_days < 1:
-            raise ScriptError(
-                "--retention-days must be 1 or more; use --retention-forever to keep "
-                "exports indefinitely."
-            )
+        snippet_admin.check_retention_days(args.retention_days)
         after["export_retention_days"] = args.retention_days
 
     if args.export_aspect is not None:
         after["export_aspect"] = args.export_aspect
 
     if args.caption_font is not None:
-        font = _clean(args.caption_font)
-        if len(font) > 255:
-            raise ScriptError("--caption-font is longer than 255 characters.")
-        after["caption_font"] = font or None
+        after["caption_font"] = snippet_admin.clean_caption_font(args.caption_font)
 
     return before, after
 
@@ -338,36 +312,14 @@ def requests_settings_write(args) -> bool:
     ))
 
 
-def _explicit(value):
-    """A None that survives the column's `default=`.
-
-    SQLAlchemy treats an attribute set to None as "no value given" and falls
-    back to the column default, so `row.export_retention_days = None` on a
-    new row stores 30 -- the model's default -- instead of NULL, and
-    --retention-forever would silently do nothing. `null()` is how you ask
-    for NULL and mean it. Applied to every field so the next nullable column
-    to gain a default does not re-introduce this.
-    """
-    return null() if value is None else value
-
-
 def write_settings(db, project: Project, after: dict) -> bool:
-    """Upsert the row to `after`. Returns True when a row was created."""
-    row = (
-        db.query(SnippetProjectSettings)
-        .filter(SnippetProjectSettings.project_id == project.id)
-        .first()
-    )
-    created = row is None
-    if created:
-        row = SnippetProjectSettings(project_id=project.id)
-        db.add(row)
-    row.enabled = after["enabled"]
-    row.source_folder_id = _explicit(after["source_folder_id"])
-    row.export_retention_days = _explicit(after["export_retention_days"])
-    row.export_aspect = after["export_aspect"]
-    row.caption_font = _explicit(after["caption_font"])
-    return created
+    """Upsert the row to `after`. Returns True when a row was created.
+
+    services/snippet_admin.py, which PATCH /projects/{id}/snippet/settings
+    also calls; that is where the NULL-versus-column-default trap is
+    handled.
+    """
+    return snippet_admin.write_settings(db, project.id, after)
 
 
 def add_speakers(db, project: Project, names, dry_run: bool) -> list:
@@ -405,20 +357,6 @@ def add_speakers(db, project: Project, names, dry_run: bool) -> list:
 # ── Listing files ──────────────────────────────────────────────────────────
 
 
-def _latest_live_version(db, asset_id):
-    """The newest version that is not in the trash.
-
-    Mirrors snippet_reprocess.py's own helper; that one is private to it, so
-    it is not imported across scripts.
-    """
-    return (
-        db.query(AssetVersion)
-        .filter(AssetVersion.asset_id == asset_id, AssetVersion.deleted_at.is_(None))
-        .order_by(AssetVersion.version_number.desc())
-        .first()
-    )
-
-
 def list_files(db, project: Project, source_folder_id) -> list:
     """Every live asset in scope, with the ids the other scripts need.
 
@@ -444,7 +382,7 @@ def list_files(db, project: Project, source_folder_id) -> list:
     for asset in assets:
         if not folder_in_scope(asset.folder_id, source_folder_id, _parent_of):
             continue
-        version = _latest_live_version(db, asset.id)
+        version = snippet_admin.latest_live_version(db, asset.id)
         media_file = (
             db.query(MediaFile).filter(MediaFile.version_id == version.id).first()
             if version is not None else None
