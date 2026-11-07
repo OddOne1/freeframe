@@ -360,10 +360,10 @@ function ClipPlayer({
             </p>
           )}
 
-          {isMoment ? (
+          {isMoment && (
             <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
               <p className="flex-1 text-xs text-text-tertiary">
-                This is a transcript moment, not a saved clip. Save it as a clip to edit or export it.
+                This is a transcript moment, not a saved clip. Save it as a clip to edit its in/out.
               </p>
               <HintTooltip hint="Create clip: coming soon">
                 <Button type="button" size="sm" variant="secondary" disabled>
@@ -371,14 +371,20 @@ function ClipPlayer({
                 </Button>
               </HintTooltip>
             </div>
-          ) : editable ? (
+          )}
+          {canEdit && (
             // Exports create files on the server, so they are an editor's
-            // action like the rest of this panel; prompt #8 owns the real
-            // permission check.
+            // action like the rest of this panel; the server checks too.
+            // They render the in/out on screen now, saved or not, and a
+            // moment exports its own range under its "moment:..." id.
             <div className="border-t border-border pt-3">
-              <ClipExports snippetId={clip.id} dirty={dirty} />
+              <ClipExports
+                snippetId={clip.id}
+                range={range}
+                valid={isValidClip(range, durationMs)}
+              />
             </div>
-          ) : null}
+          )}
         </div>
 
         {/* Live transcript */}

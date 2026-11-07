@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { triggerBrowserDownload } from '@/lib/download'
 import { resolveApiMediaUrl } from '@/lib/utils'
 import { errorMessage, errorStatus, snippetApi } from '@/lib/snippet-api'
+import { formatClipTime } from '@/lib/snippet-timing'
 import type { SnippetAspect, SnippetExportJob } from '@/types'
 import { HintTooltip } from './snippet-ui'
 
@@ -55,14 +56,40 @@ function fraction(p: number | null): number | null {
  * other status ends the poll as "no longer available". POST answers: 404 =
  * endpoint not there yet, 409 = feature off, 422 = the server's detail.
  *
+ * The body carries `range`, the player's in/out as it is on screen right
+ * now (saved or not), read at the moment a button (or Retry) is pressed.
+ * While that range is not a valid clip (`valid` false: start >= end, under
+ * 1 s, or past the end of the file) the buttons stay disabled.
+ *
  * Polling stops when this unmounts, which is when the player closes: every
  * loop carries a run number, and a closed player or a newer export makes the
  * old loop's number stale, so a reply that lands late schedules nothing.
  */
-export function ClipExports({ snippetId, dirty }: { snippetId: string; dirty: boolean }) {
+export function ClipExports({
+  snippetId,
+  range,
+  valid,
+}: {
+  snippetId: string
+  range: { start_ms: number; end_ms: number }
+  valid: boolean
+}) {
   const [state, setState] = React.useState<State>({ phase: 'idle' })
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   const run = React.useRef(0)
+  const rangeRef = React.useRef(range)
+  rangeRef.current = range
+
+  // A finished, failed or refused result describes the in/out it was asked
+  // for; once the in/out moves it no longer describes what is on screen.
+  // A render in flight keeps going (its download is still the one asked for).
+  React.useEffect(() => {
+    setState((s) =>
+      s.phase === 'done' || s.phase === 'failed' || s.phase === 'refused' || s.phase === 'gone'
+        ? { phase: 'idle' }
+        : s,
+    )
+  }, [range.start_ms, range.end_ms])
 
   const stop = React.useCallback(() => {
     run.current += 1
@@ -115,11 +142,13 @@ export function ClipExports({ snippetId, dirty }: { snippetId: string; dirty: bo
   }, [])
 
   async function start(aspect: SnippetAspect) {
+    if (!valid) return
     stop()
     const token = run.current
+    const { start_ms, end_ms } = rangeRef.current
     setState({ phase: 'starting', aspect })
     try {
-      const created = await snippetApi.createExport(snippetId, aspect)
+      const created = await snippetApi.createExport(snippetId, { aspect, start_ms, end_ms })
       if (token !== run.current) return
       setState({ phase: 'running', aspect, job: null })
       poll(token, aspect, created.export_id, 0)
@@ -141,7 +170,11 @@ export function ClipExports({ snippetId, dirty }: { snippetId: string; dirty: bo
     <section aria-label="Export" className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-2xs font-semibold uppercase tracking-wider text-text-tertiary">Export</h3>
-        {dirty && <p className="text-2xs text-text-tertiary">Exports use the saved in/out.</p>}
+        <p className="text-2xs text-text-tertiary tabular-nums">
+          {valid
+            ? `${formatClipTime(range.start_ms)} – ${formatClipTime(range.end_ms)}`
+            : 'Set an in/out of at least 1 second to export.'}
+        </p>
       </div>
       <div className="flex flex-wrap gap-1.5">
         {ASPECTS.map((a) =>
@@ -151,7 +184,7 @@ export function ClipExports({ snippetId, dirty }: { snippetId: string; dirty: bo
               type="button"
               size="sm"
               variant="secondary"
-              disabled={busy || blocked}
+              disabled={busy || blocked || !valid}
               onClick={() => start(a.value)}
               aria-label={`Export ${a.value}`}
             >
@@ -209,7 +242,7 @@ export function ClipExports({ snippetId, dirty }: { snippetId: string; dirty: bo
             <p role="alert" className="text-status-error">
               {state.message}
             </p>
-            <Button type="button" size="sm" variant="ghost" onClick={() => start(state.aspect)}>
+            <Button type="button" size="sm" variant="ghost" disabled={!valid} onClick={() => start(state.aspect)}>
               <RotateCcw className="h-3.5 w-3.5" />
               Retry
             </Button>

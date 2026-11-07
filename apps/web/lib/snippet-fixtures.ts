@@ -361,11 +361,41 @@ function exportState(id: string): SnippetExportJob {
   }
 }
 
-/** Every fixture request, for checking from the browser console that
- *  polling stops (window.__snippetFixtureLog). Dev fixtures only. */
-function logRequest(method: string, path: string) {
-  const w = globalThis as unknown as { __snippetFixtureLog?: { at: number; method: string; path: string }[] }
-  ;(w.__snippetFixtureLog ??= []).push({ at: Date.now(), method, path })
+/** Every fixture request with its body, for checking from the browser
+ *  console what was sent and that polling stops
+ *  (window.__snippetFixtureLog). Dev fixtures only. */
+function logRequest(method: string, path: string, body?: unknown) {
+  const w = globalThis as unknown as {
+    __snippetFixtureLog?: { at: number; method: string; path: string; body?: unknown }[]
+  }
+  ;(w.__snippetFixtureLog ??= []).push({
+    at: Date.now(),
+    method,
+    path,
+    ...(body !== undefined ? { body: JSON.parse(JSON.stringify(body)) } : {}),
+  })
+}
+
+/** The export POST's checks, as the API makes them (prompt #8). */
+function checkExportRequest(target: string, body: { aspect?: string; start_ms?: number; end_ms?: number; captions?: boolean }) {
+  let mediaFileId: string | undefined
+  if (target.startsWith('moment:')) {
+    mediaFileId = target.split(':')[1]
+  } else {
+    mediaFileId = clips.find((c) => c.id === target)?.media_file_id
+  }
+  if (!mediaFileId || DURATIONS[mediaFileId] == null) throw new ApiError(404, 'Snippet not found')
+  if (body.start_ms == null || body.end_ms == null) throw new ApiError(422, 'start_ms and end_ms are required.')
+  const aspects = ['9:16', '16:9', '1:1', '4:5', '3:4', '4:3']
+  if (!body.aspect || !aspects.includes(body.aspect)) throw new ApiError(422, `aspect must be one of ${aspects.join(', ')}.`)
+  if (body.aspect !== '9:16' && body.aspect !== '16:9') throw new ApiError(422, 'aspect not available yet')
+  if (body.captions) throw new ApiError(422, 'captions not available yet')
+  if (mediaFileId === MF_PODCAST) throw new ApiError(422, 'audio-only export not supported yet')
+  if (body.start_ms < 0) throw new ApiError(422, 'start_ms must be 0 or more.')
+  if (body.start_ms >= body.end_ms) throw new ApiError(422, 'start_ms must be before end_ms.')
+  if (body.end_ms - body.start_ms < 1000) throw new ApiError(422, 'An export must be at least 1 second long.')
+  if (body.end_ms - body.start_ms > 600_000) throw new ApiError(422, 'An export may be at most 10 minutes long.')
+  if (body.end_ms > DURATIONS[mediaFileId]) throw new ApiError(422, 'end_ms is past the end of the file.')
 }
 
 // ─── Dispatcher ──────────────────────────────────────────────────────────────
@@ -373,7 +403,7 @@ function logRequest(method: string, path: string) {
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 export async function fixtureRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
-  logRequest(method, path)
+  logRequest(method, path, body)
   await delay(method === 'GET' ? 250 : 400)
   const url = new URL(path, 'http://fixture.local')
   const p = url.pathname
@@ -449,8 +479,10 @@ export async function fixtureRequest<T>(method: string, path: string, body?: unk
     if (mode === 'missing') throw new ApiError(404, 'Not Found')
     if (mode === 'disabled') throw new ApiError(409, 'SocialSnippet is not enabled for this project')
     if (mode === 'refuse') throw new ApiError(422, 'aspect not available yet')
+    const req = body as { aspect?: string; start_ms?: number; end_ms?: number; captions?: boolean }
+    checkExportRequest(decodeURIComponent(m[1]), req)
     const id = `exp-${Date.now()}`
-    exportsById.set(id, { started: Date.now(), aspect: (body as { aspect: string }).aspect, mode })
+    exportsById.set(id, { started: Date.now(), aspect: req.aspect as string, mode })
     return (mode === 'legacy-id' ? { id, status: 'queued' } : { export_id: id, status: 'queued' }) as T
   }
   if ((m = p.match(/^\/exports\/([^/]+)$/))) return exportState(m[1]) as T

@@ -130,8 +130,21 @@ export const snippetApi = {
     call<SnippetClip>('PATCH', `/snippets/${snippetId}`, body),
   /** Prompt #8: POST /snippets/{id}/exports -> {export_id, status: "queued"}.
    *  A 404 means that endpoint is not deployed yet. */
-  createExport: async (snippetId: string, aspect: string): Promise<SnippetExportCreated> => {
-    const raw = await call<RawExportCreated>('POST', `/snippets/${snippetId}/exports`, { aspect })
+  createExport: async (
+    snippetId: string,
+    request: SnippetExportRequest,
+  ): Promise<SnippetExportCreated> => {
+    // The contract's body: the player's CURRENT in/out (saved or not), for a
+    // snippet and for a moment alike — a moment has no saved range to fall
+    // back on. No captions yet; framing and caption_style left out, which
+    // the server reads as centred, zoom 1, no caption style.
+    const body = {
+      aspect: request.aspect,
+      start_ms: Math.round(request.start_ms),
+      end_ms: Math.round(request.end_ms),
+      captions: false,
+    }
+    const raw = await call<RawExportCreated>('POST', `/snippets/${snippetId}/exports`, body)
     const exportId = raw?.export_id ?? raw?.id
     if (!exportId) throw new Error('The server did not return an export id.')
     return { export_id: String(exportId), status: raw.status ?? 'queued' }
@@ -146,6 +159,13 @@ export const snippetApi = {
       error: raw?.error ?? null,
     }
   },
+}
+
+/** What the export panel asks for. */
+export interface SnippetExportRequest {
+  aspect: string
+  start_ms: number
+  end_ms: number
 }
 
 /** What the export POST may send: `export_id` per the contract, `id` from an
