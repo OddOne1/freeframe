@@ -15,7 +15,8 @@ import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
 import { useParams, usePathname } from "next/navigation";
 import * as Popover from "@radix-ui/react-popover";
-import { ChevronDown, Scissors, SearchX, Settings2 } from "lucide-react";
+import * as Tabs from "@radix-ui/react-tabs";
+import { ChevronDown, Files, Scissors, SearchX, Settings2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
@@ -34,6 +35,7 @@ import { usePageTitle } from "@/hooks/use-page-title";
 import { useBreadcrumbStore } from "@/stores/breadcrumb-store";
 import { ClipCard } from "@/components/snippets/clip-card";
 import { ClipPlayerDialog } from "@/components/snippets/clip-player";
+import { SnippetFilesTab } from "@/components/snippets/snippet-files-tab";
 import { SnippetSearchBox } from "@/components/snippets/snippet-search-box";
 import { SnippetSettingsDialog } from "@/components/snippets/snippet-settings-dialog";
 import { useSnippetAccess } from "@/components/snippets/use-snippet-access";
@@ -232,6 +234,9 @@ export default function SnippetsPage() {
   const [playing, setPlaying] = React.useState<SnippetClip | null>(null);
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  // Clips for everyone; Files (which files are processed, speakers per
+  // track) for editors and owners only, as GET /snippet/files is.
+  const [tab, setTab] = React.useState<"clips" | "files">("clips");
 
   async function setClipStatus(clip: SnippetClip, next: SnippetStatus) {
     setBusyId(clip.id);
@@ -327,7 +332,7 @@ export default function SnippetsPage() {
 
   const searchStatus = errorStatus(search.error);
 
-  return shell(
+  const clipsView = (
     <>
       {/* Search and filters */}
       <div className="space-y-3">
@@ -512,7 +517,41 @@ export default function SnippetsPage() {
           void search.mutate();
         }}
       />
-    </>,
+    </>
+  );
+
+  if (!canEdit) return shell(clipsView);
+
+  return shell(
+    <Tabs.Root value={tab} onValueChange={(v) => setTab(v as "clips" | "files")}>
+      <Tabs.List aria-label="SocialSnippet views" className="-mb-px flex items-center gap-1 border-b border-border">
+        {[
+          { value: "clips", label: "Clips", icon: Scissors },
+          { value: "files", label: "Files", icon: Files },
+        ].map(({ value, label, icon: Icon }) => (
+          <Tabs.Trigger
+            key={value}
+            value={value}
+            className={cn(
+              "flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+              "border-transparent text-text-secondary hover:text-text-primary",
+              "data-[state=active]:border-accent data-[state=active]:text-accent",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50",
+            )}
+          >
+            <Icon className="h-4 w-4" aria-hidden />
+            {label}
+          </Tabs.Trigger>
+        ))}
+      </Tabs.List>
+      <Tabs.Content value="clips" className="space-y-5 pt-5 focus:outline-none">
+        {clipsView}
+      </Tabs.Content>
+      {/* Unmounted when not shown, so its 5 s polling stops with it. */}
+      <Tabs.Content value="files" className="pt-5 focus:outline-none">
+        <SnippetFilesTab projectId={projectId} canManage={canManage} />
+      </Tabs.Content>
+    </Tabs.Root>,
   );
 }
 

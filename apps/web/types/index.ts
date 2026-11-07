@@ -1434,8 +1434,58 @@ export interface SnippetTrack {
   speaker_name: string | null
 }
 
+/** What re-running clip detection after a speaker change did. `ran` false
+ *  with a `reason` when it was skipped (no transcript, transcription
+ *  running) or failed; the speaker is saved either way. Counts are of
+ *  auto ("keyword") suggestions only: approved, rejected, imported and
+ *  manual clips are never touched. */
+export interface SnippetDetectSummary {
+  ran: boolean
+  created: number
+  removed: number
+  reason: string | null
+}
+
 export interface SnippetTrackSpeakerResponse extends SnippetTrack {
   segments_relabelled: number
+  detect_summary: SnippetDetectSummary
+}
+
+/** GET /projects/{id}/snippet/files: how far SocialSnippet got with a file. */
+export type SnippetFileStatus = 'not_processed' | 'queued' | 'running' | 'done' | 'failed'
+
+export interface SnippetFile {
+  asset_id: string
+  /** The latest version's media file; null only for a file with no media yet. */
+  media_file_id: string | null
+  name: string
+  kind: 'video' | 'audio'
+  /** "/" for the project root, else "/Parent/Child". */
+  folder_path: string
+  duration_ms: number | null
+  /** The version's own processing: uploading, processing, ready or failed. */
+  asset_status: string
+  /** Why it cannot be processed yet; null when asset_status is "ready". */
+  not_ready_reason: string | null
+  snippet_status: SnippetFileStatus
+  segment_count: number
+  /** Clips that are not rejected. */
+  snippet_count: number
+  /** Why it failed; on a "done" file, why clip detection failed. */
+  error: string | null
+  updated_at: string | null
+  tracks: SnippetTrack[]
+}
+
+export interface SnippetFilesResponse {
+  total: number
+  items: SnippetFile[]
+}
+
+export interface SnippetFilesParams {
+  q?: string
+  page?: number
+  page_size?: number
 }
 
 export interface SnippetSuggest {

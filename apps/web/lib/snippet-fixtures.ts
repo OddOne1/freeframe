@@ -10,6 +10,11 @@
  * it, and that is what the player reads as "no video". Searching, filtering, sorting,
  * grouping, approve/reject, in/out saves and exports all work against it.
  *
+ * Files tab: nine files in every state (done, not processed, not ready,
+ * failed, one already running). Processing one walks it through queued
+ * (5 s) and running (9 s more) to done, so the 5 s polling can be watched
+ * starting and stopping; "Keynote.mov" fails every time, for Retry.
+ *
  * Media: set NEXT_PUBLIC_SNIPPET_FIXTURE_VIDEO / NEXT_PUBLIC_SNIPPET_FIXTURE_AUDIO
  * to an absolute URL (an .m3u8 or an .mp4/.m4a) to make the player play
  * something. Unset, stream_url is null and the player says so.
@@ -18,9 +23,12 @@ import { ApiError } from '@/lib/api'
 import type {
   SnippetClip,
   SnippetExportJob,
+  SnippetFile,
+  SnippetFilesResponse,
   SnippetSearchResponse,
   SnippetSettings,
   SnippetSpeaker,
+  SnippetTrack,
   SnippetTranscript,
   SnippetTranscriptSegment,
 } from '@/types'
@@ -232,6 +240,157 @@ let settings: SnippetSettings = {
 }
 
 const speakers: SnippetSpeaker[] = [ANNA, MARCO]
+
+// ─── Files tab ───────────────────────────────────────────────────────────────
+
+/** A fixture file, plus where a run started (absent = not running). */
+type FixtureFile = SnippetFile & { startedAt?: number; outcome?: 'done' | 'failed' }
+
+const FILE_QUEUED_MS = 5_000
+const FILE_RUNNING_MS = 14_000
+
+const track = (track_index: number, label: string, who: SnippetSpeaker | null = null): SnippetTrack => ({
+  track_index,
+  label,
+  speaker_id: who?.id ?? null,
+  speaker_name: who?.name ?? null,
+})
+
+function file(id: number, f: Partial<FixtureFile> & Pick<FixtureFile, 'name'>): FixtureFile {
+  return {
+    asset_id: `0d4f1c8e-0000-4000-8000-0000000a${String(id).padStart(4, '0')}`,
+    media_file_id: `0d4f1c8e-0000-4000-8000-0000000b${String(id).padStart(4, '0')}`,
+    kind: /\.(wav|m4a|mp3)$/i.test(f.name) ? 'audio' : 'video',
+    folder_path: '/Interviews',
+    duration_ms: 600_000,
+    asset_status: 'ready',
+    not_ready_reason: null,
+    snippet_status: 'not_processed',
+    segment_count: 0,
+    snippet_count: 0,
+    error: null,
+    updated_at: new Date(Date.now() - id * 3_600_000).toISOString(),
+    tracks: [track(0, 'Track 1')],
+    ...f,
+  }
+}
+
+let files: FixtureFile[] = [
+  file(1, {
+    name: 'Interview Anna.mov', media_file_id: MF_INTERVIEW, duration_ms: 300_000,
+    snippet_status: 'done', segment_count: 84, snippet_count: 4,
+    tracks: [track(0, 'Lav Anna · 1 ch · de', ANNA), track(1, 'Lav Marco · 1 ch', MARCO)],
+  }),
+  file(2, {
+    name: 'Panel discussion.mov', media_file_id: MF_PANEL, duration_ms: 240_000,
+    snippet_status: 'done', segment_count: 61, snippet_count: 1,
+    error: 'Clip detection failed: ValueError: no sentence boundaries',
+    tracks: [track(0, 'Track 1 · stereo', MARCO)],
+  }),
+  file(3, {
+    name: 'Podcast episode 12.wav', media_file_id: MF_PODCAST, folder_path: '/Podcast',
+    snippet_status: 'done', segment_count: 140, snippet_count: 1,
+  }),
+  file(4, {
+    name: 'Roundtable_with_the_whole_team_final_v3_EXPORT.mov', duration_ms: 2_520_000,
+    folder_path: '/Interviews/Day 2', snippet_status: 'running', startedAt: Date.now() - FILE_QUEUED_MS,
+    outcome: 'done',
+    tracks: [track(0, 'Boom · mono'), track(1, 'Lav 1 · mono', ANNA), track(2, 'Lav 2 · mono')],
+  }),
+  file(5, {
+    name: 'B-roll street.mov', duration_ms: 4_320_000, folder_path: '/Footage/Day 2',
+    tracks: [track(0, 'Track 1 · stereo'), track(1, 'Track 2 · stereo')],
+  }),
+  file(6, { name: 'Phone memo.m4a', duration_ms: null, folder_path: '/' }),
+  file(7, {
+    name: 'Keynote.mov', duration_ms: 1_800_000, snippet_status: 'failed',
+    error: 'RuntimeError: ffmpeg exited with status 1 while extracting track 0', outcome: 'failed',
+  }),
+  file(8, {
+    name: 'Upload in progress.mov', asset_status: 'uploading',
+    not_ready_reason: 'the file is still uploading', tracks: [],
+  }),
+  file(9, {
+    name: 'Archive 2019.mov', asset_status: 'failed',
+    not_ready_reason: "the file's own processing failed; fix that first",
+  }),
+]
+
+/** Moves a running fixture file along by the clock. */
+function advance(f: FixtureFile): FixtureFile {
+  if (f.startedAt == null) return f
+  const elapsed = Date.now() - f.startedAt
+  if (elapsed < FILE_QUEUED_MS) return { ...f, snippet_status: 'queued', error: null }
+  if (elapsed < FILE_QUEUED_MS + FILE_RUNNING_MS) return { ...f, snippet_status: 'running', error: null }
+  const failed = f.outcome === 'failed'
+  return {
+    ...f,
+    startedAt: undefined,
+    snippet_status: failed ? 'failed' : 'done',
+    error: failed ? 'RuntimeError: ffmpeg exited with status 1 while extracting track 0' : null,
+    segment_count: failed ? f.segment_count : Math.max(f.segment_count, 40 + f.name.length),
+    snippet_count: failed ? f.snippet_count : Math.max(f.snippet_count, 3),
+    updated_at: new Date().toISOString(),
+  }
+}
+
+function listFiles(qs: URLSearchParams): SnippetFilesResponse {
+  files = files.map(advance)
+  const q = (qs.get('q') ?? '').trim().toLowerCase()
+  const page = Number(qs.get('page') ?? 1)
+  const size = Number(qs.get('page_size') ?? 50)
+  const all = files
+    .filter((f) => !q || f.name.toLowerCase().includes(q))
+    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
+  return {
+    total: all.length,
+    items: all.slice((page - 1) * size, page * size).map(({ startedAt: _s, outcome: _o, ...f }) => f),
+  }
+}
+
+function processFiles(ids: string[], force: boolean) {
+  files = files.map(advance)
+  const results = ids.map((asset_id) => {
+    const f = files.find((x) => x.asset_id === asset_id)
+    if (!f) return { asset_id, queued: false, reason: 'not found' }
+    if (f.not_ready_reason) return { asset_id, queued: false, reason: f.not_ready_reason }
+    if (f.startedAt != null) return { asset_id, queued: false, reason: 'a transcription is already running' }
+    if (f.segment_count > 0 && !force) return { asset_id, queued: false, reason: 'already transcribed' }
+    files = files.map((x) => (x.asset_id === asset_id ? { ...x, startedAt: Date.now(), snippet_status: 'queued' } : x))
+    return { asset_id, queued: true, reason: 'queue' }
+  })
+  return { queued: results.filter((r) => r.queued).length, results }
+}
+
+function setFileTrackSpeaker(mediaFileId: string, trackIndex: number, speakerId: string) {
+  const f = files.find((x) => x.media_file_id === mediaFileId)
+  const who = speakers.find((s) => s.id === speakerId)
+  if (!f || !who) throw new ApiError(404, 'Not found')
+  if (!f.tracks.some((t) => t.track_index === trackIndex)) {
+    throw new ApiError(422, `This file's audio tracks are [${f.tracks.map((t) => t.track_index).join(', ')}]; there is no track ${trackIndex}.`)
+  }
+  let row: SnippetTrack | undefined
+  files = files.map((x) =>
+    x !== f
+      ? x
+      : {
+          ...x,
+          tracks: x.tracks.map((t) =>
+            t.track_index === trackIndex ? (row = { ...t, speaker_id: who.id, speaker_name: who.name }) : t,
+          ),
+        },
+  )
+  const hasTranscript = f.segment_count > 0
+  return {
+    ...row!,
+    segments_relabelled: hasTranscript ? 12 : 0,
+    detect_summary: f.startedAt != null
+      ? { ran: false, created: 0, removed: 0, reason: 'A transcription is running; it will detect clips with this speaker when it finishes.' }
+      : hasTranscript
+        ? { ran: true, created: 3, removed: 2, reason: null }
+        : { ran: false, created: 0, removed: 0, reason: 'No transcript yet; clips are detected when the file is processed.' },
+  }
+}
 
 // ─── Transcripts: words laid out evenly over each clip's span ────────────────
 
@@ -475,8 +634,12 @@ export async function fixtureRequest<T>(method: string, path: string, body?: unk
   }
   if ((m = p.match(/^\/projects\/([^/]+)\/snippet\/search$/))) return search(m[1], qs) as T
   if ((m = p.match(/^\/projects\/([^/]+)\/snippet\/process$/))) {
-    const ids = (body as { asset_ids: string[] }).asset_ids
-    return { queued: ids.length, results: ids.map((asset_id) => ({ asset_id, queued: true, reason: 'queued' })) } as T
+    const { asset_ids, force } = body as { asset_ids: string[]; force?: boolean }
+    return processFiles(asset_ids, !!force) as T
+  }
+  if ((m = p.match(/^\/projects\/([^/]+)\/snippet\/files$/))) return listFiles(qs) as T
+  if ((m = p.match(/^\/media-files\/([^/]+)\/snippet\/tracks\/(\d+)\/speaker$/)) && method === 'PUT') {
+    return setFileTrackSpeaker(m[1], Number(m[2]), (body as { speaker_id: string }).speaker_id) as T
   }
   if ((m = p.match(/^\/media-files\/([^/]+)\/snippet\/transcript$/))) {
     const dur = DURATIONS[m[1]]

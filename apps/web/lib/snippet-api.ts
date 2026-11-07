@@ -18,6 +18,8 @@ import type {
   SnippetClip,
   SnippetExportCreated,
   SnippetExportJob,
+  SnippetFilesParams,
+  SnippetFilesResponse,
   SnippetPatch,
   SnippetProcessResponse,
   SnippetSearchParams,
@@ -91,6 +93,17 @@ export const snippetKeys = {
     const qs = searchQuery(p)
     return `/projects/${projectId}/snippet/search${qs ? `?${qs}` : ''}`
   },
+  /** The Files tab's list. Defaults are left out so the key of the first
+   *  unfiltered page is stable. */
+  files: (projectId: string, p: SnippetFilesParams = {}) => {
+    const qs = new URLSearchParams()
+    const q = p.q?.trim()
+    if (q) qs.set('q', q)
+    if (p.page && p.page > 1) qs.set('page', String(p.page))
+    if (p.page_size && p.page_size !== 50) qs.set('page_size', String(p.page_size))
+    const s = qs.toString()
+    return `/projects/${projectId}/snippet/files${s ? `?${s}` : ''}`
+  },
   tracks: (mediaFileId: string) => `/media-files/${mediaFileId}/snippet/tracks`,
   transcript: (mediaFileId: string, fromMs: number, toMs: number) =>
     `/media-files/${mediaFileId}/snippet/transcript?from_ms=${Math.max(0, Math.floor(fromMs))}&to_ms=${Math.ceil(toMs)}`,
@@ -111,9 +124,13 @@ export const snippetApi = {
       asset_ids: assetIds,
       force,
     }),
+  /** GET /projects/{id}/snippet/files (editor and up). */
+  listFiles: (projectId: string, p: SnippetFilesParams = {}) =>
+    call<SnippetFilesResponse>('GET', snippetKeys.files(projectId, p)),
   createSpeaker: (projectId: string, name: string) =>
     call<SnippetSpeaker>('POST', snippetKeys.speakers(projectId), { name }),
   listTracks: (mediaFileId: string) => call<SnippetTrack[]>('GET', snippetKeys.tracks(mediaFileId)),
+  /** Also re-runs clip detection for the file; see `detect_summary`. */
   setTrackSpeaker: (mediaFileId: string, trackIndex: number, speakerId: string) =>
     call<SnippetTrackSpeakerResponse>(
       'PUT',
