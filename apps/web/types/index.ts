@@ -1532,13 +1532,22 @@ export interface SnippetPatch {
   end_ms?: number
 }
 
-/** Prompt #8's export job. Not in the draft v1 contract: the shape below is
- *  what this UI assumes (id, status, progress 0..1 or 0..100, download_url
- *  once done). */
-export interface SnippetExport {
-  id: string
-  status: 'queued' | 'running' | 'done' | 'failed' | string
+/** The four export states the contract names. Anything else the server
+ *  sends (e.g. "expired") is handled as "no longer available". */
+export type SnippetExportStatus = 'queued' | 'running' | 'done' | 'failed'
+
+/** POST /snippets/{snippet_id}/exports, normalised by lib/snippet-api.ts:
+ *  the server sends `export_id` (an older `id` is accepted as a fallback). */
+export interface SnippetExportCreated {
+  export_id: string
+  status: SnippetExportStatus | (string & {})
+}
+
+/** GET /exports/{export_id}: exactly these four fields. */
+export interface SnippetExportJob {
+  status: SnippetExportStatus | (string & {})
+  /** 0..1, null when the job has none yet. */
   progress: number | null
   download_url: string | null
-  error?: string | null
+  error: string | null
 }

@@ -15,7 +15,7 @@
 import { ApiError } from '@/lib/api'
 import type {
   SnippetClip,
-  SnippetExport,
+  SnippetExportJob,
   SnippetSearchResponse,
   SnippetSettings,
   SnippetSpeaker,
@@ -25,10 +25,6 @@ import type {
 
 const VIDEO_URL = process.env.NEXT_PUBLIC_SNIPPET_FIXTURE_VIDEO || null
 const AUDIO_URL = process.env.NEXT_PUBLIC_SNIPPET_FIXTURE_AUDIO || null
-/** NEXT_PUBLIC_SNIPPET_FIXTURE_EXPORTS=missing answers the export POST with
- *  404, as the real API does until prompt #8 is merged. */
-const EXPORTS_MISSING = process.env.NEXT_PUBLIC_SNIPPET_FIXTURE_EXPORTS === 'missing'
-
 const ANNA: SnippetSpeaker = { id: '0d4f1c8e-0000-4000-8000-00000000a001', name: 'Anna Berger' }
 const MARCO: SnippetSpeaker = { id: '0d4f1c8e-0000-4000-8000-00000000a002', name: 'Marco Rossi' }
 
@@ -318,19 +314,58 @@ function search(projectId: string, qs: URLSearchParams): SnippetSearchResponse {
 }
 
 // ─── Exports: a fake job that finishes in about six seconds ──────────────────
+//
+// Contract shape: POST -> {export_id, status: "queued"};
+// GET -> {status, progress 0..1, download_url|null, error|null}.
+//
+// Which outcome the fake produces: localStorage "snippet-fixture-exports"
+// (so it can be switched in the browser without a restart), else
+// NEXT_PUBLIC_SNIPPET_FIXTURE_EXPORTS, else "ok". Modes:
+//   ok        queued -> running -> done
+//   missing   POST 404 (prompt #8 not deployed)
+//   disabled  POST 409
+//   refuse    POST 422 "aspect not available yet"
+//   failed    the job fails half way, with an error
+//   expired   the job reports an unknown status, "expired"
+//   legacy-id POST answers {id} instead of {export_id}
 
-const exportsById = new Map<string, { started: number; aspect: string }>()
+type ExportMode = 'ok' | 'missing' | 'disabled' | 'refuse' | 'failed' | 'expired' | 'legacy-id'
 
-function exportState(id: string): SnippetExport {
+function exportMode(): ExportMode {
+  let fromStorage: string | null = null
+  try {
+    fromStorage = globalThis.localStorage?.getItem('snippet-fixture-exports') ?? null
+  } catch {
+    // storage blocked: fall through to the env value
+  }
+  return (fromStorage || process.env.NEXT_PUBLIC_SNIPPET_FIXTURE_EXPORTS || 'ok') as ExportMode
+}
+
+const exportsById = new Map<string, { started: number; aspect: string; mode: ExportMode }>()
+
+function exportState(id: string): SnippetExportJob {
   const job = exportsById.get(id)
   if (!job) throw new ApiError(404, 'Not found')
   const progress = Math.min(1, (Date.now() - job.started) / 6000)
+  if (job.mode === 'failed' && progress >= 0.5) {
+    return { status: 'failed', progress: 0.5, download_url: null, error: 'ffmpeg exited with code 1 (fixture)' }
+  }
+  if (job.mode === 'expired' && progress >= 0.3) {
+    return { status: 'expired', progress: null, download_url: null, error: null }
+  }
   return {
-    id,
     status: progress >= 1 ? 'done' : progress < 0.15 ? 'queued' : 'running',
     progress,
     download_url: progress >= 1 ? (VIDEO_URL ?? 'data:text/plain,fixture%20export') : null,
+    error: null,
   }
+}
+
+/** Every fixture request, for checking from the browser console that
+ *  polling stops (window.__snippetFixtureLog). Dev fixtures only. */
+function logRequest(method: string, path: string) {
+  const w = globalThis as unknown as { __snippetFixtureLog?: { at: number; method: string; path: string }[] }
+  ;(w.__snippetFixtureLog ??= []).push({ at: Date.now(), method, path })
 }
 
 // ─── Dispatcher ──────────────────────────────────────────────────────────────
@@ -338,6 +373,7 @@ function exportState(id: string): SnippetExport {
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 export async function fixtureRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+  logRequest(method, path)
   await delay(method === 'GET' ? 250 : 400)
   const url = new URL(path, 'http://fixture.local')
   const p = url.pathname
@@ -409,10 +445,13 @@ export async function fixtureRequest<T>(method: string, path: string, body?: unk
     return next as T
   }
   if ((m = p.match(/^\/snippets\/([^/]+)\/exports$/)) && method === 'POST') {
-    if (EXPORTS_MISSING) throw new ApiError(404, 'Not Found')
+    const mode = exportMode()
+    if (mode === 'missing') throw new ApiError(404, 'Not Found')
+    if (mode === 'disabled') throw new ApiError(409, 'SocialSnippet is not enabled for this project')
+    if (mode === 'refuse') throw new ApiError(422, 'aspect not available yet')
     const id = `exp-${Date.now()}`
-    exportsById.set(id, { started: Date.now(), aspect: (body as { aspect: string }).aspect })
-    return exportState(id) as T
+    exportsById.set(id, { started: Date.now(), aspect: (body as { aspect: string }).aspect, mode })
+    return (mode === 'legacy-id' ? { id, status: 'queued' } : { export_id: id, status: 'queued' }) as T
   }
   if ((m = p.match(/^\/exports\/([^/]+)$/))) return exportState(m[1]) as T
 

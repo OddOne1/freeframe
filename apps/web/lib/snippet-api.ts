@@ -16,7 +16,8 @@
 import { api, ApiError } from '@/lib/api'
 import type {
   SnippetClip,
-  SnippetExport,
+  SnippetExportCreated,
+  SnippetExportJob,
   SnippetPatch,
   SnippetProcessResponse,
   SnippetSearchParams,
@@ -127,10 +128,32 @@ export const snippetApi = {
   /** PATCH /snippets/{id}. Only for kind "snippet": a moment has no row. */
   patchSnippet: (snippetId: string, body: SnippetPatch) =>
     call<SnippetClip>('PATCH', `/snippets/${snippetId}`, body),
-  /** Prompt #8. A 404 means that endpoint is not deployed yet. */
-  createExport: (snippetId: string, aspect: string) =>
-    call<SnippetExport>('POST', `/snippets/${snippetId}/exports`, { aspect }),
-  getExport: (exportId: string) => call<SnippetExport>('GET', snippetKeys.export(exportId)),
+  /** Prompt #8: POST /snippets/{id}/exports -> {export_id, status: "queued"}.
+   *  A 404 means that endpoint is not deployed yet. */
+  createExport: async (snippetId: string, aspect: string): Promise<SnippetExportCreated> => {
+    const raw = await call<RawExportCreated>('POST', `/snippets/${snippetId}/exports`, { aspect })
+    const exportId = raw?.export_id ?? raw?.id
+    if (!exportId) throw new Error('The server did not return an export id.')
+    return { export_id: String(exportId), status: raw.status ?? 'queued' }
+  },
+  /** GET /exports/{export_id} -> exactly {status, progress, download_url, error}. */
+  getExport: async (exportId: string): Promise<SnippetExportJob> => {
+    const raw = await call<Partial<SnippetExportJob>>('GET', snippetKeys.export(exportId))
+    return {
+      status: raw?.status ?? '',
+      progress: typeof raw?.progress === 'number' ? raw.progress : null,
+      download_url: raw?.download_url ?? null,
+      error: raw?.error ?? null,
+    }
+  },
+}
+
+/** What the export POST may send: `export_id` per the contract, `id` from an
+ *  older build of the endpoint. */
+interface RawExportCreated {
+  export_id?: string
+  id?: string
+  status?: string
 }
 
 // ─── Error helpers ───────────────────────────────────────────────────────────
