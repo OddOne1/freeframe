@@ -171,7 +171,9 @@ def build_world(s):
     Project C (off): owner and viewer. One file, transcript and snippet.
     `admin` is a superadmin and a member of nothing.
     """
-    from apps.api.models.asset import Asset, AssetType, AssetVersion, FileType, MediaFile
+    from apps.api.models.asset import (
+        Asset, AssetType, AssetVersion, FileType, MediaFile, ProcessingStatus,
+    )
     from apps.api.models.project import Project, ProjectMember, ProjectRole
     from apps.api.models.snippet import (
         Snippet, SnippetProjectSettings, SnippetSpeaker, SnippetStatus,
@@ -225,7 +227,9 @@ def build_world(s):
                   created_by=w.owner.id)
         s.add(a)
         s.flush()
-        v = AssetVersion(asset_id=a.id, version_number=1)
+        # Ready: every file here has finished its own processing, which
+        # POST /snippet/process requires.
+        v = AssetVersion(asset_id=a.id, version_number=1, processing_status=ProcessingStatus.ready)
         s.add(v)
         s.flush()
         mf = MediaFile(
@@ -511,8 +515,11 @@ def test_mapping_a_track_relabels_its_segments(db, world, api):
     assert api.as_(world.viewer).put(url, json={"speaker_id": str(world.ben.id)}).status_code == 403
     r = api.as_(world.editor).put(url, json={"speaker_id": str(world.ben.id)})
     assert r.status_code == 200
-    assert r.json() == {"track_index": 1, "label": "Track 2 · stereo", "speaker_id": str(world.ben.id),
-                        "speaker_name": "Ben", "segments_relabelled": 1}
+    body = r.json()
+    # The re-detect it triggers is covered in test_snippet_files.py.
+    assert body.pop("detect_summary")["ran"] is True
+    assert body == {"track_index": 1, "label": "Track 2 · stereo", "speaker_id": str(world.ben.id),
+                    "speaker_name": "Ben", "segments_relabelled": 1}
     db.expire_all()
     assert db.query(TranscriptSegment).filter_by(id=world.alpha_track1[0].id).one().speaker_id == world.ben.id
     bad = api.as_(world.editor).put(f"/media-files/{world.alpha_mf.id}/snippet/tracks/5/speaker",

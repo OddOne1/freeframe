@@ -22,6 +22,8 @@ the jobs are reset and the tasks queued.
 Skipped, with the reason printed:
   * the project does not have SocialSnippet enabled, or the asset is outside
     the source folder (that asset takes the ordinary transcription path);
+  * the file's latest version is not `ready` (still uploading, still being
+    processed, or its processing failed);
   * transcription is turned off for the file;
   * a transcription is already running for it;
   * a person has edited its transcript -- the task would refuse it, because

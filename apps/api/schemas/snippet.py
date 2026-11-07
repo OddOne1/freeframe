@@ -1,5 +1,6 @@
 """Request and response shapes for routers/snippet.py (socialsnippet-api-contract.md, draft v1)."""
 import uuid
+from datetime import datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -72,8 +73,58 @@ class TrackSpeakerIn(BaseModel):
     speaker_id: uuid.UUID
 
 
+class DetectSummary(BaseModel):
+    """What re-running clip detection after a speaker change did.
+
+    `ran` false with a `reason` when it was not run (no transcript yet, or a
+    transcription is running and its own detect stage will pick the speaker
+    up) or when it failed; the speaker change itself is saved either way.
+    `created` and `removed` count only `source='keyword'` suggestions: no
+    other clip is touched (tasks/transcribe_tasks.replace_keyword_snippets).
+    """
+
+    ran: bool
+    created: int = 0
+    removed: int = 0
+    reason: Optional[str] = None
+
+
 class TrackSpeakerOut(TrackOut):
     segments_relabelled: int
+    detect_summary: DetectSummary
+
+
+# ── Files ──────────────────────────────────────────────────────────────────
+
+SnippetFileStatusLiteral = Literal["not_processed", "queued", "running", "done", "failed"]
+
+
+class SnippetFileItem(BaseModel):
+    asset_id: uuid.UUID
+    #: The latest live version's media file.
+    media_file_id: Optional[uuid.UUID] = None
+    name: str
+    kind: Literal["video", "audio"]
+    #: "/" for the project root, else "/Parent/Child".
+    folder_path: str
+    duration_ms: Optional[int] = None
+    #: The latest version's processing status (uploading, processing, ready, failed).
+    asset_status: str
+    #: Why the file cannot be processed yet; null when `asset_status` is ready.
+    #: The same words POST /snippet/process answers with.
+    not_ready_reason: Optional[str] = None
+    snippet_status: SnippetFileStatusLiteral
+    segment_count: int
+    #: Clips that are not rejected.
+    snippet_count: int
+    error: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    tracks: list[TrackOut]
+
+
+class SnippetFilesOut(BaseModel):
+    total: int
+    items: list[SnippetFileItem]
 
 
 # ── Suggest ────────────────────────────────────────────────────────────────

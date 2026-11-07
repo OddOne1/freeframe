@@ -23,7 +23,9 @@ from typing import Callable, Optional
 
 from sqlalchemy import func, null
 
-from ..models.asset import Asset, AssetType, AssetVersion, MediaFile, TranscriptionStatus
+from ..models.asset import (
+    Asset, AssetType, AssetVersion, MediaFile, ProcessingStatus, TranscriptionStatus,
+)
 from ..models.snippet import (
     EXPORT_ASPECTS, SnippetJob, SnippetProjectSettings, SnippetSpeaker,
     SnippetTrackSpeaker, TranscriptSegment,
@@ -150,10 +152,6 @@ def track_rows(db, media_file) -> list:
     known at all, because every audio or video file has one.
     """
     streams = audio_streams(media_file)
-    by_index = {
-        s["audio_index"]: s for s in (streams or [])
-        if isinstance(s, dict) and isinstance(s.get("audio_index"), int)
-    }
     mapping = {
         m.track_index: (s.id, s.name)
         for m, s in (
@@ -163,9 +161,9 @@ def track_rows(db, media_file) -> list:
             .all()
         )
     }
-    indices = set(by_index) | set(mapping)
+    segment_tracks = set()
     if streams is None:
-        indices |= {
+        segment_tracks = {
             t for (t,) in (
                 db.query(TranscriptSegment.track_index)
                 .filter(TranscriptSegment.media_file_id == media_file.id)
@@ -173,6 +171,25 @@ def track_rows(db, media_file) -> list:
                 .all()
             )
         }
+    return build_track_rows(streams, mapping, segment_tracks)
+
+
+def build_track_rows(streams: Optional[list], mapping: dict, segment_tracks) -> list:
+    """`track_rows` without the database: the same rule over values already read.
+
+    `mapping` is {track_index: (speaker_id, speaker_name)}; `segment_tracks`
+    the track indices that have segments (only consulted when `streams` is
+    None). GET /projects/{id}/snippet/files reads these for a whole page of
+    files in a few queries and builds every file's rows here, so the two
+    endpoints cannot come to list a file's tracks differently.
+    """
+    by_index = {
+        s["audio_index"]: s for s in (streams or [])
+        if isinstance(s, dict) and isinstance(s.get("audio_index"), int)
+    }
+    indices = set(by_index) | set(mapping)
+    if streams is None:
+        indices |= set(segment_tracks)
         if not indices:
             indices = {0}
     return [
@@ -283,6 +300,24 @@ class Candidate:
     reason: str
 
 
+#: Why a file whose latest version is not `ready` cannot be processed yet.
+#: One wording for POST /snippet/process (the `reason` it answers with) and
+#: GET /snippet/files (`not_ready_reason`, which the web shows on the
+#: disabled row), so the two say the same thing about the same file.
+NOT_READY_REASONS = {
+    ProcessingStatus.uploading: "the file is still uploading",
+    ProcessingStatus.processing: "the file is still being processed",
+    ProcessingStatus.failed: "the file's own processing failed; fix that first",
+}
+
+
+def not_ready_reason(processing_status) -> Optional[str]:
+    """None when the version is ready, else why SocialSnippet must wait."""
+    if processing_status == ProcessingStatus.ready:
+        return None
+    return NOT_READY_REASONS.get(processing_status, "the file is not ready yet")
+
+
 def latest_live_version(db, asset_id):
     """The newest version that is not in the trash."""
     return (
@@ -341,6 +376,15 @@ def find_candidates(db, project_id=None, asset_id=None, asset_ids=None,
             _skip("SocialSnippet is not enabled for this project, or the asset is outside its source folder")
             continue
         version = latest_live_version(db, asset.id)
+        if version is not None:
+            # The transcode has to have finished first: an upload still in
+            # flight has no complete original to read, and a failed one may
+            # have none at all. Checked before anything that depends on the
+            # media file, so the reason is the one a person can act on.
+            not_ready = not_ready_reason(version.processing_status)
+            if not_ready is not None:
+                _skip(not_ready, version)
+                continue
         media_file = (
             db.query(MediaFile).filter(MediaFile.version_id == version.id).first()
             if version else None

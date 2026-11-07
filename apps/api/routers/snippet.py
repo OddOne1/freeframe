@@ -7,6 +7,7 @@ transcript editing are not here.
 ── Who may do what ────────────────────────────────────────────────────────
   read anything            any project member (viewer and up)
   speakers, tracks, clips  editor and up
+  the file list            editor and up
   settings, process        the project owner or a superadmin
                            (`is_project_owner_or_superadmin`)
 
@@ -30,6 +31,7 @@ Every read of an asset-bound table goes through `Model.live(db)` or
 transcript, tracks and clips are a 404 here exactly as they are invisible
 everywhere else.
 """
+import logging
 import math
 import uuid
 from collections import Counter
@@ -42,7 +44,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..middleware.auth import get_current_user
-from ..models.asset import Asset, AssetType, AssetVersion, MediaFile
+from ..models.asset import Asset, AssetType, AssetVersion, MediaFile, TranscriptionStatus
 from ..models.folder import Folder
 from ..models.project import Project, ProjectRole
 from ..models.snippet import (
@@ -51,12 +53,12 @@ from ..models.snippet import (
 )
 from ..models.user import User
 from ..schemas.snippet import (
-    Clip, ClipGroup, SearchOut, SnippetPatch, SnippetProcessIn, SnippetProcessItem,
+    Clip, ClipGroup, DetectSummary, SearchOut, SnippetFilesOut, SnippetPatch, SnippetProcessIn, SnippetProcessItem,
     SnippetProcessOut, SnippetSettingsOut, SnippetSettingsPatch, SnippetSourceLiteral,
     SnippetStatusLiteral, SpeakerIn, SpeakerOut, SuggestOut, TrackOut, TrackSpeakerIn,
     TrackSpeakerOut, TranscriptOut,
 )
-from ..services import snippet_admin, snippet_search
+from ..services import snippet_admin, snippet_files, snippet_search
 from ..services.permissions import (
     folder_chain_is_live, get_project_member, is_project_owner_or_superadmin,
     require_project_role,
@@ -65,6 +67,7 @@ from ..services.snippet_admin import SnippetAdminError
 from .hls_proxy import create_hls_token, proxy_url_for
 
 router = APIRouter(tags=["socialsnippet"])
+logger = logging.getLogger(__name__)
 
 #: The longest transcript range one request may read.
 TRANSCRIPT_RANGE_MAX_MS = 10 * 60 * 1000
@@ -314,8 +317,8 @@ def process_assets(
     """Queue SocialSnippet transcription for exactly these assets (at most 20).
 
     The rules are snippet_reprocess.py's (services/snippet_admin.py): in
-    scope, a video or audio file, transcription on, nothing running, no
-    edited segments. A file that already has a transcript is skipped unless
+    scope, a video or audio file whose latest version is `ready`,
+    transcription on, nothing running, no edited segments. A file that already has a transcript is skipped unless
     `force`; with `force` it is transcribed afresh. Each asset answers with
     whether it was queued and why not; an id that is not a live asset of
     this project answers "not found".
@@ -338,6 +341,31 @@ def process_assets(
         else:
             results.append(SnippetProcessItem(asset_id=asset_id, queued=c.enqueue, reason=c.reason))
     return SnippetProcessOut(queued=queued, results=results)
+
+
+@router.get("/projects/{project_id}/snippet/files", response_model=SnippetFilesOut)
+def list_snippet_files(
+    project_id: uuid.UUID,
+    q: Optional[str] = Query(default=None, max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """The project's video and audio files inside the source folder, by name,
+    with how far SocialSnippet has got with each (services/snippet_files.py).
+
+    Editor and up: the list exists to start processing and name speakers,
+    which a viewer or reviewer cannot do. `q` matches the file name.
+    """
+    _require_member(db, project_id, current_user, ProjectRole.editor)
+    _require_enabled(db, project_id)
+    row = snippet_admin.settings_row(db, project_id)
+    result = snippet_files.list_files(
+        db, project_id, row.source_folder_id if row is not None else None,
+        q, page, page_size,
+    )
+    return SnippetFilesOut(total=result.total, items=result.items)
 
 
 # ── Speakers and tracks ────────────────────────────────────────────────────
@@ -408,7 +436,9 @@ def set_track_speaker(
     current_user: User = Depends(get_current_user),
 ):
     """Map the track to a speaker of the same project and relabel the
-    segments already transcribed on it (as snippet_set_track_speaker.py)."""
+    segments already transcribed on it (as snippet_set_track_speaker.py),
+    then re-run clip detection for the file so its suggestions carry the
+    speaker (`detect_summary`; see `_redetect`)."""
     media_file, asset = _media_file_access(db, media_file_id, current_user, ProjectRole.editor)
     speaker = (
         db.query(SnippetSpeaker)
@@ -426,8 +456,63 @@ def set_track_speaker(
         db.rollback()
         raise _unprocessable(exc) from None
     db.commit()
+    detect_summary = _redetect(db, media_file)
     row = next(r for r in snippet_admin.track_rows(db, media_file) if r["track_index"] == track_index)
-    return TrackSpeakerOut(**row, segments_relabelled=result["segments_relabelled"])
+    return TrackSpeakerOut(**row, segments_relabelled=result["segments_relabelled"],
+                           detect_summary=detect_summary)
+
+
+def _redetect(db: Session, media_file: MediaFile) -> DetectSummary:
+    """Re-run the pipeline's detect stage for one file, after its speakers changed.
+
+    `_stage_detect` (tasks/transcribe_tasks.py) is the stage itself: the same
+    `run_detect_for_media_file` scripts/snippet_detect.py calls, plus the
+    stage's snippet_jobs row, so a detect failure recorded by an earlier
+    run is cleared by a good one here and the file list stops reporting
+    it. No Whisper and no network. It replaces only the file's
+    `source='keyword'` AND `status='suggested'` clips; approved, rejected,
+    imported and hand-made clips are left alone.
+
+    Never raises: the speaker change is already committed, and a suggester
+    that fails must not turn a saved change into an error. Not run while a
+    transcription is in flight (its own detect stage runs at the end and
+    reads the new speaker from the relabelled segments), nor for a file
+    with no transcript, which has nothing to detect from.
+    """
+    if media_file.transcription_status == TranscriptionStatus.processing:
+        return DetectSummary(ran=False, reason="A transcription is running; it will "
+                             "detect clips with this speaker when it finishes.")
+    has_transcript = (
+        TranscriptSegment.live(db)
+        .filter(TranscriptSegment.media_file_id == media_file.id)
+        .first()
+        is not None
+    )
+    if not has_transcript:
+        return DetectSummary(ran=False, reason="No transcript yet; clips are detected "
+                             "when the file is processed.")
+    from ..models.snippet import SnippetJob
+    from ..tasks.transcribe_tasks import SNIPPET_STAGE_DETECT, _stage_detect
+
+    media_file_id = media_file.id
+    # The relabel is a bulk UPDATE that does not touch segment objects the
+    # session already holds; detection must read the new speaker, not a
+    # cached one. A no-op with the app's sessions (they expire on commit),
+    # and what keeps this right under a session that does not.
+    db.expire_all()
+    result = _stage_detect(db, media_file_id)
+    if result is None:
+        job = (
+            db.query(SnippetJob)
+            .filter(SnippetJob.media_file_id == media_file_id,
+                    SnippetJob.stage == SNIPPET_STAGE_DETECT)
+            .first()
+        )
+        message = job.error if job is not None and job.error else "no message"
+        logger.warning("Re-detect after a speaker change failed for media file %s: %s",
+                       media_file_id, message)
+        return DetectSummary(ran=False, reason=f"Clip detection failed: {message}")
+    return DetectSummary(ran=True, created=result["created"], removed=result["removed"])
 
 
 # ── Suggest and search ─────────────────────────────────────────────────────
