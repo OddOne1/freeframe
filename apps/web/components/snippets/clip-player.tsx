@@ -6,7 +6,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { AlertCircle, AudioLines, Loader2, Pause, Play, Repeat, RotateCcw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useOptionalToast } from '@/components/shared/toast'
-import { useVideoPlayer } from '@/hooks/use-video-player'
+import { NO_PICTURE_ERROR, useVideoPlayer } from '@/hooks/use-video-player'
 import { cn, resolveApiMediaUrl, resolveStreamUrl } from '@/lib/utils'
 import {
   TRANSCRIPT_MAX_RANGE_MS,
@@ -90,6 +90,13 @@ function ClipPlayer({
   const src = clip.stream_url ? resolveStreamUrl(clip.stream_url) : null
   const poster = resolveApiMediaUrl(clip.thumbnail_url)
   const player = useVideoPlayer(src, { detached: true })
+  // Audio-only: the contract gives an audio file no thumbnail, and a file
+  // that plays but never shows a picture is one too, whatever its listing
+  // said. Either way it shows the AUDIO ONLY tile and nothing else — the
+  // hook's "no playable picture" message is about broken video, and here it
+  // is simply what an audio file is.
+  const audioOnly = !clip.thumbnail_url || player.error === NO_PICTURE_ERROR
+  const playerError = audioOnly && player.error === NO_PICTURE_ERROR ? null : player.error
   const durationMs = player.duration > 0 && Number.isFinite(player.duration) ? Math.round(player.duration * 1000) : null
 
   const [saved, setSaved] = React.useState<InOut>({ start_ms: clip.start_ms, end_ms: clip.end_ms })
@@ -267,9 +274,9 @@ function ClipPlayer({
               preload="metadata"
               poster={poster ?? undefined}
               onClick={togglePlay}
-              className={cn('h-full w-full object-contain', !poster && !clip.thumbnail_url && 'opacity-0')}
+              className={cn('h-full w-full object-contain', audioOnly && 'opacity-0')}
             />
-            {!clip.thumbnail_url && (
+            {audioOnly && (
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/70">
                 <AudioLines className="h-12 w-12" aria-hidden />
                 <span className="text-xs uppercase tracking-wider">Audio only</span>
@@ -281,12 +288,12 @@ function ClipPlayer({
                 No playable media for this clip.
               </div>
             )}
-            {src && player.error && (
+            {src && playerError && (
               <div role="alert" className="absolute inset-0 flex items-center justify-center bg-black/80 p-6 text-center text-sm text-white/80">
-                {player.error}
+                {playerError}
               </div>
             )}
-            {src && player.isLoading && !player.error && (
+            {src && player.isLoading && !playerError && (
               <Loader2 className="absolute left-1/2 top-1/2 h-8 w-8 -translate-x-1/2 -translate-y-1/2 animate-spin text-white/80" />
             )}
           </div>
@@ -378,11 +385,22 @@ function ClipPlayer({
             // They render the in/out on screen now, saved or not, and a
             // moment exports its own range under its "moment:..." id.
             <div className="border-t border-border pt-3">
-              <ClipExports
-                snippetId={clip.id}
-                range={range}
-                valid={isValidClip(range, durationMs)}
-              />
+              {audioOnly ? (
+                // The server answers an audio-only export with 422; saying
+                // so here beats offering buttons that can only fail.
+                <section aria-label="Export" className="space-y-1">
+                  <h3 className="text-2xs font-semibold uppercase tracking-wider text-text-tertiary">Export</h3>
+                  <p className="text-xs text-text-tertiary" data-testid="export-audio-note">
+                    Export needs a video file.
+                  </p>
+                </section>
+              ) : (
+                <ClipExports
+                  snippetId={clip.id}
+                  range={range}
+                  valid={isValidClip(range, durationMs)}
+                />
+              )}
             </div>
           )}
         </div>

@@ -5,7 +5,9 @@
  * a normal build never includes this module.
  *
  * Six clips: two speakers, three topics, one audio-only file, one clip with no
- * scores, plus one transcript "moment". Searching, filtering, sorting,
+ * scores, plus two transcript "moments" (one video, one audio-only; both
+ * match "glacier"). Audio-only means no thumbnail_url, as the contract has
+ * it, and that is what the player reads as "no video". Searching, filtering, sorting,
  * grouping, approve/reject, in/out saves and exports all work against it.
  *
  * Media: set NEXT_PUBLIC_SNIPPET_FIXTURE_VIDEO / NEXT_PUBLIC_SNIPPET_FIXTURE_AUDIO
@@ -193,6 +195,34 @@ const MOMENT: SnippetClip = {
   generator: null,
 }
 
+/** An audio-only transcript moment (the podcast), so the player's audio-only
+ *  handling — the AUDIO ONLY tile, no "no playable picture" message, and
+ *  "Export needs a video file." instead of export buttons — can be seen on a
+ *  moment as well as on a stored clip. Audio-only by contract: no thumbnail. */
+const AUDIO_MOMENT: SnippetClip = {
+  ...base({
+    id: `moment:${MF_PODCAST}:452000`,
+    asset_id: '0d4f1c8e-0000-4000-8000-0000000a0003',
+    asset_name: 'Podcast_Ep14_master.wav',
+    media_file_id: MF_PODCAST,
+    speaker: MARCO,
+    start_ms: 452_000,
+    end_ms: 463_500,
+    title: null,
+    quote: 'Every glacier we went back to was shorter than on the old maps, without a single exception.',
+    topics: [],
+    quality_score: null,
+    viral_score: null,
+    source: null,
+    status: null,
+    audio: true,
+  }),
+  kind: 'moment',
+  generator: null,
+}
+
+const MOMENTS = [MOMENT, AUDIO_MOMENT]
+
 let settings: SnippetSettings = {
   enabled: true,
   source_folder_id: null,
@@ -227,7 +257,7 @@ function segmentFor(c: SnippetClip, i: number): SnippetTranscriptSegment {
 }
 
 function transcript(mediaFileId: string, from: number, to: number): SnippetTranscript {
-  const segs = [...clips, MOMENT]
+  const segs = [...clips, ...MOMENTS]
     .filter((c) => c.media_file_id === mediaFileId)
     .map((c, i) => segmentFor(c, i))
     .filter((s) => s.end_ms > from && s.start_ms < to)
@@ -264,7 +294,7 @@ function search(projectId: string, qs: URLSearchParams): SnippetSearchResponse {
   const wanted = statuses.length ? statuses : ['suggested', 'approved']
   let pool = clips.filter((c) => wanted.includes(c.status as string))
   // Moments only without an explicit status filter, and only for a query.
-  if (!statuses.length && q && !sources.length) pool = [...pool, MOMENT]
+  if (!statuses.length && q && !sources.length) pool = [...pool, ...MOMENTS]
   let items = pool.filter(
     (c) =>
       (!q || matches(c, q)) &&

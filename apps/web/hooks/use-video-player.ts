@@ -119,8 +119,11 @@ export interface UseVideoPlayerOptions {
   detached?: boolean
 }
 
-/** Shown when a media decodes audio but never produces a picture (§117). */
-const NO_PICTURE_ERROR =
+/** Shown when a media decodes audio but never produces a picture (§117).
+ *  Exported so a player that KNOWS its file has no picture (the
+ *  SocialSnippet clip player on an audio-only file) can tell this message
+ *  apart from a real error and leave it out. */
+export const NO_PICTURE_ERROR =
   'This video has no playable picture in this browser (unsupported video codec).'
 
 /**
