@@ -166,3 +166,51 @@ class SnippetPatch(BaseModel):
     status: Optional[SnippetStatusLiteral] = None
     start_ms: Optional[int] = None
     end_ms: Optional[int] = None
+
+
+# ── Exports (prompt #8) ────────────────────────────────────────────────────
+
+
+class ExportFraming(BaseModel):
+    """Where the picked region sits in the source; see services/snippet_export.
+    Missing values default to the centre at zoom 1. Range checks happen in
+    the service so the 422 says which value is wrong in plain words."""
+
+    x: Optional[float] = None
+    y: Optional[float] = None
+    zoom: Optional[float] = None
+
+
+class ExportCaptionStyle(BaseModel):
+    x: Optional[float] = None
+    y: Optional[float] = None
+    size: Optional[float] = None
+
+
+class SnippetExportIn(BaseModel):
+    """POST /snippets/{snippet_id}/exports.
+
+    `start_ms`/`end_ms` may be left out for a stored snippet, which then
+    exports its saved in/out; a moment (`moment:{media_file_id}:{start_ms}`)
+    must send `end_ms` and may leave `start_ms` to the id's."""
+
+    start_ms: Optional[int] = None
+    end_ms: Optional[int] = None
+    aspect: str
+    captions: bool = False
+    framing: Optional[ExportFraming] = None
+    caption_style: Optional[ExportCaptionStyle] = None
+
+
+class SnippetExportCreatedOut(BaseModel):
+    export_id: uuid.UUID
+    #: "queued" for a new or re-queued render; an existing export answers
+    #: with its own status (e.g. "done", "running").
+    status: str
+
+
+class SnippetExportOut(BaseModel):
+    status: str
+    progress: float
+    download_url: Optional[str] = None
+    error: Optional[str] = None

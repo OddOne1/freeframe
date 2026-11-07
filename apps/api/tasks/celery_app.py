@@ -25,6 +25,7 @@ celery_app = Celery(
         "apps.api.tasks.reconcile_tasks",
         "apps.api.tasks.upload_sweep_tasks",
         "apps.api.tasks.crc_tasks",
+        "apps.api.tasks.snippet_export_tasks",
     ],
 )
 
@@ -220,6 +221,15 @@ celery_app.conf.update(
         "apps.api.tasks.crc_tasks.*": {"queue": "transcoding"},
         "compute_object_crc32": {"queue": "transcoding"},
         "backfill_object_crc32": {"queue": "transcoding"},
+        # SocialSnippet clip exports (prompt #8). Both forms from the first
+        # commit, as above: each task declares `name=`, so the glob alone
+        # would strand it on `default`. `transcoding` because a clip render
+        # is ffmpeg work on an asset — the LUT-export profile — and that
+        # worker already has ffmpeg and its two slots; the sweep is the
+        # DB-plus-S3-deletes profile of the other sweeps there.
+        "apps.api.tasks.snippet_export_tasks.*": {"queue": "transcoding"},
+        "render_snippet_export": {"queue": "transcoding"},
+        "sweep_snippet_exports": {"queue": "transcoding"},
     },
     # Rate limiting for email queues (SES limits)
     task_annotations={
@@ -338,6 +348,16 @@ celery_app.conf.beat_schedule = {
     "sweep-abandoned-uploads": {
         "task": "sweep_abandoned_uploads",
         "schedule": crontab(minute="45"),
+        "options": {"expires": 3540},
+    },
+    # SocialSnippet exports past their project's `export_retention_days`.
+    # Hourly: retention is measured in days, so the worst case is a clip
+    # outliving its last day by under an hour. Minute 5, clear of the other
+    # S3-heavy entries (15, 30, 45 and the 03:00/03:45 local windows).
+    # Rows with no expiry (retention NULL = forever) are never touched.
+    "sweep-snippet-exports": {
+        "task": "sweep_snippet_exports",
+        "schedule": crontab(minute="5"),
         "options": {"expires": 3540},
     },
 }

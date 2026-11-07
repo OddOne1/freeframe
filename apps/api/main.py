@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
-from .routers import auth, users, projects, upload, events, assets, me, comments, approvals, share, metadata, branding, notifications, admin, setup, folders, hls_proxy, zip_stream, site_settings, luts, email_settings, sidecars, contact, snippet
+from .routers import auth, users, projects, upload, events, assets, me, comments, approvals, share, metadata, branding, notifications, admin, setup, folders, hls_proxy, zip_stream, site_settings, luts, email_settings, sidecars, contact, snippet, snippet_export
 from .services.s3_service import ensure_bucket_exists
 from .middleware.global_rate_limit import GlobalRateLimitMiddleware
 from .middleware.setup_guard import SetupGuardMiddleware
@@ -85,6 +85,8 @@ app.include_router(contact.router)
 app.include_router(sidecars.router)
 # SocialSnippet: settings, speakers, search and clip editing (routers/snippet.py).
 app.include_router(snippet.router)
+# SocialSnippet clip exports (routers/snippet_export.py).
+app.include_router(snippet_export.router)
 
 @app.get("/health")
 def health():

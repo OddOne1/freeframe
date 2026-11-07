@@ -19,3 +19,4 @@ from .snippet import (
     SnippetProjectSettings, SnippetSpeaker, SnippetTrackSpeaker, TranscriptSegment,
     TranscriptWord, TranscriptEdit, SnippetJob, Snippet,
 )
+from .snippet_export import SnippetExport
