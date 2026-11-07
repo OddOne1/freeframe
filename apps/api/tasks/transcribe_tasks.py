@@ -42,7 +42,7 @@ from ..models.snippet import (
     SegmentStatus, Snippet, SnippetJob, SnippetJobStatus, SnippetProjectSettings,
     SnippetSpeaker, SnippetStatus, SnippetTrackSpeaker, TranscriptSegment, TranscriptWord,
 )
-from ..services.snippet_detect import detect_snippets
+from ..services.snippet_detect import detect_snippets, drop_overlapping
 from ..services.snippet_transcribe import (
     audio_streams_from_ffprobe, build_initial_prompt, combined_segments,
     dominant_language, folder_in_scope, gate_words_by_track, rms_profile,
@@ -723,29 +723,53 @@ def snippet_words_by_track(db, media_file_id) -> dict:
     return tracks
 
 
-def replace_keyword_snippets(db, media_file_id, rows) -> dict:
-    """Swap this file's generated suggestions for `rows`.
+def replaceable_snippets():
+    """SQL criteria: the clips a detect run may delete and replace.
 
-    What is deleted is ONLY `source='keyword'` AND `status='suggested'`.
-    Everything else survives a re-run, and each exclusion is deliberate:
+    THE one statement of the rule, for the pipeline's detect stage,
+    scripts/snippet_detect.py (and its --dry-run count), snippet_reprocess.py
+    (through the pipeline) and the re-detect after a speaker is named:
+    `source='keyword'` AND `status='suggested'` AND never edited by a person.
+    Every other clip is kept, and each exclusion is deliberate:
 
-      * source `import` or `manual` did not come from this detector, so it
-        is not the detector's to replace;
+      * source `import`, `manual` or `llm` did not come from this detector,
+        so it is not the detector's to replace;
       * a keyword row somebody APPROVED or REJECTED is a decision. Deleting
         it would either lose an approved clip or re-suggest one that was
-        already turned down.
+        already turned down;
+      * a keyword row a person trimmed, retitled or re-topiced
+        (`user_edited_at`) is their work, approved or not.
+    """
+    return (
+        Snippet.source == "keyword",
+        Snippet.status == SnippetStatus.suggested,
+        Snippet.user_edited_at.is_(None),
+    )
 
-    Returns {"removed": n, "created": m}.
+
+def replace_keyword_snippets(db, media_file_id, rows) -> dict:
+    """Swap this file's replaceable suggestions (`replaceable_snippets`) for `rows`.
+
+    The clips that stay are also respected by what is added: a new row that
+    overlaps a kept clip by more than snippet_detect.MAX_OVERLAP_RATIO is not
+    created (`drop_overlapping`), so a rejected clip is not suggested again
+    and an edited one gets no untrimmed twin.
+
+    Returns {"removed": n, "created": m, "skipped": k}; `skipped` counts the
+    rows dropped for overlapping a kept clip.
     """
     removed = (
         db.query(Snippet)
-        .filter(
-            Snippet.media_file_id == media_file_id,
-            Snippet.source == "keyword",
-            Snippet.status == SnippetStatus.suggested,
-        )
+        .filter(Snippet.media_file_id == media_file_id, *replaceable_snippets())
         .delete(synchronize_session=False)
     )
+    kept = [
+        {"start_ms": start, "end_ms": end}
+        for start, end in db.query(Snippet.start_ms, Snippet.end_ms)
+        .filter(Snippet.media_file_id == media_file_id)
+        .all()
+    ]
+    rows, skipped = drop_overlapping(rows, kept)
     for row in rows:
         db.add(Snippet(
             id=uuid.uuid4(),
@@ -763,7 +787,7 @@ def replace_keyword_snippets(db, media_file_id, rows) -> dict:
             generator=row.get("generator"),
         ))
     db.commit()
-    return {"removed": removed or 0, "created": len(rows)}
+    return {"removed": removed or 0, "created": len(rows), "skipped": skipped}
 
 
 def run_detect_for_media_file(db, media_file_id) -> dict:

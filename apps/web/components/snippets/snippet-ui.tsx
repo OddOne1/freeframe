@@ -171,6 +171,19 @@ export function StatusPill({ status }: { status: SnippetStatus }) {
   )
 }
 
+/** A person changed this clip's title, topics or in/out points, so clip
+ *  detection will not replace it. Rendered only when that is true. */
+export function EditedPill() {
+  return (
+    <span
+      title="Edited by a person: re-detecting clips will not replace it"
+      className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-2xs font-medium text-text-secondary"
+    >
+      edited
+    </span>
+  )
+}
+
 // ─── Tooltip ─────────────────────────────────────────────────────────────────
 
 /**

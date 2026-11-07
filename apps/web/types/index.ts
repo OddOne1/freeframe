@@ -1516,6 +1516,9 @@ export interface SnippetClip {
   source: SnippetSource | null
   generator: string | null
   status: SnippetStatus | null
+  /** A person changed the title, topics or in/out points. Always false for
+   *  a moment. Clip detection never replaces an edited clip. */
+  user_edited: boolean
   /** The WHOLE file (HLS master playlist, or the original file before it is
    *  transcoded), never a cut clip: the player seeks to start_ms itself. */
   stream_url: string | null

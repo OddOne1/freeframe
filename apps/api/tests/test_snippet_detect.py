@@ -791,6 +791,100 @@ def test_a_rerun_never_touches_import_manual_approved_or_rejected_rows(Session):
     }
 
 
+def test_a_rerun_keeps_a_clip_a_person_edited_and_makes_no_twin_of_it(Session):
+    """An edited suggestion (user_edited_at set, still `suggested`, still
+    `keyword`) is kept exactly like an approved one, and the window it was
+    cut from is not suggested again beside it."""
+    from datetime import datetime, timezone
+
+    from apps.api.models.snippet import Snippet
+    from apps.api.services.snippet_detect import MAX_OVERLAP_RATIO
+    from apps.api.tasks.transcribe_tasks import _stage_detect
+
+    w = _make_world(Session)
+    db = w.Session()
+    first = _stage_detect(db, w.media_file_id)
+    assert first["created"] > 0
+    target = (db.query(Snippet).filter(Snippet.media_file_id == w.media_file_id)
+              .order_by(Snippet.start_ms).first())
+    target.start_ms += 500
+    target.title = "Trimmed by a person"
+    target.user_edited_at = datetime.now(timezone.utc)
+    db.commit()
+    edited_id, span = target.id, (target.start_ms, target.end_ms)
+
+    second = _stage_detect(db, w.media_file_id)
+    third = _stage_detect(db, w.media_file_id)
+    rows = db.query(Snippet).filter(Snippet.media_file_id == w.media_file_id).all()
+    db.close()
+
+    assert second["removed"] == first["created"] - 1, "everything but the edited clip is replaced"
+    assert second["skipped"] >= 1, "the window it came from is not suggested again"
+    assert third["removed"] == second["created"]
+    kept = next(r for r in rows if r.id == edited_id)
+    assert (kept.title, kept.start_ms, kept.end_ms) == ("Trimmed by a person", *span)
+    for r in rows:
+        if r.id == edited_id:
+            continue
+        overlap = min(r.end_ms, span[1]) - max(r.start_ms, span[0])
+        shortest = min(r.end_ms - r.start_ms, span[1] - span[0])
+        assert overlap <= 0 or overlap / shortest <= MAX_OVERLAP_RATIO
+
+
+def test_a_rejected_clip_is_not_suggested_again(Session):
+    from apps.api.models.snippet import Snippet, SnippetStatus
+    from apps.api.tasks.transcribe_tasks import _stage_detect
+
+    w = _make_world(Session)
+    db = w.Session()
+    first = _stage_detect(db, w.media_file_id)
+    for s in db.query(Snippet).filter(Snippet.media_file_id == w.media_file_id):
+        s.status = SnippetStatus.rejected
+    db.commit()
+    again = _stage_detect(db, w.media_file_id)
+    db.close()
+    # The detector is deterministic: every window it finds is a rejected one.
+    assert (again["created"], again["removed"], again["skipped"]) == (0, 0, first["created"])
+
+
+def test_drop_overlapping_uses_the_selection_limit():
+    from apps.api.services.snippet_detect import MAX_OVERLAP_RATIO, drop_overlapping
+
+    kept = [{"start_ms": 10_000, "end_ms": 20_000}]
+    rows = [
+        {"start_ms": 0, "end_ms": 9_000},          # no overlap
+        {"start_ms": 17_000, "end_ms": 27_000},    # 3 s of 10 s = 0.30: allowed
+        {"start_ms": 16_900, "end_ms": 26_900},    # 3.1 s: dropped
+        {"start_ms": 12_000, "end_ms": 15_000},    # wholly inside: dropped
+    ]
+    assert MAX_OVERLAP_RATIO == 0.30
+    out, dropped = drop_overlapping(rows, kept)
+    assert out == rows[:2] and dropped == 2
+    assert drop_overlapping(rows, []) == (rows, 0)
+
+
+def test_the_dry_run_counts_by_the_same_rule(Session):
+    from datetime import datetime, timezone
+
+    from apps.api.models.snippet import Snippet
+    from apps.api.scripts.snippet_detect import preview
+    from apps.api.tasks.transcribe_tasks import _stage_detect
+
+    w = _make_world(Session)
+    db = w.Session()
+    first = _stage_detect(db, w.media_file_id)
+    edited = (db.query(Snippet).filter(Snippet.media_file_id == w.media_file_id)
+              .order_by(Snippet.start_ms).first())
+    edited.user_edited_at = datetime.now(timezone.utc)
+    db.commit()
+    would = preview(db, w.media_file_id)
+    real = _stage_detect(db, w.media_file_id)
+    db.close()
+    assert (would["removed"], would["created"], would["skipped"]) == \
+        (real["removed"], real["created"], real["skipped"])
+    assert would["removed"] == first["created"] - 1 and would["kept"] == 1
+
+
 def test_a_soft_deleted_asset_detects_nothing(Session):
     """Excluded by the existing helper (`TranscriptSegment.live`), not by a
     second copy of the rule here."""
@@ -801,7 +895,7 @@ def test_a_soft_deleted_asset_detects_nothing(Session):
     assert snippet_words_by_track(db, w.media_file_id) == {}
     result = _stage_detect(db, w.media_file_id)
     db.close()
-    assert result == {"created": 0, "removed": 0, "tracks": []}
+    assert result == {"created": 0, "removed": 0, "skipped": 0, "tracks": []}
     assert _snippets(w) == []
 
 

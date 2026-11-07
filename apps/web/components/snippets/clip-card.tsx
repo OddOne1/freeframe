@@ -5,7 +5,7 @@ import { AudioLines, Check, Play, X } from 'lucide-react'
 import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { formatDuration } from '@/lib/snippet-timing'
 import type { SnippetClip, SnippetStatus } from '@/types'
-import { ScoreBadge, SourceBadge, StatusPill } from './snippet-ui'
+import { EditedPill, ScoreBadge, SourceBadge, StatusPill } from './snippet-ui'
 
 /**
  * One search result. A "snippet" is a stored clip with a title, source,
@@ -146,6 +146,7 @@ export function ClipCard({
           <ScoreBadge label="Q" title="Quality" score={clip.quality_score} />
           <ScoreBadge label="V" title="Viral" score={clip.viral_score} />
           {clip.status && <StatusPill status={clip.status} />}
+          {clip.user_edited && <EditedPill />}
           {canEdit && clip.kind === 'snippet' && clip.status && (
             <div className="ml-auto flex items-center gap-1">
               <button

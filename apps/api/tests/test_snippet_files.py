@@ -402,12 +402,28 @@ def test_statement_count_does_not_grow_with_the_page(db, world, api):
 # ── Naming a speaker re-runs detection ─────────────────────────────────────
 
 
+def _clear_the_transcript_span(db, world):
+    """Move Alpha's hand-made clip SC (2.5-5.5 s) past the transcript.
+
+    Kept clips block overlapping suggestions, and SC lies inside the only
+    window Alpha's transcript yields, so with it there nothing is created.
+    """
+    from apps.api.models.snippet import Snippet
+
+    sc = db.query(Snippet).filter_by(id=world.SC.id).one()
+    sc.start_ms, sc.end_ms = 80_000, 83_000
+    db.commit()
+
+
 def test_naming_a_speaker_redetects_and_leaves_decided_clips_alone(db, world, api):
     from apps.api.models.snippet import Snippet, SnippetJob, SnippetStatus
 
+    _clear_the_transcript_span(db, world)
+
     stale = Snippet(media_file_id=world.alpha_mf.id, start_ms=0, end_ms=9000, source="keyword",
                     generator="tfidf-v1", speaker_id=world.anna.id, title="Old suggestion")
-    approved = Snippet(media_file_id=world.alpha_mf.id, start_ms=0, end_ms=9500, source="keyword",
+    # Away from the transcript, so it does not stop new suggestions over it.
+    approved = Snippet(media_file_id=world.alpha_mf.id, start_ms=60_000, end_ms=69_500, source="keyword",
                        generator="tfidf-v1", speaker_id=world.anna.id, title="Keep me",
                        status=SnippetStatus.approved)
     db.add_all([stale, approved])
@@ -434,6 +450,47 @@ def test_naming_a_speaker_redetects_and_leaves_decided_clips_alone(db, world, ap
     assert kept[world.SC.id].speaker_id == world.anna.id  # manual, untouched
     job = db.query(SnippetJob).filter_by(media_file_id=world.alpha_mf.id, stage="detect").one()
     assert job.status.value == "done"
+
+
+def test_redetect_after_naming_a_speaker_keeps_an_edited_clip(db, world, api):
+    """A suggestion a person trimmed is not replaced, keeps its speaker, and
+    gets no untrimmed twin; the PATCH is what marks it."""
+    from apps.api.models.snippet import Snippet
+
+    _clear_the_transcript_span(db, world)
+    r = api.as_(world.editor).put(f"/media-files/{world.alpha_mf.id}/snippet/tracks/0/speaker",
+                                  json={"speaker_id": str(world.anna.id)})
+    assert r.json()["detect_summary"]["created"] >= 1
+    db.expire_all()
+    first = (db.query(Snippet).filter_by(media_file_id=world.alpha_mf.id, source="keyword")
+             .order_by(Snippet.start_ms).first())
+    span = (first.start_ms + 400, first.end_ms)
+    patched = api.as_(world.editor).patch(f"/snippets/{first.id}", json={"start_ms": span[0]})
+    assert patched.json()["user_edited"] is True
+
+    r = api.as_(world.editor).put(f"/media-files/{world.alpha_mf.id}/snippet/tracks/0/speaker",
+                                  json={"speaker_id": str(world.ben.id)})
+    assert r.status_code == 200
+    summary = r.json()["detect_summary"]
+    assert summary["ran"] is True
+    db.expire_all()
+    rows = db.query(Snippet).filter_by(media_file_id=world.alpha_mf.id).all()
+    kept = next(s for s in rows if s.id == first.id)
+    assert (kept.start_ms, kept.end_ms) == span
+    assert kept.speaker_id == world.anna.id, "an edited clip is not rewritten, speaker included"
+    for s in rows:
+        if s.id == first.id or s.source != "keyword":
+            continue
+        overlap = min(s.end_ms, span[1]) - max(s.start_ms, span[0])
+        assert overlap <= 0 or overlap / min(s.end_ms - s.start_ms, span[1] - span[0]) <= 0.30
+
+
+def test_a_hand_made_clip_blocks_suggestions_over_it(db, world, api):
+    """With SC where it is, Alpha's one window overlaps it: detection runs,
+    replaces nothing and creates nothing."""
+    r = api.as_(world.editor).put(f"/media-files/{world.alpha_mf.id}/snippet/tracks/0/speaker",
+                                  json={"speaker_id": str(world.ben.id)})
+    assert r.json()["detect_summary"] == {"ran": True, "created": 0, "removed": 0, "reason": None}
 
 
 def test_a_good_redetect_clears_an_earlier_detect_failure(db, world, api):

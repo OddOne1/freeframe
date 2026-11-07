@@ -35,6 +35,7 @@ import logging
 import math
 import uuid
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -220,6 +221,7 @@ def _clip(hit: snippet_search.Hit, info: snippet_search.FileInfo, speakers: dict
         source=s.source if s is not None else None,
         generator=s.generator if s is not None else None,
         status=s.status.value if s is not None else None,
+        user_edited=s is not None and s.user_edited_at is not None,
         stream_url=stream,
         thumbnail_url=thumb,
     )
@@ -469,9 +471,10 @@ def _redetect(db: Session, media_file: MediaFile) -> DetectSummary:
     `run_detect_for_media_file` scripts/snippet_detect.py calls, plus the
     stage's snippet_jobs row, so a detect failure recorded by an earlier
     run is cleared by a good one here and the file list stops reporting
-    it. No Whisper and no network. It replaces only the file's
-    `source='keyword'` AND `status='suggested'` clips; approved, rejected,
-    imported and hand-made clips are left alone.
+    it. No Whisper and no network. What it may replace is the one rule in
+    `replaceable_snippets` (untouched keyword suggestions); approved,
+    rejected, imported, hand-made and person-edited clips are left alone,
+    and no new suggestion overlaps one of them.
 
     Never raises: the speaker change is already committed, and a suggester
     that fails must not turn a saved change into an error. Not run while a
@@ -671,6 +674,11 @@ def patch_snippet(
     New times must keep start before end, at least 1 s apart, inside the
     file (when its length is known). `source` and `generator` are left as
     they are: they say where the clip came from, not who last trimmed it.
+
+    `user_edited_at` is set (UTC now) when the title, topics, start or end
+    actually changes; a status change alone, or values equal to the stored
+    ones, leave it as it is. Clip detection keeps an edited clip like an
+    approved one (tasks/transcribe_tasks.replaceable_snippets).
     """
     snippet = Snippet.live(db).filter(Snippet.id == snippet_id).first()
     if snippet is None:
@@ -685,14 +693,20 @@ def patch_snippet(
         raise
 
     given = body.model_fields_set
+    edited = False
     try:
         if "title" in given:
             title = snippet_admin.clean_text(body.title)
             if len(title) > TITLE_MAX_CHARS:
                 raise SnippetAdminError(f"title may be at most {TITLE_MAX_CHARS} characters.")
-            snippet.title = title or None
+            if (title or None) != snippet.title:
+                snippet.title = title or None
+                edited = True
         if "topics" in given:
-            snippet.topics = _clean_topics(body.topics)
+            topics = _clean_topics(body.topics)
+            if topics != list(snippet.topics or []):
+                snippet.topics = topics
+                edited = True
         if "status" in given:
             if body.status is None:
                 raise SnippetAdminError("status must not be null.")
@@ -712,10 +726,14 @@ def patch_snippet(
             duration = _duration_ms(media_file.duration_seconds)
             if duration is not None and end > duration:
                 raise SnippetAdminError("end_ms is past the end of the file.")
-            snippet.start_ms, snippet.end_ms = start, end
+            if (start, end) != (snippet.start_ms, snippet.end_ms):
+                snippet.start_ms, snippet.end_ms = start, end
+                edited = True
     except SnippetAdminError as exc:
         db.rollback()
         raise _unprocessable(exc) from None
+    if edited:
+        snippet.user_edited_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(snippet)
 

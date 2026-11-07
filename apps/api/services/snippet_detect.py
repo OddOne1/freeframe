@@ -250,6 +250,32 @@ def select_windows(windows: list, max_overlap_ratio: float = MAX_OVERLAP_RATIO,
     return sorted(kept, key=lambda w: (w["start_ms"], w["end_ms"]))
 
 
+def drop_overlapping(rows: list, kept: list,
+                     max_overlap_ratio: float = MAX_OVERLAP_RATIO) -> tuple:
+    """(rows to create, how many were dropped).
+
+    A candidate is dropped when it shares more than `max_overlap_ratio` of
+    the shorter of the two with any clip in `kept` -- the clips a re-run
+    leaves alone (approved, rejected, imported, hand-made, edited by a
+    person). The same limit `select_windows` holds candidates to among
+    themselves, so a kept clip counts as one more window already chosen:
+    a rejected clip is not suggested again, and an edited one does not get
+    an untrimmed twin beside it.
+
+    Time only, across tracks: a clip is a span of the file, and two spans
+    of the same file overlap whoever is speaking in them. Each item needs
+    `start_ms` and `end_ms`.
+    """
+    def _span(item):
+        start, end = int(item["start_ms"]), int(item["end_ms"])
+        return {"start_ms": start, "end_ms": end, "duration_ms": end - start}
+
+    spans = [_span(k) for k in kept]
+    out = [r for r in rows
+           if all(_overlap_ratio(_span(r), k) <= max_overlap_ratio for k in spans)]
+    return out, len(rows) - len(out)
+
+
 def build_candidates(
     words_by_track,
     *,

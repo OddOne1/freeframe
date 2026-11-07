@@ -21,10 +21,11 @@ no transcript is listed as skipped, because detection reads the stored
 transcript and never starts a transcription. snippet_reprocess.py is the
 script that transcribes.
 
-What a run replaces is only `source='keyword'` AND `status='suggested'`.
-Imported and hand-made rows, and any keyword row somebody approved or
-rejected, are left exactly as they are -- see
-tasks/transcribe_tasks.replace_keyword_snippets.
+What a run replaces is only `source='keyword'` AND `status='suggested'`
+AND never edited by a person. Imported and hand-made rows, any keyword row
+somebody approved or rejected, and any clip a person trimmed, retitled or
+re-topiced are left exactly as they are, and no new suggestion is made that
+overlaps one of them -- see tasks/transcribe_tasks.replaceable_snippets.
 """
 import argparse
 import sys
@@ -34,8 +35,10 @@ from typing import Optional
 
 from apps.api.database import SessionLocal
 from apps.api.models.asset import Asset, AssetVersion, MediaFile
-from apps.api.models.snippet import Snippet, SnippetStatus, TranscriptSegment
-from apps.api.services.snippet_detect import detect_snippets
+from apps.api.models.snippet import Snippet, TranscriptSegment
+from sqlalchemy import and_, not_
+
+from apps.api.services.snippet_detect import detect_snippets, drop_overlapping
 
 # The same no-traceback error type the other snippet scripts use.
 from apps.api.scripts.snippet_set_track_speaker import ScriptError
@@ -104,19 +107,24 @@ def preview(db, media_file_id) -> dict:
     Reads the same words and runs the same detection as the real thing, then
     COUNTS the rows that would go instead of deleting them.
     """
-    from apps.api.tasks.transcribe_tasks import snippet_words_by_track
+    from apps.api.tasks.transcribe_tasks import replaceable_snippets, snippet_words_by_track
 
     tracks = snippet_words_by_track(db, media_file_id)
     rows = detect_snippets({"media_file_id": str(media_file_id), "tracks": tracks})
     removed = (
         db.query(Snippet)
-        .filter(Snippet.media_file_id == media_file_id,
-                Snippet.source == "keyword",
-                Snippet.status == SnippetStatus.suggested)
+        .filter(Snippet.media_file_id == media_file_id, *replaceable_snippets())
         .count()
     )
-    total = db.query(Snippet).filter(Snippet.media_file_id == media_file_id).count()
-    return {"created": len(rows), "removed": removed, "kept": total - removed, "rows": rows}
+    kept = [
+        {"start_ms": start, "end_ms": end}
+        for start, end in db.query(Snippet.start_ms, Snippet.end_ms)
+        .filter(Snippet.media_file_id == media_file_id, not_(and_(*replaceable_snippets())))
+        .all()
+    ]
+    rows, skipped = drop_overlapping(rows, kept)
+    return {"created": len(rows), "removed": removed, "kept": len(kept), "skipped": skipped,
+            "rows": rows}
 
 
 def main(argv=None) -> int:
@@ -145,7 +153,8 @@ def main(argv=None) -> int:
                 result = preview(db, uuid.UUID(item.media_file_id))
                 print(f"would {item.asset_id}  {item.asset_name}  "
                       f"{result['created']} suggestion(s), replacing {result['removed']}, "
-                      f"{result['kept']} row(s) kept untouched")
+                      f"{result['kept']} row(s) kept untouched, {result['skipped']} "
+                      f"candidate(s) left out for overlapping a kept clip")
                 for row in result["rows"]:
                     print(f"        {row['start_ms']:>8}-{row['end_ms']:<8} "
                           f"track {row['track_index']}  {row['title']}")

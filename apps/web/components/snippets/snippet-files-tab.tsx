@@ -396,8 +396,8 @@ function confirmCopy(p: Pending | null): { title: string; body: React.ReactNode;
       )}
       {p.kind === 'reprocess' && (
         <span className="block">
-          The transcript is made again from scratch. Approved and hand-made clips stay; auto suggestions are
-          replaced.
+          The transcript is made again from scratch. Approved, edited and hand-made clips stay; untouched
+          auto suggestions are replaced.
         </span>
       )}
     </span>

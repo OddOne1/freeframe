@@ -54,8 +54,9 @@ const thumb = (hue: number) =>
   )}`
 
 function base(
-  c: Omit<SnippetClip, 'duration_ms' | 'kind' | 'stream_url' | 'thumbnail_url' | 'generator'> & {
+  c: Omit<SnippetClip, 'duration_ms' | 'kind' | 'stream_url' | 'thumbnail_url' | 'generator' | 'user_edited'> & {
     kind?: SnippetClip['kind']
+    user_edited?: boolean
     audio?: boolean
     hue?: number
     generator?: string | null
@@ -65,6 +66,7 @@ function base(
   return {
     kind: 'snippet',
     generator: rest.source === 'llm' ? 'claude-haiku-5-5' : rest.source === 'keyword' ? 'keyword-v1' : null,
+    user_edited: false,
     ...rest,
     duration_ms: rest.end_ms - rest.start_ms,
     stream_url: audio ? AUDIO_URL : VIDEO_URL,
@@ -89,6 +91,8 @@ let clips: SnippetClip[] = [
     viral_score: 0.72,
     source: 'llm',
     status: 'suggested',
+    // Trimmed by a person: shows the "edited" pill.
+    user_edited: true,
     hue: 200,
   }),
   base({
@@ -200,6 +204,7 @@ const MOMENT: SnippetClip = {
     hue: 200,
   }),
   kind: 'moment',
+  user_edited: false,
   generator: null,
 }
 
@@ -226,6 +231,7 @@ const AUDIO_MOMENT: SnippetClip = {
     audio: true,
   }),
   kind: 'moment',
+  user_edited: false,
   generator: null,
 }
 
@@ -659,7 +665,15 @@ export async function fixtureRequest<T>(method: string, path: string, body?: unk
     const i = clips.findIndex((c) => c.id === m![1])
     if (i < 0) throw new ApiError(404, 'Not found')
     const patch = body as Partial<SnippetClip>
-    const next = { ...clips[i], ...patch }
+    const prev = clips[i]
+    const next = { ...prev, ...patch }
+    // As the API: only a change to the title, topics or in/out marks a clip edited.
+    const changed =
+      ('title' in patch && (patch.title || null) !== prev.title) ||
+      ('topics' in patch && JSON.stringify(patch.topics) !== JSON.stringify(prev.topics)) ||
+      ('start_ms' in patch && patch.start_ms !== prev.start_ms) ||
+      ('end_ms' in patch && patch.end_ms !== prev.end_ms)
+    if (changed) next.user_edited = true
     const dur = DURATIONS[next.media_file_id]
     if (next.end_ms - next.start_ms < 1000) throw new ApiError(422, 'A clip must be at least 1 second long.')
     if (next.start_ms < 0 || (dur && next.end_ms > dur)) throw new ApiError(422, 'The clip must lie inside the file.')

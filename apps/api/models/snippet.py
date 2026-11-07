@@ -524,6 +524,13 @@ class Snippet(AssetBound, Base):
         Enum(SnippetStatus, name="snippetstatus"),
         nullable=False, default=SnippetStatus.suggested, server_default=SnippetStatus.suggested.value,
     )
+    #: When a person last changed the title, topics or in/out points (PATCH
+    #: /snippets/{id}); NULL = never. A status change alone does not set it.
+    #: Clip detection treats a row with it like an approved one: never
+    #: replaced, and no new suggestion overlapping it.
+    user_edited_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

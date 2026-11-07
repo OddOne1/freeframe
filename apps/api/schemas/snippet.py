@@ -79,8 +79,9 @@ class DetectSummary(BaseModel):
     `ran` false with a `reason` when it was not run (no transcript yet, or a
     transcription is running and its own detect stage will pick the speaker
     up) or when it failed; the speaker change itself is saved either way.
-    `created` and `removed` count only `source='keyword'` suggestions: no
-    other clip is touched (tasks/transcribe_tasks.replace_keyword_snippets).
+    `created` and `removed` count only untouched `source='keyword'`
+    suggestions: approved, rejected, imported, hand-made and person-edited
+    clips are never touched (tasks/transcribe_tasks.replaceable_snippets).
     """
 
     ran: bool
@@ -169,6 +170,9 @@ class Clip(BaseModel):
     source: Optional[SnippetSourceLiteral] = None
     generator: Optional[str] = None
     status: Optional[SnippetStatusLiteral] = None
+    #: A person changed the title, topics or in/out points (PATCH sets
+    #: snippets.user_edited_at). Always false for a moment.
+    user_edited: bool = False
     stream_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
 

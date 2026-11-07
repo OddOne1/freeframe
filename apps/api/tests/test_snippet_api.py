@@ -31,7 +31,7 @@ The app is the real one; only `get_db` (this test's session) and
 """
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -620,10 +620,52 @@ def test_editor_edits_a_clip_and_gets_the_clip_back(db, world, api):
     assert clip["status"] == "approved"
     assert (clip["start_ms"], clip["end_ms"], clip["duration_ms"]) == (1000, 9000, 8000)
     assert (clip["source"], clip["generator"]) == ("keyword", "tfidf-v1"), "times edited, origin kept"
+    assert clip["user_edited"] is True
     assert clip["speaker"] == {"id": str(world.anna.id), "name": "Anna Example"}
     assert clip["asset_id"] == str(world.delta.id) and clip["asset_name"] == "Delta.mov"
     assert clip["stream_url"].startswith("/stream/hls/master.m3u8?token=")
     assert clip["thumbnail_url"].startswith("/stream/hls/thumb.jpg?token=")
+
+
+def _edited_at(db, snippet_id):
+    from apps.api.models.snippet import Snippet
+
+    db.expire_all()
+    return db.query(Snippet).filter_by(id=snippet_id).one().user_edited_at
+
+
+def test_a_status_change_or_an_unchanged_value_does_not_mark_a_clip_edited(db, world, api):
+    url = f"/snippets/{world.D1.id}"
+    editor = api.as_(world.editor)
+    r = editor.patch(url, json={"status": "approved"})
+    assert r.status_code == 200 and r.json()["user_edited"] is False
+    assert _edited_at(db, world.D1.id) is None
+    # The stored values again (title after cleaning, topics, times): no change.
+    r = editor.patch(url, json={"title": "  Clean  power ", "topics": ["Climate", "Energy"],
+                                "start_ms": 0, "end_ms": 10000, "status": "suggested"})
+    assert r.status_code == 200 and r.json()["user_edited"] is False
+    assert _edited_at(db, world.D1.id) is None
+    # A refused edit changes nothing either.
+    assert editor.patch(url, json={"start_ms": 9500}).status_code == 422
+    assert _edited_at(db, world.D1.id) is None
+
+
+@pytest.mark.parametrize("body", [
+    {"title": "A new title"},
+    {"title": ""},
+    {"topics": ["Energy"]},
+    {"start_ms": 500},
+    {"end_ms": 9000},
+])
+def test_changing_title_topics_or_times_marks_a_clip_edited(db, world, api, body):
+    before = datetime.now(timezone.utc)
+    r = api.as_(world.editor).patch(f"/snippets/{world.D1.id}", json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["user_edited"] is True
+    stamp = _edited_at(db, world.D1.id)
+    assert stamp is not None
+    stamp = stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+    assert before - timedelta(seconds=5) <= stamp <= datetime.now(timezone.utc) + timedelta(seconds=5)
 
 
 def test_an_audio_clip_streams_its_audio_and_has_no_thumbnail(db, world, api):
@@ -887,6 +929,16 @@ def test_search_query_count_does_not_grow_with_results(pg, world, api):
     assert lone["quote"] == "A glacier again here."
     assert count() == before_plain
     assert count(q="glacier") == before_q
+
+
+@needs_pg
+def test_moments_are_never_marked_edited_and_an_edited_clip_is(pg, world, api):
+    api.as_(world.editor).patch(f"/snippets/{world.SC.id}", json={"title": "River talk, cut"})
+    items = all_items(search(api, world, q="glacier"))
+    assert any(i["kind"] == "moment" for i in items)
+    assert all(i["user_edited"] is False for i in items if i["kind"] == "moment")
+    sc = next(i for i in all_items(search(api, world)) if i["id"] == str(world.SC.id))
+    assert sc["user_edited"] is True
 
 
 @needs_pg
