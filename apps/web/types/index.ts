@@ -1389,3 +1389,156 @@ export interface SidecarFile {
   parsed_metadata: Record<string, unknown>
   created_at: string
 }
+
+// ─── SocialSnippet (socialsnippet-api-contract.md draft v1, plus the
+// changes the finished backend made; see apps/api/schemas/snippet.py) ─────────
+
+export type SnippetSource = 'keyword' | 'llm' | 'import' | 'manual'
+export type SnippetStatus = 'suggested' | 'approved' | 'rejected'
+export type SnippetAspect = '9:16' | '16:9' | '1:1' | '4:5' | '3:4' | '4:3'
+export type SnippetSort = 'relevance' | 'quality' | 'viral' | 'length_asc' | 'length_desc'
+export type SnippetGroup = 'none' | 'speaker' | 'topic'
+
+export interface SnippetSettings {
+  enabled: boolean
+  source_folder_id: string | null
+  /** null = keep exports forever. */
+  export_retention_days: number | null
+  export_aspect: SnippetAspect
+  caption_font: string | null
+}
+
+export type SnippetSettingsPatch = Partial<SnippetSettings>
+
+export interface SnippetProcessResult {
+  asset_id: string
+  queued: boolean
+  /** e.g. "queued", "already transcribed", "not found". */
+  reason: string
+}
+
+export interface SnippetProcessResponse {
+  queued: number
+  results: SnippetProcessResult[]
+}
+
+export interface SnippetSpeaker {
+  id: string
+  name: string
+}
+
+export interface SnippetTrack {
+  track_index: number
+  label: string
+  speaker_id: string | null
+  speaker_name: string | null
+}
+
+export interface SnippetTrackSpeakerResponse extends SnippetTrack {
+  segments_relabelled: number
+}
+
+export interface SnippetSuggest {
+  names: SnippetSpeaker[]
+  topics: { topic: string; count: number }[]
+}
+
+export interface SnippetClip {
+  /** The snippet id, or "moment:{media_file_id}:{start_ms}" for a moment. */
+  id: string
+  kind: 'snippet' | 'moment'
+  asset_id: string
+  asset_name: string
+  media_file_id: string
+  speaker: SnippetSpeaker | null
+  start_ms: number
+  end_ms: number
+  duration_ms: number
+  /** Null for a moment. */
+  title: string | null
+  quote: string | null
+  topics: string[]
+  /** null = not scored, which is shown as nothing, never as zero. */
+  quality_score: number | null
+  viral_score: number | null
+  /** source, generator and status are null for a moment: it is a transcript
+   *  hit, not a stored clip. */
+  source: SnippetSource | null
+  generator: string | null
+  status: SnippetStatus | null
+  /** The WHOLE file (HLS master playlist, or the original file before it is
+   *  transcoded), never a cut clip: the player seeks to start_ms itself. */
+  stream_url: string | null
+  /** Null for audio-only files. */
+  thumbnail_url: string | null
+}
+
+export interface SnippetClipGroup {
+  key: string
+  label: string
+  items: SnippetClip[]
+}
+
+export interface SnippetSearchResponse {
+  /** With group=topic a clip appears in each of its topics, so this counts
+   *  entries, not distinct clips. */
+  total: number
+  page: number
+  page_size: number
+  groups: SnippetClipGroup[]
+}
+
+export interface SnippetSearchParams {
+  q?: string
+  speaker_id?: string[]
+  topic?: string[]
+  min_ms?: number | null
+  max_ms?: number | null
+  source?: SnippetSource[]
+  status?: SnippetStatus[]
+  sort?: SnippetSort
+  group?: SnippetGroup
+  page?: number
+  page_size?: number
+}
+
+export interface SnippetTranscriptWord {
+  start_ms: number
+  end_ms: number
+  word: string
+}
+
+export interface SnippetTranscriptSegment {
+  id: string
+  track_index: number
+  speaker_name: string | null
+  start_ms: number
+  end_ms: number
+  text: string
+  status: string
+  words: SnippetTranscriptWord[]
+}
+
+export interface SnippetTranscript {
+  language: string | null
+  segments: SnippetTranscriptSegment[]
+}
+
+export interface SnippetPatch {
+  title?: string | null
+  topics?: string[]
+  status?: SnippetStatus
+  start_ms?: number
+  end_ms?: number
+}
+
+/** Prompt #8's export job. Not in the draft v1 contract: the shape below is
+ *  what this UI assumes (id, status, progress 0..1 or 0..100, download_url
+ *  once done). */
+export interface SnippetExport {
+  id: string
+  status: 'queued' | 'running' | 'done' | 'failed' | string
+  progress: number | null
+  download_url: string | null
+  error?: string | null
+}

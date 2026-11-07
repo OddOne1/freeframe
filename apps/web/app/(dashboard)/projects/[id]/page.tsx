@@ -68,6 +68,7 @@ import { useShareLinks } from "@/hooks/use-share-links";
 import { FolderTree, RecentlyDeletedEntry } from "@/components/projects/folder-tree";
 import { RecentlyDeleted } from "@/components/projects/recently-deleted";
 import { FolderNavigator } from "@/components/projects/folder-navigator";
+import { SnippetEntry } from "@/components/snippets/snippet-entry";
 import {
   ShareLinksSection,
   ProjectStorageMeter,
@@ -1096,6 +1097,10 @@ export default function ProjectDetailPage() {
             folder navigator can show the SAME list below `xl`, where this
             column does not exist and nothing led to the share links at
             all. Nothing about what this column renders changed. */}
+        {/* SocialSnippet sits directly above Share Links, in this column
+            and in the phone/tablet panel below. It decides for itself
+            whether to show (enabled, or owner set-up, or nothing). */}
+        <SnippetEntry projectId={projectId} />
         {canSeeShareLinks && <ShareLinksSection {...shareLinksSectionProps} />}
 
 
@@ -1198,6 +1203,7 @@ export default function ProjectDetailPage() {
           }
           extra={(close) => (
             <>
+              <SnippetEntry projectId={projectId} onSelect={close} />
               {canSeeShareLinks && (
                 <ShareLinksSection {...shareLinksSectionProps} onSelect={close} />
               )}
