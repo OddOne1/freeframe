@@ -96,7 +96,10 @@ def _jobs(*specs):
     ("not_started", [], 0, ("not_processed", None)),
     ("processing", [], 0, ("queued", None)),
     ("processing", [("plan", "pending", None)], 0, ("queued", None)),
-    ("processing", [("plan", "done", None)], 0, ("running", None)),
+    # A resumed file waiting in the queue keeps its done rows: still queued.
+    ("processing", [("plan", "done", None)], 0, ("queued", None)),
+    ("processing", [("plan", "done", None), ("transcribe:track0", "done", "no speech"),
+                    ("transcribe:track1", "pending", None)], 0, ("queued", None)),
     ("ready", [("plan", "done", None), ("transcribe:track0", "running", None)], 0, ("running", None)),
     # A Celery retry: the earlier failure is still recorded while the task runs again.
     ("processing", [("plan", "done", None), ("gate", "failed", "boom")], 0, ("running", None)),
@@ -108,6 +111,10 @@ def _jobs(*specs):
     ("ready", [("store", "done", None), ("detect", "done", None)], 7, ("done", None)),
     # No speech at all: no segments, but the store stage finished.
     ("ready", [("store", "done", None)], 0, ("done", None)),
+    ("ready", [("transcribe:track0", "done", "no speech"), ("store", "done", "no speech found"),
+               ("detect", "done", None)], 0, ("done", None)),
+    # A track's "no speech" note is not an error of the file.
+    ("ready", [("transcribe:track1", "done", "no speech"), ("store", "done", None)], 4, ("done", None)),
     # An imported transcript with no jobs at all.
     ("not_started", [], 3, ("done", None)),
     ("ready", [("store", "done", None), ("detect", "failed", "KeyError: x")], 5,
@@ -138,6 +145,11 @@ def test_stage_names_match_the_pipeline():
 
     assert snippet_files.STORE_STAGE == transcribe_tasks.SNIPPET_STAGE_STORE
     assert snippet_files.DETECT_STAGE == transcribe_tasks.SNIPPET_STAGE_DETECT
+    from apps.api.services import snippet_admin
+    assert transcribe_tasks.snippet_track_stage(3) == f"{snippet_admin.TRACK_STAGE_PREFIX}3"
+    assert snippet_admin.track_of_stage(transcribe_tasks.snippet_track_stage(12)) == 12
+    assert snippet_admin.track_of_stage("gate") is None
+    assert snippet_admin.track_of_stage("transcribe:trackX") is None
 
 
 # ── Access ─────────────────────────────────────────────────────────────────
@@ -549,3 +561,99 @@ def test_a_failing_detect_keeps_the_speaker_and_reports_it(db, world, api):
     alpha = by_name(files(api, world))["Alpha.mov"]
     assert alpha["snippet_status"] == "done"
     assert alpha["error"] == "Clip detection failed: ValueError: no windows today"
+
+
+# ── No speech, track counts and resume ─────────────────────────────────────
+
+
+def test_no_speech_tracks_are_labelled_and_counted(db, world, api):
+    """Alpha has two recorded tracks; track 0 is mapped, so a run transcribes
+    exactly track 0. Fresh has no recorded streams and no mapping."""
+    add_job(db, world.alpha_mf, "transcribe:track1", "done", error="no speech")
+    add_job(db, world.alpha_mf, "transcribe:track0", "done")
+    db.commit()
+    body = by_name(files(api, world))
+    alpha = body["Alpha.mov"]
+    assert [t["label"] for t in alpha["tracks"]] == [
+        "Lav Anna · 1 ch · de", "Track 2 · stereo · no speech"]
+    assert alpha["planned_track_count"] == 1 and alpha["done_track_count"] == 1
+    tracks = api.as_(world.viewer).get(f"/media-files/{world.alpha_mf.id}/snippet/tracks").json()
+    assert tracks == alpha["tracks"], "one rule for both endpoints"
+    fresh = body["Fresh.wav"]
+    assert fresh["planned_track_count"] is None and fresh["done_track_count"] == 0
+
+
+def test_a_no_speech_track_without_recorded_streams_is_still_listed(db, world, api):
+    add_job(db, world.fresh_mf, "transcribe:track0", "done")
+    add_job(db, world.fresh_mf, "transcribe:track2", "done", error="no speech")
+    db.commit()
+    rows = api.as_(world.viewer).get(f"/media-files/{world.fresh_mf.id}/snippet/tracks").json()
+    assert [(r["track_index"], r["label"]) for r in rows] == [(2, "Track 3 · no speech")]
+
+
+def _job_rows(db, mf):
+    from apps.api.models.snippet import SnippetJob
+    db.expire_all()
+    return {j.stage: (j.status.value, j.error)
+            for j in db.query(SnippetJob).filter(SnippetJob.media_file_id == mf.id)}
+
+
+def test_process_without_force_resumes_a_failed_file(db, world, api):
+    """Fresh failed on track 2 after track 1 was found silent; Alpha's
+    transcript is finished. Without force: Fresh is queued with its done
+    stages kept, Alpha is skipped. With force: every row of Alpha goes."""
+    from apps.api.models.asset import MediaFile, TranscriptionStatus
+
+    mf = db.query(MediaFile).filter_by(id=world.fresh_mf.id).one()
+    mf.transcription_status = TranscriptionStatus.failed
+    add_job(db, world.fresh_mf, "plan", "done")
+    add_job(db, world.fresh_mf, "transcribe:track0", "done")
+    add_job(db, world.fresh_mf, "transcribe:track1", "done", error="no speech")
+    add_job(db, world.fresh_mf, "transcribe:track2", "failed", error="ConnectionError: reset")
+    add_job(db, world.fresh_mf, "transcribe:track3", "running")
+    for stage in ("plan", "store", "detect"):
+        add_job(db, world.alpha_mf, stage, "done")
+    db.commit()
+
+    url = f"/projects/{world.A.id}/snippet/process"
+    with patch("apps.api.tasks.transcribe_tasks.transcribe_asset.delay",
+               return_value=SimpleNamespace(id="t-resume")):
+        r = api.as_(world.owner).post(url, json={"asset_ids": [str(world.fresh.id), str(world.alpha.id)]})
+    out = {i["asset_id"]: (i["queued"], i["reason"]) for i in r.json()["results"]}
+    assert out == {str(world.fresh.id): (True, "queue"),
+                   str(world.alpha.id): (False, "already transcribed")}
+    assert _job_rows(db, world.fresh_mf) == {
+        "plan": ("done", None),
+        "transcribe:track0": ("done", None),
+        "transcribe:track1": ("done", "no speech"),
+        "transcribe:track2": ("pending", None),
+        "transcribe:track3": ("pending", None),
+    }
+    assert by_name(files(api, world))["Fresh.wav"]["snippet_status"] == "queued", \
+        "kept done rows do not make a waiting file look like it is running"
+
+    with patch("apps.api.tasks.transcribe_tasks.transcribe_asset.delay",
+               return_value=SimpleNamespace(id="t-force")):
+        r = api.as_(world.owner).post(url, json={"asset_ids": [str(world.alpha.id)], "force": True})
+    assert r.json()["queued"] == 1
+    assert _job_rows(db, world.alpha_mf) == {}, "force: from scratch, as before"
+
+
+def test_a_failed_file_with_an_older_transcript_is_resumed_not_skipped(db, world, api):
+    """Alpha has segments from an earlier run; its latest run failed. A
+    retry without force continues it instead of answering "already
+    transcribed" (which used to make the web force a full restart)."""
+    from apps.api.models.asset import MediaFile, TranscriptionStatus
+
+    mf = db.query(MediaFile).filter_by(id=world.alpha_mf.id).one()
+    mf.transcription_status = TranscriptionStatus.failed
+    add_job(db, world.alpha_mf, "transcribe:track0", "done")
+    add_job(db, world.alpha_mf, "gate", "failed", error="OSError: disk full")
+    db.commit()
+    with patch("apps.api.tasks.transcribe_tasks.transcribe_asset.delay",
+               return_value=SimpleNamespace(id="t-retry")):
+        r = api.as_(world.owner).post(f"/projects/{world.A.id}/snippet/process",
+                                      json={"asset_ids": [str(world.alpha.id)]})
+    assert r.json()["results"][0] == {"asset_id": str(world.alpha.id), "queued": True, "reason": "queue"}
+    assert _job_rows(db, world.alpha_mf) == {"transcribe:track0": ("done", None),
+                                             "gate": ("pending", None)}

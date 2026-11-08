@@ -6,12 +6,13 @@
 import type { SnippetDetectSummary, SnippetFile, SnippetFileStatus } from '@/types'
 
 /**
- * How many times faster than real time the server's CPU transcribes, on
- * average: a 25-minute file takes about 10 minutes. AN ESTIMATE, not a
- * measurement of this server; every place it is shown says so. The one
- * number to change when the worker's hardware does.
+ * How many times faster than real time the server's CPU transcribes ONE
+ * audio track. Measured on speech-dense audio at about 1.6x (a 57-minute
+ * track took 35 minutes) and rounded down to 1.5, so a 30-minute track
+ * reads as about 20 minutes. Still AN ESTIMATE; every place it is shown says
+ * so. The one number to change when the worker's hardware does.
  */
-export const SERVER_CPU_SPEED_FACTOR = 2.5
+export const SERVER_CPU_SPEED_FACTOR = 1.5
 
 /** POST /snippet/process takes at most this many assets per request. */
 export const MAX_PROCESS_BATCH = 20
@@ -26,18 +27,52 @@ export interface ProcessingEstimate {
   unknown: number
 }
 
-/** Roughly how long the server needs for these files: duration / factor. */
+/** One file for the estimate: its length, and how many tracks are still to
+ *  transcribe when the files list says (null or left out: count it once). */
+export interface EstimateItem {
+  durationMs: number | null | undefined
+  tracks?: number | null
+}
+
+/**
+ * How many tracks a run of this file transcribes, from the files list:
+ * `force` (Reprocess) redoes every planned track, otherwise the tracks
+ * already done (transcribed, or found to have no speech) are kept. Null
+ * when the list does not know the file's tracks.
+ */
+export function tracksToTranscribe(
+  f: Pick<SnippetFile, 'planned_track_count' | 'done_track_count'>,
+  force: boolean,
+): number | null {
+  if (f.planned_track_count == null) return null
+  if (force) return f.planned_track_count
+  return Math.max(0, f.planned_track_count - (f.done_track_count ?? 0))
+}
+
+/**
+ * Roughly how long the server needs for these files: duration × tracks still
+ * to transcribe / factor, where a file whose track count is unknown counts
+ * once. A file with nothing left to transcribe (only the quick final stages)
+ * still makes it at least a minute rather than "unknown".
+ */
 export function estimateProcessing(
-  durationsMs: (number | null | undefined)[],
+  items: (EstimateItem | number | null | undefined)[],
   factor: number = SERVER_CPU_SPEED_FACTOR,
 ): ProcessingEstimate {
   let ms = 0
   let unknown = 0
-  for (const d of durationsMs) {
-    if (d == null || !Number.isFinite(d) || d <= 0) unknown += 1
-    else ms += d
+  let known = 0
+  for (const item of items) {
+    const { durationMs: d, tracks } =
+      typeof item === 'object' && item !== null ? item : { durationMs: item, tracks: null }
+    if (d == null || !Number.isFinite(d) || d <= 0) {
+      unknown += 1
+      continue
+    }
+    known += 1
+    ms += d * (tracks != null && Number.isFinite(tracks) && tracks >= 0 ? tracks : 1)
   }
-  return { minutes: ms > 0 ? Math.max(1, Math.ceil(ms / factor / 60_000)) : 0, unknown }
+  return { minutes: known > 0 ? Math.max(1, Math.ceil(ms / factor / 60_000)) : 0, unknown }
 }
 
 /** "about 12 min on the server CPU", or "about 1 h 05 min …" past an hour. */
@@ -65,15 +100,19 @@ const LABELS: Record<SnippetFileStatus, { label: string; tone: StatusTone }> = {
 /**
  * The status chip. A file whose own upload or transcode is not finished says
  * so instead, since that is what stops it; a finished transcript whose clip
- * detection failed is "Done" with a warning, because the transcript is good.
+ * detection failed is "Done" with a warning, because the transcript is good;
+ * a file done with no segments at all had no speech on any track.
  */
 export function statusLabel(
-  f: Pick<SnippetFile, 'snippet_status' | 'error' | 'not_ready_reason'>,
+  f: Pick<SnippetFile, 'snippet_status' | 'error' | 'not_ready_reason' | 'segment_count'>,
 ): { label: string; tone: StatusTone } {
   if (f.not_ready_reason && f.snippet_status === 'not_processed') {
     return { label: 'Not ready', tone: 'neutral' }
   }
   if (f.snippet_status === 'done' && f.error) return { label: 'Done, no new clips', tone: 'warning' }
+  if (f.snippet_status === 'done' && f.segment_count === 0) {
+    return { label: 'Done, no speech found', tone: 'neutral' }
+  }
   return LABELS[f.snippet_status] ?? { label: f.snippet_status, tone: 'neutral' }
 }
 
@@ -90,9 +129,10 @@ export function canSelect(f: Pick<SnippetFile, 'asset_status' | 'snippet_status'
   return f.asset_status === 'ready' && f.media_file_id != null && !isActive(f.snippet_status)
 }
 
-/** Retrying a failure has to force when a transcript is already there, or the
- *  server skips the file as "already transcribed". */
-export const retryNeedsForce = (f: Pick<SnippetFile, 'segment_count'>) => f.segment_count > 0
+/** Retry never forces: the server resumes a failed or interrupted file
+ *  (finished stages are kept) even when an older transcript is still there.
+ *  Only Reprocess starts from scratch. */
+export const RETRY_FORCES = false
 
 /** A file's length: "4:05", or "1:12:00" from an hour up. */
 export function formatLength(ms: number): string {

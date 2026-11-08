@@ -121,6 +121,12 @@ class SnippetFileItem(BaseModel):
     error: Optional[str] = None
     updated_at: Optional[datetime] = None
     tracks: list[TrackOut]
+    #: How many tracks a run transcribes (mapped tracks, else every track but
+    #: a stereo fullmix); null when the file's audio streams are not recorded.
+    planned_track_count: Optional[int] = None
+    #: How many of those have a finished stage ("no speech" included): what a
+    #: resume does not redo.
+    done_track_count: int = 0
 
 
 class SnippetFilesOut(BaseModel):

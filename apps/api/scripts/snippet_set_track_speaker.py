@@ -109,6 +109,9 @@ def list_tracks(db, media_file_id) -> dict:
         "mapping": mapping,
         "would_transcribe": selected,
         "reason": reason,
+        # The same labels GET /media-files/{id}/snippet/tracks answers with,
+        # "no speech" included for a track the last run found none on.
+        "labels": {r["track_index"]: r["label"] for r in snippet_admin.track_rows(db, media_file)},
     }
 
 
@@ -116,6 +119,7 @@ def _print_list(info: dict) -> None:
     print(f"Media file {info['media_file_id']} (project {info['project_id']})")
     streams = info["audio_streams"]
     mapping = info["mapping"]
+    labels = info.get("labels") or {}
     if streams is None:
         print("  Audio streams: not recorded in technical_metadata "
               "(the pipeline probes the file itself when it runs).")
@@ -129,11 +133,17 @@ def _print_list(info: dict) -> None:
         title = f" title={s.get('title')!r}" if s.get("title") else ""
         lang = f" lang={s.get('language')}" if s.get("language") else ""
         who = mapping.get(idx, "-")
+        label = f"  [{labels[idx]}]" if idx in labels else ""
         print(f"  track {idx}: stream #{s.get('stream_index')} {s.get('codec')} {layout} "
-              f"{s.get('sample_rate')} Hz{lang}{title}  -> {who}")
+              f"{s.get('sample_rate')} Hz{lang}{title}{label}  -> {who}")
     for idx, name in sorted(mapping.items()):
         if idx not in shown:
-            print(f"  track {idx}: (not in recorded streams)  -> {name}")
+            label = f"  [{labels[idx]}]" if idx in labels else ""
+            print(f"  track {idx}: (not in recorded streams){label}  -> {name}")
+    if streams is None:
+        for idx, label in sorted(labels.items()):
+            if idx not in mapping:
+                print(f"  track {idx}: [{label}]  -> -")
     if info["would_transcribe"] is not None:
         print(f"  Next run transcribes: {info['would_transcribe']} ({info['reason']})")
 

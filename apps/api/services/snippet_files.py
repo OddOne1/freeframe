@@ -18,11 +18,12 @@ No column says it; it is read off what the pipeline leaves behind (see
 
   * the file's `snippet_jobs` rows, one per stage;
   * whether it has transcript segments;
-  * `media_files.transcription_status`, for one gap the jobs cannot cover:
-    `snippet_admin.reprocess` DELETES a file's job rows before it queues
-    the task (so the task redoes every stage), and sets the status to
-    `processing`. Between that and the worker picking the task up, the file
-    has no jobs at all, and only the status says it is queued.
+  * `media_files.transcription_status`, for what the jobs alone cannot
+    say: `snippet_admin.reprocess` sets it to `processing` when it queues
+    the task. A forced run's job rows are deleted first, so until the
+    worker picks the task up the file has no jobs at all; a resumed run
+    keeps its done rows and puts the rest back to pending. Either way no
+    stage is running or failed, and only the status says it is queued.
 
 ── Cost ────────────────────────────────────────────────────────────────────
 A fixed number of statements however many files are on the page: the
@@ -89,10 +90,13 @@ def derive_status(transcription_status, jobs: Iterable[JobView],
     """(snippet_status, error) for one media file. Pure; the order is the rule.
 
     1. Any stage running: `running`.
-    2. `transcription_status` is `processing` with no stage running: `queued`
-       while no stage has started (no rows, or only pending ones), else
-       `running` -- the worker is between two stages, or resuming finished
-       ones from their stored output.
+    2. `transcription_status` is `processing` with no stage running:
+       `running` when a stage has failed (a Celery retry of a transient
+       error is under way), else `queued`. Done rows do not count as
+       started: a resumed file keeps its done rows while it waits in the
+       queue. The price is that a file whose worker is between two stages
+       (milliseconds), or reloading finished stages on a resume (seconds),
+       reads `queued` for that moment.
     3. A stage other than detect failed: `failed`, with that stage's error.
        This includes a run the task refused because a person edited the
        transcript; the old transcript is still there, and the error says why.
@@ -109,8 +113,8 @@ def derive_status(transcription_status, jobs: Iterable[JobView],
     if any(j.status == SnippetJobStatus.running for j in jobs):
         return RUNNING, None
     if transcription_status == TranscriptionStatus.processing:
-        started = any(j.status != SnippetJobStatus.pending for j in jobs)
-        return (RUNNING if started else QUEUED), None
+        retrying = any(j.status == SnippetJobStatus.failed for j in jobs)
+        return (RUNNING if retrying else QUEUED), None
     failed = [j for j in jobs if j.status == SnippetJobStatus.failed]
     pipeline_failed = [j for j in failed if j.stage != DETECT_STAGE]
     if pipeline_failed:
@@ -288,13 +292,29 @@ def list_files(db, project_id, source_folder_id, q: Optional[str], page: int,
         file_jobs = jobs.get(mf_id, [])
         by_track = segments.get(mf_id, {})
         segment_count = sum(by_track.values())
+        planned, done_tracks = None, 0
         if mf is None:
             snippet_status, error, tracks = NOT_PROCESSED, None, []
         else:
             snippet_status, error = derive_status(mf.transcription_status, file_jobs, segment_count)
+            streams = snippet_admin.audio_streams(mf)
+            file_mapping = mapping.get(mf_id, {})
+            no_speech = {
+                snippet_admin.track_of_stage(j.stage) for j in file_jobs
+                if snippet_admin.is_no_speech_job(j.stage, j.status, j.error)
+            }
             tracks = snippet_admin.build_track_rows(
-                snippet_admin.audio_streams(mf), mapping.get(mf_id, {}), set(by_track),
+                streams, file_mapping, set(by_track), no_speech,
             )
+            # For the Files tab's estimate: what a run transcribes, and how
+            # much of that a resume keeps.
+            planned = snippet_admin.planned_tracks(streams, file_mapping)
+            finished = {
+                snippet_admin.track_of_stage(j.stage) for j in file_jobs
+                if j.status == SnippetJobStatus.done
+                and snippet_admin.track_of_stage(j.stage) is not None
+            }
+            done_tracks = len(finished & set(planned)) if planned is not None else 0
         stamps = [s for s in [asset.updated_at, *(j.updated_at for j in file_jobs)] if s]
         items.append({
             "asset_id": asset.id,
@@ -311,5 +331,7 @@ def list_files(db, project_id, source_folder_id, q: Optional[str], page: int,
             "error": error,
             "updated_at": max(stamps, key=_utc) if stamps else None,
             "tracks": tracks,
+            "planned_track_count": len(planned) if planned is not None else None,
+            "done_track_count": done_tracks,
         })
     return FilesPage(total=total, items=items)

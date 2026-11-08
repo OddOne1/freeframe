@@ -21,6 +21,8 @@ from apps.api.services.snippet_transcribe import (
     dominant_language,
     folder_in_scope,
     gate_words_by_track,
+    has_speech_level,
+    is_whisper_no_speech_error,
     rms_profile,
     select_tracks,
     span_level_db,
@@ -269,3 +271,106 @@ def test_dominant_language_is_the_track_with_most_words():
               1: {"language": "en", "language_probability": 0.8}}
     gated = {0: [_segment((0, 1))], 1: [_segment((0, 1), (1, 2), (2, 3))]}
     assert dominant_language(tracks, gated) == ("en", 0.8)
+
+
+# ── speech or not ──────────────────────────────────────────────────────────
+
+
+def test_speech_level_needs_a_second_above_the_floor():
+    floor = 10 ** (-55 / 20)
+    assert has_speech_level([0.1] * 10) is True, "1 s of -20 dBFS"
+    assert has_speech_level([0.1] * 9 + [0.0] * 1000) is False, "0.9 s is not enough"
+    assert has_speech_level([floor * 1.01] * 10) is True
+    assert has_speech_level([floor * 0.99] * 100_000) is False, "hours of hiss below the floor"
+    assert has_speech_level([]) is False and has_speech_level([0.0] * 34_000) is False
+    assert has_speech_level([0.1] * 20, frame_ms=50) is True
+    with pytest.raises(ValueError):
+        has_speech_level([0.1], frame_ms=0)
+
+
+@pytest.mark.parametrize("exc, expected", [
+    (ValueError("max() arg is an empty sequence"), True),
+    # Everything else is a real failure and must propagate.
+    (ValueError("max() arg is an empty sequence "), False),
+    (ValueError("Max() arg is an empty sequence"), False),
+    (ValueError("invalid literal for int()"), False),
+    (ValueError(), False),
+    (RuntimeError("max() arg is an empty sequence"), False),
+    (type("SubValueError", (ValueError,), {})("max() arg is an empty sequence"), False),
+], ids=["exact", "trailing-space", "case", "other-message", "no-message", "runtime", "subclass"])
+def test_only_the_exact_whisper_error_means_no_speech(exc, expected):
+    assert is_whisper_no_speech_error(exc) is expected
+
+
+def test_the_message_is_what_this_python_says_for_an_empty_max():
+    """The worker and the test image run the same CPython line (3.11); if
+    an upgrade changes the wording, this fails before the server does."""
+    from apps.api.services.snippet_transcribe import WHISPER_NO_SPEECH_MESSAGE
+    with pytest.raises(ValueError) as caught:
+        max([])
+    assert str(caught.value) == WHISPER_NO_SPEECH_MESSAGE
+
+
+@needs_ffmpeg
+def test_a_generated_silent_wav_has_no_speech_level_and_a_tone_has(tmp_path):
+    silent = tmp_path / "silent.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono",
+         "-t", "5", "-c:a", "pcm_s16le", str(silent)],
+        check=True,
+    )
+    rms = rms_profile(str(silent))
+    assert len(rms) == 50 and max(rms) == 0.0
+    assert has_speech_level(rms) is False
+    assert has_speech_level(rms_profile(_tone(tmp_path / "loud.wav"))) is True
+    # -21 dBFS tone pulled down 30 dB: about -51 dBFS, quiet speech. Still asked.
+    assert has_speech_level(rms_profile(_tone(tmp_path / "quiet.wav", volume_db=-30))) is True
+    # 40 dB down, about -61 dBFS: below the floor.
+    assert has_speech_level(rms_profile(_tone(tmp_path / "hiss.wav", volume_db=-40))) is False
+
+
+# ── which failures are retried ─────────────────────────────────────────────
+
+
+def _client_error(code):
+    from botocore.exceptions import ClientError
+    return ClientError({"Error": {"Code": code}}, "GetObject")
+
+
+def _transient_cases():
+    import subprocess as sp
+    from botocore.exceptions import EndpointConnectionError, ReadTimeoutError
+    from sqlalchemy.exc import OperationalError
+    from apps.api.tasks.transcribe_tasks import _FfmpegError
+
+    return [
+        (ConnectionError("reset by peer"), True),
+        (TimeoutError("read timed out"), True),
+        (sp.TimeoutExpired(["ffmpeg"], 10), True),
+        (sp.CalledProcessError(1, ["ffmpeg"]), True),
+        (_FfmpegError("ffmpeg could not extract audio track 1"), True),
+        (EndpointConnectionError(endpoint_url="http://s3"), True),
+        (ReadTimeoutError(endpoint_url="http://s3"), True),
+        (_client_error("SlowDown"), True),
+        (_client_error("InternalError"), True),
+        (OperationalError("SELECT 1", {}, Exception("server closed the connection")), True),
+        (MemoryError(), True),
+        (RuntimeError("std::bad_alloc"), True),
+        (RuntimeError("CUDA failed: out of memory"), True),
+        # Deterministic: fail the stage at once.
+        (ValueError("max() arg is an empty sequence"), False),
+        (ValueError("bad"), False),
+        (KeyError("segments"), False),
+        (TypeError("NoneType"), False),
+        (_client_error("NoSuchKey"), False),
+        (_client_error("404"), False),
+        (_client_error("AccessDenied"), False),
+        (RuntimeError("Whisper model 'small.en' is an English-only checkpoint"), False),
+        (Exception("anything unknown"), False),
+    ]
+
+
+def test_retry_classification():
+    from apps.api.tasks.transcribe_tasks import _is_transient
+    for exc, expected in _transient_cases():
+        assert _is_transient(exc) is expected, (type(exc).__name__, str(exc))

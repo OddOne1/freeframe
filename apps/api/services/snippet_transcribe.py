@@ -223,6 +223,63 @@ def _to_db(rms: float) -> float:
     return 20.0 * math.log10(rms) if rms > 0 else _SILENCE_DB
 
 
+# ── Speech or not ────────────────────────────────────────────────────────────
+
+#: What a track without speech is marked with: the `error` column of its done
+#: `transcribe:track{N}` row (a note there, not an error: the stage
+#: succeeded), and the label the tracks list and `--list` append.
+NO_SPEECH = "no speech"
+
+#: The store stage's note, and the message of the completion event, when no
+#: track of the file has speech at all.
+NO_SPEECH_FOUND = "no speech found"
+
+#: Below this level (dBFS, per RMS frame) a frame counts as silent. Quiet
+#: speech on a distant or badly set microphone still reads around -45 dBFS
+#: at 100 ms frames; room tone and preamp hiss sit far below. Set low on
+#: purpose: a track wrongly called silent loses its words, while a silent
+#: track wrongly called loud only costs a Whisper pass, whose own VAD then
+#: finds nothing (see `is_whisper_no_speech_error`).
+SPEECH_FLOOR_DBFS = -55.0
+
+#: How much of the track has to be above the floor before Whisper is run.
+SPEECH_MIN_SECONDS = 1.0
+
+
+def has_speech_level(rms: list[float], frame_ms: int = 100,
+                     floor_db: float = SPEECH_FLOOR_DBFS,
+                     min_seconds: float = SPEECH_MIN_SECONDS) -> bool:
+    """Could this track hold speech at all, judged by level alone?
+
+    False only when less than `min_seconds` of the track is above
+    `floor_db`: an unplugged input, a muted channel, digital silence. The
+    cheap first check before a Whisper pass that costs about two thirds of
+    the track's length; it never says a track HAS speech, only that it is
+    worth asking Whisper.
+    """
+    if frame_ms <= 0:
+        raise ValueError("frame_ms must be positive")
+    floor = 10.0 ** (floor_db / 20.0)
+    loud = sum(1 for v in rms or [] if v >= floor)
+    return loud * frame_ms / 1000.0 >= min_seconds
+
+
+#: The exact message of the error faster-whisper 1.0.3 raises from its
+#: language detection when the VAD filter removed ALL of the audio: it takes
+#: max() over the probabilities of zero segments. CPython 3.11's wording of
+#: max() on an empty sequence, which is what the worker runs.
+WHISPER_NO_SPEECH_MESSAGE = "max() arg is an empty sequence"
+
+
+def is_whisper_no_speech_error(exc: BaseException) -> bool:
+    """Is this faster-whisper saying "the VAD found no speech", and nothing else?
+
+    Only a ValueError with exactly that message. Every other ValueError --
+    and anything that merely mentions the words -- is a real failure.
+    """
+    return type(exc) is ValueError and str(exc) == WHISPER_NO_SPEECH_MESSAGE
+
+
 def span_level_db(rms: list[float], start: float, end: float, frame_ms: int = 100) -> float:
     """Level in dBFS over [start, end) seconds: the RMS of the frames it touches.
 

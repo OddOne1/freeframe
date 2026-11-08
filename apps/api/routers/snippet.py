@@ -320,10 +320,14 @@ def process_assets(
 
     The rules are snippet_reprocess.py's (services/snippet_admin.py): in
     scope, a video or audio file whose latest version is `ready`,
-    transcription on, nothing running, no edited segments. A file that already has a transcript is skipped unless
-    `force`; with `force` it is transcribed afresh. Each asset answers with
-    whether it was queued and why not; an id that is not a live asset of
-    this project answers "not found".
+    transcription on, nothing running, no edited segments.
+
+    Without `force`: a file whose transcript is finished is skipped ("already
+    transcribed"); a failed or interrupted file RESUMES -- every stage it
+    already finished (a transcribed track, a track with no speech) is kept
+    and only what is missing is redone. With `force` every stage starts
+    from scratch. Each asset answers with whether it was queued and why
+    not; an id that is not a live asset of this project answers "not found".
     """
     _require_owner(db, project_id, current_user)
     _require_enabled(db, project_id)
@@ -333,7 +337,7 @@ def process_assets(
     )
     from ..tasks.transcribe_tasks import transcribe_asset
 
-    queued = snippet_admin.reprocess(db, candidates, transcribe_asset.delay)
+    queued = snippet_admin.reprocess(db, candidates, transcribe_asset.delay, force=body.force)
     by_id = {c.asset_id: c for c in candidates}
     results = []
     for asset_id in wanted:

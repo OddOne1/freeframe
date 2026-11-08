@@ -153,9 +153,11 @@ class Stub:
         self.script = {
             0: lambda: [_seg(0.2, 1.6, *HALLO)],
             1: lambda: [_seg(0.2, 1.6, *HALLO), _seg(2.2, 3.5, *GUTEN)],
+            2: lambda: [_seg(0.2, 1.6, *HALLO)],
+            3: lambda: [_seg(2.2, 3.5, *GUTEN)],
             None: lambda: [_seg(0.2, 1.6, *HALLO, text=" Hallo zusammen")],
         }
-        self.languages = {0: "de", 1: "de", None: "de"}
+        self.languages = {0: "de", 1: "de", 2: "de", 3: "de", None: "de"}
         stub = self
 
         class WhisperModel:
@@ -471,7 +473,7 @@ def test_a_crash_in_track_1_resumes_without_redoing_track_0(Session, two_track_s
     ok_track1 = stub.script[1]
 
     def _crash():
-        raise RuntimeError("worker fell over in track 1")
+        raise ConnectionError("worker lost the S3 connection in track 1")
 
     stub.script[1] = _crash
     exc = run(w)
@@ -481,7 +483,7 @@ def test_a_crash_in_track_1_resumes_without_redoing_track_0(Session, two_track_s
     assert j["plan"][:2] == ("done", 1)
     assert j["transcribe:track0"][:2] == ("done", 1)
     assert j["transcribe:track1"][:2] == ("failed", 1)
-    assert "worker fell over in track 1" in j["transcribe:track1"][2]
+    assert "worker lost the S3 connection in track 1" in j["transcribe:track1"][2]
     assert "gate" not in j and "store" not in j
     assert w.s3.has("snippet/raw_track_0.json") and not w.s3.has("snippet/raw_track_1.json")
     assert segments(w) == []
@@ -710,7 +712,7 @@ def test_set_track_speaker_creates_reuses_and_relabels(Session, two_track_source
     db.close()
 
 
-def test_reprocess_resets_stages_and_queues_only_what_is_in_scope(Session, two_track_source, stub):
+def test_forced_reprocess_resets_stages_and_queues_only_what_is_in_scope(Session, two_track_source, stub):
     from apps.api.scripts.snippet_reprocess import find_candidates, reprocess
     w = _build_world(Session, two_track_source)
     assert run(w) is None
@@ -722,10 +724,11 @@ def test_reprocess_resets_stages_and_queues_only_what_is_in_scope(Session, two_t
 
     queued = []
     n = reprocess(db, candidates,
-                  lambda a, v: queued.append((a, v)) or SimpleNamespace(id="task-123"))
+                  lambda a, v: queued.append((a, v)) or SimpleNamespace(id="task-123"),
+                  force=True)
     db.close()
     assert n == 1 and queued == [(str(w.asset_id), str(w.version_id))]
-    assert jobs(w) == {}, "stages reset: the next run redoes every track"
+    assert jobs(w) == {}, "forced: stages reset, the next run redoes every track"
     m = media(w)
     assert (m.status, m.task_id, m.progress) == ("processing", "task-123", 0)
 
@@ -748,3 +751,366 @@ def test_reprocess_skips_projects_without_socialsnippet(Session, two_track_sourc
     c = find_candidates(db, project_id=w.project_id)
     db.close()
     assert len(c) == 1 and not c[0].enqueue and "not enabled" in c[0].reason
+
+
+# ── tracks without speech ────────────────────────────────────────────────
+#
+# A track with no speech must never fail the job. Two ways to find out:
+# its level (no Whisper pass at all), or faster-whisper 1.0.3's one
+# ValueError when its VAD removed the whole track. Either way the stage is
+# done with the note "no speech", and a resume keeps it.
+
+TONE = "0.5*sin(2*PI*440*t)"
+
+
+def _make_source(path, *expressions, seconds=4):
+    """A Matroska file with one mono PCM track per aevalsrc expression ("0" = silence)."""
+    cmd = ["ffmpeg", "-y", "-v", "error"]
+    for expr in expressions:
+        cmd += ["-f", "lavfi", "-i", f"aevalsrc='{expr}':s=48000:d={seconds}"]
+    for i in range(len(expressions)):
+        cmd += ["-map", f"{i}:a"]
+    cmd += ["-c:a", "pcm_s16le", str(path)]
+    subprocess.run(cmd, check=True)
+    return str(path)
+
+
+@pytest.fixture(scope="module")
+def three_tracks_one_silent(tmp_path_factory):
+    return _make_source(
+        tmp_path_factory.mktemp("src3") / "three.mka",
+        "if(lt(t,2),0.5*sin(2*PI*440*t),0)",
+        "if(lt(t,2),0.05*sin(2*PI*440*t),0.5*sin(2*PI*660*t))",
+        "0",
+    )
+
+
+@pytest.fixture(scope="module")
+def four_tracks(tmp_path_factory):
+    return _make_source(tmp_path_factory.mktemp("src4") / "four.mka", TONE, TONE, TONE, TONE)
+
+
+@pytest.fixture(scope="module")
+def silent_wav(tmp_path_factory):
+    """A real, generated silent WAV: one track, digital silence."""
+    path = tmp_path_factory.mktemp("silent") / "silent.wav"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
+                    "-t", "4", "-c:a", "pcm_s16le", str(path)], check=True)
+    return str(path)
+
+
+@pytest.fixture(scope="module")
+def two_silent_tracks(tmp_path_factory):
+    return _make_source(tmp_path_factory.mktemp("src2s") / "silent2.mka", "0", "0")
+
+
+def _labels(w):
+    from apps.api.models.asset import MediaFile
+    from apps.api.services import snippet_admin
+    db = w.Session()
+    try:
+        mf = db.query(MediaFile).filter(MediaFile.id == w.media_file_id).first()
+        return {r["track_index"]: r["label"] for r in snippet_admin.track_rows(db, mf)}
+    finally:
+        db.close()
+
+
+def test_a_silent_track_among_speech_tracks_is_skipped_by_level(
+        Session, three_tracks_one_silent, stub):
+    w = _build_world(Session, three_tracks_one_silent, speakers=False)
+    assert run(w) is None, "a silent track does not fail the job"
+
+    assert [c[0] for c in stub.calls] == [0, 1], "no Whisper pass on the silent track"
+    j = jobs(w)
+    assert j["transcribe:track2"] == ("done", 1, "no speech")
+    assert j["transcribe:track0"] == ("done", 1, None) and j["transcribe:track1"] == ("done", 1, None)
+    assert j["store"] == ("done", 1, None) and j["detect"][0] == "done"
+    raw2 = w.s3.json("snippet/raw_track_2.json")
+    assert raw2["no_speech"] is True and raw2["no_speech_reason"] == "level"
+    assert raw2["segments"] == [] and raw2["model"] is None and raw2["language"] is None
+    assert len(raw2["rms"]["values"]) == 40, "stored like any per-track result"
+    assert [(s.track, s.text_ai) for s in segments(w)] == [(0, "Hallo zusammen"), (1, "Guten Tag.")]
+    assert media(w).status == "ready"
+    assert w.events[-1][0] == "transcription_complete" and "message" not in w.events[-1][1]
+
+    labels = _labels(w)
+    assert labels[2].endswith(" · no speech") and "no speech" not in labels[0] + labels[1]
+
+    from apps.api.scripts.snippet_set_track_speaker import _print_list, list_tracks
+    db = w.Session()
+    info = list_tracks(db, w.media_file_id)
+    db.close()
+    assert info["labels"][2].endswith("no speech")
+
+
+def test_set_track_speaker_list_prints_no_speech(Session, three_tracks_one_silent, stub, capsys):
+    from apps.api.scripts.snippet_set_track_speaker import main
+    w = _build_world(Session, three_tracks_one_silent, speakers=False)
+    assert run(w) is None
+    with patch("apps.api.scripts.snippet_set_track_speaker.SessionLocal", w.Session):
+        assert main(["--media-file-id", str(w.media_file_id), "--list"]) == 0
+    out = capsys.readouterr().out
+    lines = {ln.split(":")[0].strip(): ln for ln in out.splitlines() if ln.strip().startswith("track ")}
+    assert "no speech" in lines["track 2"], out
+    assert "no speech" not in lines["track 0"] and "no speech" not in lines["track 1"], out
+
+
+def test_whispers_no_speech_error_marks_the_track_and_the_job_goes_on(
+        Session, two_track_source, stub):
+    """Loud enough for the level check, but Whisper's VAD removes it all:
+    faster-whisper 1.0.3 raises ValueError('max() arg is an empty sequence')."""
+    w = _build_world(Session, two_track_source)
+
+    def _vad_removed_everything():
+        raise ValueError("max() arg is an empty sequence")
+
+    stub.script[1] = _vad_removed_everything
+    assert run(w) is None, "not failed, not retried"
+    j = jobs(w)
+    assert j["transcribe:track1"] == ("done", 1, "no speech")
+    raw1 = w.s3.json("snippet/raw_track_1.json")
+    assert raw1["no_speech"] is True and raw1["no_speech_reason"] == "vad"
+    assert raw1["model"] == "medium", "Whisper did run on it"
+    assert [(s.track, s.text_ai) for s in segments(w)] == [(0, "Hallo zusammen")]
+    assert media(w).status == "ready" and len(w.s3.downloads) == 1
+
+    # A resume keeps the marker: track 1 is not asked again.
+    from apps.api.models.snippet import SnippetJob, SnippetJobStatus
+    db = w.Session()
+    db.query(SnippetJob).filter(SnippetJob.media_file_id == w.media_file_id,
+                                SnippetJob.stage.in_(["gate", "store", "detect"])) \
+        .update({SnippetJob.status: SnippetJobStatus.pending}, synchronize_session=False)
+    db.commit()
+    db.close()
+    calls = len(stub.calls)
+    assert run(w) is None
+    assert len(stub.calls) == calls and jobs(w)["transcribe:track1"] == ("done", 1, "no speech")
+
+
+@pytest.mark.parametrize("message", [
+    "max() arg is an empty sequence (not quite)",
+    "could not broadcast input array",
+])
+def test_any_other_value_error_fails_the_stage_at_once_without_retry(
+        Session, two_track_source, stub, message):
+    """Regression: only the one exact message is "no speech". Every other
+    ValueError propagates -- and, being deterministic, is not retried."""
+    w = _build_world(Session, two_track_source)
+
+    def _broken():
+        raise ValueError(message)
+
+    stub.script[1] = _broken
+    exc = run(w)
+    assert type(exc) is ValueError and str(exc) == message, "propagated as-is, not via retry()"
+    j = jobs(w)
+    assert j["transcribe:track1"][0] == "failed" and message in j["transcribe:track1"][2]
+    assert j["transcribe:track0"][0] == "done", "the finished track is kept for a resume"
+    assert media(w).status == "failed"
+    assert w.events[-1][0] == "transcription_failed"
+    assert len(w.s3.downloads) == 1
+
+
+def test_a_transient_error_is_retried(Session, two_track_source, stub):
+    w = _build_world(Session, two_track_source)
+    w.s3.fail_put.add("snippet/gated.json")
+    exc = run(w)
+    assert isinstance(exc, RuntimeError) and "retry called" in str(exc)
+    assert jobs(w)["gate"][0] == "failed"
+
+
+@pytest.mark.parametrize("source", ["silent_wav", "two_silent_tracks"])
+def test_no_speech_on_any_track_is_done_with_zero_segments(Session, stub, request, source):
+    """Real ffmpeg on a generated silent file: done, not failed, zero
+    segments, "no speech found", and a detect stage that creates nothing."""
+    w = _build_world(Session, request.getfixturevalue(source), speakers=False)
+    assert run(w) is None
+
+    assert stub.inits == [] and stub.calls == [], "the model is never even loaded"
+    j = jobs(w)
+    tracks = [s for s in j if s.startswith("transcribe:")]
+    assert tracks and all(j[t] == ("done", 1, "no speech") for t in tracks)
+    assert j["gate"][0] == "done"
+    assert j["store"] == ("done", 1, "no speech found")
+    assert j["detect"] == ("done", 1, None), "detect ran on nothing and did not fail"
+    assert segments(w) == []
+    from apps.api.models.snippet import Snippet
+    db = w.Session()
+    assert db.query(Snippet).filter(Snippet.media_file_id == w.media_file_id).count() == 0
+    db.close()
+    m = media(w)
+    assert (m.status, m.progress, m.task_id) == ("ready", 100, None)
+    transcript = w.s3.json("/transcript.json")
+    assert transcript["segments"] == [] and transcript["text"] == ""
+    kind, payload = w.events[-1]
+    assert kind == "transcription_complete"
+    assert payload["segment_count"] == 0 and payload["message"] == "no speech found"
+
+    from apps.api.models.asset import TranscriptionStatus
+    from apps.api.models.snippet import SnippetJob
+    from apps.api.services.snippet_files import JobView, derive_status
+    db = w.Session()
+    views = [JobView(r.stage, r.status, r.error, r.updated_at)
+             for r in db.query(SnippetJob).filter(SnippetJob.media_file_id == w.media_file_id)]
+    db.close()
+    assert derive_status(TranscriptionStatus.ready, views, 0) == ("done", None)
+
+
+# ── resume ───────────────────────────────────────────────────────────────
+
+
+def test_a_transient_failure_on_track_2_of_4_resumes_from_track_2(Session, four_tracks, stub):
+    w = _build_world(Session, four_tracks, speakers=False)
+    ok = stub.script[2]
+    stub.script[2] = lambda: (_ for _ in ()).throw(ConnectionError("S3 read timed out"))
+    exc = run(w)
+    assert isinstance(exc, RuntimeError) and "retry called" in str(exc)
+    j = jobs(w)
+    assert [j[f"transcribe:track{t}"][0] for t in (0, 1, 2)] == ["done", "done", "failed"]
+    assert "transcribe:track3" not in j
+
+    stub.script[2] = ok
+    assert run(w) is None, "the Celery retry"
+    assert [len(stub.calls_for(t)) for t in range(4)] == [1, 1, 2, 1], \
+        "tracks 0 and 1 are not transcribed again"
+    j = jobs(w)
+    assert j["transcribe:track0"][:2] == ("done", 1) and j["transcribe:track1"][:2] == ("done", 1)
+    assert j["transcribe:track2"][:2] == ("done", 2) and j["transcribe:track3"][:2] == ("done", 1)
+    assert media(w).status == "ready"
+
+
+def test_requeueing_a_failed_file_resumes_and_force_starts_over(Session, four_tracks, stub):
+    """snippet_reprocess.py without --force keeps every done stage, the
+    "no speech" one included; with --force everything restarts."""
+    from apps.api.scripts.snippet_reprocess import find_candidates, main, reprocess
+    w = _build_world(Session, four_tracks, speakers=False)
+    stub.script[1] = lambda: (_ for _ in ()).throw(ValueError("max() arg is an empty sequence"))
+    ok = stub.script[2]
+    stub.script[2] = lambda: (_ for _ in ()).throw(ValueError("a deterministic bug"))
+    exc = run(w)
+    assert type(exc) is ValueError, "deterministic: no retry, the job stops"
+    assert media(w).status == "failed"
+    assert jobs(w)["transcribe:track1"] == ("done", 1, "no speech")
+
+    # Queue it again, as snippet_reprocess.py does (no --force).
+    queued = []
+    with patch("apps.api.scripts.snippet_reprocess.SessionLocal", w.Session), \
+         patch("apps.api.tasks.transcribe_tasks.transcribe_asset.delay",
+               side_effect=lambda a, v: queued.append(a) or SimpleNamespace(id="t-resume")):
+        assert main(["--asset-id", str(w.asset_id)]) == 0
+    assert queued == [str(w.asset_id)]
+    j = jobs(w)
+    assert j["plan"][0] == "done" and j["transcribe:track0"][0] == "done"
+    assert j["transcribe:track1"] == ("done", 1, "no speech"), "the no-speech marker is kept"
+    assert j["transcribe:track2"] == ("pending", 1, None), "the failed stage is back to pending"
+    assert media(w).status == "processing"
+
+    stub.script[2] = ok
+    downloads = len(w.s3.downloads)
+    assert run(w) is None
+    assert [len(stub.calls_for(t)) for t in range(4)] == [1, 1, 2, 1]
+    assert len(w.s3.downloads) == downloads + 1, "fetched once, for tracks 2 and 3"
+    assert jobs(w)["transcribe:track1"] == ("done", 1, "no speech")
+    assert media(w).status == "ready"
+
+    # --force: every stage row goes, every track is transcribed again.
+    db = w.Session()
+    n = reprocess(db, find_candidates(db, asset_id=w.asset_id),
+                  lambda a, v: SimpleNamespace(id="t-force"), force=True)
+    db.close()
+    assert n == 1 and jobs(w) == {}
+    assert run(w) is None
+    assert [len(stub.calls_for(t)) for t in range(4)] == [2, 2, 3, 2]
+
+
+def test_a_resume_with_only_store_and_detect_left_downloads_nothing(
+        Session, two_track_source, stub, monkeypatch):
+    from apps.api.models.snippet import SnippetJob, SnippetJobStatus
+    from apps.api.tasks import transcribe_tasks
+    w = _build_world(Session, two_track_source)
+    assert run(w) is None
+    assert len(w.s3.downloads) == 1
+
+    db = w.Session()
+    db.query(SnippetJob).filter(SnippetJob.media_file_id == w.media_file_id,
+                                SnippetJob.stage.in_(["store", "detect"])) \
+        .update({SnippetJob.status: SnippetJobStatus.pending}, synchronize_session=False)
+    db.commit()
+    db.close()
+    monkeypatch.setattr(transcribe_tasks, "_model", None)
+    monkeypatch.setattr(transcribe_tasks, "_model_key", None)
+    inits, calls = len(stub.inits), len(stub.calls)
+
+    assert run(w) is None
+    assert w.s3.downloads == [w.s3.downloads[0]], "the source was not fetched again"
+    assert len(stub.inits) == inits and len(stub.calls) == calls, "no model load, no Whisper"
+    j = jobs(w)
+    assert j["store"][:2] == ("done", 2) and j["detect"][:2] == ("done", 2)
+    assert j["gate"][:2] == ("done", 1), "the gate's stored output was reused"
+    assert len(segments(w)) == 2 and media(w).status == "ready"
+
+
+def test_a_resume_with_only_detect_left_keeps_the_stored_transcript(
+        Session, two_track_source, stub):
+    from apps.api.models.snippet import SnippetJob, SnippetJobStatus
+    w = _build_world(Session, two_track_source)
+    assert run(w) is None
+    ids = {s.id for s in segments(w)}
+    db = w.Session()
+    db.query(SnippetJob).filter(SnippetJob.media_file_id == w.media_file_id,
+                                SnippetJob.stage == "detect") \
+        .update({SnippetJob.status: SnippetJobStatus.failed}, synchronize_session=False)
+    db.commit()
+    db.close()
+    assert run(w) is None
+    assert {s.id for s in segments(w)} == ids, "store was done: its rows are not rewritten"
+    j = jobs(w)
+    assert j["store"][:2] == ("done", 1) and j["detect"][:2] == ("done", 2)
+    assert len(w.s3.downloads) == 1 and media(w).status == "ready"
+
+
+def test_a_changed_mapping_on_resume_replans_from_the_stored_streams(Session, two_track_source, stub):
+    """The plan is checked against the current mapping without fetching the
+    source (its streams came from ffprobe and are in plan.json)."""
+    from apps.api.models.snippet import SnippetJob, SnippetJobStatus, SnippetTrackSpeaker
+    w = _build_world(Session, two_track_source)
+    assert run(w) is None
+    db = w.Session()
+    db.query(SnippetTrackSpeaker).filter(SnippetTrackSpeaker.media_file_id == w.media_file_id,
+                                         SnippetTrackSpeaker.track_index == 1).delete()
+    db.query(SnippetJob).filter(SnippetJob.media_file_id == w.media_file_id,
+                                SnippetJob.stage == "store") \
+        .update({SnippetJob.status: SnippetJobStatus.failed}, synchronize_session=False)
+    db.commit()
+    db.close()
+    calls = len(stub.calls)
+
+    assert run(w) is None
+    assert len(w.s3.downloads) == 1 and len(stub.calls) == calls
+    plan = w.s3.json("snippet/plan.json")
+    assert plan["tracks"] == [0] and plan["streams_from"] == "ffprobe"
+    assert jobs(w)["plan"][:2] == ("done", 2) and jobs(w)["gate"][:2] == ("done", 2)
+    assert [s.track for s in segments(w)] == [0]
+
+
+def test_reprocess_without_force_keeps_done_rows_and_resets_the_rest(Session, two_track_source, stub):
+    from apps.api.models.snippet import SnippetJob, SnippetJobStatus
+    from apps.api.scripts.snippet_reprocess import find_candidates, reprocess
+    w = _build_world(Session, two_track_source)
+    assert run(w) is None
+    db = w.Session()
+    for stage, status in (("gate", SnippetJobStatus.failed), ("store", SnippetJobStatus.running)):
+        db.query(SnippetJob).filter(SnippetJob.media_file_id == w.media_file_id,
+                                    SnippetJob.stage == stage) \
+            .update({SnippetJob.status: status, SnippetJob.error: "x"}, synchronize_session=False)
+    db.commit()
+    n = reprocess(db, find_candidates(db, asset_id=w.asset_id),
+                  lambda a, v: SimpleNamespace(id="task-9"))
+    db.close()
+    assert n == 1
+    j = jobs(w)
+    assert j["plan"][0] == j["transcribe:track0"][0] == j["transcribe:track1"][0] == "done"
+    assert j["detect"][0] == "done"
+    assert j["gate"] == ("pending", 1, None) and j["store"] == ("pending", 1, None)
+    m = media(w)
+    assert (m.status, m.task_id) == ("processing", "task-9")

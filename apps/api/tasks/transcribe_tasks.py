@@ -44,9 +44,9 @@ from ..models.snippet import (
 )
 from ..services.snippet_detect import detect_snippets, drop_overlapping
 from ..services.snippet_transcribe import (
-    audio_streams_from_ffprobe, build_initial_prompt, combined_segments,
-    dominant_language, folder_in_scope, gate_words_by_track, rms_profile,
-    select_tracks,
+    NO_SPEECH, NO_SPEECH_FOUND, audio_streams_from_ffprobe, build_initial_prompt,
+    combined_segments, dominant_language, folder_in_scope, gate_words_by_track,
+    has_speech_level, is_whisper_no_speech_error, rms_profile, select_tracks,
 )
 from ..services.storage_prefix import prefix_for_project
 from ..services.s3_service import get_s3_client, put_object
@@ -174,13 +174,30 @@ def _extract_audio(input_path: str, output_path: str) -> None:
 # from -- re-running it is cheap and replaces its own rows.
 #
 # Every OTHER stage writes its output to S3 before it is marked done, so a retry
-# (Celery's, or a redelivery after the worker was killed) loads a finished
-# stage's output instead of redoing it. Once a stage actually runs, every
-# stage after it runs too: a re-transcribed track makes the old gate output
-# stale.
+# (Celery's, a redelivery after the worker was killed, or a re-queue without
+# `force` -- snippet_admin.reprocess keeps done rows then) loads a finished
+# stage's output instead of redoing it. Tracks are independent of each
+# other: a track that has to run again does not make another track's
+# finished output stale, so each track runs only when its own stage is not
+# done. What a track that ran DOES make stale is everything that combines
+# the tracks, so after any track (or a changed plan) runs, gate and store
+# run too.
 #
-# The pure decisions (which tracks, the prompt, the gate) are in
-# services/snippet_transcribe.py and are tested without Whisper.
+# A track without speech is not a failure. It is decided cheaply first, from
+# the RMS profile (`has_speech_level`: no Whisper pass, no model load); a
+# track loud enough to pass that but on which Whisper's VAD finds nothing
+# makes faster-whisper 1.0.3 raise one specific ValueError, which is read as
+# the same answer. Either way the track's stage is done, its raw output has
+# `"no_speech": true` and no segments, and its row carries the note
+# NO_SPEECH -- so a resume does not ask again. A file on which NO track has
+# speech is done with zero segments (store's note: NO_SPEECH_FOUND).
+#
+# The source file is fetched only by a stage that still has to read it: a
+# plan without recorded audio streams, and a track that is not done yet.
+# Gate, store and detect never fetch it.
+#
+# The pure decisions (which tracks, the prompt, the gate, speech or not) are
+# in services/snippet_transcribe.py and are tested without Whisper.
 
 SNIPPET_STAGE_PLAN = "plan"
 SNIPPET_STAGE_GATE = "gate"
@@ -202,6 +219,54 @@ class _SnippetFatal(Exception):
 
 class _SnippetRefused(Exception):
     """A person has edited this file's transcript. Nothing is changed."""
+
+
+class _FfmpegError(RuntimeError):
+    """ffmpeg or ffprobe exited non-zero. Transient (see `_is_transient`)."""
+
+
+# ── Which failures a retry can fix ─────────────────────────────────────────
+#
+# A Celery retry of this task costs the whole remaining run again, and for a
+# track that is not done that starts by fetching the original (15-18 minutes
+# for a one-hour MXF). So only a failure that can plausibly go away by
+# itself is retried:
+#
+#   transient   network and S3 (botocore errors other than a missing key,
+#               ConnectionError), timeouts (TimeoutError,
+#               subprocess.TimeoutExpired), ffmpeg/ffprobe exiting non-zero
+#               (_FfmpegError, CalledProcessError: a truncated read, a full
+#               disk), the database connection dropping (OperationalError),
+#               out of memory (MemoryError, or a RuntimeError saying so --
+#               how CTranslate2 reports a failed allocation)
+#   everything  deterministic: ValueError, KeyError, TypeError, validation,
+#   else        a missing S3 object, an unknown model. The same input fails
+#               the same way, so the stage fails at once and the task is
+#               NOT retried. Re-queue it (resume) after fixing the cause.
+#
+# Unknown exception types land in the second group on purpose: a retry
+# storm on a deterministic error is what cost three source fetches on the
+# 57-minute file this rule was written for.
+
+_OOM_MARKERS = ("out of memory", "bad_alloc", "cannot allocate memory")
+
+
+def _is_transient(exc: BaseException) -> bool:
+    from botocore.exceptions import BotoCoreError
+    from sqlalchemy.exc import OperationalError
+
+    if isinstance(exc, ClientError):
+        code = str((exc.response or {}).get("Error", {}).get("Code", ""))
+        return code not in ("NoSuchKey", "404", "NotFound", "NoSuchBucket",
+                            "AccessDenied", "403", "InvalidAccessKeyId")
+    if isinstance(exc, (BotoCoreError, ConnectionError, TimeoutError,
+                        subprocess.TimeoutExpired, subprocess.CalledProcessError,
+                        _FfmpegError, OperationalError, MemoryError)):
+        return True
+    if type(exc) is RuntimeError:
+        message = str(exc).lower()
+        return any(marker in message for marker in _OOM_MARKERS)
+    return False
 
 
 def _snippet_settings_for(db, asset):
@@ -265,9 +330,11 @@ def _job_start(db, job: SnippetJob) -> None:
     db.commit()
 
 
-def _job_done(db, job: SnippetJob) -> None:
+def _job_done(db, job: SnippetJob, note: str | None = None) -> None:
+    """Mark the stage done. `note` goes into `error`, which on a DONE row is
+    an outcome note, never an error: today only NO_SPEECH / NO_SPEECH_FOUND."""
     job.status = SnippetJobStatus.done
-    job.error = None
+    job.error = note
     job.finished_at = _now()
     db.commit()
 
@@ -301,10 +368,14 @@ def _put_json(key: str, data) -> None:
 
 
 def _ffprobe_streams(path: str) -> dict:
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", path],
-        check=True, capture_output=True,
-    )
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_streams", "-of", "json", path],
+            check=True, capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        tail = (exc.stderr or b"").decode("utf-8", "replace")[-500:]
+        raise _FfmpegError(f"ffprobe could not read the source: {tail}") from exc
     return json.loads(out.stdout or b"{}")
 
 
@@ -324,7 +395,7 @@ def _extract_track(input_path: str, output_path: str, audio_index: int) -> None:
         )
     except subprocess.CalledProcessError as exc:
         tail = (exc.stderr or b"").decode("utf-8", "replace")[-500:]
-        raise RuntimeError(f"ffmpeg could not extract audio track {audio_index}: {tail}") from exc
+        raise _FfmpegError(f"ffmpeg could not extract audio track {audio_index}: {tail}") from exc
 
 
 class _LazySource:
@@ -407,26 +478,40 @@ def _refusal_message(count: int) -> str:
 
 
 def _stage_plan(db, s3, media_file_id, technical_metadata, source, plan_key, force: bool):
+    """(plan, ran). `ran` is True when the track choice was (re)made.
+
+    A done plan is reused, but its track choice is checked against the
+    current speaker mapping using the streams it stored -- so a resume never
+    fetches the source for the plan, and a mapping changed since the plan
+    was made still decides which tracks run.
+    """
+    mapped = (
+        db.query(SnippetTrackSpeaker)
+        .filter(SnippetTrackSpeaker.media_file_id == media_file_id)
+        .all()
+    )
     job = _snippet_job(db, media_file_id, SNIPPET_STAGE_PLAN)
+    stored_streams = None
     if job.status == SnippetJobStatus.done and not force:
         plan = _s3_get_json(s3, plan_key)
         if plan is not None:
-            return plan, False
+            tracks, _reason = select_tracks(plan.get("audio_streams"), mapped)
+            if [int(t) for t in plan["tracks"]] == tracks:
+                return plan, False
+            stored_streams = (plan.get("audio_streams"), plan.get("streams_from"))
     _job_start(db, job)
 
-    streams = (technical_metadata or {}).get("audio_streams")
-    streams_from = "technical_metadata"
+    if stored_streams is not None:
+        streams, streams_from = stored_streams
+    else:
+        streams = (technical_metadata or {}).get("audio_streams")
+        streams_from = "technical_metadata"
     if not isinstance(streams, list):
         # Not every file has had its audio streams recorded. The original is
         # needed for transcription anyway, so probe it here.
         streams = audio_streams_from_ffprobe(_ffprobe_streams(source.path()))
         streams_from = "ffprobe"
 
-    mapped = (
-        db.query(SnippetTrackSpeaker)
-        .filter(SnippetTrackSpeaker.media_file_id == media_file_id)
-        .all()
-    )
     tracks, reason = select_tracks(streams, mapped)
     if not tracks:
         raise _SnippetFatal("This file has no audio track to transcribe.")
@@ -459,57 +544,83 @@ def _stage_transcribe_track(db, s3, media_file_id, track, source, workdir, raw_k
     wav = os.path.join(workdir, f"track_{track}.wav")
     _extract_track(source.path(), wav, track)
     rms = rms_profile(wav, SNIPPET_RMS_FRAME_MS)
-
     size = settings.snippet_whisper_model_size
-    model = _get_model(size, cpu_threads=settings.snippet_whisper_cpu_threads)
-    kwargs = {"word_timestamps": True, "vad_filter": True}
-    if prompt:
-        kwargs["initial_prompt"] = prompt
-    # No `language=`: detected per track, since two people on one recording
-    # need not speak the same language.
-    segment_iter, info = model.transcribe(wav, **kwargs)
-    total = float(getattr(info, "duration", 0) or 0)
 
     segments = []
-    for seg in segment_iter:
-        words = []
-        for w in getattr(seg, "words", None) or []:
-            prob = getattr(w, "probability", None)
-            words.append({
-                "start": float(w.start),
-                "end": float(w.end),
-                "word": w.word,
-                "probability": float(prob) if prob is not None else None,
-            })
-        segments.append({
-            "start": float(seg.start),
-            "end": float(seg.end),
-            "text": (seg.text or "").strip(),
-            "words": words,
-        })
-        if total > 0:
-            progress.update(track, float(seg.end) / total)
+    info = None
+    no_speech_reason = None
+    if not has_speech_level(rms, SNIPPET_RMS_FRAME_MS):
+        # Silent by level: no Whisper pass, and no model load for it.
+        no_speech_reason = "level"
+    else:
+        model = _get_model(size, cpu_threads=settings.snippet_whisper_cpu_threads)
+        kwargs = {"word_timestamps": True, "vad_filter": True}
+        if prompt:
+            kwargs["initial_prompt"] = prompt
+        try:
+            # No `language=`: detected per track, since two people on one
+            # recording need not speak the same language.
+            segment_iter, info = model.transcribe(wav, **kwargs)
+            total = float(getattr(info, "duration", 0) or 0)
+            for seg in segment_iter:
+                words = []
+                for w in getattr(seg, "words", None) or []:
+                    prob = getattr(w, "probability", None)
+                    words.append({
+                        "start": float(w.start),
+                        "end": float(w.end),
+                        "word": w.word,
+                        "probability": float(prob) if prob is not None else None,
+                    })
+                segments.append({
+                    "start": float(seg.start),
+                    "end": float(seg.end),
+                    "text": (seg.text or "").strip(),
+                    "words": words,
+                })
+                if total > 0:
+                    progress.update(track, float(seg.end) / total)
+        except ValueError as exc:
+            # faster-whisper 1.0.3, when its VAD removed the whole track,
+            # fails in language detection with exactly this error. Only that
+            # one, and only before any segment came out, means "no speech";
+            # every other ValueError is a real failure and propagates.
+            if segments or not is_whisper_no_speech_error(exc):
+                raise
+            info = None
+            no_speech_reason = "vad"
+        if not segments and no_speech_reason is None:
+            no_speech_reason = "empty"
 
+    no_speech = no_speech_reason is not None
     data = {
         "track_index": track,
-        "model": size,
-        "language": getattr(info, "language", None),
-        "language_probability": getattr(info, "language_probability", None),
-        "duration": getattr(info, "duration", None),
+        "model": None if no_speech_reason == "level" else size,
+        "language": None if no_speech else getattr(info, "language", None),
+        "language_probability": None if no_speech else getattr(info, "language_probability", None),
+        "duration": (getattr(info, "duration", None) if info is not None
+                     else round(len(rms) * SNIPPET_RMS_FRAME_MS / 1000.0, 3)),
         "segments": segments,
         "rms": {"frame_ms": SNIPPET_RMS_FRAME_MS, "values": [round(v, 6) for v in rms]},
     }
+    if no_speech:
+        data["no_speech"] = True
+        data["no_speech_reason"] = no_speech_reason
     _put_json(raw_key, data)
-    _job_done(db, job)
+    _job_done(db, job, note=NO_SPEECH if no_speech else None)
     progress.finish(track)
     try:
         os.unlink(wav)
     except OSError:
         pass
-    logger.info(
-        "SocialSnippet media file %s track %s: %d segment(s), language=%s",
-        media_file_id, track, len(segments), data["language"],
-    )
+    if no_speech:
+        logger.info("SocialSnippet media file %s track %s: no speech (%s)",
+                    media_file_id, track, no_speech_reason)
+    else:
+        logger.info(
+            "SocialSnippet media file %s track %s: %d segment(s), language=%s",
+            media_file_id, track, len(segments), data["language"],
+        )
     return data, True
 
 
@@ -564,9 +675,29 @@ def _ms(seconds) -> int:
     return max(0, int(round(float(seconds) * 1000)))
 
 
-def _stage_store(db, media_file, media_file_id, gated_data, output_prefix):
-    """Segments + words in one transaction, plus the panel's transcript files."""
+def _finish_media_file(media_file) -> None:
+    media_file.transcription_task_id = None
+    media_file.transcription_progress = 100
+    media_file.transcription_status = TranscriptionStatus.ready
+
+
+def _stage_store(db, media_file, media_file_id, gated_data, output_prefix, force: bool):
+    """Segments + words in one transaction, plus the panel's transcript files.
+
+    A done store stage is kept when nothing before it ran (a resume where
+    only detect is left): the stored rows are already this run's result.
+    """
     job = _snippet_job(db, media_file_id, SNIPPET_STAGE_STORE)
+    if job.status == SnippetJobStatus.done and not force:
+        count = (
+            db.query(TranscriptSegment)
+            .filter(TranscriptSegment.media_file_id == media_file_id)
+            .count()
+        )
+        language = media_file.transcript_language
+        _finish_media_file(media_file)
+        db.commit()
+        return language, count, count, None
     _job_start(db, job)
 
     # Checked again here, not only at the start: a run takes minutes to
@@ -662,11 +793,10 @@ def _stage_store(db, media_file, media_file_id, gated_data, output_prefix):
     media_file.s3_key_transcript = transcript_key
     media_file.s3_key_captions = captions_key
     media_file.transcript_language = language
-    media_file.transcription_task_id = None
-    media_file.transcription_progress = 100
-    media_file.transcription_status = TranscriptionStatus.ready
+    _finish_media_file(media_file)
     job.status = SnippetJobStatus.done
-    job.error = None
+    # Zero segments is a result, not a failure: no track had speech.
+    job.error = None if seg_rows else NO_SPEECH_FOUND
     job.finished_at = _now()
     db.commit()
     return language, len(segments), len(seg_rows), len(word_rows)
@@ -893,31 +1023,44 @@ def _run_snippet_pipeline(task, db, asset, version, media_file):
         stage = SNIPPET_STAGE_PLAN
         plan, ran = _stage_plan(db, s3, media_file_id, technical_metadata, source,
                                 f"{snippet_prefix}/plan.json", force=False)
-        force = ran
+        # `changed`: something the combining stages read has been redone.
+        changed = ran
         tracks = [int(t) for t in plan["tracks"]]
 
         progress = _TrackProgress(db, media_file, project_id, asset_id, version_id, tracks)
         raw = {}
         for track in tracks:
             stage = snippet_track_stage(track)
+            # Never forced by another stage: tracks do not depend on each
+            # other, so a finished one is kept (see the notes above).
             raw[track], ran = _stage_transcribe_track(
                 db, s3, media_file_id, track, source, workdir,
-                f"{snippet_prefix}/raw_track_{track}.json", prompt, progress, force=force,
+                f"{snippet_prefix}/raw_track_{track}.json", prompt, progress, force=False,
             )
-            force = force or ran
+            changed = changed or ran
 
         stage = SNIPPET_STAGE_GATE
-        gated_data, _ran = _stage_gate(db, s3, media_file_id, tracks, raw,
-                                       f"{snippet_prefix}/gated.json", force=force)
+        gated_data, ran = _stage_gate(db, s3, media_file_id, tracks, raw,
+                                      f"{snippet_prefix}/gated.json", force=changed)
+        changed = changed or ran
 
         stage = SNIPPET_STAGE_STORE
         language, segment_count, rows, words = _stage_store(
-            db, media_file, media_file_id, gated_data, output_prefix,
+            db, media_file, media_file_id, gated_data, output_prefix, force=changed,
         )
-        logger.info(
-            "SocialSnippet asset %s version %s: %d segment row(s), %d word(s), language=%s",
-            asset_id, version_id, rows, words, language,
-        )
+        if words is None:
+            logger.info(
+                "SocialSnippet asset %s version %s: store was already done (%d segment row(s))",
+                asset_id, version_id, rows,
+            )
+        else:
+            logger.info(
+                "SocialSnippet asset %s version %s: %d segment row(s), %d word(s), language=%s",
+                asset_id, version_id, rows, words, language,
+            )
+        if rows == 0:
+            logger.info("SocialSnippet asset %s version %s: %s on any track",
+                        asset_id, version_id, NO_SPEECH_FOUND)
 
         # The transcript is stored and the file is `ready` at this point.
         # detect runs last and swallows its own failures, so a broken
@@ -937,12 +1080,15 @@ def _run_snippet_pipeline(task, db, asset, version, media_file):
                 asset_id, detected["created"], detected["removed"],
             )
 
-        _publish_event(project_id, "transcription_complete", {
+        complete = {
             "asset_id": asset_id,
             "version_id": version_id,
             "language": language,
             "segment_count": segment_count,
-        })
+        }
+        if rows == 0:
+            complete["message"] = NO_SPEECH_FOUND
+        _publish_event(project_id, "transcription_complete", complete)
 
     except _SnippetRefused as exc:
         logger.warning("SocialSnippet transcription refused for version %s: %s", version_id, exc)
@@ -970,7 +1116,15 @@ def _run_snippet_pipeline(task, db, asset, version, media_file):
             "version_id": version_id,
             "error": str(exc),
         })
-        raise task.retry(exc=exc)
+        if _is_transient(exc):
+            raise task.retry(exc=exc)
+        # Deterministic: the same input fails the same way, so no retry.
+        # Re-raised as-is so Celery records the failure.
+        logger.error(
+            "SocialSnippet stage %s failed with a non-transient %s; not retried",
+            stage, type(exc).__name__,
+        )
+        raise
     finally:
         if workdir:
             shutil.rmtree(workdir, ignore_errors=True)

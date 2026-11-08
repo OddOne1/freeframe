@@ -277,6 +277,8 @@ function file(id: number, f: Partial<FixtureFile> & Pick<FixtureFile, 'name'>): 
     error: null,
     updated_at: new Date(Date.now() - id * 3_600_000).toISOString(),
     tracks: [track(0, 'Track 1')],
+    planned_track_count: (f.tracks ?? [null]).length,
+    done_track_count: 0,
     ...f,
   }
 }
@@ -319,6 +321,18 @@ let files: FixtureFile[] = [
   file(9, {
     name: 'Archive 2019.mov', asset_status: 'failed',
     not_ready_reason: "the file's own processing failed; fix that first",
+  }),
+  file(10, {
+    name: 'Camera A ambience.mxf', duration_ms: 3_420_000, snippet_status: 'done',
+    tracks: [track(0, 'Track 1 · mono · no speech'), track(1, 'Track 2 · mono · no speech')],
+    done_track_count: 2,
+  }),
+  file(11, {
+    name: 'Canon interview.mxf', duration_ms: 3_420_000, snippet_status: 'failed',
+    error: 'ConnectionError: S3 read timed out', outcome: 'failed',
+    tracks: [track(0, 'Track 1 · mono', ANNA), track(1, 'Track 2 · mono · no speech'),
+      track(2, 'Track 3 · mono'), track(3, 'Track 4 · mono')],
+    done_track_count: 2,
   }),
 ]
 

@@ -32,8 +32,9 @@ import {
   estimateProcessing,
   formatEstimate,
   formatLength,
-  retryNeedsForce,
+  RETRY_FORCES,
   statusLabel,
+  tracksToTranscribe,
   type StatusTone,
 } from '@/lib/snippet-files'
 import { Button } from '@/components/ui/button'
@@ -167,8 +168,8 @@ export function SnippetFilesTab({
   async function runPending() {
     if (!pending) return
     const targets = pending.kind === 'batch' ? pending.files : [pending.file]
-    const force =
-      pending.kind === 'reprocess' ? true : pending.kind === 'retry' ? retryNeedsForce(pending.file) : false
+    // Reprocess starts from scratch; Retry and a batch resume (RETRY_FORCES).
+    const force = pending.kind === 'reprocess' ? true : pending.kind === 'retry' ? RETRY_FORCES : false
     const names = Object.fromEntries(targets.map((f) => [f.asset_id, f.name]))
     try {
       const res = await snippetApi.process(projectId, targets.map((f) => f.asset_id), force)
@@ -377,12 +378,15 @@ export function SnippetFilesTab({
 function confirmCopy(p: Pending | null): { title: string; body: React.ReactNode; action: string } {
   if (!p) return { title: '', body: null, action: 'Confirm' }
   const files = p.kind === 'batch' ? p.files : [p.file]
-  const est = formatEstimate(estimateProcessing(files.map((f) => f.duration_ms)))
+  const force = p.kind === 'reprocess'
+  const est = formatEstimate(
+    estimateProcessing(files.map((f) => ({ durationMs: f.duration_ms, tracks: tracksToTranscribe(f, force) }))),
+  )
   const body = (
     <span className="block space-y-2">
       <span className="block">
         Estimate: <strong className="font-medium text-text-primary">{est}</strong>
-        {` (file length ÷ ${SERVER_CPU_SPEED_FACTOR}; the real time depends on the server).`}
+        {` (file length × audio tracks still to transcribe ÷ ${SERVER_CPU_SPEED_FACTOR}; the real time depends on the server).`}
       </span>
       <span className="flex gap-2 text-status-warning">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
@@ -392,12 +396,21 @@ function confirmCopy(p: Pending | null): { title: string; body: React.ReactNode;
         </span>
       </span>
       {p.kind === 'batch' && (
-        <span className="block">Files that already have a transcript are skipped; use Reprocess for those.</span>
+        <span className="block">
+          Files with a finished transcript are skipped; use Reprocess for those. A file that failed or stopped
+          continues where it stopped.
+        </span>
+      )}
+      {p.kind === 'retry' && (
+        <span className="block">
+          It continues where it stopped: tracks already transcribed, or found to have no speech, are kept, and
+          only what is missing is redone.
+        </span>
       )}
       {p.kind === 'reprocess' && (
         <span className="block">
-          The transcript is made again from scratch. Approved, edited and hand-made clips stay; untouched
-          auto suggestions are replaced.
+          The transcript is made again from scratch, every track included. Approved, edited and hand-made clips
+          stay; untouched auto suggestions are replaced.
         </span>
       )}
     </span>

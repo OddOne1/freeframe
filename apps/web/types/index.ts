@@ -1474,7 +1474,12 @@ export interface SnippetFile {
   /** Why it failed; on a "done" file, why clip detection failed. */
   error: string | null
   updated_at: string | null
+  /** Each track's label ends in "no speech" when the last run found none on it. */
   tracks: SnippetTrack[]
+  /** How many tracks a run transcribes; null when the audio streams are not recorded. */
+  planned_track_count: number | null
+  /** How many of those are finished ("no speech" included): what a resume keeps. */
+  done_track_count: number
 }
 
 export interface SnippetFilesResponse {
