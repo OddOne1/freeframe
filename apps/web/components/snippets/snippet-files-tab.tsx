@@ -29,26 +29,21 @@
 import * as React from 'react'
 import useSWR from 'swr'
 import { usePathname, useSearchParams } from 'next/navigation'
-import * as Dialog from '@radix-ui/react-dialog'
-import * as Select from '@radix-ui/react-select'
 import * as Tooltip from '@radix-ui/react-tooltip'
 import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
-  Check,
   ChevronDown,
   ChevronRight,
   FileX2,
   Film,
   FolderClosed,
   Music,
-  Plus,
   RotateCcw,
   Search,
   WrapText,
-  X,
 } from 'lucide-react'
 import { cn, formatRelativeTime } from '@/lib/utils'
 import { errorMessage, snippetApi, snippetFetcher, snippetKeys } from '@/lib/snippet-api'
@@ -106,6 +101,7 @@ import { EmptyState } from '@/components/shared/empty-state'
 import { Skeleton } from '@/components/shared/skeleton'
 import { useOptionalToast } from '@/components/shared/toast'
 import { Chip, SnippetSelect } from '@/components/snippets/snippet-ui'
+import { AddSpeakerDialog, SpeakerSelect } from '@/components/snippets/speaker-assign'
 import type { SnippetFile, SnippetFilesResponse, SnippetProcessResponse, SnippetSpeaker } from '@/types'
 
 /** How long the search box waits after the last key before it applies. */
@@ -413,6 +409,16 @@ export function SnippetFilesTab({
   // ── Speakers ─────────────────────────────────────────────────────────────
   const [busyTrack, setBusyTrack] = React.useState<string | null>(null)
   const [adding, setAdding] = React.useState<{ file: SnippetFile; track: number } | null>(null)
+  const addingTarget = React.useMemo(
+    () =>
+      adding
+        ? {
+            fileName: adding.file.name,
+            trackLabel: adding.file.tracks.find((t) => t.track_index === adding.track)?.label ?? null,
+          }
+        : null,
+    [adding],
+  )
 
   async function assign(file: SnippetFile, trackIndex: number, speakerId: string) {
     if (!file.media_file_id) return
@@ -713,7 +719,7 @@ export function SnippetFilesTab({
         onConfirm={runPending}
       />
       <AddSpeakerDialog
-        target={adding}
+        target={addingTarget}
         onOpenChange={(open) => {
           if (!open) setAdding(null)
         }}
@@ -1084,190 +1090,6 @@ function HeaderCell({
         <span className="h-full w-px bg-border transition-colors group-hover/handle:w-0.5 group-hover/handle:bg-accent group-focus-visible/handle:w-0.5 group-focus-visible/handle:bg-accent" />
       </span>
     </span>
-  )
-}
-
-/** Radix Select reserves "" (it shows the placeholder), so "add" gets a sentinel. */
-const ADD_NEW = '__add_new_speaker__'
-
-function SpeakerSelect({
-  value,
-  fallbackName,
-  hasSpeech,
-  warn,
-  speakers,
-  disabled,
-  busy,
-  label,
-  onChange,
-  onAdd,
-}: {
-  value: string | null
-  /** The name the list row carries, for a speaker the roster has not loaded yet. */
-  fallbackName: string | null
-  /** False for a track the last run found no speech on. */
-  hasSpeech: boolean
-  /** No speaker on a track of a processed file that may have speech. */
-  warn: boolean
-  speakers: SnippetSpeaker[]
-  disabled: boolean
-  busy: boolean
-  label: string
-  onChange: (speakerId: string) => void
-  onAdd: () => void
-}) {
-  const options =
-    value && !speakers.some((s) => s.id === value)
-      ? [{ id: value, name: fallbackName ?? 'Unknown' }, ...speakers]
-      : speakers
-  const missing = !value && warn
-  return (
-    <Select.Root
-      value={value ?? ''}
-      disabled={disabled || busy}
-      onValueChange={(v) => {
-        if (v === ADD_NEW) onAdd()
-        else if (v && v !== value) onChange(v)
-      }}
-    >
-      <Select.Trigger
-        aria-label={label}
-        aria-busy={busy || undefined}
-        className={cn(
-          'inline-flex h-8 hover-none:h-10 min-w-0 flex-1 items-center justify-between gap-2 rounded-md border bg-bg-primary px-2.5 text-xs text-text-primary transition-colors hover:bg-bg-tertiary focus:outline-none focus:ring-1 focus:ring-border-focus disabled:cursor-not-allowed disabled:opacity-50 lg:max-w-[14rem]',
-          missing ? 'border-status-warning/50' : 'border-border',
-        )}
-      >
-        <span
-          className={cn(
-            'flex min-w-0 items-center gap-1.5',
-            !value && (missing ? 'font-medium text-status-warning' : 'text-text-tertiary'),
-          )}
-        >
-          {missing && <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />}
-          <span className="truncate">
-            <Select.Value placeholder={hasSpeech ? 'no speaker yet' : 'no speech found'} />
-          </span>
-        </span>
-        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" aria-hidden />
-      </Select.Trigger>
-      <Select.Portal>
-        <Select.Content
-          position="popper"
-          sideOffset={4}
-          className="z-[60] min-w-[12rem] max-h-[60vh] overflow-hidden rounded-md border border-border bg-bg-secondary shadow-xl"
-        >
-          <Select.Viewport className="p-1">
-            {options.map((s) => (
-              <Select.Item
-                key={s.id}
-                value={s.id}
-                className="relative flex cursor-pointer items-center gap-2 rounded-sm px-7 py-1.5 hover-none:py-2.5 text-sm text-text-primary outline-none data-[highlighted]:bg-bg-hover"
-              >
-                <Select.ItemIndicator className="absolute left-2">
-                  <Check className="h-3.5 w-3.5 text-accent" />
-                </Select.ItemIndicator>
-                <Select.ItemText>{s.name}</Select.ItemText>
-              </Select.Item>
-            ))}
-            {options.length > 0 && <Select.Separator className="my-1 h-px bg-border" />}
-            <Select.Item
-              value={ADD_NEW}
-              className="relative flex cursor-pointer items-center gap-2 rounded-sm px-7 py-1.5 hover-none:py-2.5 text-sm text-accent outline-none data-[highlighted]:bg-bg-hover"
-            >
-              <Plus className="absolute left-2 h-3.5 w-3.5" aria-hidden />
-              <Select.ItemText>Add new speaker…</Select.ItemText>
-            </Select.Item>
-          </Select.Viewport>
-        </Select.Content>
-      </Select.Portal>
-    </Select.Root>
-  )
-}
-
-function AddSpeakerDialog({
-  target,
-  onOpenChange,
-  onAdd,
-}: {
-  target: { file: SnippetFile; track: number } | null
-  onOpenChange: (open: boolean) => void
-  onAdd: (name: string) => Promise<void>
-}) {
-  const [name, setName] = React.useState('')
-  const [saving, setSaving] = React.useState(false)
-  const [error, setError] = React.useState<string | null>(null)
-  React.useEffect(() => {
-    if (target) {
-      setName('')
-      setError(null)
-    }
-  }, [target])
-  const trackLabel = target?.file.tracks.find((t) => t.track_index === target.track)?.label
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!name.trim()) {
-      setError('Enter a name.')
-      return
-    }
-    setSaving(true)
-    setError(null)
-    try {
-      await onAdd(name.trim())
-      onOpenChange(false)
-    } catch (err) {
-      setError(errorMessage(err, 'Could not add the speaker.'))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Dialog.Root open={target !== null} onOpenChange={onOpenChange}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-secondary p-6 shadow-xl">
-          <div className="flex items-start justify-between gap-3">
-            <Dialog.Title className="text-sm font-semibold text-text-primary">Add a speaker</Dialog.Title>
-            <Dialog.Close
-              className="rounded p-1 text-text-tertiary hover:bg-bg-hover hover:text-text-primary"
-              aria-label="Close"
-            >
-              <X className="h-4 w-4" />
-            </Dialog.Close>
-          </div>
-          <Dialog.Description className="mt-1.5 text-sm text-text-tertiary">
-            Added to this project&apos;s speakers and put on {trackLabel ?? 'the track'} of {target?.file.name}.
-          </Dialog.Description>
-          <form onSubmit={submit} className="mt-4 space-y-3">
-            <label className="block">
-              <span className="text-xs text-text-secondary">Name</span>
-              <input
-                autoFocus
-                value={name}
-                maxLength={255}
-                onChange={(e) => setName(e.target.value)}
-                className="mt-1 h-9 hover-none:h-11 w-full rounded-md border border-border bg-bg-primary px-3 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-border-focus"
-              />
-            </label>
-            {error && (
-              <p role="alert" className="text-xs text-status-error">
-                {error}
-              </p>
-            )}
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="secondary" size="sm" onClick={() => onOpenChange(false)} disabled={saving}>
-                Cancel
-              </Button>
-              <Button type="submit" size="sm" loading={saving}>
-                Add and assign
-              </Button>
-            </div>
-          </form>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
   )
 }
 

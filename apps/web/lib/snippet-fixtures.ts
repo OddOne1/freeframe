@@ -8,7 +8,9 @@
  * scores, plus two transcript "moments" (one video, one audio-only; both
  * match "glacier"). Audio-only means no thumbnail_url, as the contract has
  * it, and that is what the player reads as "no video". Searching, filtering, sorting,
- * grouping, approve/reject, in/out saves and exports all work against it.
+ * grouping, approve/reject, title/topic/in-out autosaves and exports all work
+ * against it. Each clip sits on one track of its file (GET .../tracks is the
+ * Files tab's list), and naming that track's speaker renames its clips.
  *
  * Files tab: 34 files in four folders plus the project root, in every state
  * (done, not processed, not ready, failed, one already running), many
@@ -301,6 +303,9 @@ let files: FixtureFile[] = [
   file(3, {
     name: 'Podcast episode 12.wav', media_file_id: MF_PODCAST, folder_path: '/Podcast',
     snippet_status: 'done', segment_count: 140, snippet_count: 1,
+    // Host and guest on their own tracks, so a clip card's speaker select
+    // and the transcript's speaker labels each find a track to name.
+    tracks: [track(0, 'Host · mono', ANNA), track(1, 'Guest · mono', MARCO)],
   }),
   file(4, {
     name: 'Roundtable_with_the_whole_team_final_v3_EXPORT.mov', duration_ms: 2_520_000,
@@ -460,6 +465,13 @@ function setFileTrackSpeaker(mediaFileId: string, trackIndex: number, speakerId:
           ),
         },
   )
+  // A clip's speaker is its track's: every clip and moment on this track
+  // now carries the new name, as the API's re-labelling does.
+  const onTrack = (c: SnippetClip) => c.media_file_id === mediaFileId && trackIndexOf(c) === trackIndex
+  clips = clips.map((c) => (onTrack(c) ? { ...c, speaker: who } : c))
+  MOMENTS.forEach((c, k) => {
+    if (onTrack(c)) MOMENTS[k] = { ...c, speaker: who }
+  })
   const hasTranscript = f.segment_count > 0
   return {
     ...row!,
@@ -474,6 +486,19 @@ function setFileTrackSpeaker(mediaFileId: string, trackIndex: number, speakerId:
 
 // ─── Transcripts: words laid out evenly over each clip's span ────────────────
 
+/** Which track a clip is spoken on: decided once, from the track that had its
+ *  speaker when the fixtures were built, so renaming the speaker keeps it. */
+const clipTracks = new Map<string, number>()
+function trackIndexOf(c: SnippetClip): number {
+  let t = clipTracks.get(c.id)
+  if (t == null) {
+    const f = files.find((x) => x.media_file_id === c.media_file_id)
+    t = f?.tracks.find((tr) => tr.speaker_id != null && tr.speaker_id === c.speaker?.id)?.track_index ?? 0
+    clipTracks.set(c.id, t)
+  }
+  return t
+}
+
 function segmentFor(c: SnippetClip, i: number): SnippetTranscriptSegment {
   const text = c.quote ?? ''
   const tokens = text.split(/\s+/).filter(Boolean)
@@ -485,7 +510,7 @@ function segmentFor(c: SnippetClip, i: number): SnippetTranscriptSegment {
   })
   return {
     id: `0d4f1c8e-0000-4000-8000-${String(900000000000 + i).padStart(12, '0')}`,
-    track_index: c.speaker?.id === MARCO.id ? 1 : 0,
+    track_index: trackIndexOf(c),
     speaker_name: c.speaker?.name ?? null,
     start_ms: c.start_ms,
     end_ms: c.end_ms,
@@ -730,10 +755,11 @@ export async function fixtureRequest<T>(method: string, path: string, body?: unk
     return transcript(m[1], from, to) as T
   }
   if ((m = p.match(/^\/media-files\/([^/]+)\/snippet\/tracks$/))) {
-    return [
-      { track_index: 0, label: 'Track 1', speaker_id: ANNA.id, speaker_name: ANNA.name },
-      { track_index: 1, label: 'Track 2', speaker_id: MARCO.id, speaker_name: MARCO.name },
-    ] as T
+    // The same tracks the Files tab shows, so naming a speaker from a clip
+    // and from the Files tab change one list.
+    const f = files.find((x) => x.media_file_id === m![1])
+    if (!f) throw new ApiError(404, 'Not found')
+    return f.tracks as T
   }
   if ((m = p.match(/^\/snippets\/([^/]+)$/)) && method === 'PATCH') {
     const i = clips.findIndex((c) => c.id === m![1])

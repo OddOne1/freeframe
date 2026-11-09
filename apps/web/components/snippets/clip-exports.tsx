@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { Download, Loader2, RotateCcw } from 'lucide-react'
+import { Download, Loader2, RotateCcw, Scissors } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { triggerBrowserDownload } from '@/lib/download'
 import { resolveApiMediaUrl } from '@/lib/utils'
@@ -61,18 +61,25 @@ function fraction(p: number | null): number | null {
  * While that range is not a valid clip (`valid` false: start >= end, under
  * 1 s, or past the end of the file) the buttons stay disabled.
  *
- * Polling stops when this unmounts, which is when the player closes: every
- * loop carries a run number, and a closed player or a newer export makes the
- * old loop's number stale, so a reply that lands late schedules nothing.
+ * Polling stops when this unmounts, which is when its card leaves the page:
+ * every loop carries a run number, and an unmounted card or a newer export
+ * makes the old loop's number stale, so a reply that lands late schedules
+ * nothing.
+ *
+ * `compact` is the clip card's row: "Export 9:16" as the main action and 16:9
+ * beside it (the formats still to come are listed in the opened card), and
+ * the status line takes no room until there is something to say.
  */
 export function ClipExports({
   snippetId,
   range,
   valid,
+  compact,
 }: {
   snippetId: string
   range: { start_ms: number; end_ms: number }
   valid: boolean
+  compact?: boolean
 }) {
   const [state, setState] = React.useState<State>({ phase: 'idle' })
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -165,47 +172,84 @@ export function ClipExports({
   const busy = state.phase === 'starting' || state.phase === 'running'
   const blocked = state.phase === 'blocked'
   const progress = state.phase === 'running' && state.job ? fraction(state.job.progress) : null
+  const spinning = (aspect: SnippetAspect) => busy && 'aspect' in state && state.aspect === aspect
+  const disabled = busy || blocked || !valid
 
   return (
-    <section aria-label="Export" className="space-y-2">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-2xs font-semibold uppercase tracking-wider text-text-tertiary">Export</h3>
-        <p className="text-2xs text-text-tertiary tabular-nums">
-          {valid
-            ? `${formatClipTime(range.start_ms)} – ${formatClipTime(range.end_ms)}`
-            : 'Set an in/out of at least 1 second to export.'}
-        </p>
-      </div>
-      <div className="flex flex-wrap gap-1.5">
-        {ASPECTS.map((a) =>
-          a.enabled ? (
-            <Button
-              key={a.value}
-              type="button"
-              size="sm"
-              variant="secondary"
-              disabled={busy || blocked || !valid}
-              onClick={() => start(a.value)}
-              aria-label={`Export ${a.value}`}
-            >
-              {busy && 'aspect' in state && state.aspect === a.value ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Download className="h-3.5 w-3.5" />
-              )}
-              {a.value}
-            </Button>
-          ) : (
-            <HintTooltip key={a.value} hint={`${a.value}: coming soon`}>
-              <Button type="button" size="sm" variant="secondary" disabled aria-label={`Export ${a.value}, coming soon`}>
+    <section aria-label="Export" className={compact ? 'space-y-1.5' : 'space-y-2'}>
+      {compact ? (
+        // The card's row: the main format as the main action, the other
+        // available one beside it; formats still to come are in the opened
+        // card only.
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            disabled={disabled}
+            onClick={() => start('9:16')}
+            aria-label="Export 9:16"
+            className="h-8 hover-none:h-10 gap-1.5 px-3"
+          >
+            {spinning('9:16') ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
+            Export 9:16
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={disabled}
+            onClick={() => start('16:9')}
+            aria-label="Export 16:9"
+            className="h-8 hover-none:h-10 gap-1 px-2.5 text-xs"
+          >
+            {spinning('16:9') && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            16:9
+          </Button>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-2xs font-semibold uppercase tracking-wider text-text-tertiary">Export</h3>
+          <p className="text-2xs text-text-tertiary tabular-nums">
+            {valid
+              ? `${formatClipTime(range.start_ms)} – ${formatClipTime(range.end_ms)}`
+              : 'Set an in/out of at least 1 second to export.'}
+          </p>
+        </div>
+      )}
+      {compact ? (
+        !valid && <p className="text-2xs text-text-tertiary">Set an in/out of at least 1 second to export.</p>
+      ) : (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {ASPECTS.map((a) =>
+            a.enabled ? (
+              <Button
+                key={a.value}
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={disabled}
+                onClick={() => start(a.value)}
+                aria-label={`Export ${a.value}`}
+              >
+                {spinning(a.value) ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
                 {a.value}
               </Button>
-            </HintTooltip>
-          ),
-        )}
-      </div>
+            ) : (
+              <HintTooltip key={a.value} hint={`${a.value}: coming soon`}>
+                <Button type="button" size="sm" variant="secondary" disabled aria-label={`Export ${a.value}, coming soon`}>
+                  {a.value}
+                </Button>
+              </HintTooltip>
+            ),
+          )}
+        </div>
+      )}
 
-      <div aria-live="polite" className="min-h-[1.25rem] text-xs" data-testid="export-status">
+      <div
+        aria-live="polite"
+        className={compact ? 'text-xs' : 'min-h-[1.25rem] text-xs'}
+        data-testid="export-status"
+      >
         {state.phase === 'blocked' && <p className="text-text-tertiary">{state.message}</p>}
         {state.phase === 'starting' && <p className="text-text-tertiary">Starting {state.aspect} export…</p>}
         {state.phase === 'running' && (

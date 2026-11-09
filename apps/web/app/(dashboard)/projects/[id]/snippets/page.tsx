@@ -16,7 +16,8 @@ import useSWRInfinite from "swr/infinite";
 import { useParams, usePathname, useSearchParams } from "next/navigation";
 import * as Popover from "@radix-ui/react-popover";
 import * as Tabs from "@radix-ui/react-tabs";
-import { ChevronDown, Files, Scissors, SearchX, Settings2 } from "lucide-react";
+import { flushSync } from "react-dom";
+import { ChevronDown, Files, Keyboard, Scissors, SearchX, Settings2, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
@@ -33,8 +34,16 @@ import { Skeleton } from "@/components/shared/skeleton";
 import { useOptionalToast } from "@/components/shared/toast";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { useBreadcrumbStore } from "@/stores/breadcrumb-store";
-import { ClipCard } from "@/components/snippets/clip-card";
-import { ClipPlayerDialog } from "@/components/snippets/clip-player";
+import {
+  SHORTCUTS,
+  cardKeyOf,
+  createPlayerGroup,
+  describeChange,
+  isEmptyPatch,
+  shortcutFor,
+  targetKind,
+} from "@/lib/snippet-card";
+import { ClipCard, type ClipCardController } from "@/components/snippets/clip-card";
 import { SnippetFilesTab } from "@/components/snippets/snippet-files-tab";
 import { SnippetSearchBox } from "@/components/snippets/snippet-search-box";
 import { SnippetSettingsDialog } from "@/components/snippets/snippet-settings-dialog";
@@ -50,6 +59,7 @@ import type {
   SnippetClip,
   SnippetClipGroup,
   SnippetGroup,
+  SnippetPatch,
   SnippetSearchParams,
   SnippetSearchResponse,
   SnippetSort,
@@ -125,6 +135,53 @@ function topicOptions(popular: string[], applied: string[]) {
     label: `#${t}`,
     on: applied.some((a) => a.toLowerCase() === t.toLowerCase()),
   }));
+}
+
+const NO_SPEAKERS: SnippetSpeaker[] = [];
+
+/** "3 clips · 2 files" under a group heading. */
+function groupSummary(items: SnippetClip[]): string {
+  const files = new Set(items.map((c) => c.media_file_id)).size;
+  return `${items.length} ${items.length === 1 ? "clip" : "clips"} · ${files} ${files === 1 ? "file" : "files"}`;
+}
+
+/** The last saved change, for the Undo toast. */
+interface UndoEntry {
+  id: number;
+  clipId: string;
+  cardKey: string;
+  inverse: SnippetPatch;
+  message: string;
+}
+
+const UNDO_TOAST_MS = 7000;
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
+/**
+ * Opening or closing a card reflows the grid; this slides every card from
+ * where it was to where it lands (FLIP: measure, change, measure, animate
+ * the difference), so the eye can follow the cards that moved.
+ */
+function flipCards(update: () => void) {
+  const cards = Array.from(document.querySelectorAll<HTMLElement>("[data-clip-key]"));
+  const before = new Map(cards.map((el) => [el, el.getBoundingClientRect()]));
+  flushSync(update);
+  if (prefersReducedMotion()) return;
+  for (const el of cards) {
+    const a = before.get(el);
+    if (!a || !el.isConnected || typeof el.animate !== "function") continue;
+    const b = el.getBoundingClientRect();
+    const dx = a.left - b.left;
+    const dy = a.top - b.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+    el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }], {
+      duration: 260,
+      easing: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+    });
+  }
 }
 
 export default function SnippetsPage() {
@@ -231,8 +288,6 @@ export default function SnippetsPage() {
   }
 
   // ── Player and review ───────────────────────────────────────────────────
-  const [playing, setPlaying] = React.useState<SnippetClip | null>(null);
-  const [busyId, setBusyId] = React.useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   // Clips for everyone; Files (which files are processed, speakers per
   // track) for editors and owners only, as GET /snippet/files is.
@@ -251,20 +306,120 @@ export default function SnippetsPage() {
     window.history.replaceState(null, "", s ? `${pathname}?${s}` : pathname);
   };
 
-  async function setClipStatus(clip: SnippetClip, next: SnippetStatus) {
-    setBusyId(clip.id);
-    try {
-      await snippetApi.patchSnippet(clip.id, { status: next });
-      await search.mutate();
-      if (next === "rejected" && status === "default") {
-        toast("Rejected. Rejected clips are hidden in this view.", "info");
+  // One player for the whole grid (see createPlayerGroup) and one open card.
+  const [players] = React.useState(createPlayerGroup);
+  const activeKey = React.useSyncExternalStore(players.subscribe, players.active, () => null);
+  const [expandedKey, setExpandedKey] = React.useState<string | null>(null);
+  const toggleExpand = React.useCallback((key: string) => {
+    flipCards(() => setExpandedKey((cur) => (cur === key ? null : key)));
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLElement>(`[data-clip-key="${CSS.escape(key)}"]`)
+        ?.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" }),
+    );
+  }, []);
+
+  // Cards register what the keyboard and Undo drive.
+  const controllers = React.useRef(new Map<string, ClipCardController>());
+  const register = React.useCallback((key: string, c: ClipCardController) => {
+    controllers.current.set(key, c);
+    return () => {
+      if (controllers.current.get(key) === c) controllers.current.delete(key);
+    };
+  }, []);
+
+  // ── Saves and Undo ──────────────────────────────────────────────────────
+  const [undo, setUndo] = React.useState<UndoEntry | null>(null);
+  const statusRef = React.useRef(status);
+  statusRef.current = status;
+  const searchRef = React.useRef(search);
+  searchRef.current = search;
+
+  /** The server's copy of a clip, put in place without reloading the list,
+   *  so a card being trimmed does not jump under a sort. */
+  const replaceClip = React.useCallback((updated: SnippetClip) => {
+    void searchRef.current.mutate(
+      (pages) =>
+        pages?.map((p) => ({
+          ...p,
+          groups: p.groups.map((g) => ({
+            ...g,
+            items: g.items.map((c) => (c.id === updated.id ? updated : c)),
+          })),
+        })),
+      { revalidate: false },
+    );
+  }, []);
+
+  const onSaved = React.useCallback(
+    (updated: SnippetClip, sent: SnippetPatch, inverse: SnippetPatch, cardKey: string) => {
+      // A status change can move the clip in or out of this view, as before.
+      if ("status" in sent) void searchRef.current.mutate();
+      else replaceClip(updated);
+      if (isEmptyPatch(inverse)) {
+        setUndo(null);
+        return;
       }
+      const hidden = sent.status === "rejected" && statusRef.current === "default";
+      setUndo({
+        id: Date.now(),
+        clipId: updated.id,
+        cardKey,
+        inverse,
+        message: hidden ? "Rejected. Rejected clips are hidden in this view." : describeChange(sent),
+      });
+    },
+    [replaceClip],
+  );
+
+  async function runUndo(entry: UndoEntry) {
+    setUndo(null);
+    const card = controllers.current.get(entry.cardKey);
+    if (card && card.clipId === entry.clipId) {
+      card.undo(entry.inverse);
+      return;
+    }
+    // The card is gone (a rejected clip left this view): undo directly.
+    try {
+      await snippetApi.patchSnippet(entry.clipId, entry.inverse);
+      await search.mutate();
     } catch (err) {
-      toast(errorMessage(err, "Could not update the clip."), "error");
-    } finally {
-      setBusyId(null);
+      toast(errorMessage(err, "Could not undo the change."), "error");
     }
   }
+
+  const onTracksChanged = React.useCallback(() => void searchRef.current.mutate(), []);
+
+  // Nothing typed is lost to a closed tab while a save is waiting.
+  React.useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (Array.from(controllers.current.values()).some((c) => c.busy())) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
+  // ── Keyboard ────────────────────────────────────────────────────────────
+  React.useEffect(() => {
+    if (tab !== "clips") return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      const action = shortcutFor(e, targetKind(e.target));
+      if (!action) return;
+      const focused =
+        (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("[data-clip-key]")?.dataset.clipKey ??
+        null;
+      const active = players.active();
+      const key = action.type === "toggle-expand" ? (focused ?? active) : (active ?? focused);
+      const card = key ? controllers.current.get(key) : undefined;
+      if (card?.run(action)) e.preventDefault();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [tab, players]);
 
   // ── Render ──────────────────────────────────────────────────────────────
   // The trail (Projects › project › SocialSnippet) is the Header's, fed by
@@ -470,32 +625,46 @@ export default function SnippetsPage() {
         />
       ) : (
         <div className="space-y-6">
-          <p className="text-xs text-text-tertiary">
-            {total}{" "}
-            {group === "topic" ? (total === 1 ? "entry" : "entries") : total === 1 ? "result" : "results"}
-            {group === "topic" && " (a clip appears under each of its topics)"}
-          </p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs text-text-tertiary">
+              {total}{" "}
+              {group === "topic" ? (total === 1 ? "entry" : "entries") : total === 1 ? "result" : "results"}
+              {group === "topic" && " (a clip appears under each of its topics)"}
+            </p>
+            <ShortcutsHelp />
+          </div>
           {groups.map((g) => (
             <section key={g.key} aria-label={group === "none" ? "Results" : g.label}>
               {group !== "none" && (
-                <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-text-tertiary">
+                <h2 className="mb-3 flex flex-wrap items-baseline gap-x-2 text-base font-semibold text-text-primary">
                   {g.label}
-                  <span className="ml-1.5 font-normal tabular-nums">{g.items.length}</span>
+                  <span className="text-xs font-normal tabular-nums text-text-tertiary">{groupSummary(g.items)}</span>
                 </h2>
               )}
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-                {g.items.map((clip) => (
-                  <ClipCard
-                    key={`${g.key}-${clip.id}`}
-                    clip={clip}
-                    canEdit={canEdit}
-                    activeTopics={topics}
-                    busy={busyId === clip.id}
-                    onPlay={() => setPlaying(clip)}
-                    onTopic={toggleTopic}
-                    onStatus={(s) => setClipStatus(clip, s)}
-                  />
-                ))}
+              {/* Dense flow: the opened card spans the row and the others fill in around it. */}
+              <div className="grid grid-flow-row-dense grid-cols-1 gap-4 lg:grid-cols-2">
+                {g.items.map((clip) => {
+                  const key = cardKeyOf(g.key, clip.id);
+                  return (
+                    <ClipCard
+                      key={key}
+                      cardKey={key}
+                      clip={clip}
+                      projectId={projectId}
+                      canEdit={canEdit}
+                      speakers={allSpeakers ?? NO_SPEAKERS}
+                      activeTopics={topics}
+                      active={activeKey === key}
+                      expanded={expandedKey === key}
+                      group={players}
+                      onTopic={toggleTopic}
+                      onToggleExpand={toggleExpand}
+                      onSaved={onSaved}
+                      onTracksChanged={onTracksChanged}
+                      register={register}
+                    />
+                  );
+                })}
               </div>
             </section>
           ))}
@@ -519,17 +688,9 @@ export default function SnippetsPage() {
         </div>
       )}
 
-      <ClipPlayerDialog
-        clip={playing}
-        canEdit={canEdit}
-        onOpenChange={(open) => {
-          if (!open) setPlaying(null);
-        }}
-        onSaved={(updated) => {
-          setPlaying(updated);
-          void search.mutate();
-        }}
-      />
+      {undo && (
+        <UndoToast key={undo.id} entry={undo} onUndo={() => void runUndo(undo)} onClose={() => setUndo(null)} />
+      )}
     </>
   );
 
@@ -570,22 +731,102 @@ export default function SnippetsPage() {
 
 function ResultsSkeleton() {
   return (
-    <div
-      className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4"
-      aria-busy="true"
-      aria-label="Loading clips"
-    >
-      {Array.from({ length: 6 }, (_, i) => (
-        <div key={i} className="overflow-hidden rounded-lg border border-border bg-bg-secondary">
-          <Skeleton className="aspect-video w-full rounded-none" />
-          <div className="space-y-2 p-3">
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2" aria-busy="true" aria-label="Loading clips">
+      {Array.from({ length: 4 }, (_, i) => (
+        <div
+          key={i}
+          className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 rounded-xl border border-border bg-bg-secondary p-3 sm:grid-cols-[clamp(8.5rem,28%,14.5rem)_minmax(0,1fr)] sm:gap-x-4 sm:p-4"
+        >
+          <Skeleton className="aspect-[9/16] w-full rounded-lg" />
+          <div className="space-y-2.5">
             <Skeleton className="h-4 w-3/4" />
             <Skeleton className="h-3 w-1/2" />
             <Skeleton className="h-3 w-full" />
+            <Skeleton className="h-3 w-5/6" />
+            <Skeleton className="mt-6 h-8 w-full" />
+            <Skeleton className="h-8 w-28" />
           </div>
         </div>
       ))}
     </div>
+  );
+}
+
+/** "Saved · Undo" for the last change, gone after a few seconds. */
+function UndoToast({ entry, onUndo, onClose }: { entry: UndoEntry; onUndo: () => void; onClose: () => void }) {
+  React.useEffect(() => {
+    const t = setTimeout(onClose, UNDO_TOAST_MS);
+    return () => clearTimeout(t);
+  }, [onClose]);
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-1/2 z-[55] flex w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 items-center gap-3 rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm text-text-primary shadow-xl"
+    >
+      <span className="min-w-0 flex-1 truncate">{entry.message}</span>
+      <button
+        type="button"
+        onClick={onUndo}
+        className="rounded px-1.5 py-0.5 hover-none:py-2 text-sm font-medium text-accent hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        Undo
+      </button>
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="Dismiss"
+        className="rounded p-1 text-text-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        <X className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+/** The keyboard shortcuts, in a small popover. */
+function ShortcutsHelp() {
+  return (
+    <Popover.Root>
+      <Popover.Trigger
+        aria-label="Keyboard shortcuts"
+        className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-text-tertiary hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        <Keyboard className="h-3.5 w-3.5" aria-hidden />
+        <span className="hidden sm:inline">Shortcuts</span>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="end"
+          sideOffset={4}
+          collisionPadding={12}
+          className="z-[60] w-72 rounded-md border border-border bg-bg-secondary p-3 shadow-xl"
+        >
+          <p className="mb-2 text-xs font-semibold text-text-primary">Keyboard shortcuts</p>
+          <dl className="space-y-1.5 text-xs">
+            {SHORTCUTS.map((s) => (
+              <div key={s.label} className="flex items-center justify-between gap-3">
+                <dt className="text-text-secondary">{s.label}</dt>
+                <dd className="flex shrink-0 gap-1">
+                  {s.keys.map((k) => (
+                    <kbd
+                      key={k}
+                      className="min-w-[1.5rem] rounded border border-border bg-bg-tertiary px-1.5 py-0.5 text-center font-mono text-2xs text-text-primary"
+                    >
+                      {k}
+                    </kbd>
+                  ))}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mt-2 text-2xs text-text-tertiary">
+            Not while typing in a field. Space, I, O and the arrows act on the clip that is playing; E on the clip
+            with focus.
+          </p>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
