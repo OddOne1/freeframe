@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import type { SnippetFile, SnippetTrack } from '@/types'
 import {
-  MAX_PROCESS_BATCH, RETRY_FORCES, SERVER_CPU_SPEED_FACTOR, anyActive, canSelect, detectSummaryText,
-  estimateProcessing, formatEstimate, formatLength, statusLabel, tracksToTranscribe,
+  DEFAULT_FILES_VIEW, FILES_VIEW_KEYS, FILE_FILTERS, MAX_PROCESS_BATCH, RETRY_FORCES, SERVER_CPU_SPEED_FACTOR,
+  anyActive, canSelect, detectSummaryText, estimateProcessing, fetchAllFiles, filterCounts, folderLabel,
+  formatEstimate, formatLength, groupByFolder, matchesFilter, matchesSearch, needsSpeaker, readFilesView,
+  selectAllTargets, sortFiles, statusLabel, summaryText, trackHasSpeech, trackName, tracksToTranscribe,
+  writeFilesView,
 } from '../snippet-files'
 import { snippetKeys } from '../snippet-api'
 
@@ -154,5 +158,219 @@ describe('snippetKeys.files', () => {
     expect(snippetKeys.files('p', { q: 'a b', page: 2, page_size: 20 })).toBe(
       '/projects/p/snippet/files?q=a+b&page=2&page_size=20',
     )
+  })
+})
+
+// ─── Files tab navigation: search, chips, sort, groups, URL ─────────────────
+
+const tr = (track_index: number, label: string, speaker_id: string | null = null): SnippetTrack => ({
+  track_index, label, speaker_id, speaker_name: speaker_id ? `Name ${speaker_id}` : null,
+})
+
+let seq = 0
+const mk = (o: Partial<SnippetFile> = {}): SnippetFile => {
+  seq += 1
+  return {
+    asset_id: `a${String(seq).padStart(3, '0')}`, media_file_id: `m${seq}`, name: `File ${seq}.mov`, kind: 'video',
+    folder_path: '/', duration_ms: 60_000, asset_status: 'ready', not_ready_reason: null,
+    snippet_status: 'not_processed', segment_count: 0, snippet_count: 0, error: null,
+    updated_at: '2026-11-01T10:00:00Z', tracks: [], planned_track_count: null, done_track_count: 0, ...o,
+  }
+}
+const names = (fs: SnippetFile[]) => fs.map((f) => f.name)
+
+describe('needs-speaker rule', () => {
+  it('a track marked "no speech" never needs a speaker', () => {
+    expect(trackHasSpeech(tr(0, 'Track 1 · mono · no speech'))).toBe(false)
+    expect(trackHasSpeech(tr(0, 'Track 1 · mono · No Speech '))).toBe(false)
+    expect(trackHasSpeech(tr(0, 'Lav Anna · 1 ch · de'))).toBe(true)
+    // "no speech" in the middle of a label is not the server's marker.
+    expect(trackHasSpeech(tr(0, 'no speech zone · mono'))).toBe(true)
+  })
+  it('a file needs one when any track that may have speech has no speaker', () => {
+    expect(needsSpeaker(mk({ tracks: [tr(0, 'Track 1', 's1'), tr(1, 'Track 2')] }))).toBe(true)
+    expect(needsSpeaker(mk({ tracks: [tr(0, 'Track 1', 's1'), tr(1, 'Track 2 · no speech')] }))).toBe(false)
+    expect(needsSpeaker(mk({ tracks: [tr(0, 'Track 1 · no speech'), tr(1, 'Track 2 · no speech')] }))).toBe(false)
+    expect(needsSpeaker(mk({ tracks: [] }))).toBe(false)
+  })
+  it('names tracks by their position', () => {
+    expect(trackName({ track_index: 0 })).toBe('Track 1')
+    expect(trackName({ track_index: 3 })).toBe('Track 4')
+  })
+})
+
+describe('filter chips', () => {
+  const files = [
+    mk({ snippet_status: 'failed', error: 'x' }),
+    mk({ snippet_status: 'queued' }),
+    mk({ snippet_status: 'running', tracks: [tr(0, 'Track 1')] }),
+    mk({ snippet_status: 'done', tracks: [tr(0, 'Track 1', 's1')] }),
+    mk({ snippet_status: 'done', tracks: [tr(0, 'Track 1 · no speech')] }),
+    mk({ snippet_status: 'not_processed', tracks: [tr(0, 'Track 1'), tr(1, 'Track 2 · no speech')] }),
+  ]
+  it('each chip picks its own files', () => {
+    expect(files.filter((f) => matchesFilter(f, 'attention')).map((f) => f.snippet_status)).toEqual(['failed'])
+    expect(files.filter((f) => matchesFilter(f, 'processing')).map((f) => f.snippet_status)).toEqual(['queued', 'running'])
+    expect(files.filter((f) => matchesFilter(f, 'done'))).toHaveLength(2)
+    expect(files.filter((f) => matchesFilter(f, 'not_processed'))).toHaveLength(1)
+    expect(files.filter((f) => matchesFilter(f, 'needs_speaker')).map((f) => f.snippet_status))
+      .toEqual(['running', 'not_processed'])
+    expect(files.filter((f) => matchesFilter(f, 'all'))).toHaveLength(6)
+  })
+  it('counts every chip at once', () => {
+    expect(filterCounts(files)).toEqual({
+      all: 6, attention: 1, processing: 2, done: 2, not_processed: 1, needs_speaker: 2,
+    })
+    expect(Object.keys(filterCounts([]))).toEqual(FILE_FILTERS.map((x) => x.value))
+  })
+})
+
+describe('search', () => {
+  const f = mk({ name: 'Interview Anna.mov', folder_path: '/Shoots/Day 2' })
+  it('matches part of the name or the folder path, ignoring case', () => {
+    expect(matchesSearch(f, 'anna')).toBe(true)
+    expect(matchesSearch(f, 'day 2')).toBe(true)
+    expect(matchesSearch(f, '/shoots')).toBe(true)
+    expect(matchesSearch(f, 'marco')).toBe(false)
+    expect(matchesSearch(f, '   ')).toBe(true)
+  })
+  it('a file in the project root is shown, and found, as "Project root"', () => {
+    expect(folderLabel('/')).toBe('Project root')
+    expect(matchesSearch(mk({ name: 'memo.m4a', folder_path: '/' }), 'root')).toBe(true)
+  })
+})
+
+describe('sortFiles', () => {
+  const a = mk({ name: 'b take 10.mov', snippet_status: 'done', duration_ms: 300_000, updated_at: '2026-11-03T00:00:00Z' })
+  const b = mk({ name: 'B take 2.mov', snippet_status: 'failed', duration_ms: null, updated_at: '2026-11-01T00:00:00Z' })
+  const c = mk({ name: 'a.mov', snippet_status: 'running', duration_ms: 60_000, updated_at: null })
+  const d = mk({ name: 'c.mov', snippet_status: 'not_processed', duration_ms: 600_000, updated_at: '2026-11-02T00:00:00Z' })
+  const all = [a, b, c, d]
+  it('sorts names naturally, ignoring case', () => {
+    expect(names(sortFiles(all, 'name-asc'))).toEqual(['a.mov', 'B take 2.mov', 'b take 10.mov', 'c.mov'])
+    expect(names(sortFiles(all, 'name-desc'))).toEqual(['c.mov', 'b take 10.mov', 'B take 2.mov', 'a.mov'])
+  })
+  it('sorts status with failed first, or done first', () => {
+    expect(sortFiles(all, 'status-asc').map((f) => f.snippet_status)).toEqual(['failed', 'running', 'not_processed', 'done'])
+    expect(sortFiles(all, 'status-desc').map((f) => f.snippet_status)).toEqual(['done', 'not_processed', 'running', 'failed'])
+  })
+  it('puts an unknown length or update time last in both directions', () => {
+    expect(names(sortFiles(all, 'length-asc'))).toEqual(['a.mov', 'b take 10.mov', 'c.mov', 'B take 2.mov'])
+    expect(names(sortFiles(all, 'length-desc'))).toEqual(['c.mov', 'b take 10.mov', 'a.mov', 'B take 2.mov'])
+    expect(names(sortFiles(all, 'updated-desc'))).toEqual(['b take 10.mov', 'c.mov', 'B take 2.mov', 'a.mov'])
+    expect(names(sortFiles(all, 'updated-asc'))).toEqual(['B take 2.mov', 'c.mov', 'b take 10.mov', 'a.mov'])
+  })
+  it('breaks ties by name and leaves the input alone', () => {
+    const x = mk({ name: 'z.mov', snippet_status: 'done' })
+    const y = mk({ name: 'y.mov', snippet_status: 'done' })
+    const input = [x, y]
+    expect(names(sortFiles(input, 'status-asc'))).toEqual(['y.mov', 'z.mov'])
+    expect(names(sortFiles(input, 'status-desc'))).toEqual(['y.mov', 'z.mov'])
+    expect(names(input)).toEqual(['z.mov', 'y.mov'])
+  })
+})
+
+describe('groupByFolder', () => {
+  it('one group per folder, A to Z with numbers in order, "Ungrouped" last, order inside kept', () => {
+    const files = [
+      mk({ name: '1', folder_path: '/Shoot/Day 10' }),
+      mk({ name: '2', folder_path: '/' }),
+      mk({ name: '3', folder_path: '/Shoot/Day 2' }),
+      mk({ name: '4', folder_path: '/Audio' }),
+      mk({ name: '5', folder_path: '/Shoot/Day 2' }),
+    ]
+    const groups = groupByFolder(files)
+    expect(groups.map((g) => g.label)).toEqual(['/Audio', '/Shoot/Day 2', '/Shoot/Day 10', 'Ungrouped'])
+    expect(groups.map((g) => names(g.files))).toEqual([['4'], ['3', '5'], ['1'], ['2']])
+  })
+  it('is empty for no files', () => {
+    expect(groupByFolder([])).toEqual([])
+  })
+})
+
+describe('summaryText', () => {
+  it('counts done, failed and files that need a speaker', () => {
+    const files = [
+      mk({ snippet_status: 'done', tracks: [tr(0, 'Track 1')] }),
+      mk({ snippet_status: 'done', tracks: [tr(0, 'Track 1', 's')] }),
+      mk({ snippet_status: 'failed', tracks: [tr(0, 'Track 1 · no speech')] }),
+    ]
+    expect(summaryText(files)).toBe('3 files, 2 done, 1 failed, 1 needs a speaker')
+    expect(summaryText([])).toBe('0 files, 0 done, 0 failed, 0 need a speaker')
+    expect(summaryText(files.slice(0, 1), 1)).toBe('1 file, 1 done, 0 failed, 1 needs a speaker')
+  })
+})
+
+describe('selectAllTargets', () => {
+  it('ticks only rows that can be processed, in the order shown', () => {
+    const rows = [
+      mk({ name: 'ok1' }), mk({ name: 'busy', snippet_status: 'running' }),
+      mk({ name: 'up', asset_status: 'uploading', not_ready_reason: 'uploading' }), mk({ name: 'ok2', snippet_status: 'done' }),
+    ]
+    const r = selectAllTargets(rows)
+    expect(r.ids).toEqual([rows[0].asset_id, rows[3].asset_id])
+    expect(r).toMatchObject({ eligible: 2, clipped: 0 })
+  })
+  it('stops at the per-request maximum and says how many it left out', () => {
+    const rows = Array.from({ length: 27 }, () => mk())
+    const r = selectAllTargets(rows)
+    expect(r.ids).toHaveLength(MAX_PROCESS_BATCH)
+    expect(r.ids).toEqual(rows.slice(0, 20).map((f) => f.asset_id))
+    expect(r).toMatchObject({ eligible: 27, clipped: 7 })
+  })
+})
+
+describe('fetchAllFiles', () => {
+  const page = (total: number, from: number, n: number) => ({
+    total, items: Array.from({ length: n }, (_, i) => mk({ asset_id: `id${from + i}` })),
+  })
+  it('follows the pages at 100 a page', async () => {
+    const calls: [number, number][] = []
+    const res = await fetchAllFiles(async (p, size) => {
+      calls.push([p, size])
+      return page(230, (p - 1) * size, Math.min(size, 230 - (p - 1) * size))
+    })
+    expect(calls).toEqual([[1, 100], [2, 100], [3, 100]])
+    expect(res.total).toBe(230)
+    expect(res.items).toHaveLength(230)
+  })
+  it('stops at 500 files and keeps the real total', async () => {
+    const calls: number[] = []
+    const res = await fetchAllFiles(async (p, size) => {
+      calls.push(p)
+      return page(1234, (p - 1) * size, size)
+    })
+    expect(calls).toEqual([1, 2, 3, 4, 5])
+    expect(res).toMatchObject({ total: 1234 })
+    expect(res.items).toHaveLength(500)
+  })
+  it('asks once for a short list, and keeps a file that moved between pages once', async () => {
+    const one = await fetchAllFiles(async () => page(3, 0, 3))
+    expect(one.items).toHaveLength(3)
+    const moved = await fetchAllFiles(async (p) => (p === 1 ? page(4, 0, 2) : page(4, 1, 2)), { pageSize: 2 })
+    expect(moved.items.map((f) => f.asset_id)).toEqual(['id0', 'id1', 'id2'])
+  })
+})
+
+describe('files view in the URL', () => {
+  it('leaves defaults out and keeps other keys', () => {
+    const base = new URLSearchParams('tab=files&other=1')
+    expect(writeFilesView(base, DEFAULT_FILES_VIEW).toString()).toBe('tab=files&other=1')
+    const qs = writeFilesView(base, { q: ' day 2 ', filter: 'needs_speaker', sort: 'updated-desc', grouped: false })
+    expect(qs.get(FILES_VIEW_KEYS.q)).toBe('day 2')
+    expect(qs.get(FILES_VIEW_KEYS.filter)).toBe('needs_speaker')
+    expect(qs.get(FILES_VIEW_KEYS.sort)).toBe('updated-desc')
+    expect(qs.get(FILES_VIEW_KEYS.group)).toBe('none')
+    expect(qs.get('tab')).toBe('files')
+    expect(qs.get('other')).toBe('1')
+  })
+  it('reads back what it wrote', () => {
+    const view = { q: 'anna', filter: 'attention' as const, sort: 'length-desc' as const, grouped: false }
+    expect(readFilesView(writeFilesView(new URLSearchParams(), view))).toEqual(view)
+    expect(readFilesView(new URLSearchParams())).toEqual(DEFAULT_FILES_VIEW)
+  })
+  it('falls back to the default for values it does not know', () => {
+    expect(readFilesView(new URLSearchParams('files_filter=nope&files_sort=size-up&files_group=x')))
+      .toEqual(DEFAULT_FILES_VIEW)
   })
 })

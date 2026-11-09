@@ -10,10 +10,13 @@
  * it, and that is what the player reads as "no video". Searching, filtering, sorting,
  * grouping, approve/reject, in/out saves and exports all work against it.
  *
- * Files tab: nine files in every state (done, not processed, not ready,
- * failed, one already running). Processing one walks it through queued
- * (5 s) and running (9 s more) to done, so the 5 s polling can be watched
- * starting and stopping; "Keynote.mov" fails every time, for Retry.
+ * Files tab: 31 files in four folders plus the project root, in every state
+ * (done, not processed, not ready, failed, one already running), many
+ * without speaker names and some tracks with no speech, so the search, the
+ * filter chips, sorting, folder groups and the 20-file "select all" limit can
+ * be seen. Processing one walks it through queued (5 s) and running (9 s
+ * more) to done, so the 5 s polling can be watched starting and stopping;
+ * "Keynote.mov" fails every time, for Retry.
  *
  * Media: set NEXT_PUBLIC_SNIPPET_FIXTURE_VIDEO / NEXT_PUBLIC_SNIPPET_FIXTURE_AUDIO
  * to an absolute URL (an .m3u8 or an .mp4/.m4a) to make the player play
@@ -306,7 +309,7 @@ let files: FixtureFile[] = [
     tracks: [track(0, 'Boom · mono'), track(1, 'Lav 1 · mono', ANNA), track(2, 'Lav 2 · mono')],
   }),
   file(5, {
-    name: 'B-roll street.mov', duration_ms: 4_320_000, folder_path: '/Footage/Day 2',
+    name: 'B-roll street.mov', duration_ms: 4_320_000, folder_path: '/Footage',
     tracks: [track(0, 'Track 1 · stereo'), track(1, 'Track 2 · stereo')],
   }),
   file(6, { name: 'Phone memo.m4a', duration_ms: null, folder_path: '/' }),
@@ -334,6 +337,46 @@ let files: FixtureFile[] = [
       track(2, 'Track 3 · mono'), track(3, 'Track 4 · mono')],
     done_track_count: 2,
   }),
+  // More of the same shoot, so the tab has enough to filter, sort and group.
+  ...Array.from({ length: 8 }, (_, i) =>
+    file(12 + i, {
+      name: `Interview take ${i + 2}.mov`,
+      duration_ms: 240_000 + i * 95_000,
+      folder_path: i < 4 ? '/Interviews' : '/Interviews/Day 2',
+      snippet_status: i % 3 === 0 ? 'done' : 'not_processed',
+      segment_count: i % 3 === 0 ? 50 + i : 0,
+      snippet_count: i % 3 === 0 ? 2 : 0,
+      tracks:
+        i % 2 === 0
+          ? [track(0, 'Lav Anna · 1 ch', ANNA), track(1, 'Lav guest · 1 ch')]
+          : [track(0, 'Lav Anna · 1 ch', ANNA), track(1, 'Lav Marco · 1 ch', MARCO)],
+    }),
+  ),
+  ...Array.from({ length: 6 }, (_, i) =>
+    file(20 + i, {
+      name: `Drone shot ${String(i + 1).padStart(2, '0')}.mp4`,
+      duration_ms: 45_000 + i * 20_000,
+      folder_path: '/Footage',
+      snippet_status: i < 2 ? 'done' : 'not_processed',
+      tracks: [track(0, i < 2 ? 'Track 1 · stereo · no speech' : 'Track 1 · stereo')],
+      done_track_count: i < 2 ? 1 : 0,
+    }),
+  ),
+  ...Array.from({ length: 4 }, (_, i) =>
+    file(26 + i, {
+      name: `Podcast episode ${13 + i}.wav`,
+      duration_ms: 1_800_000 + i * 300_000,
+      folder_path: '/Podcast',
+      snippet_status: i === 0 ? 'done' : i === 1 ? 'failed' : 'not_processed',
+      segment_count: i === 0 ? 120 : 0,
+      snippet_count: i === 0 ? 5 : 0,
+      error: i === 1 ? 'RuntimeError: the transcription worker stopped' : null,
+      tracks: [track(0, 'Host · mono', i === 0 ? MARCO : null), track(1, 'Guest · mono')],
+    }),
+  ),
+  file(30, { name: 'Voice note 2.m4a', duration_ms: 95_000, folder_path: '/', snippet_status: 'done',
+    segment_count: 12, snippet_count: 1, tracks: [track(0, 'Track 1 · mono', ANNA)] }),
+  file(31, { name: 'Untitled export.mov', duration_ms: 610_000, folder_path: '/' }),
 ]
 
 /** Moves a running fixture file along by the clock. */

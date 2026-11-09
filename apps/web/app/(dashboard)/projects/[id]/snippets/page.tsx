@@ -13,7 +13,7 @@
 import * as React from "react";
 import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
-import { useParams, usePathname } from "next/navigation";
+import { useParams, usePathname, useSearchParams } from "next/navigation";
 import * as Popover from "@radix-ui/react-popover";
 import * as Tabs from "@radix-ui/react-tabs";
 import { ChevronDown, Files, Scissors, SearchX, Settings2 } from "lucide-react";
@@ -236,7 +236,20 @@ export default function SnippetsPage() {
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   // Clips for everyone; Files (which files are processed, speakers per
   // track) for editors and owners only, as GET /snippet/files is.
-  const [tab, setTab] = React.useState<"clips" | "files">("clips");
+  // The open tab is in the URL (?tab=files), as the Files tab's own view is,
+  // so a reload or a shared link comes back to it. history.replaceState, which
+  // Next (14.1+) feeds back into useSearchParams, rather than a router
+  // navigation that would reset the page title to the layout's.
+  const searchParams = useSearchParams();
+  const tab: "clips" | "files" = searchParams.get("tab") === "files" ? "files" : "clips";
+  const setTab = (next: "clips" | "files") => {
+    const qs = new URLSearchParams(searchParams.toString());
+    if (next === "files") qs.set("tab", "files");
+    else qs.delete("tab");
+    const s = qs.toString();
+    // `null`, not history.state: Next's own marker there makes it skip the update.
+    window.history.replaceState(null, "", s ? `${pathname}?${s}` : pathname);
+  };
 
   async function setClipStatus(clip: SnippetClip, next: SnippetStatus) {
     setBusyId(clip.id);

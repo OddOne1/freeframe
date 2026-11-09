@@ -9,6 +9,14 @@
  * the owner's, as POST /snippet/process is. The UI hides what the server would
  * refuse; the server still decides.
  *
+ * The whole list is read (100 a page, at most FILES_LOAD_LIMIT files), so the
+ * filter chips, their counts, sorting and the folder groups work on every
+ * file, not one page. The search box matches the name and the folder path
+ * here; when the project has more files than were read, it also asks the
+ * server (`q`, which matches names) so a name past the limit is still found.
+ * Search, chip, sort and grouping live in the URL (lib/snippet-files.ts,
+ * FILES_VIEW_KEYS), so a reload or a shared link shows the same view.
+ *
  * One tree for every width: below `lg` each file is a card, from `lg` up the
  * same elements line up as a table under a header row.
  *
@@ -17,12 +25,29 @@
  */
 import * as React from 'react'
 import useSWR from 'swr'
+import { usePathname, useSearchParams } from 'next/navigation'
 import * as Dialog from '@radix-ui/react-dialog'
 import * as Select from '@radix-ui/react-select'
-import { AlertTriangle, Check, ChevronDown, FileX2, Film, Music, Plus, RotateCcw, Search, X } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  FileX2,
+  Film,
+  FolderClosed,
+  Music,
+  Plus,
+  RotateCcw,
+  Search,
+  X,
+} from 'lucide-react'
+import { cn, formatRelativeTime } from '@/lib/utils'
 import { errorMessage, snippetApi, snippetFetcher, snippetKeys } from '@/lib/snippet-api'
 import {
+  FILE_FILTERS,
+  FILE_SORTS,
+  FILES_LOAD_LIMIT,
   MAX_PROCESS_BATCH,
   POLL_INTERVAL_MS,
   SERVER_CPU_SPEED_FACTOR,
@@ -30,11 +55,25 @@ import {
   canSelect,
   detectSummaryText,
   estimateProcessing,
+  fetchAllFiles,
+  filterCounts,
+  folderLabel,
   formatEstimate,
   formatLength,
+  groupByFolder,
+  matchesFilter,
+  matchesSearch,
+  readFilesView,
   RETRY_FORCES,
+  selectAllTargets,
+  sortFiles,
   statusLabel,
+  summaryText,
+  trackHasSpeech,
+  trackName,
   tracksToTranscribe,
+  writeFilesView,
+  type FilesView,
   type StatusTone,
 } from '@/lib/snippet-files'
 import { Button } from '@/components/ui/button'
@@ -42,13 +81,15 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { EmptyState } from '@/components/shared/empty-state'
 import { Skeleton } from '@/components/shared/skeleton'
 import { useOptionalToast } from '@/components/shared/toast'
+import { Chip, SnippetSelect } from '@/components/snippets/snippet-ui'
 import type { SnippetFile, SnippetFilesResponse, SnippetProcessResponse, SnippetSpeaker } from '@/types'
 
-const PAGE_SIZE = 50
+/** How long the search box waits after the last key before it applies. */
+const SEARCH_DEBOUNCE_MS = 250
 
 /** The table's columns from `lg` up; the header row and every row share it. */
 const COLUMNS =
-  'lg:grid lg:grid-cols-[1.75rem_minmax(0,2fr)_minmax(0,1fr)_8.5rem_4.5rem_3.5rem_minmax(0,2.4fr)_6.5rem] lg:items-center lg:gap-3'
+  'lg:grid lg:grid-cols-[1.75rem_minmax(0,2.4fr)_8.5rem_4.5rem_3.5rem_minmax(0,2.6fr)_6.5rem] lg:items-center lg:gap-3'
 
 const TONE: Record<StatusTone, string> = {
   neutral: 'bg-bg-tertiary text-text-secondary',
@@ -71,6 +112,42 @@ type Pending =
   | { kind: 'reprocess'; file: SnippetFile }
   | { kind: 'retry'; file: SnippetFile }
 
+/**
+ * The view (search, chip, sort, grouping), read from and written to the URL.
+ * Written with history.replaceState, which Next (14.1+) feeds back into
+ * useSearchParams: no soft navigation per keystroke, and the page title that
+ * a router navigation would reset to the layout's stays.
+ */
+function useFilesView(): [FilesView, (patch: Partial<FilesView>) => void] {
+  const pathname = usePathname()
+  const params = useSearchParams()
+  const view = React.useMemo(() => readFilesView(params), [params])
+  const update = React.useCallback(
+    (patch: Partial<FilesView>) => {
+      const qs = writeFilesView(params, { ...view, ...patch }).toString()
+      // `null`, not history.state: Next's own marker in that state makes its
+      // patched replaceState skip the router update. Next copies its state over.
+      window.history.replaceState(null, '', qs ? `${pathname}?${qs}` : pathname)
+    },
+    [params, view, pathname],
+  )
+  return [view, update]
+}
+
+/** Every file of the project (or every name match for `q`), polled while any is busy. */
+function useAllFiles(projectId: string, q: string | null) {
+  return useSWR<SnippetFilesResponse>(
+    q === null ? null : ['snippet/files/all', projectId, q],
+    () =>
+      fetchAllFiles((page, page_size) => snippetApi.listFiles(projectId, { q: q || undefined, page, page_size })),
+    {
+      keepPreviousData: true,
+      shouldRetryOnError: false,
+      refreshInterval: (latest) => (anyActive(latest?.items) ? POLL_INTERVAL_MS : 0),
+    },
+  )
+}
+
 export function SnippetFilesTab({
   projectId,
   canManage,
@@ -80,69 +157,116 @@ export function SnippetFilesTab({
   canManage: boolean
 }) {
   const toast = useOptionalToast()
-  const [text, setText] = React.useState('')
-  const [q, setQ] = React.useState('')
-  const [page, setPage] = React.useState(1)
-  React.useEffect(() => {
-    const t = setTimeout(() => {
-      setQ(text.trim())
-      setPage(1)
-    }, 400)
-    return () => clearTimeout(t)
-  }, [text])
+  const [view, setView] = useFilesView()
 
-  const list = useSWR<SnippetFilesResponse>(
-    snippetKeys.files(projectId, { q, page, page_size: PAGE_SIZE }),
-    snippetFetcher,
-    {
-      keepPreviousData: true,
-      shouldRetryOnError: false,
-      refreshInterval: (latest) => (anyActive(latest?.items) ? POLL_INTERVAL_MS : 0),
-    },
-  )
+  // ── Search box: typed text, applied to the URL after a pause ─────────────
+  const [text, setText] = React.useState(view.q)
+  const applied = React.useRef(view.q)
+  React.useEffect(() => {
+    // Back/forward or a pasted link changed the URL: show its search.
+    if (view.q !== applied.current) {
+      applied.current = view.q
+      setText(view.q)
+    }
+  }, [view.q])
+  React.useEffect(() => {
+    const next = text.trim()
+    if (next === applied.current) return
+    const t = setTimeout(() => {
+      applied.current = next
+      setView({ q: next })
+    }, SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(t)
+  }, [text, setView])
+  const q = view.q
+
+  // ── Data ─────────────────────────────────────────────────────────────────
+  const list = useAllFiles(projectId, '')
+  const truncated = list.data != null && list.data.items.length < list.data.total
+  // Past the load limit the server's name search reaches the files not read.
+  const byName = useAllFiles(projectId, truncated && q ? q : null)
   const { data: speakers, mutate: mutateSpeakers } = useSWR<SnippetSpeaker[]>(
     snippetKeys.speakers(projectId),
     snippetFetcher,
   )
+  const { mutate: mutateList } = list
+  const { mutate: mutateByName } = byName
+  const refresh = React.useCallback(
+    () => Promise.all([mutateList(), mutateByName()]),
+    [mutateList, mutateByName],
+  )
 
-  const items = React.useMemo(() => list.data?.items ?? [], [list.data])
+  const all = React.useMemo(() => list.data?.items ?? [], [list.data])
   const total = list.data?.total ?? 0
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const polling = anyActive(items)
+  const pool = React.useMemo(() => {
+    const extra = byName.data?.items ?? []
+    if (extra.length === 0) return all
+    const ids = new Set(all.map((f) => f.asset_id))
+    return [...all, ...extra.filter((f) => !ids.has(f.asset_id))]
+  }, [all, byName.data])
+  const searched = React.useMemo(() => pool.filter((f) => matchesSearch(f, q)), [pool, q])
+  const counts = React.useMemo(() => filterCounts(searched), [searched])
+  const shown = React.useMemo(
+    () => sortFiles(searched.filter((f) => matchesFilter(f, view.filter)), view.sort),
+    [searched, view.filter, view.sort],
+  )
+  const groups = React.useMemo(() => (view.grouped ? groupByFolder(shown) : null), [shown, view.grouped])
+  /** The rows in the order they are on screen (collapsed groups included). */
+  const ordered = React.useMemo(() => (groups ? groups.flatMap((g) => g.files) : shown), [groups, shown])
+  const polling = anyActive(pool)
+  const filtering = q !== '' || view.filter !== 'all'
+
+  // ── Folder groups: collapsed ones, for this visit only ───────────────────
+  const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set())
+  const toggleGroup = (key: string) =>
+    setCollapsed((cur) => {
+      const next = new Set(cur)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
 
   // ── Selection (ids, so it survives the 5 s refresh) ──────────────────────
   const [selected, setSelected] = React.useState<Set<string>>(new Set())
-  const selectable = items.filter(canSelect)
-  // Drop ids that stopped being selectable (started running, gone from the page).
+  /** The last "select all" that hit the per-request limit, while it stands. */
+  const [clip, setClip] = React.useState<{ ids: string[]; eligible: number } | null>(null)
+  // Drop ids that stopped being selectable (started running, gone from the list).
   React.useEffect(() => {
     setSelected((cur) => {
-      const ok = new Set(items.filter(canSelect).map((f) => f.asset_id))
+      const ok = new Set(pool.filter(canSelect).map((f) => f.asset_id))
       const next = new Set(Array.from(cur).filter((id) => ok.has(id)))
       return next.size === cur.size ? cur : next
     })
-  }, [items])
+  }, [pool])
   const full = selected.size >= MAX_PROCESS_BATCH
-  const toggle = (id: string) =>
+  const toggle = (id: string) => {
+    setClip(null)
     setSelected((cur) => {
       const next = new Set(cur)
       if (next.has(id)) next.delete(id)
       else if (next.size < MAX_PROCESS_BATCH) next.add(id)
       return next
     })
-  const allOnPage = selectable.length > 0 && selectable.every((f) => selected.has(f.asset_id))
-  const toggleAll = () =>
-    setSelected((cur) => {
-      const next = new Set(cur)
-      if (allOnPage) {
-        for (const f of selectable) next.delete(f.asset_id)
-        return next
-      }
-      for (const f of selectable) {
-        if (next.size >= MAX_PROCESS_BATCH) break
-        next.add(f.asset_id)
-      }
-      return next
-    })
+  }
+  const targets = React.useMemo(() => selectAllTargets(ordered), [ordered])
+  const allShownSelected = targets.ids.length > 0 && targets.ids.every((id) => selected.has(id))
+  const someShownSelected = !allShownSelected && targets.ids.some((id) => selected.has(id))
+  const toggleAll = () => {
+    if (allShownSelected) {
+      const shownIds = new Set(ordered.map((f) => f.asset_id))
+      setSelected((cur) => new Set(Array.from(cur).filter((id) => !shownIds.has(id))))
+      setClip(null)
+      return
+    }
+    setSelected(new Set(targets.ids))
+    setClip(targets.clipped > 0 ? { ids: targets.ids, eligible: targets.eligible } : null)
+  }
+  const clipStands =
+    clip != null && clip.ids.length === selected.size && clip.ids.every((id) => selected.has(id))
+  const hiddenSelected = React.useMemo(() => {
+    const shownIds = new Set(shown.map((f) => f.asset_id))
+    return Array.from(selected).filter((id) => !shownIds.has(id)).length
+  }, [selected, shown])
 
   // ── Processing ───────────────────────────────────────────────────────────
   const [pending, setPending] = React.useState<Pending | null>(null)
@@ -174,8 +298,11 @@ export function SnippetFilesTab({
     try {
       const res = await snippetApi.process(projectId, targets.map((f) => f.asset_id), force)
       report(res, names)
-      if (pending.kind === 'batch') setSelected(new Set())
-      await list.mutate()
+      if (pending.kind === 'batch') {
+        setSelected(new Set())
+        setClip(null)
+      }
+      await refresh()
     } catch (err) {
       toast(errorMessage(err, 'Could not start processing.'), 'error')
       throw err
@@ -193,7 +320,7 @@ export function SnippetFilesTab({
       const res = await snippetApi.setTrackSpeaker(file.media_file_id, trackIndex, speakerId)
       const detectFailed = res.detect_summary?.reason?.startsWith('Clip detection failed') ?? false
       toast(detectSummaryText(res.detect_summary), detectFailed ? 'error' : 'success')
-      await list.mutate()
+      await refresh()
     } catch (err) {
       toast(errorMessage(err, 'Could not save the speaker.'), 'error')
     } finally {
@@ -212,14 +339,36 @@ export function SnippetFilesTab({
   }
 
   // ── Render ───────────────────────────────────────────────────────────────
-  const selectedFiles = items.filter((f) => selected.has(f.asset_id))
+  const selectedFiles = pool.filter((f) => selected.has(f.asset_id))
   const confirm = confirmCopy(pending ?? lastPending.current)
+  const clearView = () => {
+    setText('')
+    applied.current = ''
+    setView({ q: '', filter: 'all' })
+  }
+  const row = (f: SnippetFile) => (
+    <FileRow
+      key={f.asset_id}
+      file={f}
+      canManage={canManage}
+      selected={selected.has(f.asset_id)}
+      selectDisabled={!canSelect(f) || (full && !selected.has(f.asset_id))}
+      onToggle={() => toggle(f.asset_id)}
+      speakers={speakers ?? []}
+      busyTrack={busyTrack}
+      onAssign={(track, speakerId) => void assign(f, track, speakerId)}
+      onAddSpeaker={(track) => setAdding({ file: f, track })}
+      onReprocess={() => setPending({ kind: 'reprocess', file: f })}
+      onRetry={() => setPending({ kind: 'retry', file: f })}
+    />
+  )
 
   return (
     <div className="space-y-4">
+      {/* Search, sort, grouping */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <label className="relative block sm:w-72">
-          <span className="sr-only">Search files</span>
+        <label className="relative block min-w-0 sm:w-72">
+          <span className="sr-only">Search file names and folders</span>
           <Search
             className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-text-tertiary"
             aria-hidden
@@ -230,30 +379,95 @@ export function SnippetFilesTab({
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
-                setQ(text.trim())
-                setPage(1)
+                applied.current = text.trim()
+                setView({ q: text.trim() })
               }
             }}
-            placeholder="Search file names"
+            maxLength={200}
+            placeholder="Search names and folders"
             className="h-9 hover-none:h-11 w-full rounded-md border border-border bg-bg-secondary pl-8 pr-3 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 focus:ring-border-focus"
           />
         </label>
-        {canManage && (
-          <div className="flex items-center justify-between gap-3 sm:justify-end">
-            <span className="text-xs text-text-tertiary tabular-nums" aria-live="polite">
-              {selected.size > 0 ? `${selected.size} selected` : `Select up to ${MAX_PROCESS_BATCH}`}
-              {full && ' (the most per batch)'}
-            </span>
-            <Button
-              size="sm"
-              disabled={selected.size === 0}
-              onClick={() => setPending({ kind: 'batch', files: selectedFiles })}
-            >
-              Process selected{selected.size > 0 ? ` (${selected.size})` : ''}
-            </Button>
-          </div>
-        )}
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <SnippetSelect
+            label="Sort"
+            value={view.sort}
+            onChange={(sort) => setView({ sort })}
+            options={FILE_SORTS}
+            className="min-w-0 max-w-full"
+          />
+          <Chip active={view.grouped} onClick={() => setView({ grouped: !view.grouped })}>
+            <FolderClosed className="h-3.5 w-3.5" aria-hidden />
+            Group by folder
+          </Chip>
+        </div>
       </div>
+
+      {/* Filter chips with counts (after the search) */}
+      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by status">
+        {FILE_FILTERS.map(({ value, label }) => (
+          <Chip
+            key={value}
+            active={view.filter === value}
+            onClick={() => setView({ filter: view.filter === value && value !== 'all' ? 'all' : value })}
+          >
+            {label}
+            <span className="tabular-nums opacity-70">{list.data ? counts[value] : '…'}</span>
+          </Chip>
+        ))}
+      </div>
+
+      {/* Summary, how many are shown, and selection */}
+      {list.data && (
+        <div className="flex flex-col gap-2 text-xs text-text-tertiary sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0 space-y-0.5">
+            <p className="text-text-secondary">{summaryText(all, total)}</p>
+            <p aria-live="polite" className="tabular-nums">
+              Showing {shown.length} of {total}
+              {truncated &&
+                ` (the first ${FILES_LOAD_LIMIT} are loaded; counts and sorting cover those, search also finds names beyond them)`}
+            </p>
+          </div>
+          {canManage && (
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 sm:justify-end">
+              <label className="inline-flex min-h-[2rem] items-center gap-2 text-text-secondary">
+                <input
+                  type="checkbox"
+                  checked={allShownSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = someShownSelected
+                  }}
+                  disabled={targets.eligible === 0}
+                  onChange={toggleAll}
+                  className="h-4 w-4 lg:h-3.5 lg:w-3.5 accent-[var(--accent)] disabled:opacity-40"
+                />
+                Select all shown{targets.eligible > 0 && ` (${targets.eligible})`}
+              </label>
+              <span className="tabular-nums" aria-live="polite">
+                {selected.size > 0 ? `${selected.size} selected` : `Up to ${MAX_PROCESS_BATCH} per batch`}
+                {hiddenSelected > 0 && `, ${hiddenSelected} not shown`}
+                {full && !clipStands && ' (the most per batch)'}
+              </span>
+              <Button
+                size="sm"
+                disabled={selected.size === 0}
+                onClick={() => setPending({ kind: 'batch', files: selectedFiles })}
+              >
+                Process selected{selected.size > 0 ? ` (${selected.size})` : ''}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+      {canManage && clipStands && clip && (
+        <p className="flex gap-2 text-xs text-status-warning" role="status">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>
+            Selected the first {MAX_PROCESS_BATCH} of the {clip.eligible} files shown that can be processed: one
+            batch takes at most {MAX_PROCESS_BATCH}. Process these, then select again for the rest.
+          </span>
+        </p>
+      )}
 
       {polling && (
         <p className="text-xs text-text-tertiary" role="status">
@@ -270,14 +484,20 @@ export function SnippetFilesTab({
           description={errorMessage(list.error)}
           action={{ label: 'Retry', onClick: () => void list.mutate() }}
         />
-      ) : items.length === 0 ? (
+      ) : pool.length === 0 ? (
         <EmptyState
           icon={FileX2}
-          title={q ? 'No files match' : 'No video or audio files yet'}
+          title="No video or audio files yet"
+          description="Files in the source folder chosen in the settings show up here."
+        />
+      ) : shown.length === 0 ? (
+        <EmptyState
+          icon={FileX2}
+          title="No files match"
           description={
-            q ? 'Try another part of the name.' : 'Files in the source folder chosen in the settings show up here.'
+            q ? 'Try another part of the name or folder, or another filter.' : 'No file is in this state right now.'
           }
-          action={q ? { label: 'Clear search', onClick: () => setText('') } : undefined}
+          action={filtering ? { label: 'Clear search and filter', onClick: clearView } : undefined}
         />
       ) : (
         <div role="table" aria-label="Files" className="rounded-lg border border-border bg-bg-secondary">
@@ -290,19 +510,9 @@ export function SnippetFilesTab({
               )}
             >
               <span role="columnheader">
-                {canManage && (
-                  <input
-                    type="checkbox"
-                    aria-label="Select all ready files on this page"
-                    checked={allOnPage}
-                    disabled={selectable.length === 0}
-                    onChange={toggleAll}
-                    className="h-3.5 w-3.5 accent-[var(--accent)]"
-                  />
-                )}
+                <span className="sr-only">Selected</span>
               </span>
-              <span role="columnheader">Name</span>
-              <span role="columnheader">Folder</span>
+              <span role="columnheader">Name and folder</span>
               <span role="columnheader">Status</span>
               <span role="columnheader" className="text-right">
                 Segments
@@ -316,40 +526,46 @@ export function SnippetFilesTab({
               </span>
             </div>
           </div>
-          <div role="rowgroup" className="divide-y divide-border">
-            {items.map((f) => (
-              <FileRow
-                key={f.asset_id}
-                file={f}
-                canManage={canManage}
-                selected={selected.has(f.asset_id)}
-                selectDisabled={!canSelect(f) || (full && !selected.has(f.asset_id))}
-                onToggle={() => toggle(f.asset_id)}
-                speakers={speakers ?? []}
-                busyTrack={busyTrack}
-                onAssign={(track, speakerId) => void assign(f, track, speakerId)}
-                onAddSpeaker={(track) => setAdding({ file: f, track })}
-                onReprocess={() => setPending({ kind: 'reprocess', file: f })}
-                onRetry={() => setPending({ kind: 'retry', file: f })}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {pages > 1 && (
-        <div className="flex items-center justify-between gap-2 text-xs text-text-tertiary">
-          <span className="tabular-nums">
-            {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total}
-          </span>
-          <div className="flex gap-2">
-            <Button variant="secondary" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-              Previous
-            </Button>
-            <Button variant="secondary" size="sm" disabled={page >= pages} onClick={() => setPage(page + 1)}>
-              Next
-            </Button>
-          </div>
+          {groups ? (
+            groups.map((g) => {
+              const open = !collapsed.has(g.key)
+              const id = `snippet-files-group-${encodeURIComponent(g.key)}`
+              return (
+                <div key={g.key} role="rowgroup" className="border-b border-border last:border-b-0">
+                  <div role="row" className="bg-bg-primary/40">
+                    <span role="rowheader" className="block">
+                      <button
+                        type="button"
+                        aria-expanded={open}
+                        aria-controls={id}
+                        onClick={() => toggleGroup(g.key)}
+                        className="flex w-full min-w-0 items-center gap-2 px-3 py-2 hover-none:py-3 text-left text-xs font-semibold text-text-secondary hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50"
+                      >
+                        {open ? (
+                          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" aria-hidden />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-tertiary" aria-hidden />
+                        )}
+                        <span className="truncate" title={g.label}>
+                          {g.label}
+                        </span>
+                        <span className="shrink-0 font-normal tabular-nums text-text-tertiary">
+                          {g.files.length} {g.files.length === 1 ? 'file' : 'files'}
+                        </span>
+                      </button>
+                    </span>
+                  </div>
+                  <div id={id} hidden={!open} className="divide-y divide-border border-t border-border">
+                    {open && g.files.map(row)}
+                  </div>
+                </div>
+              )
+            })
+          ) : (
+            <div role="rowgroup" className="divide-y divide-border">
+              {shown.map(row)}
+            </div>
+          )}
         </div>
       )}
 
@@ -423,6 +639,7 @@ function confirmCopy(p: Pending | null): { title: string; body: React.ReactNode;
   return { title: `Retry ${p.file.name}?`, body, action: 'Retry' }
 }
 
+
 function FileRow({
   file: f,
   canManage,
@@ -451,9 +668,14 @@ function FileRow({
   const status = statusLabel(f)
   const notReady = f.not_ready_reason != null
   const Icon = f.kind === 'audio' ? Music : Film
-  const meta = [f.duration_ms != null ? formatLength(f.duration_ms) : null, f.kind === 'audio' ? 'Audio' : 'Video']
+  const meta = [
+    f.duration_ms != null ? formatLength(f.duration_ms) : null,
+    f.kind === 'audio' ? 'Audio' : 'Video',
+    f.updated_at ? `updated ${formatRelativeTime(f.updated_at)}` : null,
+  ]
     .filter(Boolean)
     .join(' · ')
+  const folder = folderLabel(f.folder_path)
   const indent = canManage && 'pl-7 lg:pl-0'
 
   return (
@@ -477,7 +699,7 @@ function FileRow({
         )}
       </span>
 
-      {/* Name */}
+      {/* Name, folder path, length and kind */}
       <span role="cell" className={cn('min-w-0', indent)}>
         <span className="flex min-w-0 items-center gap-2">
           <Icon className={cn('h-4 w-4 shrink-0 text-text-tertiary', notReady && 'opacity-50')} aria-hidden />
@@ -488,15 +710,11 @@ function FileRow({
             {f.name}
           </span>
         </span>
-        <span className="mt-0.5 block truncate text-xs text-text-tertiary">
-          <span className="lg:hidden">{f.folder_path} · </span>
-          {meta}
+        <span className="mt-0.5 block truncate text-xs text-text-secondary" title={folder}>
+          <span className="sr-only">Folder: </span>
+          {folder}
         </span>
-      </span>
-
-      {/* Folder */}
-      <span role="cell" className="hidden truncate text-xs text-text-secondary lg:block" title={f.folder_path}>
-        {f.folder_path}
+        <span className="block truncate text-xs text-text-tertiary">{meta}</span>
       </span>
 
       {/* Status */}
@@ -532,16 +750,20 @@ function FileRow({
         ) : (
           f.tracks.map((t) => (
             <span key={t.track_index} className="flex min-w-0 items-center gap-2">
-              <span className="w-24 shrink-0 truncate text-xs text-text-tertiary lg:w-28" title={t.label}>
-                {t.label}
+              <span
+                className="w-14 shrink-0 text-xs text-text-tertiary tabular-nums"
+                title={t.label}
+              >
+                {trackName(t)}
               </span>
               <SpeakerSelect
                 value={t.speaker_id}
                 fallbackName={t.speaker_name}
+                hasSpeech={trackHasSpeech(t)}
                 speakers={speakers}
                 disabled={notReady || !f.media_file_id}
                 busy={busyTrack === `${f.media_file_id}:${t.track_index}`}
-                label={`Speaker on ${t.label}, ${f.name}`}
+                label={`Speaker on ${trackName(t)} (${t.label}), ${f.name}`}
                 onChange={(id) => onAssign(t.track_index, id)}
                 onAdd={() => onAddSpeaker(t.track_index)}
               />
@@ -569,7 +791,7 @@ function FileRow({
       {(f.error || notReady) && (
         <p
           className={cn(
-            'text-xs lg:col-span-6 lg:col-start-2',
+            'break-words text-xs lg:col-span-5 lg:col-start-2',
             indent,
             notReady
               ? 'text-text-tertiary'
@@ -591,6 +813,7 @@ const ADD_NEW = '__add_new_speaker__'
 function SpeakerSelect({
   value,
   fallbackName,
+  hasSpeech,
   speakers,
   disabled,
   busy,
@@ -601,6 +824,8 @@ function SpeakerSelect({
   value: string | null
   /** The name the list row carries, for a speaker the roster has not loaded yet. */
   fallbackName: string | null
+  /** False for a track the last run found no speech on: no warning then. */
+  hasSpeech: boolean
   speakers: SnippetSpeaker[]
   disabled: boolean
   busy: boolean
@@ -612,6 +837,7 @@ function SpeakerSelect({
     value && !speakers.some((s) => s.id === value)
       ? [{ id: value, name: fallbackName ?? 'Unknown' }, ...speakers]
       : speakers
+  const missing = !value && hasSpeech
   return (
     <Select.Root
       value={value ?? ''}
@@ -624,10 +850,21 @@ function SpeakerSelect({
       <Select.Trigger
         aria-label={label}
         aria-busy={busy || undefined}
-        className="inline-flex h-8 hover-none:h-10 min-w-0 flex-1 items-center justify-between gap-2 rounded-md border border-border bg-bg-primary px-2.5 text-xs text-text-primary transition-colors hover:bg-bg-tertiary focus:outline-none focus:ring-1 focus:ring-border-focus disabled:cursor-not-allowed disabled:opacity-50 lg:max-w-[12rem]"
+        className={cn(
+          'inline-flex h-8 hover-none:h-10 min-w-0 flex-1 items-center justify-between gap-2 rounded-md border bg-bg-primary px-2.5 text-xs text-text-primary transition-colors hover:bg-bg-tertiary focus:outline-none focus:ring-1 focus:ring-border-focus disabled:cursor-not-allowed disabled:opacity-50 lg:max-w-[14rem]',
+          missing ? 'border-status-warning/50' : 'border-border',
+        )}
       >
-        <span className={cn('truncate', !value && 'text-text-tertiary')}>
-          <Select.Value placeholder="Name speaker…" />
+        <span
+          className={cn(
+            'flex min-w-0 items-center gap-1.5',
+            !value && (missing ? 'font-medium text-status-warning' : 'text-text-tertiary'),
+          )}
+        >
+          {missing && <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />}
+          <span className="truncate">
+            <Select.Value placeholder={missing ? 'no speaker yet' : 'no speech found'} />
+          </span>
         </span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" aria-hidden />
       </Select.Trigger>
