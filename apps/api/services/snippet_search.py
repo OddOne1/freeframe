@@ -5,13 +5,14 @@ uses the generated `transcript_segments.search_vector` (and its GIN index),
 `unnest` over `snippets.topics`, and `pg_trgm` where the database has it.
 
 ── The read rule ───────────────────────────────────────────────────────────
-Every query over an asset-bound table goes through `Model.live(db)` /
-`Model.live_clause()` (models/snippet.py), which is the one implementation
-of "leave out the rows of a soft-deleted asset". The project scope is a
-separate IN over the project's media files and says nothing about
-deletion. No outer query here joins `media_files`, `asset_versions` or
-`assets`: the live clause is an EXISTS over exactly those three, and an
-outer join on them would let SQLAlchemy auto-correlate it away.
+Every query over an asset-bound table goes through `Model.visible(db)` /
+`Model.visible_clause()` (models/snippet.py), which is the one implementation
+of "leave out the rows of a soft-deleted asset, or of one hidden from
+SocialSnippet". The project scope is a separate IN over the project's media
+files and says nothing about deletion or hiding. No outer query here joins
+`media_files`, `asset_versions` or `assets`: the visible clause is an EXISTS
+over exactly those three, and an outer join on them would let SQLAlchemy
+auto-correlate it away.
 
 ── How a search is answered ────────────────────────────────────────────────
 1. The matching snippets, with every filter applied in SQL. When there is a
@@ -99,7 +100,8 @@ def has_trigram(db) -> bool:
 def project_media_files(project_id):
     """SELECT of every media file id of the project's assets.
 
-    Scope only: it does NOT leave out deleted assets, the live clause does.
+    Scope only: it does NOT leave out deleted or hidden assets, the visible
+    clause does.
     """
     return (
         select(MediaFile.id)
@@ -144,7 +146,7 @@ def file_infos(db, media_file_ids) -> dict:
     """{media_file_id: FileInfo}, in one query.
 
     No live filter: every id handed in came from a row that was already
-    read through the live rule.
+    read through the visible rule.
     """
     ids = list(set(media_file_ids))
     if not ids:
@@ -177,9 +179,9 @@ def roster(db, project_id) -> dict:
 
 
 def _usable_snippets(project_id) -> tuple:
-    """Criteria: live snippets of the project that suggest counts (suggested or approved)."""
+    """Criteria: visible snippets of the project that suggest counts (suggested or approved)."""
     return (
-        Snippet.live_clause(),
+        Snippet.visible_clause(),
         Snippet.media_file_id.in_(project_media_files(project_id)),
         Snippet.status.in_(DEFAULT_STATUSES),
     )
@@ -340,7 +342,7 @@ class SearchResult:
 
 def _matching_snippets(db, project_id, p: SearchParams, terms, speakers) -> tuple:
     """([(Snippet, transcript_rank or None)], capped)."""
-    query = Snippet.live(db).filter(Snippet.media_file_id.in_(project_media_files(project_id)))
+    query = Snippet.visible(db).filter(Snippet.media_file_id.in_(project_media_files(project_id)))
     statuses = [SnippetStatus(s) for s in p.statuses] or list(DEFAULT_STATUSES)
     query = query.filter(Snippet.status.in_(statuses))
     if p.speaker_ids:
@@ -514,7 +516,7 @@ def _moments(db, project_id, p: SearchParams, terms) -> tuple:
     tsq = func.plainto_tsquery("simple", q)
     ts_rank = func.ts_rank(seg.search_vector, tsq).label("rank")
     hits_q = (
-        seg.live(db)
+        seg.visible(db)
         .with_entities(seg.id, seg.media_file_id, seg.track_index, seg.seq,
                        seg.start_ms, seg.end_ms, seg.speaker_id, seg.text_current, ts_rank)
         .filter(seg.media_file_id.in_(project_media_files(project_id)),
@@ -536,7 +538,7 @@ def _moments(db, project_id, p: SearchParams, terms) -> tuple:
     pairs = sorted({(h.media_file_id, h.track_index) for h in hits}, key=str)
     by_pair: dict = {}
     for row in (
-        seg.live(db)
+        seg.visible(db)
         .with_entities(seg.id, seg.media_file_id, seg.track_index, seg.seq)
         .filter(tuple_(seg.media_file_id, seg.track_index).in_(pairs))
         .all()
@@ -554,7 +556,7 @@ def _moments(db, project_id, p: SearchParams, terms) -> tuple:
         wanted_ids.update(windows[h.id])
     words_by_segment: dict = {}
     for w in (
-        TranscriptWord.live(db)
+        TranscriptWord.visible(db)
         .filter(TranscriptWord.segment_id.in_(list(wanted_ids)))
         .order_by(TranscriptWord.segment_id, TranscriptWord.idx)
         .all()
@@ -573,7 +575,7 @@ def _moments(db, project_id, p: SearchParams, terms) -> tuple:
     # Any stored clip on the file, whatever its status, covers what it spans.
     covering: dict = {}
     for mf_id, start, end in (
-        Snippet.live(db)
+        Snippet.visible(db)
         .with_entities(Snippet.media_file_id, Snippet.start_ms, Snippet.end_ms)
         .filter(Snippet.media_file_id.in_(hit_files))
         .all()

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { SnippetFile, SnippetTrack } from '@/types'
+import type { SnippetFile, SnippetSearchResponse, SnippetTrack } from '@/types'
 import {
-  DEFAULT_COLUMN_WIDTHS, FILE_COLUMNS, FILE_SORTS, MAX_COLUMN_WIDTH, ariaSortOf, clampColumnWidth, columnTemplate,
-  sanitizeColumnWidths, tableMinWidth, toggleSort,
+  ACTIONS_COLUMN_WIDTH, DEFAULT_COLUMN_WIDTHS, FILE_COLUMNS, FILE_SORTS, MAX_COLUMN_WIDTH, MAX_HIDE_BATCH, ariaSortOf,
+  clampColumnWidth, columnTemplate, hiddenModeOf, hideConfirmCopy, hideResultText, sanitizeColumnWidths, selectableIn,
+  selectionLimit, tableMinWidth, toggleSort, withoutAsset,
   DEFAULT_FILES_VIEW, FILES_VIEW_KEYS, FILE_FILTERS, MAX_PROCESS_BATCH, RETRY_FORCES, SERVER_CPU_SPEED_FACTOR,
   anyActive, canSelect, detectSummaryText, estimateProcessing, fetchAllFiles, filterCounts, folderLabel,
   formatEstimate, formatLength, groupByFolder, matchesFilter, matchesSearch, needsSpeaker, readFilesView,
@@ -176,7 +177,7 @@ const mk = (o: Partial<SnippetFile> = {}): SnippetFile => {
     asset_id: `a${String(seq).padStart(3, '0')}`, media_file_id: `m${seq}`, name: `File ${seq}.mov`, kind: 'video',
     folder_path: '/', duration_ms: 60_000, asset_status: 'ready', not_ready_reason: null,
     snippet_status: 'not_processed', segment_count: 0, snippet_count: 0, error: null,
-    updated_at: '2026-11-01T10:00:00Z', tracks: [], planned_track_count: null, done_track_count: 0, ...o,
+    updated_at: '2026-11-01T10:00:00Z', tracks: [], planned_track_count: null, done_track_count: 0, hidden: false, ...o,
   }
 }
 const names = (fs: SnippetFile[]) => fs.map((f) => f.name)
@@ -376,7 +377,9 @@ describe('files view in the URL', () => {
   it('leaves defaults out and keeps other keys', () => {
     const base = new URLSearchParams('tab=files&other=1')
     expect(writeFilesView(base, DEFAULT_FILES_VIEW).toString()).toBe('tab=files&other=1')
-    const qs = writeFilesView(base, { q: ' day 2 ', filter: 'needs_speaker', sort: 'name-asc', grouped: false })
+    const qs = writeFilesView(base, {
+      q: ' day 2 ', filter: 'needs_speaker', sort: 'name-asc', grouped: false, hidden: false,
+    })
     expect(qs.get(FILES_VIEW_KEYS.q)).toBe('day 2')
     expect(qs.get(FILES_VIEW_KEYS.filter)).toBe('needs_speaker')
     expect(qs.get(FILES_VIEW_KEYS.sort)).toBe('name-asc')
@@ -384,16 +387,21 @@ describe('files view in the URL', () => {
     expect(DEFAULT_FILES_VIEW.sort).toBe('updated-desc')
     expect(writeFilesView(base, { ...DEFAULT_FILES_VIEW, sort: 'updated-desc' }).has(FILES_VIEW_KEYS.sort)).toBe(false)
     expect(qs.get(FILES_VIEW_KEYS.group)).toBe('none')
+    expect(qs.has(FILES_VIEW_KEYS.hidden)).toBe(false)
+    expect(writeFilesView(base, { ...DEFAULT_FILES_VIEW, hidden: true }).get(FILES_VIEW_KEYS.hidden)).toBe('1')
     expect(qs.get('tab')).toBe('files')
     expect(qs.get('other')).toBe('1')
   })
   it('reads back what it wrote', () => {
-    const view = { q: 'anna', filter: 'attention' as const, sort: 'length-desc' as const, grouped: false }
+    const view = { q: 'anna', filter: 'attention' as const, sort: 'length-desc' as const, grouped: false, hidden: true }
     expect(readFilesView(writeFilesView(new URLSearchParams(), view))).toEqual(view)
+    expect(readFilesView(writeFilesView(new URLSearchParams(), { ...view, hidden: false }))).toEqual({
+      ...view, hidden: false,
+    })
     expect(readFilesView(new URLSearchParams())).toEqual(DEFAULT_FILES_VIEW)
   })
   it('falls back to the default for values it does not know', () => {
-    expect(readFilesView(new URLSearchParams('files_filter=nope&files_sort=size-up&files_group=x')))
+    expect(readFilesView(new URLSearchParams('files_filter=nope&files_sort=size-up&files_group=x&files_hidden=yes')))
       .toEqual(DEFAULT_FILES_VIEW)
   })
 })
@@ -470,8 +478,106 @@ describe('column widths', () => {
     const t = columnTemplate(DEFAULT_COLUMN_WIDTHS)
     expect(t.split(' ')).toHaveLength(FILE_COLUMNS.length + 3)
     expect(t.startsWith('28px 220px ')).toBe(true)
-    expect(t.endsWith('minmax(0,1fr) 96px')).toBe(true)
+    expect(t.endsWith(`minmax(0,1fr) ${ACTIONS_COLUMN_WIDTH}px`)).toBe(true)
     const sum = FILE_COLUMNS.reduce((n, c) => n + c.width, 0)
-    expect(tableMinWidth(DEFAULT_COLUMN_WIDTHS)).toBe(28 + sum + 96 + 8 * (FILE_COLUMNS.length + 2) + 24)
+    expect(tableMinWidth(DEFAULT_COLUMN_WIDTHS)).toBe(
+      28 + sum + ACTIONS_COLUMN_WIDTH + 8 * (FILE_COLUMNS.length + 2) + 24,
+    )
+  })
+})
+
+describe('hiding files', () => {
+  it('asks the server for the hidden files only with the Hidden chip on', () => {
+    expect(hiddenModeOf({ hidden: true })).toBe('only')
+    expect(hiddenModeOf({ hidden: false })).toBe('exclude')
+    expect(hiddenModeOf(DEFAULT_FILES_VIEW)).toBe('exclude')
+  })
+  it('puts the mode in the files key only when it is not the default', () => {
+    expect(snippetKeys.files('p1', { hidden: 'exclude' })).toBe('/projects/p1/snippet/files')
+    expect(snippetKeys.files('p1', { hidden: 'only', page_size: 1 })).toBe(
+      '/projects/p1/snippet/files?page_size=1&hidden=only',
+    )
+  })
+  it('selects processable rows normally and any hidden row in the Hidden view', () => {
+    const notReady = mk({ hidden: true, asset_status: 'uploading', not_ready_reason: 'uploading' })
+    const running = mk({ hidden: true, snippet_status: 'running' })
+    const shown = mk()
+    expect(selectableIn(true)(notReady)).toBe(true)
+    expect(selectableIn(true)(running)).toBe(true)
+    expect(selectableIn(true)(shown)).toBe(false)
+    expect(selectableIn(false)(shown)).toBe(canSelect(shown))
+    expect(selectableIn(false)(mk({ asset_status: 'uploading' }))).toBe(false)
+    expect(selectionLimit(true)).toBe(MAX_HIDE_BATCH)
+    expect(selectionLimit(false)).toBe(MAX_PROCESS_BATCH)
+    const rows = Array.from({ length: 120 }, () => mk({ hidden: true }))
+    expect(selectAllTargets(rows, selectionLimit(true), selectableIn(true))).toMatchObject({
+      eligible: 120, clipped: 20,
+    })
+  })
+  it('says in the summary when it counts hidden files', () => {
+    const hidden = [mk({ hidden: true, snippet_status: 'done' }), mk({ hidden: true })]
+    expect(summaryText(hidden, 2, true)).toBe('2 hidden files, 1 done, 0 failed, 0 need a speaker')
+    expect(summaryText(hidden.slice(0, 1), 1, true)).toBe('1 hidden file, 1 done, 0 failed, 0 need a speaker')
+  })
+  it('the confirmation says what hiding does, what it keeps, and that it can be undone', () => {
+    const one = hideConfirmCopy(['Interview.mov'])
+    expect(one.title).toBe('Hide “Interview.mov” from SocialSnippet?')
+    expect(one.action).toBe('Hide file')
+    const text = one.points.join(' ')
+    expect(text).toMatch(/not in search, not in the clip list, not in the player/)
+    expect(text).toMatch(/Nothing is deleted: its transcript, its clips and downloads already made are kept/)
+    expect(text).toMatch(/Reversible/)
+    const many = hideConfirmCopy(['a.mov', 'b.mov', 'c.wav'])
+    expect(many.title).toBe('Hide 3 files from SocialSnippet?')
+    expect(many.action).toBe('Hide 3 files')
+    expect(many.points.join(' ')).toMatch(/Their clips/)
+  })
+  it('reports what changed and the first thing that did not', () => {
+    const names = { a1: 'Alpha.mov', a2: 'Beta.wav' }
+    const r = (changed: [string, boolean, string][]) => ({
+      changed: changed.filter((c) => c[1]).length,
+      results: changed.map(([asset_id, ch, reason]) => ({ asset_id, changed: ch, reason })),
+    })
+    expect(hideResultText(r([['a1', true, 'hidden'], ['a2', true, 'hidden']]), 'hide', names)).toEqual({
+      message: '2 files hidden.', tone: 'success',
+    })
+    expect(hideResultText(r([['a1', false, 'already hidden']]), 'hide', names)).toEqual({
+      message: 'Already hidden.', tone: 'info',
+    })
+    expect(hideResultText(r([['a1', true, 'hidden'], ['a2', false, 'not found'], ['x', false, 'not found']]), 'hide', names))
+      .toEqual({ message: '1 file hidden. Not hidden: Beta.wav: not found (and 1 more).', tone: 'info' })
+    expect(hideResultText(r([['a2', false, 'not found']]), 'restore', names)).toEqual({
+      message: 'Not restored: Beta.wav: not found.', tone: 'error',
+    })
+    expect(hideResultText(r([['a1', true, 'restored']]), 'restore', names)).toEqual({
+      message: '1 file restored.', tone: 'success',
+    })
+    expect(hideResultText(r([['a1', false, 'not hidden']]), 'restore', names).message).toBe('Already shown.')
+  })
+})
+
+describe('withoutAsset', () => {
+  const clip = (id: string, asset_id: string) => ({ id, asset_id }) as unknown as SnippetSearchResponse['groups'][0]['items'][0]
+  it('drops one file\'s clips from every loaded page and lowers the total', () => {
+    const pages: SnippetSearchResponse[] = [
+      { total: 5, page: 1, page_size: 3, groups: [
+        { key: 'climate', label: 'Climate', items: [clip('1', 'A'), clip('2', 'B')] },
+        { key: 'ice', label: 'Ice', items: [clip('1', 'A')] },
+      ] },
+      { total: 5, page: 2, page_size: 3, groups: [{ key: 'none', label: 'No topic', items: [clip('3', 'A'), clip('4', 'C')] }] },
+    ]
+    const out = withoutAsset(pages, 'A')!
+    expect(out.map((p) => p.total)).toEqual([2, 2])
+    expect(out[0].groups.map((g) => g.key)).toEqual(['climate'])
+    expect(out[0].groups[0].items.map((c) => c.id)).toEqual(['2'])
+    expect(out[1].groups[0].items.map((c) => c.id)).toEqual(['4'])
+    expect(pages[0].groups[0].items).toHaveLength(2) // not changed in place
+  })
+  it('keeps the single "All" group of an ungrouped list even when it empties', () => {
+    const pages: SnippetSearchResponse[] = [
+      { total: 1, page: 1, page_size: 24, groups: [{ key: 'all', label: 'All', items: [clip('1', 'A')] }] },
+    ]
+    expect(withoutAsset(pages, 'A')).toEqual([{ total: 0, page: 1, page_size: 24, groups: [{ key: 'all', label: 'All', items: [] }] }])
+    expect(withoutAsset(undefined, 'A')).toBeUndefined()
   })
 })

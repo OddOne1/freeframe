@@ -127,11 +127,30 @@ class SnippetFileItem(BaseModel):
     #: How many of those have a finished stage ("no speech" included): what a
     #: resume does not redo.
     done_track_count: int = 0
+    #: Hidden from SocialSnippet by the owner (POST ./files/hide): none of its
+    #: clips, suggestions or transcript hits are shown anywhere else.
+    hidden: bool = False
 
 
 class SnippetFilesOut(BaseModel):
     total: int
     items: list[SnippetFileItem]
+
+
+class SnippetHideIn(BaseModel):
+    asset_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)
+
+
+class SnippetHideItem(BaseModel):
+    asset_id: uuid.UUID
+    #: Whether this call changed the asset (false: it already was, or not found).
+    changed: bool
+    reason: str
+
+
+class SnippetHideOut(BaseModel):
+    changed: int
+    results: list[SnippetHideItem]
 
 
 # ── Suggest ────────────────────────────────────────────────────────────────

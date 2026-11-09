@@ -1480,6 +1480,9 @@ export interface SnippetFile {
   planned_track_count: number | null
   /** How many of those are finished ("no speech" included): what a resume keeps. */
   done_track_count: number
+  /** Hidden from SocialSnippet by the owner: its clips, suggestions and
+   *  transcript hits are not shown anywhere else. Old servers leave it out. */
+  hidden?: boolean
 }
 
 export interface SnippetFilesResponse {
@@ -1491,6 +1494,23 @@ export interface SnippetFilesParams {
   q?: string
   page?: number
   page_size?: number
+  /** exclude (the server default), include, or only the hidden files. */
+  hidden?: SnippetHiddenMode
+}
+
+export type SnippetHiddenMode = 'exclude' | 'include' | 'only'
+
+/** POST /projects/{id}/snippet/files/hide and /unhide. */
+export interface SnippetHideResult {
+  asset_id: string
+  changed: boolean
+  /** "hidden", "already hidden", "restored", "not hidden", "not found", "not video or audio". */
+  reason: string
+}
+
+export interface SnippetHideResponse {
+  changed: number
+  results: SnippetHideResult[]
 }
 
 export interface SnippetSuggest {

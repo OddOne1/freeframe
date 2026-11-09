@@ -25,6 +25,13 @@
  *
  * While any listed file is queued or running the list is re-read every 5 s
  * (POLL_INTERVAL_MS), and polling stops by itself once none is.
+ *
+ * Hiding (owner only, as POST /snippet/files/hide is): a hidden file shows
+ * nowhere else in SocialSnippet, but nothing of it is deleted. The list leaves
+ * hidden files out, and so do its chips, counts and summary, until the Hidden
+ * chip is on; then it lists the hidden files alone (`files_hidden=1` in the
+ * URL), dimmed, each with Restore. Editors see the Hidden chip and the list
+ * but no hide or restore controls.
  */
 import * as React from 'react'
 import useSWR from 'swr'
@@ -36,6 +43,8 @@ import {
   ArrowUp,
   ArrowUpDown,
   ChevronDown,
+  Eye,
+  EyeOff,
   ChevronRight,
   FileX2,
   Film,
@@ -67,11 +76,14 @@ import {
   type FileSort,
   type FileSortKey,
   FILES_LOAD_LIMIT,
-  MAX_PROCESS_BATCH,
+  hideConfirmCopy,
+  hideResultText,
+  hiddenModeOf,
+  selectableIn,
+  selectionLimit,
   POLL_INTERVAL_MS,
   SERVER_CPU_SPEED_FACTOR,
   anyActive,
-  canSelect,
   detectSummaryText,
   estimateProcessing,
   fetchAllFiles,
@@ -102,7 +114,13 @@ import { Skeleton } from '@/components/shared/skeleton'
 import { useOptionalToast } from '@/components/shared/toast'
 import { Chip, SnippetSelect } from '@/components/snippets/snippet-ui'
 import { AddSpeakerDialog, SpeakerSelect } from '@/components/snippets/speaker-assign'
-import type { SnippetFile, SnippetFilesResponse, SnippetProcessResponse, SnippetSpeaker } from '@/types'
+import type {
+  SnippetFile,
+  SnippetFilesResponse,
+  SnippetHiddenMode,
+  SnippetProcessResponse,
+  SnippetSpeaker,
+} from '@/types'
 
 /** How long the search box waits after the last key before it applies. */
 const SEARCH_DEBOUNCE_MS = 250
@@ -206,6 +224,7 @@ type Pending =
   | { kind: 'batch'; files: SnippetFile[] }
   | { kind: 'reprocess'; file: SnippetFile }
   | { kind: 'retry'; file: SnippetFile }
+  | { kind: 'hide'; files: SnippetFile[] }
 
 /**
  * The view (search, chip, sort, grouping), read from and written to the URL.
@@ -229,12 +248,15 @@ function useFilesView(): [FilesView, (patch: Partial<FilesView>) => void] {
   return [view, update]
 }
 
-/** Every file of the project (or every name match for `q`), polled while any is busy. */
-function useAllFiles(projectId: string, q: string | null) {
+/** Every file of the project (or every name match for `q`) in one hidden
+ *  mode, polled while any is busy. */
+function useAllFiles(projectId: string, q: string | null, hidden: SnippetHiddenMode) {
   return useSWR<SnippetFilesResponse>(
-    q === null ? null : ['snippet/files/all', projectId, q],
+    q === null ? null : ['snippet/files/all', projectId, q, hidden],
     () =>
-      fetchAllFiles((page, page_size) => snippetApi.listFiles(projectId, { q: q || undefined, page, page_size })),
+      fetchAllFiles((page, page_size) =>
+        snippetApi.listFiles(projectId, { q: q || undefined, page, page_size, hidden }),
+      ),
     {
       keepPreviousData: true,
       shouldRetryOnError: false,
@@ -246,10 +268,13 @@ function useAllFiles(projectId: string, q: string | null) {
 export function SnippetFilesTab({
   projectId,
   canManage,
+  onHiddenChange,
 }: {
   projectId: string
-  /** Owner or superadmin: may process. Editors see and name speakers only. */
+  /** Owner or superadmin: may process and hide. Editors see and name speakers only. */
   canManage: boolean
+  /** After files were hidden or restored: the Clips tab re-reads its list. */
+  onHiddenChange?: () => void
 }) {
   const toast = useOptionalToast()
   const [view, setView] = useFilesView()
@@ -278,10 +303,18 @@ export function SnippetFilesTab({
   const q = view.q
 
   // ── Data ─────────────────────────────────────────────────────────────────
-  const list = useAllFiles(projectId, '')
+  // With the Hidden chip on, the hidden files alone; otherwise all the rest.
+  const mode = hiddenModeOf(view)
+  const list = useAllFiles(projectId, '', mode)
   const truncated = list.data != null && list.data.items.length < list.data.total
   // Past the load limit the server's name search reaches the files not read.
-  const byName = useAllFiles(projectId, truncated && q ? q : null)
+  const byName = useAllFiles(projectId, truncated && q ? q : null, mode)
+  // The Hidden chip's count: one file's worth of the hidden list, for `total`.
+  const { data: hiddenPage, mutate: mutateHidden } = useSWR<SnippetFilesResponse>(
+    ['snippet/files/hidden-count', projectId],
+    () => snippetApi.listFiles(projectId, { hidden: 'only', page_size: 1 }),
+    { shouldRetryOnError: false },
+  )
   const { data: speakers, mutate: mutateSpeakers } = useSWR<SnippetSpeaker[]>(
     snippetKeys.speakers(projectId),
     snippetFetcher,
@@ -289,8 +322,8 @@ export function SnippetFilesTab({
   const { mutate: mutateList } = list
   const { mutate: mutateByName } = byName
   const refresh = React.useCallback(
-    () => Promise.all([mutateList(), mutateByName()]),
-    [mutateList, mutateByName],
+    () => Promise.all([mutateList(), mutateByName(), mutateHidden()]),
+    [mutateList, mutateByName, mutateHidden],
   )
 
   const all = React.useMemo(() => list.data?.items ?? [], [list.data])
@@ -312,6 +345,7 @@ export function SnippetFilesTab({
   const ordered = React.useMemo(() => (groups ? groups.flatMap((g) => g.files) : shown), [groups, shown])
   const polling = anyActive(pool)
   const filtering = q !== '' || view.filter !== 'all'
+  const hiddenCount = view.hidden ? (list.data?.total ?? hiddenPage?.total) : hiddenPage?.total
 
   // ── Folder groups: collapsed ones, for this visit only ───────────────────
   const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set())
@@ -324,28 +358,33 @@ export function SnippetFilesTab({
     })
 
   // ── Selection (ids, so it survives the 5 s refresh) ──────────────────────
+  // One selection per view: processable files (for Process and Hide), or in
+  // the Hidden view hidden files (for Restore).
+  const pick = React.useMemo(() => selectableIn(view.hidden), [view.hidden])
+  const limit = selectionLimit(view.hidden)
   const [selected, setSelected] = React.useState<Set<string>>(new Set())
   /** The last "select all" that hit the per-request limit, while it stands. */
   const [clip, setClip] = React.useState<{ ids: string[]; eligible: number } | null>(null)
-  // Drop ids that stopped being selectable (started running, gone from the list).
+  // Drop ids that stopped being selectable (started running, gone from the
+  // list, or the view switched between hidden and the rest).
   React.useEffect(() => {
     setSelected((cur) => {
-      const ok = new Set(pool.filter(canSelect).map((f) => f.asset_id))
+      const ok = new Set(pool.filter(pick).map((f) => f.asset_id))
       const next = new Set(Array.from(cur).filter((id) => ok.has(id)))
       return next.size === cur.size ? cur : next
     })
-  }, [pool])
-  const full = selected.size >= MAX_PROCESS_BATCH
+  }, [pool, pick])
+  const full = selected.size >= limit
   const toggle = (id: string) => {
     setClip(null)
     setSelected((cur) => {
       const next = new Set(cur)
       if (next.has(id)) next.delete(id)
-      else if (next.size < MAX_PROCESS_BATCH) next.add(id)
+      else if (next.size < limit) next.add(id)
       return next
     })
   }
-  const targets = React.useMemo(() => selectAllTargets(ordered), [ordered])
+  const targets = React.useMemo(() => selectAllTargets(ordered, limit, pick), [ordered, limit, pick])
   const allShownSelected = targets.ids.length > 0 && targets.ids.every((id) => selected.has(id))
   const someShownSelected = !allShownSelected && targets.ids.some((id) => selected.has(id))
   const toggleAll = () => {
@@ -388,6 +427,10 @@ export function SnippetFilesTab({
 
   async function runPending() {
     if (!pending) return
+    if (pending.kind === 'hide') {
+      await setHidden(pending.files, true)
+      return
+    }
     const targets = pending.kind === 'batch' ? pending.files : [pending.file]
     // Reprocess starts from scratch; Retry and a batch resume (RETRY_FORCES).
     const force = pending.kind === 'reprocess' ? true : pending.kind === 'retry' ? RETRY_FORCES : false
@@ -403,6 +446,36 @@ export function SnippetFilesTab({
     } catch (err) {
       toast(errorMessage(err, 'Could not start processing.'), 'error')
       throw err
+    }
+  }
+
+  // ── Hiding ───────────────────────────────────────────────────────────────
+  /** Hide (after the confirmation) or restore these files, then re-read. */
+  async function setHidden(targetFiles: SnippetFile[], hide: boolean) {
+    const ids = targetFiles.map((f) => f.asset_id)
+    const names = Object.fromEntries(targetFiles.map((f) => [f.asset_id, f.name]))
+    try {
+      const res = hide ? await snippetApi.hideFiles(projectId, ids) : await snippetApi.unhideFiles(projectId, ids)
+      const { message, tone } = hideResultText(res, hide ? 'hide' : 'restore', names)
+      toast(message, tone)
+      setSelected((cur) => new Set(Array.from(cur).filter((id) => !ids.includes(id))))
+      setClip(null)
+      if (res.changed > 0) onHiddenChange?.()
+      await refresh()
+    } catch (err) {
+      toast(errorMessage(err, hide ? 'Could not hide the files.' : 'Could not restore the files.'), 'error')
+      throw err
+    }
+  }
+  const [restoring, setRestoring] = React.useState<string | null>(null)
+  async function restore(file: SnippetFile) {
+    setRestoring(file.asset_id)
+    try {
+      await setHidden([file], false)
+    } catch {
+      // reported in a toast
+    } finally {
+      setRestoring(null)
     }
   }
 
@@ -453,6 +526,7 @@ export function SnippetFilesTab({
     applied.current = ''
     setView({ q: '', filter: 'all' })
   }
+  const restoreBusy = restoring !== null
   const row = (f: SnippetFile) => (
     <FileRow
       key={f.asset_id}
@@ -460,7 +534,7 @@ export function SnippetFilesTab({
       canManage={canManage}
       wrapName={wrapNames}
       selected={selected.has(f.asset_id)}
-      selectDisabled={!canSelect(f) || (full && !selected.has(f.asset_id))}
+      selectDisabled={!pick(f) || (full && !selected.has(f.asset_id))}
       onToggle={() => toggle(f.asset_id)}
       speakers={speakers ?? []}
       busyTrack={busyTrack}
@@ -468,6 +542,9 @@ export function SnippetFilesTab({
       onAddSpeaker={(track) => setAdding({ file: f, track })}
       onReprocess={() => setPending({ kind: 'reprocess', file: f })}
       onRetry={() => setPending({ kind: 'retry', file: f })}
+      onHide={() => setPending({ kind: 'hide', files: [f] })}
+      onRestore={() => void restore(f)}
+      restoring={restoring === f.asset_id}
     />
   )
 
@@ -523,25 +600,47 @@ export function SnippetFilesTab({
         </div>
       </div>
 
-      {/* Filter chips with counts (after the search) */}
-      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by status">
-        {FILE_FILTERS.map(({ value, label }) => (
-          <Chip
-            key={value}
-            active={view.filter === value}
-            onClick={() => setView({ filter: view.filter === value && value !== 'all' ? 'all' : value })}
-          >
-            {label}
-            <span className="tabular-nums opacity-70">{list.data ? counts[value] : '…'}</span>
-          </Chip>
-        ))}
+      {/* Filter chips with counts (after the search). The counts are of the
+          view's files: hidden ones only with the Hidden chip on. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <div className="contents" role="group" aria-label="Filter by status">
+          {FILE_FILTERS.map(({ value, label }) => (
+            <Chip
+              key={value}
+              active={view.filter === value}
+              onClick={() => setView({ filter: view.filter === value && value !== 'all' ? 'all' : value })}
+            >
+              {label}
+              <span className="tabular-nums opacity-70">{list.data ? counts[value] : '…'}</span>
+            </Chip>
+          ))}
+        </div>
+        <span className="mx-0.5 hidden h-5 w-px bg-border sm:inline-block" aria-hidden />
+        <Chip
+          active={view.hidden}
+          onClick={() => setView({ hidden: !view.hidden })}
+          title={view.hidden ? 'Back to the files SocialSnippet shows' : 'Files hidden from SocialSnippet'}
+        >
+          <EyeOff className="h-3.5 w-3.5" aria-hidden />
+          Hidden
+          <span className="tabular-nums opacity-70">{hiddenCount ?? '…'}</span>
+        </Chip>
       </div>
+      {view.hidden && (
+        <p className="flex gap-2 text-xs text-text-tertiary" role="status">
+          <EyeOff className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>
+            Hidden files are not shown in search, clips or the player. Their transcripts, clips and downloads are
+            kept{canManage ? '; Restore shows them again.' : '.'}
+          </span>
+        </p>
+      )}
 
       {/* Summary, how many are shown, and selection */}
       {list.data && (
         <div className="flex flex-col gap-2 text-xs text-text-tertiary sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 space-y-0.5">
-            <p className="text-text-secondary">{summaryText(all, total)}</p>
+            <p className="text-text-secondary">{summaryText(all, total, view.hidden)}</p>
             <p aria-live="polite" className="tabular-nums">
               Showing {shown.length} of {total}
               {truncated &&
@@ -564,17 +663,49 @@ export function SnippetFilesTab({
                 Select all shown{targets.eligible > 0 && ` (${targets.eligible})`}
               </label>
               <span className="tabular-nums" aria-live="polite">
-                {selected.size > 0 ? `${selected.size} selected` : `Up to ${MAX_PROCESS_BATCH} per batch`}
+                {selected.size > 0 ? `${selected.size} selected` : `Up to ${limit} per batch`}
                 {hiddenSelected > 0 && `, ${hiddenSelected} not shown`}
                 {full && !clipStands && ' (the most per batch)'}
               </span>
-              <Button
-                size="sm"
-                disabled={selected.size === 0}
-                onClick={() => setPending({ kind: 'batch', files: selectedFiles })}
-              >
-                Process selected{selected.size > 0 ? ` (${selected.size})` : ''}
-              </Button>
+              {view.hidden ? (
+                <Button
+                  size="sm"
+                  disabled={selected.size === 0 || restoreBusy}
+                  loading={restoring === 'batch'}
+                  onClick={async () => {
+                    setRestoring('batch')
+                    try {
+                      await setHidden(selectedFiles, false)
+                    } catch {
+                      // reported in a toast
+                    } finally {
+                      setRestoring(null)
+                    }
+                  }}
+                >
+                  <Eye className="h-3.5 w-3.5" aria-hidden />
+                  Restore selected{selected.size > 0 ? ` (${selected.size})` : ''}
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={selected.size === 0}
+                    onClick={() => setPending({ kind: 'hide', files: selectedFiles })}
+                  >
+                    <EyeOff className="h-3.5 w-3.5" aria-hidden />
+                    Hide selected{selected.size > 0 ? ` (${selected.size})` : ''}
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={selected.size === 0}
+                    onClick={() => setPending({ kind: 'batch', files: selectedFiles })}
+                  >
+                    Process selected{selected.size > 0 ? ` (${selected.size})` : ''}
+                  </Button>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -583,8 +714,9 @@ export function SnippetFilesTab({
         <p className="flex gap-2 text-xs text-status-warning" role="status">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
           <span>
-            Selected the first {MAX_PROCESS_BATCH} of the {clip.eligible} files shown that can be processed: one
-            batch takes at most {MAX_PROCESS_BATCH}. Process these, then select again for the rest.
+            {view.hidden
+              ? `Selected the first ${limit} of the ${clip.eligible} hidden files shown: one batch takes at most ${limit}. Restore these, then select again for the rest.`
+              : `Selected the first ${limit} of the ${clip.eligible} files shown that can be processed: one batch takes at most ${limit}. Process or hide these, then select again for the rest.`}
           </span>
         </p>
       )}
@@ -603,6 +735,13 @@ export function SnippetFilesTab({
           title="Could not load the files"
           description={errorMessage(list.error)}
           action={{ label: 'Retry', onClick: () => void list.mutate() }}
+        />
+      ) : pool.length === 0 && view.hidden ? (
+        <EmptyState
+          icon={EyeOff}
+          title="No hidden files"
+          description="Files hidden from SocialSnippet are listed here, so they can be restored."
+          action={{ label: 'Show all files', onClick: () => setView({ hidden: false }) }}
         />
       ) : pool.length === 0 ? (
         <EmptyState
@@ -716,6 +855,7 @@ export function SnippetFilesTab({
         title={confirm.title}
         description={confirm.body}
         confirmLabel={confirm.action}
+        variant={confirm.danger ? 'danger' : 'default'}
         onConfirm={runPending}
       />
       <AddSpeakerDialog
@@ -730,8 +870,12 @@ export function SnippetFilesTab({
 }
 
 /** The confirm dialog's words for each action. */
-function confirmCopy(p: Pending | null): { title: string; body: React.ReactNode; action: string } {
+function confirmCopy(p: Pending | null): { title: string; body: React.ReactNode; action: string; danger?: boolean } {
   if (!p) return { title: '', body: null, action: 'Confirm' }
+  if (p.kind === 'hide') {
+    const copy = hideConfirmCopy(p.files.map((f) => f.name))
+    return { title: copy.title, body: <HideConfirmBody points={copy.points} />, action: copy.action }
+  }
   const files = p.kind === 'batch' ? p.files : [p.file]
   const force = p.kind === 'reprocess'
   const est = formatEstimate(
@@ -778,6 +922,18 @@ function confirmCopy(p: Pending | null): { title: string; body: React.ReactNode;
   return { title: `Retry ${p.file.name}?`, body, action: 'Retry' }
 }
 
+/** What hiding does, as the confirmation's body (the Clips tab uses it too). */
+export function HideConfirmBody({ points }: { points: string[] }) {
+  return (
+    <span className="block space-y-1.5">
+      {points.map((p) => (
+        <span key={p} className="block">
+          {p}
+        </span>
+      ))}
+    </span>
+  )
+}
 
 function FileRow({
   file: f,
@@ -792,6 +948,9 @@ function FileRow({
   onAddSpeaker,
   onReprocess,
   onRetry,
+  onHide,
+  onRestore,
+  restoring,
 }: {
   file: SnippetFile
   canManage: boolean
@@ -806,9 +965,13 @@ function FileRow({
   onAddSpeaker: (track: number) => void
   onReprocess: () => void
   onRetry: () => void
+  onHide: () => void
+  onRestore: () => void
+  restoring: boolean
 }) {
   const status = statusLabel(f)
   const notReady = f.not_ready_reason != null
+  const hidden = f.hidden === true
   const Icon = f.kind === 'audio' ? Music : Film
   const meta = [
     f.duration_ms != null ? formatLength(f.duration_ms) : null,
@@ -826,7 +989,7 @@ function FileRow({
     <div
       role="row"
       aria-disabled={notReady || undefined}
-      className={cn(COLUMNS, 'relative flex flex-col gap-2 px-3 py-3', notReady && 'bg-bg-primary/40')}
+      className={cn(COLUMNS, 'relative flex flex-col gap-2 px-3 py-3', (notReady || hidden) && 'bg-bg-primary/40')}
     >
       {/* Checkbox */}
       <span role="cell" className="absolute left-3 top-3.5 lg:static">
@@ -846,8 +1009,11 @@ function FileRow({
       {/* Name, folder path; length, kind and update time on cards only */}
       <span role="cell" className={cn('min-w-0', indent)}>
         <span className="flex min-w-0 items-start gap-2">
-          <Icon className={cn('mt-0.5 h-4 w-4 shrink-0 text-text-tertiary', notReady && 'opacity-50')} aria-hidden />
-          <FileName name={f.name} wrap={wrapName} dim={notReady} />
+          <Icon
+            className={cn('mt-0.5 h-4 w-4 shrink-0 text-text-tertiary', (notReady || hidden) && 'opacity-50')}
+            aria-hidden
+          />
+          <FileName name={f.name} wrap={wrapName} dim={notReady || hidden} />
         </span>
         <span className="mt-0.5 block truncate text-xs text-text-secondary" title={folder}>
           <span className="sr-only">Folder: </span>
@@ -866,10 +1032,17 @@ function FileRow({
 
       {/* Status */}
       <span role="cell" className={cn('flex flex-wrap items-center gap-2', indent)}>
+        {hidden && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-2xs font-medium text-text-secondary">
+            <EyeOff className="h-3 w-3" aria-hidden />
+            Hidden
+          </span>
+        )}
         <span
           className={cn(
             'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-2xs font-medium',
             TONE[status.tone],
+            hidden && 'opacity-60',
           )}
         >
           <span
@@ -919,7 +1092,7 @@ function FileRow({
                 hasSpeech={trackHasSpeech(t)}
                 warn={warnable && trackNeedsSpeaker(t)}
                 speakers={speakers}
-                disabled={notReady || !f.media_file_id}
+                disabled={notReady || hidden || !f.media_file_id}
                 busy={busyTrack === `${f.media_file_id}:${t.track_index}`}
                 label={`Speaker on ${trackName(t)} (${t.label}), ${f.name}`}
                 onChange={(id) => onAssign(t.track_index, id)}
@@ -934,16 +1107,36 @@ function FileRow({
       <span aria-hidden className="hidden lg:block" />
 
       {/* Actions */}
-      <span role="cell" className={cn('flex items-center gap-2 empty:hidden lg:justify-end', indent)}>
-        {canManage && !notReady && f.snippet_status === 'failed' && (
+      <span role="cell" className={cn('flex flex-wrap items-center gap-2 empty:hidden lg:flex-nowrap lg:justify-end', indent)}>
+        {canManage && hidden && (
+          <Button variant="secondary" size="sm" onClick={onRestore} loading={restoring} aria-label={`Restore ${f.name}`}>
+            <Eye className="h-3.5 w-3.5" aria-hidden />
+            Restore
+          </Button>
+        )}
+        {canManage && !hidden && !notReady && f.snippet_status === 'failed' && (
           <Button variant="secondary" size="sm" onClick={onRetry}>
             <RotateCcw className="h-3.5 w-3.5" aria-hidden />
             Retry
           </Button>
         )}
-        {canManage && !notReady && f.snippet_status === 'done' && (
+        {canManage && !hidden && !notReady && f.snippet_status === 'done' && (
           <Button variant="ghost" size="sm" onClick={onReprocess}>
             Reprocess
+          </Button>
+        )}
+        {canManage && !hidden && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onHide}
+            aria-label={`Hide ${f.name}`}
+            title="Hide from SocialSnippet"
+            className="lg:px-2"
+          >
+            <EyeOff className="h-3.5 w-3.5" aria-hidden />
+            {/* Icon only in the table, where the actions column is narrow. */}
+            <span className="lg:sr-only">Hide</span>
           </Button>
         )}
       </span>

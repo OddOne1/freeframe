@@ -20,6 +20,7 @@ import type {
   SnippetExportJob,
   SnippetFilesParams,
   SnippetFilesResponse,
+  SnippetHideResponse,
   SnippetPatch,
   SnippetProcessResponse,
   SnippetSearchParams,
@@ -101,6 +102,7 @@ export const snippetKeys = {
     if (q) qs.set('q', q)
     if (p.page && p.page > 1) qs.set('page', String(p.page))
     if (p.page_size && p.page_size !== 50) qs.set('page_size', String(p.page_size))
+    if (p.hidden && p.hidden !== 'exclude') qs.set('hidden', p.hidden)
     const s = qs.toString()
     return `/projects/${projectId}/snippet/files${s ? `?${s}` : ''}`
   },
@@ -127,6 +129,12 @@ export const snippetApi = {
   /** GET /projects/{id}/snippet/files (editor and up). */
   listFiles: (projectId: string, p: SnippetFilesParams = {}) =>
     call<SnippetFilesResponse>('GET', snippetKeys.files(projectId, p)),
+  /** Owner only. Hidden files show nowhere in SocialSnippet but the Files
+   *  tab's Hidden view; nothing is deleted. At most 100 ids. */
+  hideFiles: (projectId: string, assetIds: string[]) =>
+    call<SnippetHideResponse>('POST', `/projects/${projectId}/snippet/files/hide`, { asset_ids: assetIds }),
+  unhideFiles: (projectId: string, assetIds: string[]) =>
+    call<SnippetHideResponse>('POST', `/projects/${projectId}/snippet/files/unhide`, { asset_ids: assetIds }),
   createSpeaker: (projectId: string, name: string) =>
     call<SnippetSpeaker>('POST', snippetKeys.speakers(projectId), { name }),
   listTracks: (mediaFileId: string) => call<SnippetTrack[]>('GET', snippetKeys.tracks(mediaFileId)),

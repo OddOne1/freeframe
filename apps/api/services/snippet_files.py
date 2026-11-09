@@ -7,10 +7,12 @@ Runs on SQLite and Postgres alike: nothing below needs full-text search.
 Every live video or audio asset of the project inside the source folder
 (the folder itself and everything below it; the whole project when there
 is none), with its latest live version's media file. An asset in the trash,
-or under a trashed folder, is not listed. The scope rule is
-`folder_in_scope` (services/snippet_transcribe.py), the same one the
-pipeline uses to decide whether a file takes the SocialSnippet path, so a
-file is listed here exactly when processing it would run this pipeline.
+or under a trashed folder, is not listed. A file the owner hid from
+SocialSnippet is left out unless asked for (`hidden`), and flagged when
+listed. The scope rule is `folder_in_scope` (services/snippet_transcribe.py),
+the same one the pipeline uses to decide whether a file takes the
+SocialSnippet path, so a file is listed here exactly when processing it
+would run this pipeline.
 
 ── Where `snippet_status` comes from ───────────────────────────────────────
 No column says it; it is read off what the pipeline leaves behind (see
@@ -45,7 +47,7 @@ from ..models.asset import (
 )
 from ..models.folder import Folder
 from ..models.snippet import (
-    Snippet, SnippetJob, SnippetJobStatus, SnippetSpeaker, SnippetStatus,
+    Snippet, SnippetHiddenAsset, SnippetJob, SnippetJobStatus, SnippetSpeaker, SnippetStatus,
     SnippetTrackSpeaker, TranscriptSegment,
 )
 from . import snippet_admin
@@ -57,6 +59,9 @@ from .snippet_transcribe import folder_in_scope
 #: and boto3 for two strings. tests/test_snippet_files.py compares them.
 STORE_STAGE = "store"
 DETECT_STAGE = "detect"
+
+#: GET /snippet/files?hidden=...
+HIDDEN_MODES = ("exclude", "include", "only")
 
 #: The values `snippet_status` takes.
 NOT_PROCESSED, QUEUED, RUNNING, DONE, FAILED = (
@@ -201,8 +206,18 @@ def _duration_ms(duration_seconds) -> Optional[int]:
 
 
 def list_files(db, project_id, source_folder_id, q: Optional[str], page: int,
-               page_size: int) -> FilesPage:
-    """One page of the project's in-scope video and audio files, by name."""
+               page_size: int, hidden: str = "exclude") -> FilesPage:
+    """One page of the project's in-scope video and audio files, by name.
+
+    `hidden`: "exclude" leaves out the files hidden from SocialSnippet,
+    "include" lists them with the rest, "only" lists nothing else. `total`
+    counts what is listed. The one SocialSnippet read that reaches a hidden
+    file's rows: everything below uses `live_clause`, not `visible_clause`,
+    so a hidden file shows its real segment and clip counts here and can be
+    told apart and restored.
+    """
+    if hidden not in HIDDEN_MODES:
+        raise ValueError(f"hidden must be one of {HIDDEN_MODES}")
     folders = read_folders(db, project_id)
     in_scope = Asset.folder_id.in_(folders.listable(source_folder_id))
     if source_folder_id is None:
@@ -223,6 +238,13 @@ def list_files(db, project_id, source_folder_id, q: Optional[str], page: int,
     clean_q = snippet_admin.clean_text(q)
     if clean_q:
         criteria.append(Asset.name.ilike(like_contains(clean_q), escape=LIKE_ESCAPE))
+    is_hidden = Asset.id.in_(
+        select(SnippetHiddenAsset.asset_id).where(SnippetHiddenAsset.project_id == project_id)
+    )
+    if hidden == "exclude":
+        criteria.append(~is_hidden)
+    elif hidden == "only":
+        criteria.append(is_hidden)
 
     def _base(*columns):
         return (
@@ -238,13 +260,13 @@ def list_files(db, project_id, source_folder_id, q: Optional[str], page: int,
 
     total = _base(func.count(Asset.id)).scalar() or 0
     rows = (
-        _base(Asset, AssetVersion.processing_status, MediaFile)
+        _base(Asset, AssetVersion.processing_status, MediaFile, is_hidden.label("hidden"))
         .order_by(func.lower(Asset.name), Asset.id)
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
-    mf_ids = [mf.id for _a, _s, mf in rows if mf is not None]
+    mf_ids = [mf.id for _a, _s, mf, _h in rows if mf is not None]
 
     segments: dict = {}       # media file -> {track: segment count}
     clips: dict = {}          # media file -> clip count
@@ -287,7 +309,7 @@ def list_files(db, project_id, source_folder_id, q: Optional[str], page: int,
             mapping.setdefault(mf_id, {})[track] = (speaker_id, name)
 
     items = []
-    for asset, processing_status, mf in rows:
+    for asset, processing_status, mf, is_hidden_row in rows:
         mf_id = mf.id if mf is not None else None
         file_jobs = jobs.get(mf_id, [])
         by_track = segments.get(mf_id, {})
@@ -333,5 +355,6 @@ def list_files(db, project_id, source_folder_id, q: Optional[str], page: int,
             "tracks": tracks,
             "planned_track_count": len(planned) if planned is not None else None,
             "done_track_count": done_tracks,
+            "hidden": bool(is_hidden_row),
         })
     return FilesPage(total=total, items=items)

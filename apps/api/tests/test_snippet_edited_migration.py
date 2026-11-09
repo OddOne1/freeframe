@@ -95,4 +95,11 @@ def test_the_migrated_database_has_the_column():
     finally:
         eng.dispose()
     assert row == ("timestamp with time zone", "YES", None)
-    assert head == REVISION
+    # Migrated at least this far: this revision, or one built on it.
+    revisions = _revisions()
+    chain, current = set(), head
+    while current and current not in chain:
+        chain.add(current)
+        parents = revisions.get(current, [])
+        current = parents[0] if parents else None
+    assert REVISION in chain, f"database head {head} does not include {REVISION}"

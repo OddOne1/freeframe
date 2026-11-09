@@ -11,7 +11,7 @@
  * entries and a group may continue on the next page.
  */
 import * as React from "react";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import useSWRInfinite from "swr/infinite";
 import { useParams, usePathname, useSearchParams } from "next/navigation";
 import * as Popover from "@radix-ui/react-popover";
@@ -28,7 +28,9 @@ import {
   snippetFetcher,
   snippetKeys,
 } from "@/lib/snippet-api";
+import { hideConfirmCopy, hideResultText, withoutAsset } from "@/lib/snippet-files";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Skeleton } from "@/components/shared/skeleton";
 import { useOptionalToast } from "@/components/shared/toast";
@@ -44,7 +46,7 @@ import {
   targetKind,
 } from "@/lib/snippet-card";
 import { ClipCard, type ClipCardController } from "@/components/snippets/clip-card";
-import { SnippetFilesTab } from "@/components/snippets/snippet-files-tab";
+import { HideConfirmBody, SnippetFilesTab } from "@/components/snippets/snippet-files-tab";
 import { SnippetSearchBox } from "@/components/snippets/snippet-search-box";
 import { SnippetSettingsDialog } from "@/components/snippets/snippet-settings-dialog";
 import { useSnippetAccess } from "@/components/snippets/use-snippet-access";
@@ -145,14 +147,11 @@ function groupSummary(items: SnippetClip[]): string {
   return `${items.length} ${items.length === 1 ? "clip" : "clips"} · ${files} ${files === 1 ? "file" : "files"}`;
 }
 
-/** The last saved change, for the Undo toast. */
-interface UndoEntry {
-  id: number;
-  clipId: string;
-  cardKey: string;
-  inverse: SnippetPatch;
-  message: string;
-}
+/** What the Undo toast puts back: the last saved change to a clip, or a
+ *  source file just hidden from SocialSnippet (owners only). */
+type UndoEntry =
+  | { kind: "save"; id: number; clipId: string; cardKey: string; inverse: SnippetPatch; message: string }
+  | { kind: "hide"; id: number; assetId: string; assetName: string; message: string };
 
 const UNDO_TOAST_MS = 7000;
 
@@ -362,6 +361,7 @@ export default function SnippetsPage() {
       }
       const hidden = sent.status === "rejected" && statusRef.current === "default";
       setUndo({
+        kind: "save",
         id: Date.now(),
         clipId: updated.id,
         cardKey,
@@ -374,6 +374,16 @@ export default function SnippetsPage() {
 
   async function runUndo(entry: UndoEntry) {
     setUndo(null);
+    if (entry.kind === "hide") {
+      try {
+        await snippetApi.unhideFiles(projectId, [entry.assetId]);
+        await refreshClips();
+        toast(`${entry.assetName} is shown again.`, "success");
+      } catch (err) {
+        toast(errorMessage(err, "Could not restore the file."), "error");
+      }
+      return;
+    }
     const card = controllers.current.get(entry.cardKey);
     if (card && card.clipId === entry.clipId) {
       card.undo(entry.inverse);
@@ -389,6 +399,49 @@ export default function SnippetsPage() {
   }
 
   const onTracksChanged = React.useCallback(() => void searchRef.current.mutate(), []);
+
+  // ── Hiding a clip's source file (owner only) ────────────────────────────
+  // After the confirmation every clip of the file leaves the list at once;
+  // the Undo toast shows them again. Suggest (names, topics) and the Files
+  // tab's lists are re-read too.
+  const { mutate: mutateAny } = useSWRConfig();
+  const [hiding, setHiding] = React.useState<SnippetClip | null>(null);
+  const lastHiding = React.useRef<SnippetClip | null>(null);
+  if (hiding) lastHiding.current = hiding;
+  const hideCopy = hideConfirmCopy([(hiding ?? lastHiding.current)?.asset_name ?? ""]);
+  const onHideSource = React.useCallback((clip: SnippetClip) => setHiding(clip), []);
+
+  const refreshClips = React.useCallback(async () => {
+    await Promise.all([
+      searchRef.current.mutate(),
+      mutateAny((key) => typeof key === "string" && key.includes("/snippet/suggest")),
+      mutateAny((key) => Array.isArray(key) && String(key[0]).startsWith("snippet/files")),
+    ]);
+  }, [mutateAny]);
+
+  async function hideSource(clip: SnippetClip) {
+    try {
+      const res = await snippetApi.hideFiles(projectId, [clip.asset_id]);
+      if (res.changed === 0) {
+        const { message, tone } = hideResultText(res, "hide", { [clip.asset_id]: clip.asset_name });
+        toast(message, tone);
+      } else {
+        // Gone at once; the server's own answer replaces this when it arrives.
+        void search.mutate((pages) => withoutAsset(pages, clip.asset_id), { revalidate: false });
+        setUndo({
+          kind: "hide",
+          id: Date.now(),
+          assetId: clip.asset_id,
+          assetName: clip.asset_name,
+          message: `Hidden: ${clip.asset_name}`,
+        });
+      }
+      void refreshClips();
+    } catch (err) {
+      toast(errorMessage(err, "Could not hide the file."), "error");
+      throw err;
+    }
+  }
 
   // Nothing typed is lost to a closed tab while a save is waiting.
   React.useEffect(() => {
@@ -661,6 +714,7 @@ export default function SnippetsPage() {
                       onToggleExpand={toggleExpand}
                       onSaved={onSaved}
                       onTracksChanged={onTracksChanged}
+                      onHideSource={canManage ? onHideSource : undefined}
                       register={register}
                     />
                   );
@@ -691,6 +745,18 @@ export default function SnippetsPage() {
       {undo && (
         <UndoToast key={undo.id} entry={undo} onUndo={() => void runUndo(undo)} onClose={() => setUndo(null)} />
       )}
+      <ConfirmDialog
+        open={hiding !== null}
+        onOpenChange={(open) => {
+          if (!open) setHiding(null);
+        }}
+        title={hideCopy.title}
+        description={<HideConfirmBody points={hideCopy.points} />}
+        confirmLabel={hideCopy.action}
+        onConfirm={async () => {
+          if (hiding) await hideSource(hiding);
+        }}
+      />
     </>
   );
 
@@ -723,7 +789,11 @@ export default function SnippetsPage() {
       </Tabs.Content>
       {/* Unmounted when not shown, so its 5 s polling stops with it. */}
       <Tabs.Content value="files" className="pt-5 focus:outline-none">
-        <SnippetFilesTab projectId={projectId} canManage={canManage} />
+        <SnippetFilesTab
+          projectId={projectId}
+          canManage={canManage}
+          onHiddenChange={() => void refreshClips()}
+        />
       </Tabs.Content>
     </Tabs.Root>,
   );

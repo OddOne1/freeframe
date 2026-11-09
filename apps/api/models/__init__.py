@@ -17,6 +17,6 @@ from .zip_export import ZipExport, ZipExportStatus
 from .object_checksum import ObjectChecksum
 from .snippet import (
     SnippetProjectSettings, SnippetSpeaker, SnippetTrackSpeaker, TranscriptSegment,
-    TranscriptWord, TranscriptEdit, SnippetJob, Snippet,
+    TranscriptWord, TranscriptEdit, SnippetJob, Snippet, SnippetHiddenAsset,
 )
 from .snippet_export import SnippetExport

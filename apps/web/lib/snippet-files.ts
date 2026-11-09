@@ -9,6 +9,9 @@ import type {
   SnippetFile,
   SnippetFileStatus,
   SnippetFilesResponse,
+  SnippetHiddenMode,
+  SnippetHideResponse,
+  SnippetSearchResponse,
   SnippetTrack,
 } from '@/types'
 
@@ -23,6 +26,9 @@ export const SERVER_CPU_SPEED_FACTOR = 1.5
 
 /** POST /snippet/process takes at most this many assets per request. */
 export const MAX_PROCESS_BATCH = 20
+
+/** POST /snippet/files/hide and /unhide take at most this many per request. */
+export const MAX_HIDE_BATCH = 100
 
 /** How often the list is re-read while a file is queued or running. */
 export const POLL_INTERVAL_MS = 5000
@@ -390,8 +396,10 @@ export function groupByFolder(files: SnippetFile[]): FileGroup[] {
   )
 }
 
-/** The line above the table: "12 files, 5 done, 2 failed, 3 need a speaker". */
-export function summaryText(files: SnippetFile[], total = files.length): string {
+/** The line above the table: "12 files, 5 done, 2 failed, 3 need a speaker",
+ *  or "3 hidden files, …" in the Hidden view. Counts only the files given:
+ *  the tab hands it the hidden files only when the Hidden chip is on. */
+export function summaryText(files: SnippetFile[], total = files.length, hidden = false): string {
   let done = 0
   let failed = 0
   let speaker = 0
@@ -400,7 +408,7 @@ export function summaryText(files: SnippetFile[], total = files.length): string 
     if (f.snippet_status === 'failed') failed += 1
     if (needsSpeaker(f)) speaker += 1
   }
-  return `${total} ${total === 1 ? 'file' : 'files'}, ${done} done, ${failed} failed, ${speaker} ${
+  return `${total}${hidden ? ' hidden' : ''} ${total === 1 ? 'file' : 'files'}, ${done} done, ${failed} failed, ${speaker} ${
     speaker === 1 ? 'needs' : 'need'
   } a speaker`
 }
@@ -413,8 +421,9 @@ export function summaryText(files: SnippetFile[], total = files.length): string 
 export function selectAllTargets(
   rows: SnippetFile[],
   max: number = MAX_PROCESS_BATCH,
+  pick: (f: SnippetFile) => boolean = canSelect,
 ): { ids: string[]; eligible: number; clipped: number } {
-  const ids = rows.filter(canSelect).map((f) => f.asset_id)
+  const ids = rows.filter(pick).map((f) => f.asset_id)
   return { ids: ids.slice(0, max), eligible: ids.length, clipped: Math.max(0, ids.length - max) }
 }
 
@@ -425,9 +434,17 @@ export interface FilesView {
   filter: FileFilter
   sort: FileSort
   grouped: boolean
+  /** The Hidden chip: list the files hidden from SocialSnippet, and only those. */
+  hidden: boolean
 }
 
-export const DEFAULT_FILES_VIEW: FilesView = { q: '', filter: 'all', sort: 'updated-desc', grouped: true }
+export const DEFAULT_FILES_VIEW: FilesView = {
+  q: '',
+  filter: 'all',
+  sort: 'updated-desc',
+  grouped: true,
+  hidden: false,
+}
 
 /** Query keys, prefixed so they never meet the Clips tab's. */
 export const FILES_VIEW_KEYS = {
@@ -435,6 +452,7 @@ export const FILES_VIEW_KEYS = {
   filter: 'files_filter',
   sort: 'files_sort',
   group: 'files_group',
+  hidden: 'files_hidden',
 } as const
 
 /** Reads the view from the query string; anything unknown is the default. */
@@ -446,6 +464,7 @@ export function readFilesView(params: Pick<URLSearchParams, 'get'>): FilesView {
     filter: FILE_FILTERS.some((x) => x.value === filter) ? (filter as FileFilter) : DEFAULT_FILES_VIEW.filter,
     sort: FILE_SORTS.some((x) => x.value === sort) ? (sort as FileSort) : DEFAULT_FILES_VIEW.sort,
     grouped: params.get(FILES_VIEW_KEYS.group) !== 'none',
+    hidden: params.get(FILES_VIEW_KEYS.hidden) === '1',
   }
 }
 
@@ -460,7 +479,74 @@ export function writeFilesView(params: Pick<URLSearchParams, 'toString'>, view: 
   set(FILES_VIEW_KEYS.filter, view.filter, DEFAULT_FILES_VIEW.filter)
   set(FILES_VIEW_KEYS.sort, view.sort, DEFAULT_FILES_VIEW.sort)
   set(FILES_VIEW_KEYS.group, view.grouped ? '' : 'none', '')
+  set(FILES_VIEW_KEYS.hidden, view.hidden ? '1' : '', '')
   return next
+}
+
+// ─── Hiding files ────────────────────────────────────────────────────────────
+
+/** What the list asks the server for: the hidden files alone with the Hidden
+ *  chip on, else everything else (the server's default). */
+export const hiddenModeOf = (view: Pick<FilesView, 'hidden'>): SnippetHiddenMode =>
+  view.hidden ? 'only' : 'exclude'
+
+/**
+ * Which rows can be ticked. In the Hidden view any hidden file can (restoring
+ * needs nothing of it); otherwise the rows that can be processed, so the one
+ * selection feeds both Process selected and Hide selected. A file that cannot
+ * be processed yet is still hidden with its own row's Hide.
+ */
+export function selectableIn(hiddenView: boolean): (f: SnippetFile) => boolean {
+  return hiddenView ? (f) => f.hidden === true : canSelect
+}
+
+/** The most rows one selection holds: one request's worth. */
+export const selectionLimit = (hiddenView: boolean) => (hiddenView ? MAX_HIDE_BATCH : MAX_PROCESS_BATCH)
+
+/**
+ * The confirmation before hiding, for the Files tab and the Clips tab alike:
+ * what hiding does, what it keeps, and that it can be undone.
+ */
+export function hideConfirmCopy(names: string[]): { title: string; points: string[]; action: string } {
+  const one = names.length === 1
+  const title = one ? `Hide “${names[0]}” from SocialSnippet?` : `Hide ${names.length} files from SocialSnippet?`
+  const it = one ? 'its' : 'their'
+  return {
+    title,
+    points: [
+      `${one ? 'Its' : 'Their'} clips, suggestions and transcript hits are no longer shown: not in search, not in the clip list, not in the player.`,
+      `Nothing is deleted: ${it} transcript, ${it} clips and downloads already made are kept.`,
+      `Reversible: turn on the Hidden filter in the Files tab and choose Restore.`,
+    ],
+    action: one ? 'Hide file' : `Hide ${names.length} files`,
+  }
+}
+
+/**
+ * The toast after a hide or restore: how many changed, and the first one that
+ * did not with its reason ("already hidden", "not found", …). `tone` is
+ * "error" only when nothing changed for a reason other than "already so".
+ */
+export function hideResultText(
+  res: SnippetHideResponse,
+  action: 'hide' | 'restore',
+  names: Record<string, string>,
+): { message: string; tone: 'success' | 'info' | 'error' } {
+  const done = action === 'hide' ? 'hidden' : 'restored'
+  const unchanged = res.results.filter((r) => !r.changed)
+  const already = action === 'hide' ? 'already hidden' : 'not hidden'
+  const problems = unchanged.filter((r) => r.reason !== already)
+  const parts: string[] = []
+  if (res.changed > 0) parts.push(`${res.changed} ${res.changed === 1 ? 'file' : 'files'} ${done}.`)
+  if (problems.length > 0) {
+    const first = problems[0]
+    const more = problems.length > 1 ? ` (and ${problems.length - 1} more)` : ''
+    parts.push(`Not ${done}: ${names[first.asset_id] ?? 'a file'}: ${first.reason}${more}.`)
+  } else if (res.changed === 0) {
+    parts.push(action === 'hide' ? 'Already hidden.' : 'Already shown.')
+  }
+  const tone = problems.length > 0 ? (res.changed > 0 ? 'info' : 'error') : res.changed > 0 ? 'success' : 'info'
+  return { message: parts.join(' '), tone }
 }
 
 // ─── Table columns (desktop) ─────────────────────────────────────────────────
@@ -528,14 +614,48 @@ export function sanitizeColumnWidths(raw: unknown): ColumnWidths {
   return out
 }
 
+/** The fixed actions column: room for Reprocess or Retry next to the Hide icon. */
+export const ACTIONS_COLUMN_WIDTH = 144
+
 /** The grid columns from `lg` up: checkbox, the resizable ones, a filler
  *  that takes any spare width, and the actions. */
-export function columnTemplate(widths: ColumnWidths, checkbox = 28, actions = 96): string {
+export function columnTemplate(widths: ColumnWidths, checkbox = 28, actions = ACTIONS_COLUMN_WIDTH): string {
   return [`${checkbox}px`, ...FILE_COLUMNS.map((c) => `${widths[c.key]}px`), 'minmax(0,1fr)', `${actions}px`].join(' ')
 }
 
 /** The table's smallest width: below it, it scrolls inside its container. */
-export function tableMinWidth(widths: ColumnWidths, gap = 8, checkbox = 28, actions = 96, padding = 24): number {
+export function tableMinWidth(
+  widths: ColumnWidths,
+  gap = 8,
+  checkbox = 28,
+  actions = ACTIONS_COLUMN_WIDTH,
+  padding = 24,
+): number {
   const cols = FILE_COLUMNS.reduce((sum, c) => sum + widths[c.key], 0)
   return checkbox + cols + actions + gap * (FILE_COLUMNS.length + 2) + padding
+}
+
+/**
+ * The clip list's loaded pages without one file's clips and moments, for the
+ * moment between hiding the file and the server's fresh answer. Every page's
+ * `total` drops by how many entries were removed (an entry per topic group,
+ * as the server counts them); emptied groups go.
+ */
+export function withoutAsset(
+  pages: SnippetSearchResponse[] | undefined,
+  assetId: string,
+): SnippetSearchResponse[] | undefined {
+  if (!pages) return pages
+  let removed = 0
+  const kept = pages.map((page) => ({
+    ...page,
+    groups: page.groups
+      .map((g) => {
+        const items = g.items.filter((c) => c.asset_id !== assetId)
+        removed += g.items.length - items.length
+        return { ...g, items }
+      })
+      .filter((g) => g.items.length > 0 || page.groups.length === 1),
+  }))
+  return kept.map((page) => ({ ...page, total: Math.max(0, page.total - removed) }))
 }

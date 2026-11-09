@@ -41,6 +41,7 @@ from ..models.project import Project
 from ..models.snippet import (
     SegmentStatus, Snippet, SnippetJob, SnippetJobStatus, SnippetProjectSettings,
     SnippetSpeaker, SnippetStatus, SnippetTrackSpeaker, TranscriptSegment, TranscriptWord,
+    media_file_is_hidden,
 )
 from ..services.snippet_detect import detect_snippets, drop_overlapping
 from ..services.snippet_transcribe import (
@@ -203,6 +204,8 @@ SNIPPET_STAGE_PLAN = "plan"
 SNIPPET_STAGE_GATE = "gate"
 SNIPPET_STAGE_STORE = "store"
 SNIPPET_STAGE_DETECT = "detect"
+#: The note on a detect stage that did not run because the file is hidden.
+DETECT_SKIPPED_HIDDEN = "skipped: the file is hidden from SocialSnippet"
 #: RMS frame length for the bleed gate. 100 ms resolves single words (most
 #: are 200-600 ms long) while keeping a two-hour profile at 72,000 values.
 SNIPPET_RMS_FRAME_MS = 100
@@ -332,7 +335,8 @@ def _job_start(db, job: SnippetJob) -> None:
 
 def _job_done(db, job: SnippetJob, note: str | None = None) -> None:
     """Mark the stage done. `note` goes into `error`, which on a DONE row is
-    an outcome note, never an error: today only NO_SPEECH / NO_SPEECH_FOUND."""
+    an outcome note, never an error: NO_SPEECH / NO_SPEECH_FOUND, or
+    DETECT_SKIPPED_HIDDEN."""
     job.status = SnippetJobStatus.done
     job.error = note
     job.finished_at = _now()
@@ -948,7 +952,14 @@ def run_detect_for_media_file(db, media_file_id) -> dict:
 
     The whole of the detect stage, without the snippet_jobs bookkeeping, so
     scripts/snippet_detect.py runs exactly what the pipeline runs.
+
+    A file hidden from SocialSnippet is skipped and nothing is changed: its
+    clips must stay exactly as they were, so that unhiding it brings back
+    what was there (models/snippet.SnippetHiddenAsset). `hidden: True` in
+    the result says so.
     """
+    if media_file_is_hidden(db, media_file_id):
+        return {"removed": 0, "created": 0, "skipped": 0, "tracks": [], "hidden": True}
     media_file = snippet_detect_input(db, media_file_id)
     rows = detect_snippets(media_file)
     result = replace_keyword_snippets(db, media_file_id, rows)
@@ -968,7 +979,7 @@ def _stage_detect(db, media_file_id):
         _job_start(db, job)
         result = run_detect_for_media_file(db, media_file_id)
         job = _snippet_job(db, media_file_id, SNIPPET_STAGE_DETECT)
-        _job_done(db, job)
+        _job_done(db, job, note=DETECT_SKIPPED_HIDDEN if result.get("hidden") else None)
         return result
     except Exception as exc:  # noqa: BLE001 -- deliberately swallowed; see above
         logger.exception("SocialSnippet detect failed for media file %s", media_file_id)

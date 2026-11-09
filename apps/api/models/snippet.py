@@ -15,6 +15,13 @@ Do not write `Asset.deleted_at.is_(None)` against these tables by hand. Three
 hand-written copies of a filter is how two of them come to disagree (see
 §239's note on `can_manage_version`).
 
+A project owner can also HIDE a file from SocialSnippet
+(`snippet_hidden_assets`). That is the same rule with one more condition,
+`visible_media_file_clause` / `AssetBound.visible()`, and every read or edit
+SocialSnippet presents goes through it. `live()` (trash only) is left for the
+Files list, which still shows a hidden file so it can be restored, and for
+the pipeline and operator scripts.
+
 The two project-level tables — settings and the speaker roster — belong to
 a project, not to an asset, and are deliberately not covered by that rule.
 
@@ -42,7 +49,7 @@ from typing import Optional
 
 from sqlalchemy import (
     JSON, Boolean, CheckConstraint, Computed, DateTime, Enum, Float, ForeignKey,
-    Index, Integer, String, Text, UniqueConstraint, exists, func,
+    Index, Integer, String, Text, UniqueConstraint, exists, func, select,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, TSVECTOR, UUID
 from sqlalchemy.ext.compiler import compiles
@@ -163,11 +170,21 @@ def _pg_computed_on_sqlite(element, compiler, **kw):
 # ── The one read rule ─────────────────────────────────────────────────────
 
 
-def live_media_file_clause(media_file_id_column, *via):
+def live_media_file_clause(media_file_id_column, *via, include_hidden: bool = True):
     """SQL criterion: this media file belongs to an asset that is NOT in the trash.
 
     THE single implementation of the soft-delete rule for SocialSnippet
     rows. Usable in both `select(...).where(...)` and `db.query(...).filter(...)`.
+
+    `include_hidden=False` is the hidden-file rule on top of it: the asset is
+    also not in `snippet_hidden_assets`. Every SocialSnippet read and edit
+    goes through that form (`visible_media_file_clause`, `AssetBound.visible`),
+    so a hidden file behaves exactly like one that does not exist. The live
+    form stays for the places that must still see a hidden file -- the Files
+    list (which shows it, dimmed, so it can be restored), the pipeline's
+    write guards, and operator scripts. The hidden check is an uncorrelated
+    NOT IN over a primary key inside the same EXISTS, so it adds no join and
+    no statement to any caller.
 
     `via` is any extra join criteria needed to reach `media_file_id_column`
     from the outer row — for a word or an edit, "the segment whose id is my
@@ -181,12 +198,42 @@ def live_media_file_clause(media_file_id_column, *via):
     join written into a caller's query is still one more thing that query
     has to be read around.
     """
-    return exists().where(
+    criteria = [
         *via,
         MediaFile.id == media_file_id_column,
         AssetVersion.id == MediaFile.version_id,
         Asset.id == AssetVersion.asset_id,
         Asset.deleted_at.is_(None),
+    ]
+    if not include_hidden:
+        criteria.append(Asset.id.not_in(select(SnippetHiddenAsset.asset_id)))
+    return exists().where(*criteria)
+
+
+def visible_media_file_clause(media_file_id_column, *via):
+    """SQL criterion: the media file's asset is live AND not hidden from SocialSnippet.
+
+    The read rule of every SocialSnippet path except the Files list and the
+    unhide call (see `live_media_file_clause`).
+    """
+    return live_media_file_clause(media_file_id_column, *via, include_hidden=False)
+
+
+def media_file_is_hidden(db: Session, media_file_id) -> bool:
+    """Is this media file's asset hidden from SocialSnippet?
+
+    For code that is handed one file and has to decide whether to act at
+    all -- the pipeline's detect stage, which must skip a hidden file rather
+    than read its (filtered-out, so empty) transcript and replace its
+    suggestions with nothing.
+    """
+    return (
+        db.query(SnippetHiddenAsset.asset_id)
+        .join(AssetVersion, AssetVersion.asset_id == SnippetHiddenAsset.asset_id)
+        .join(MediaFile, MediaFile.version_id == AssetVersion.id)
+        .filter(MediaFile.id == media_file_id)
+        .first()
+        is not None
     )
 
 
@@ -194,9 +241,9 @@ class AssetBound:
     """Mixin for the tables whose rows belong to one asset's media file.
 
     Each subclass says how it reaches `media_files.id` (`_media_file_path`),
-    and `live()` / `live_clause()` apply `live_media_file_clause` to it. That
-    is the whole of the soft-delete handling: no subclass filters on
-    `Asset.deleted_at` itself.
+    and `live()` / `visible()` apply `live_media_file_clause` to it. That is
+    the whole of the soft-delete and hidden-file handling: no subclass
+    filters on `Asset.deleted_at` or `snippet_hidden_assets` itself.
     """
 
     @classmethod
@@ -214,9 +261,25 @@ class AssetBound:
     def live(cls, db: Session):
         """`db.query(cls)` with rows of soft-deleted assets already excluded.
 
-        The entry point for every read. Further filters chain on as usual.
+        Hidden files are still included: only the Files list and the
+        pipeline want that. Every SocialSnippet read uses `visible`.
         """
         return db.query(cls).filter(cls.live_clause())
+
+    @classmethod
+    def visible_clause(cls):
+        """The criterion that keeps only rows of live assets not hidden from SocialSnippet."""
+        column, *via = cls._media_file_path()
+        return visible_media_file_clause(column, *via)
+
+    @classmethod
+    def visible(cls, db: Session):
+        """`db.query(cls)` without rows of soft-deleted or hidden assets.
+
+        The entry point for every read and edit that SocialSnippet presents.
+        Further filters chain on as usual.
+        """
+        return db.query(cls).filter(cls.visible_clause())
 
 
 # ── Project-level ─────────────────────────────────────────────────────────
@@ -285,6 +348,32 @@ class SnippetSpeaker(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class SnippetHiddenAsset(Base):
+    """An asset a project owner hid from SocialSnippet. No row = shown.
+
+    Hiding deletes nothing: the transcript, clips, jobs and exports stay as
+    they are, and every read simply leaves the asset out
+    (`visible_media_file_clause`). Deleting the row shows it all again.
+    Belongs to an asset but is not `AssetBound`: it IS the rule, not a row
+    the rule applies to.
+    """
+
+    __tablename__ = "snippet_hidden_assets"
+
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("assets.id", ondelete="CASCADE"), primary_key=True
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    hidden_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    hidden_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
 

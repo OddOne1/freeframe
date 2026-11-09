@@ -39,7 +39,7 @@ from typing import Optional
 
 from apps.api.database import SessionLocal
 from apps.api.models.asset import Asset, AssetVersion, MediaFile
-from apps.api.models.snippet import Snippet, TranscriptSegment
+from apps.api.models.snippet import Snippet, TranscriptSegment, media_file_is_hidden
 from sqlalchemy import and_, not_
 
 from apps.api.services.snippet_detect import detect_snippets, drop_overlapping
@@ -90,6 +90,12 @@ def find_targets(db, project_id=None, asset_id=None) -> list:
         )
         if media_file is None:
             out.append(Target(str(asset.id), asset.name, None, 0, False, "no media file"))
+            continue
+        if media_file_is_hidden(db, media_file.id):
+            # The pipeline skips it too (run_detect_for_media_file): a hidden
+            # file's clips stay as they are until it is unhidden.
+            out.append(Target(str(asset.id), asset.name, str(media_file.id), 0, False,
+                              "hidden from SocialSnippet"))
             continue
         segments = (
             TranscriptSegment.live(db)

@@ -12,13 +12,16 @@
  * against it. Each clip sits on one track of its file (GET .../tracks is the
  * Files tab's list), and naming that track's speaker renames its clips.
  *
- * Files tab: 34 files in four folders plus the project root, in every state
+ * Files tab: 35 files in four folders plus the project root, in every state
  * (done, not processed, not ready, failed, one already running), many
  * without speaker names, some tracks with no speech and three very long
  * names, so the search, the filter chips, sorting, folder groups, name
  * wrapping and the 20-file "select all" limit can be seen. Processing one walks it through queued (5 s) and running (9 s
  * more) to done, so the 5 s polling can be watched starting and stopping;
- * "Keynote.mov" fails every time, for Retry.
+ * "Keynote.mov" fails every time, for Retry. Three more are hidden from
+ * SocialSnippet (the Hidden chip). Hiding works as the API does: a hidden
+ * file's clips, moments and topics leave search and suggest, and its
+ * transcript, tracks, clip edits and exports answer 404 until it is restored.
  *
  * Media: set NEXT_PUBLIC_SNIPPET_FIXTURE_VIDEO / NEXT_PUBLIC_SNIPPET_FIXTURE_AUDIO
  * to an absolute URL (an .m3u8 or an .mp4/.m4a) to make the player play
@@ -284,6 +287,7 @@ function file(id: number, f: Partial<FixtureFile> & Pick<FixtureFile, 'name'>): 
     tracks: [track(0, 'Track 1')],
     planned_track_count: (f.tracks ?? [null]).length,
     done_track_count: 0,
+    hidden: false,
     ...f,
   }
 }
@@ -328,7 +332,7 @@ let files: FixtureFile[] = [
   }),
   file(9, {
     name: 'Archive 2019.mov', asset_status: 'failed',
-    not_ready_reason: "the file's own processing failed; fix that first",
+    not_ready_reason: "the file's own processing failed; fix that first", hidden: true,
   }),
   file(10, {
     name: 'Camera A ambience.mxf', duration_ms: 3_420_000, snippet_status: 'done',
@@ -381,7 +385,7 @@ let files: FixtureFile[] = [
   ),
   file(30, { name: 'Voice note 2.m4a', duration_ms: 95_000, folder_path: '/', snippet_status: 'done',
     segment_count: 12, snippet_count: 1, tracks: [track(0, 'Track 1 · mono', ANNA)] }),
-  file(31, { name: 'Untitled export.mov', duration_ms: 610_000, folder_path: '/' }),
+  file(31, { name: 'Untitled export.mov', duration_ms: 610_000, folder_path: '/', hidden: true }),
   // Very long names, to see wrapping (two lines, then an ellipsis) and the tooltip.
   file(32, {
     name: '2026-10-14 Client interview Anna Berger and Marco Rossi about the new product line, full uncut take with room tone, camera A and lavalier tracks (final).mov',
@@ -399,7 +403,31 @@ let files: FixtureFile[] = [
     name: 'Drone flyover of the harbour at sunrise, long version with the slow push-in over the old lighthouse.mp4',
     duration_ms: 412_000, folder_path: '/Footage',
   }),
+  // Hidden after it was processed: its counts are still listed (Hidden view).
+  file(35, {
+    name: 'Test recording do not use.mov', duration_ms: 180_000, folder_path: '/Interviews',
+    snippet_status: 'done', segment_count: 22, snippet_count: 2, hidden: true,
+    tracks: [track(0, 'Lav Anna · 1 ch', ANNA)], done_track_count: 1,
+  }),
 ]
+
+/** Is this asset (or the asset of this media file) hidden from SocialSnippet? */
+const isHiddenAsset = (assetId: string) => files.some((f) => f.asset_id === assetId && f.hidden)
+const isHiddenMedia = (mediaFileId: string) => files.some((f) => f.media_file_id === mediaFileId && f.hidden)
+const notFoundIfHidden = (mediaFileId: string) => {
+  if (isHiddenMedia(mediaFileId)) throw new ApiError(404, 'Media file not found')
+}
+
+function setHidden(ids: string[], hidden: boolean) {
+  const results = Array.from(new Set(ids)).map((asset_id) => {
+    const f = files.find((x) => x.asset_id === asset_id)
+    if (!f) return { asset_id, changed: false, reason: 'not found' }
+    if (!!f.hidden === hidden) return { asset_id, changed: false, reason: hidden ? 'already hidden' : 'not hidden' }
+    files = files.map((x) => (x.asset_id === asset_id ? { ...x, hidden } : x))
+    return { asset_id, changed: true, reason: hidden ? 'hidden' : 'restored' }
+  })
+  return { changed: results.filter((r) => r.changed).length, results }
+}
 
 /** Moves a running fixture file along by the clock. */
 function advance(f: FixtureFile): FixtureFile {
@@ -424,7 +452,10 @@ function listFiles(qs: URLSearchParams): SnippetFilesResponse {
   const q = (qs.get('q') ?? '').trim().toLowerCase()
   const page = Number(qs.get('page') ?? 1)
   const size = Number(qs.get('page_size') ?? 50)
+  const mode = qs.get('hidden') ?? 'exclude'
+  if (!['exclude', 'include', 'only'].includes(mode)) throw new ApiError(422, 'hidden must be exclude, include or only')
   const all = files
+    .filter((f) => mode === 'include' || (mode === 'only') === !!f.hidden)
     .filter((f) => !q || f.name.toLowerCase().includes(q))
     .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
   return {
@@ -438,6 +469,7 @@ function processFiles(ids: string[], force: boolean) {
   const results = ids.map((asset_id) => {
     const f = files.find((x) => x.asset_id === asset_id)
     if (!f) return { asset_id, queued: false, reason: 'not found' }
+    if (f.hidden) return { asset_id, queued: false, reason: 'hidden' }
     if (f.not_ready_reason) return { asset_id, queued: false, reason: f.not_ready_reason }
     if (f.startedAt != null) return { asset_id, queued: false, reason: 'a transcription is already running' }
     if (f.segment_count > 0 && !force) return { asset_id, queued: false, reason: 'already transcribed' }
@@ -450,7 +482,7 @@ function processFiles(ids: string[], force: boolean) {
 function setFileTrackSpeaker(mediaFileId: string, trackIndex: number, speakerId: string) {
   const f = files.find((x) => x.media_file_id === mediaFileId)
   const who = speakers.find((s) => s.id === speakerId)
-  if (!f || !who) throw new ApiError(404, 'Not found')
+  if (!f || !who || f.hidden) throw new ApiError(404, 'Not found')
   if (!f.tracks.some((t) => t.track_index === trackIndex)) {
     throw new ApiError(422, `This file's audio tracks are [${f.tracks.map((t) => t.track_index).join(', ')}]; there is no track ${trackIndex}.`)
   }
@@ -559,6 +591,7 @@ function search(projectId: string, qs: URLSearchParams): SnippetSearchResponse {
   let pool = clips.filter((c) => wanted.includes(c.status as string))
   // Moments only without an explicit status filter, and only for a query.
   if (!statuses.length && q && !sources.length) pool = [...pool, ...MOMENTS]
+  pool = pool.filter((c) => !isHiddenAsset(c.asset_id))
   let items = pool.filter(
     (c) =>
       (!q || matches(c, q)) &&
@@ -723,7 +756,7 @@ export async function fixtureRequest<T>(method: string, path: string, body?: unk
   }
   if ((m = p.match(/^\/projects\/([^/]+)\/snippet\/suggest$/))) {
     const q = (qs.get('q') ?? '').toLowerCase()
-    const live = clips.filter((c) => c.status !== 'rejected')
+    const live = clips.filter((c) => c.status !== 'rejected' && !isHiddenAsset(c.asset_id))
     const counts: Record<string, number> = {}
     for (const c of live) for (const t of c.topics) counts[t] = (counts[t] ?? 0) + 1
     return {
@@ -743,12 +776,18 @@ export async function fixtureRequest<T>(method: string, path: string, body?: unk
     return processFiles(asset_ids, !!force) as T
   }
   if ((m = p.match(/^\/projects\/([^/]+)\/snippet\/files$/))) return listFiles(qs) as T
+  if ((m = p.match(/^\/projects\/([^/]+)\/snippet\/files\/(hide|unhide)$/)) && method === 'POST') {
+    const ids = (body as { asset_ids: string[] }).asset_ids
+    if (!ids.length || ids.length > 100) throw new ApiError(422, 'asset_ids must hold 1 to 100 ids')
+    return setHidden(ids, m[2] === 'hide') as T
+  }
   if ((m = p.match(/^\/media-files\/([^/]+)\/snippet\/tracks\/(\d+)\/speaker$/)) && method === 'PUT') {
     return setFileTrackSpeaker(m[1], Number(m[2]), (body as { speaker_id: string }).speaker_id) as T
   }
   if ((m = p.match(/^\/media-files\/([^/]+)\/snippet\/transcript$/))) {
     const dur = DURATIONS[m[1]]
     if (dur == null) throw new ApiError(404, 'Not found')
+    notFoundIfHidden(m[1])
     const from = Number(qs.get('from_ms') ?? 0)
     const to = Number(qs.get('to_ms') ?? from + 600_000)
     if (from >= dur) throw new ApiError(422, 'from_ms is past the end of the file.')
@@ -756,14 +795,15 @@ export async function fixtureRequest<T>(method: string, path: string, body?: unk
   }
   if ((m = p.match(/^\/media-files\/([^/]+)\/snippet\/tracks$/))) {
     // The same tracks the Files tab shows, so naming a speaker from a clip
-    // and from the Files tab change one list.
+    // and from the Files tab change one list. A hidden file's are 404.
     const f = files.find((x) => x.media_file_id === m![1])
     if (!f) throw new ApiError(404, 'Not found')
+    notFoundIfHidden(m[1])
     return f.tracks as T
   }
   if ((m = p.match(/^\/snippets\/([^/]+)$/)) && method === 'PATCH') {
     const i = clips.findIndex((c) => c.id === m![1])
-    if (i < 0) throw new ApiError(404, 'Not found')
+    if (i < 0 || isHiddenAsset(clips[i].asset_id)) throw new ApiError(404, 'Snippet not found')
     const patch = body as Partial<SnippetClip>
     const prev = clips[i]
     const next = { ...prev, ...patch }
@@ -787,7 +827,12 @@ export async function fixtureRequest<T>(method: string, path: string, body?: unk
     if (mode === 'disabled') throw new ApiError(409, 'SocialSnippet is not enabled for this project')
     if (mode === 'refuse') throw new ApiError(422, 'aspect not available yet')
     const req = body as { aspect?: string; start_ms?: number; end_ms?: number; captions?: boolean }
-    checkExportRequest(decodeURIComponent(m[1]), req)
+    const target = decodeURIComponent(m[1])
+    const source = target.startsWith('moment:')
+      ? target.split(':')[1]
+      : clips.find((c) => c.id === target)?.media_file_id
+    if (source && isHiddenMedia(source)) throw new ApiError(404, 'Snippet not found')
+    checkExportRequest(target, req)
     const id = `exp-${Date.now()}`
     exportsById.set(id, { started: Date.now(), aspect: req.aspect as string, mode })
     return (mode === 'legacy-id' ? { id, status: 'queued' } : { export_id: id, status: 'queued' }) as T

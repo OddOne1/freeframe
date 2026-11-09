@@ -8,8 +8,8 @@ transcript editing are not here.
   read anything            any project member (viewer and up)
   speakers, tracks, clips  editor and up
   the file list            editor and up
-  settings, process        the project owner or a superadmin
-                           (`is_project_owner_or_superadmin`)
+  settings, process,       the project owner or a superadmin
+  hide and unhide files    (`is_project_owner_or_superadmin`)
 
 A caller who is not a member gets 404 for the project and for everything
 in it, the same answer as "does not exist". A member below the role an
@@ -26,10 +26,12 @@ handler, so a malformed request is a 422 even for a caller who would have
 got a 404.
 
 ── The read rule ──────────────────────────────────────────────────────────
-Every read of an asset-bound table goes through `Model.live(db)` or
-`live_media_file_clause` (models/snippet.py): a soft-deleted asset's
-transcript, tracks and clips are a 404 here exactly as they are invisible
-everywhere else.
+Every read of an asset-bound table goes through `Model.visible(db)` or
+`visible_media_file_clause` (models/snippet.py): the transcript, tracks and
+clips of a soft-deleted asset, or of one the owner hid from SocialSnippet,
+are a 404 here exactly as they are invisible everywhere else. The two
+exceptions are the Files list, which shows a hidden file (flagged
+`hidden`) so it can be restored, and unhide itself.
 """
 import logging
 import math
@@ -50,11 +52,12 @@ from ..models.folder import Folder
 from ..models.project import Project, ProjectRole
 from ..models.snippet import (
     Snippet, SnippetSpeaker, SnippetStatus, TranscriptSegment, TranscriptWord,
-    live_media_file_clause,
+    visible_media_file_clause,
 )
 from ..models.user import User
 from ..schemas.snippet import (
-    Clip, ClipGroup, DetectSummary, SearchOut, SnippetFilesOut, SnippetPatch, SnippetProcessIn, SnippetProcessItem,
+    Clip, ClipGroup, DetectSummary, SearchOut, SnippetFilesOut, SnippetHideIn, SnippetHideItem,
+    SnippetHideOut, SnippetPatch, SnippetProcessIn, SnippetProcessItem,
     SnippetProcessOut, SnippetSettingsOut, SnippetSettingsPatch, SnippetSourceLiteral,
     SnippetStatusLiteral, SpeakerIn, SpeakerOut, SuggestOut, TrackOut, TrackSpeakerIn,
     TrackSpeakerOut, TranscriptOut,
@@ -124,10 +127,11 @@ def _require_enabled(db: Session, project_id: uuid.UUID) -> None:
 
 def _media_file_access(db: Session, media_file_id: uuid.UUID, user: User,
                        minimum: ProjectRole) -> tuple:
-    """(media_file, asset) of a live asset the caller may act on, or 404/403/409."""
+    """(media_file, asset) of a visible asset (live, not hidden) the caller may
+    act on, or 404/403/409."""
     media_file = (
         db.query(MediaFile)
-        .filter(MediaFile.id == media_file_id, live_media_file_clause(MediaFile.id))
+        .filter(MediaFile.id == media_file_id, visible_media_file_clause(MediaFile.id))
         .first()
     )
     if media_file is None:
@@ -355,6 +359,7 @@ def list_snippet_files(
     q: Optional[str] = Query(default=None, max_length=200),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
+    hidden: Literal["exclude", "include", "only"] = "exclude",
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -363,15 +368,73 @@ def list_snippet_files(
 
     Editor and up: the list exists to start processing and name speakers,
     which a viewer or reviewer cannot do. `q` matches the file name.
+
+    `hidden`: files hidden from SocialSnippet are left out by default
+    (`exclude`), listed alongside the rest (`include`), or listed alone
+    (`only`); `total` counts what the mode lists. Each item says whether it
+    is hidden. The one read that still sees a hidden file's transcript and
+    clip counts, so a hidden file can be found and restored.
     """
     _require_member(db, project_id, current_user, ProjectRole.editor)
     _require_enabled(db, project_id)
     row = snippet_admin.settings_row(db, project_id)
     result = snippet_files.list_files(
         db, project_id, row.source_folder_id if row is not None else None,
-        q, page, page_size,
+        q, page, page_size, hidden=hidden,
     )
     return SnippetFilesOut(total=result.total, items=result.items)
+
+
+@router.post("/projects/{project_id}/snippet/files/hide", response_model=SnippetHideOut)
+def hide_files(
+    project_id: uuid.UUID,
+    body: SnippetHideIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Hide these assets (1-100) from SocialSnippet.
+
+    A hidden file behaves as if it did not exist: no clips, suggestions or
+    transcript hits are presented, its clips cannot be edited or exported,
+    detection skips it and processing refuses it ("hidden"). NOTHING is
+    deleted -- segments, words, clips, jobs and exports stay -- and
+    unhide shows it all again. Exports already made stay downloadable.
+
+    Idempotent: an asset already hidden answers `changed: false`. An id that
+    is not a live asset of this project answers "not found".
+    """
+    _require_owner(db, project_id, current_user)
+    _require_enabled(db, project_id)
+    outcome = snippet_admin.hide_assets(db, project_id, body.asset_ids, current_user.id)
+    db.commit()
+    return _hide_out(body.asset_ids, outcome)
+
+
+@router.post("/projects/{project_id}/snippet/files/unhide", response_model=SnippetHideOut)
+def unhide_files(
+    project_id: uuid.UUID,
+    body: SnippetHideIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Show these hidden assets in SocialSnippet again, exactly as they were.
+
+    Idempotent: an asset that is not hidden answers `changed: false`.
+    """
+    _require_owner(db, project_id, current_user)
+    _require_enabled(db, project_id)
+    outcome = snippet_admin.unhide_assets(db, project_id, body.asset_ids)
+    db.commit()
+    return _hide_out(body.asset_ids, outcome)
+
+
+def _hide_out(asset_ids, outcome: dict) -> SnippetHideOut:
+    """One result per distinct id, in the order asked."""
+    results = [
+        SnippetHideItem(asset_id=asset_id, changed=outcome[asset_id][0], reason=outcome[asset_id][1])
+        for asset_id in dict.fromkeys(asset_ids)
+    ]
+    return SnippetHideOut(changed=sum(1 for r in results if r.changed), results=results)
 
 
 # ── Speakers and tracks ────────────────────────────────────────────────────
@@ -490,7 +553,7 @@ def _redetect(db: Session, media_file: MediaFile) -> DetectSummary:
         return DetectSummary(ran=False, reason="A transcription is running; it will "
                              "detect clips with this speaker when it finishes.")
     has_transcript = (
-        TranscriptSegment.live(db)
+        TranscriptSegment.visible(db)
         .filter(TranscriptSegment.media_file_id == media_file.id)
         .first()
         is not None
@@ -609,7 +672,7 @@ def get_transcript_range(
         raise HTTPException(status_code=422, detail="from_ms is past the end of the file.")
 
     segments = (
-        TranscriptSegment.live(db)
+        TranscriptSegment.visible(db)
         .filter(TranscriptSegment.media_file_id == media_file.id,
                 TranscriptSegment.start_ms < to,
                 TranscriptSegment.end_ms > from_ms)
@@ -620,7 +683,7 @@ def get_transcript_range(
     words: dict = {}
     if segments:
         for w in (
-            TranscriptWord.live(db)
+            TranscriptWord.visible(db)
             .filter(TranscriptWord.segment_id.in_([s.id for s in segments]))
             .order_by(TranscriptWord.segment_id, TranscriptWord.idx)
             .all()
@@ -684,7 +747,7 @@ def patch_snippet(
     ones, leave it as it is. Clip detection keeps an edited clip like an
     approved one (tasks/transcribe_tasks.replaceable_snippets).
     """
-    snippet = Snippet.live(db).filter(Snippet.id == snippet_id).first()
+    snippet = Snippet.visible(db).filter(Snippet.id == snippet_id).first()
     if snippet is None:
         raise _not_found("Snippet not found")
     try:

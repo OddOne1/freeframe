@@ -40,6 +40,7 @@ import {
   NoMedia,
   transcriptWindow,
 } from './clip-player'
+import { ClipMenu } from './clip-menu'
 import { EditedPill, HintTooltip, ScoreBadge, SourceBadge, StatusPill } from './snippet-ui'
 import { ClipTracksControl, SpeakerSelect, useTrackSpeakerAssign } from './speaker-assign'
 
@@ -88,6 +89,8 @@ export interface ClipCardProps {
   onToggleExpand: (cardKey: string) => void
   onSaved: (clip: SnippetClip, sent: SnippetPatch, inverse: SnippetPatch, cardKey: string) => void
   onTracksChanged: (res: SnippetTrackSpeakerResponse) => void
+  /** The owner's "Hide source file" (asks first); left out for everyone else. */
+  onHideSource?: (clip: SnippetClip) => void
   register: (cardKey: string, controller: ClipCardController) => () => void
 }
 
@@ -485,6 +488,13 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
               >
                 <Pencil className="h-3.5 w-3.5" />
               </button>
+            )}
+            {props.onHideSource && !editingTitle && (
+              <ClipMenu
+                assetName={clip.asset_name}
+                onHideSource={() => latest.current.onHideSource?.(clip)}
+                className="h-6 w-6 hover-none:h-9 hover-none:w-9 shrink-0 border-transparent"
+              />
             )}
             {expanded && (
               <button

@@ -93,7 +93,7 @@ def create_export(
     target = _parse_target(snippet_id)
     snippet = None
     if target[0] == "snippet":
-        snippet = Snippet.live(db).filter(Snippet.id == target[1]).first()
+        snippet = Snippet.visible(db).filter(Snippet.id == target[1]).first()
         if snippet is None:
             raise _not_found("Snippet not found")
         media_file_id = snippet.media_file_id

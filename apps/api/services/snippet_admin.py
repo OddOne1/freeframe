@@ -22,14 +22,15 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from sqlalchemy import func, null
+from sqlalchemy import delete, func, null
+from sqlalchemy.dialects import postgresql, sqlite
 
 from ..models.asset import (
     Asset, AssetType, AssetVersion, MediaFile, ProcessingStatus, TranscriptionStatus,
 )
 from ..models.snippet import (
-    EXPORT_ASPECTS, SnippetJob, SnippetJobStatus, SnippetProjectSettings, SnippetSpeaker,
-    SnippetTrackSpeaker, TranscriptSegment,
+    EXPORT_ASPECTS, SnippetHiddenAsset, SnippetJob, SnippetJobStatus, SnippetProjectSettings,
+    SnippetSpeaker, SnippetTrackSpeaker, TranscriptSegment,
 )
 from .snippet_transcribe import NO_SPEECH, select_tracks
 
@@ -428,6 +429,7 @@ def find_candidates(db, project_id=None, asset_id=None, asset_ids=None,
     else:
         query = query.filter(Asset.project_id == project_id)
     assets = query.order_by(Asset.name).all()
+    hidden = hidden_asset_ids(db, [a.id for a in assets])
 
     out = []
     for asset in assets:
@@ -439,6 +441,11 @@ def find_candidates(db, project_id=None, asset_id=None, asset_ids=None,
                 False, reason,
             ))
 
+        # First: a hidden file is not SocialSnippet's to process, whatever
+        # else is true of it. Unhide it to process it.
+        if asset.id in hidden:
+            _skip(HIDDEN)
+            continue
         if asset.asset_type not in (AssetType.video, AssetType.audio):
             _skip(f"not video or audio ({asset.asset_type.value})")
             continue
@@ -522,3 +529,111 @@ def reprocess(db, candidates, enqueue: Callable, force: bool = False) -> int:
         db.commit()
         queued += 1
     return queued
+
+
+# ── Hiding files ───────────────────────────────────────────────────────────
+#
+# A row in `snippet_hidden_assets` hides an asset from SocialSnippet. Every
+# read honours it through `visible_media_file_clause` (models/snippet.py);
+# these functions only add and remove the row. Neither touches a segment,
+# word, clip, job or export, so unhiding brings back exactly what was there.
+
+#: The `reason` for an asset that was hidden, and what POST /snippet/process
+#: and snippet_reprocess.py answer for a hidden asset.
+HIDDEN = "hidden"
+ALREADY_HIDDEN = "already hidden"
+RESTORED = "restored"
+NOT_HIDDEN = "not hidden"
+NOT_FOUND = "not found"
+NOT_MEDIA = "not video or audio"
+
+
+def hidden_asset_ids(db, asset_ids) -> set:
+    """Which of these assets are hidden. One query."""
+    ids = list(asset_ids)
+    if not ids:
+        return set()
+    return {
+        a for (a,) in
+        db.query(SnippetHiddenAsset.asset_id).filter(SnippetHiddenAsset.asset_id.in_(ids)).all()
+    }
+
+
+def _project_assets(db, project_id, asset_ids) -> dict:
+    """{asset_id: asset_type} for the ids that are live assets of the project."""
+    return dict(
+        db.query(Asset.id, Asset.asset_type)
+        .filter(Asset.project_id == project_id, Asset.deleted_at.is_(None),
+                Asset.id.in_(list(asset_ids)))
+        .all()
+    )
+
+
+def _insert_ignoring_existing(db, rows: list) -> set:
+    """INSERT the hidden rows, skipping any another request inserted first.
+    Returns the asset ids this statement inserted."""
+    if not rows:
+        return set()
+    dialect = postgresql if db.get_bind().dialect.name == "postgresql" else sqlite
+    stmt = (
+        dialect.insert(SnippetHiddenAsset)
+        .values(rows)
+        .on_conflict_do_nothing(index_elements=["asset_id"])
+        .returning(SnippetHiddenAsset.asset_id)
+    )
+    return {a for (a,) in db.execute(stmt).all()}
+
+
+def hide_assets(db, project_id, asset_ids, hidden_by=None) -> dict:
+    """Hide these assets. {asset_id: (changed, reason)} for every distinct id.
+
+    Only live video and audio assets of the project can be hidden: anything
+    else is "not found" (another project's, trashed, unknown) or "not video
+    or audio". Safe to repeat and to race: a second call, or a concurrent
+    one, answers "already hidden". Does not commit.
+    """
+    wanted = list(dict.fromkeys(asset_ids))
+    found = _project_assets(db, project_id, wanted)
+    already = hidden_asset_ids(db, found)
+    media = {a for a, t in found.items() if t in (AssetType.video, AssetType.audio)}
+    inserted = _insert_ignoring_existing(db, [
+        {"asset_id": a, "project_id": project_id, "hidden_by": hidden_by}
+        for a in wanted if a in media and a not in already
+    ])
+    out = {}
+    for a in wanted:
+        if a not in found:
+            out[a] = (False, NOT_FOUND)
+        elif a in inserted:
+            out[a] = (True, HIDDEN)
+        elif a in already or a in media:
+            out[a] = (False, ALREADY_HIDDEN)
+        else:
+            out[a] = (False, NOT_MEDIA)
+    return out
+
+
+def unhide_assets(db, project_id, asset_ids) -> dict:
+    """Show these assets again. {asset_id: (changed, reason)} for every distinct id.
+
+    "not found" for an id that is not a live asset of the project; "not
+    hidden" for one that is not hidden (including a concurrent unhide that
+    got there first). Does not commit.
+    """
+    wanted = list(dict.fromkeys(asset_ids))
+    found = _project_assets(db, project_id, wanted)
+    removed = set()
+    if found:
+        removed = {
+            a for (a,) in db.execute(
+                delete(SnippetHiddenAsset)
+                .where(SnippetHiddenAsset.asset_id.in_(list(found)))
+                .returning(SnippetHiddenAsset.asset_id)
+            ).all()
+        }
+    return {
+        a: (False, NOT_FOUND) if a not in found
+        else (True, RESTORED) if a in removed
+        else (False, NOT_HIDDEN)
+        for a in wanted
+    }
