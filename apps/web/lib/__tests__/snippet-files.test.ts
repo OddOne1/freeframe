@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { SnippetFile, SnippetTrack } from '@/types'
 import {
+  DEFAULT_COLUMN_WIDTHS, FILE_COLUMNS, FILE_SORTS, MAX_COLUMN_WIDTH, ariaSortOf, clampColumnWidth, columnTemplate,
+  sanitizeColumnWidths, tableMinWidth, toggleSort,
   DEFAULT_FILES_VIEW, FILES_VIEW_KEYS, FILE_FILTERS, MAX_PROCESS_BATCH, RETRY_FORCES, SERVER_CPU_SPEED_FACTOR,
   anyActive, canSelect, detectSummaryText, estimateProcessing, fetchAllFiles, filterCounts, folderLabel,
   formatEstimate, formatLength, groupByFolder, matchesFilter, matchesSearch, needsSpeaker, readFilesView,
@@ -187,11 +189,26 @@ describe('needs-speaker rule', () => {
     // "no speech" in the middle of a label is not the server's marker.
     expect(trackHasSpeech(tr(0, 'no speech zone · mono'))).toBe(true)
   })
-  it('a file needs one when any track that may have speech has no speaker', () => {
-    expect(needsSpeaker(mk({ tracks: [tr(0, 'Track 1', 's1'), tr(1, 'Track 2')] }))).toBe(true)
-    expect(needsSpeaker(mk({ tracks: [tr(0, 'Track 1', 's1'), tr(1, 'Track 2 · no speech')] }))).toBe(false)
-    expect(needsSpeaker(mk({ tracks: [tr(0, 'Track 1 · no speech'), tr(1, 'Track 2 · no speech')] }))).toBe(false)
-    expect(needsSpeaker(mk({ tracks: [] }))).toBe(false)
+  it('a processed file needs one when any track that may have speech has no speaker', () => {
+    for (const snippet_status of ['done', 'failed', 'queued', 'running'] as const) {
+      expect(needsSpeaker(mk({ snippet_status, tracks: [tr(0, 'Track 1', 's1'), tr(1, 'Track 2')] }))).toBe(true)
+    }
+    expect(needsSpeaker(mk({ snippet_status: 'done', tracks: [tr(0, 'Track 1', 's1'), tr(1, 'Track 2', 's2')] })))
+      .toBe(false)
+  })
+  it('tracks marked "no speech" never count', () => {
+    expect(needsSpeaker(mk({ snippet_status: 'done', tracks: [tr(0, 'Track 1', 's1'), tr(1, 'Track 2 · no speech')] })))
+      .toBe(false)
+    expect(needsSpeaker(mk({ snippet_status: 'done', tracks: [tr(0, 'Track 1 · no speech'), tr(1, 'Track 2 · no speech')] })))
+      .toBe(false)
+  })
+  it('a file not processed yet, or with no known tracks, never counts', () => {
+    expect(needsSpeaker(mk({ snippet_status: 'not_processed', tracks: [tr(0, 'Track 1'), tr(1, 'Track 2')] }))).toBe(false)
+    expect(needsSpeaker(mk({ snippet_status: 'not_processed', tracks: [] }))).toBe(false)
+    expect(needsSpeaker(mk({ snippet_status: 'done', tracks: [] }))).toBe(false)
+    // Not ready (still uploading) is not processed either.
+    expect(needsSpeaker(mk({ asset_status: 'uploading', not_ready_reason: 'uploading', tracks: [tr(0, 'Track 1')] })))
+      .toBe(false)
   })
   it('names tracks by their position', () => {
     expect(trackName({ track_index: 0 })).toBe('Track 1')
@@ -213,13 +230,14 @@ describe('filter chips', () => {
     expect(files.filter((f) => matchesFilter(f, 'processing')).map((f) => f.snippet_status)).toEqual(['queued', 'running'])
     expect(files.filter((f) => matchesFilter(f, 'done'))).toHaveLength(2)
     expect(files.filter((f) => matchesFilter(f, 'not_processed'))).toHaveLength(1)
+    // The not-processed file has an unnamed track but does not count yet.
     expect(files.filter((f) => matchesFilter(f, 'needs_speaker')).map((f) => f.snippet_status))
-      .toEqual(['running', 'not_processed'])
+      .toEqual(['running'])
     expect(files.filter((f) => matchesFilter(f, 'all'))).toHaveLength(6)
   })
   it('counts every chip at once', () => {
     expect(filterCounts(files)).toEqual({
-      all: 6, attention: 1, processing: 2, done: 2, not_processed: 1, needs_speaker: 2,
+      all: 6, attention: 1, processing: 2, done: 2, not_processed: 1, needs_speaker: 1,
     })
     expect(Object.keys(filterCounts([]))).toEqual(FILE_FILTERS.map((x) => x.value))
   })
@@ -296,6 +314,8 @@ describe('summaryText', () => {
       mk({ snippet_status: 'failed', tracks: [tr(0, 'Track 1 · no speech')] }),
     ]
     expect(summaryText(files)).toBe('3 files, 2 done, 1 failed, 1 needs a speaker')
+    const withNew = [...files, mk({ snippet_status: 'not_processed', tracks: [tr(0, 'Track 1')] })]
+    expect(summaryText(withNew)).toBe('4 files, 2 done, 1 failed, 1 needs a speaker')
     expect(summaryText([])).toBe('0 files, 0 done, 0 failed, 0 need a speaker')
     expect(summaryText(files.slice(0, 1), 1)).toBe('1 file, 1 done, 0 failed, 1 needs a speaker')
   })
@@ -356,10 +376,13 @@ describe('files view in the URL', () => {
   it('leaves defaults out and keeps other keys', () => {
     const base = new URLSearchParams('tab=files&other=1')
     expect(writeFilesView(base, DEFAULT_FILES_VIEW).toString()).toBe('tab=files&other=1')
-    const qs = writeFilesView(base, { q: ' day 2 ', filter: 'needs_speaker', sort: 'updated-desc', grouped: false })
+    const qs = writeFilesView(base, { q: ' day 2 ', filter: 'needs_speaker', sort: 'name-asc', grouped: false })
     expect(qs.get(FILES_VIEW_KEYS.q)).toBe('day 2')
     expect(qs.get(FILES_VIEW_KEYS.filter)).toBe('needs_speaker')
-    expect(qs.get(FILES_VIEW_KEYS.sort)).toBe('updated-desc')
+    expect(qs.get(FILES_VIEW_KEYS.sort)).toBe('name-asc')
+    // The default (last updated, newest first) is left out.
+    expect(DEFAULT_FILES_VIEW.sort).toBe('updated-desc')
+    expect(writeFilesView(base, { ...DEFAULT_FILES_VIEW, sort: 'updated-desc' }).has(FILES_VIEW_KEYS.sort)).toBe(false)
     expect(qs.get(FILES_VIEW_KEYS.group)).toBe('none')
     expect(qs.get('tab')).toBe('files')
     expect(qs.get('other')).toBe('1')
@@ -372,5 +395,83 @@ describe('files view in the URL', () => {
   it('falls back to the default for values it does not know', () => {
     expect(readFilesView(new URLSearchParams('files_filter=nope&files_sort=size-up&files_group=x')))
       .toEqual(DEFAULT_FILES_VIEW)
+  })
+})
+
+describe('sortFiles: kind, folder, segments, clips', () => {
+  const v = mk({ name: 'v.mov', kind: 'video', folder_path: '/B', segment_count: 5, snippet_count: 1 })
+  const a = mk({ name: 'a.wav', kind: 'audio', folder_path: '/A', segment_count: 9, snippet_count: 0 })
+  const r = mk({ name: 'r.mov', kind: 'video', folder_path: '/', segment_count: 0, snippet_count: 3 })
+  const all = [v, a, r]
+  it('sorts by kind and folder (the root first), then by name', () => {
+    expect(names(sortFiles(all, 'kind-asc'))).toEqual(['a.wav', 'r.mov', 'v.mov'])
+    expect(names(sortFiles(all, 'kind-desc'))).toEqual(['r.mov', 'v.mov', 'a.wav'])
+    expect(names(sortFiles(all, 'folder-asc'))).toEqual(['r.mov', 'a.wav', 'v.mov'])
+    expect(names(sortFiles(all, 'folder-desc'))).toEqual(['v.mov', 'a.wav', 'r.mov'])
+  })
+  it('sorts by segment and clip counts', () => {
+    expect(names(sortFiles(all, 'segments-desc'))).toEqual(['a.wav', 'v.mov', 'r.mov'])
+    expect(names(sortFiles(all, 'clips-asc'))).toEqual(['a.wav', 'v.mov', 'r.mov'])
+  })
+  it('every column that sorts has both directions in the dropdown', () => {
+    for (const c of FILE_COLUMNS.filter((x) => x.sort)) {
+      expect(FILE_SORTS.map((o) => o.value)).toEqual(expect.arrayContaining([`${c.sort}-asc`, `${c.sort}-desc`]))
+    }
+  })
+})
+
+describe('toggleSort and ariaSortOf', () => {
+  it('the same column flips its direction', () => {
+    expect(toggleSort('name-asc', 'name')).toBe('name-desc')
+    expect(toggleSort('name-desc', 'name')).toBe('name-asc')
+    expect(toggleSort('updated-desc', 'updated')).toBe('updated-asc')
+  })
+  it('another column starts in its natural direction', () => {
+    expect(toggleSort('updated-desc', 'name')).toBe('name-asc')
+    expect(toggleSort('name-asc', 'length')).toBe('length-desc')
+    expect(toggleSort('name-asc', 'segments')).toBe('segments-desc')
+    expect(toggleSort('length-desc', 'folder')).toBe('folder-asc')
+    expect(toggleSort('length-desc', 'status')).toBe('status-asc')
+  })
+  it('says which column sorts and which way', () => {
+    expect(ariaSortOf('name-asc', 'name')).toBe('ascending')
+    expect(ariaSortOf('updated-desc', 'updated')).toBe('descending')
+    expect(ariaSortOf('updated-desc', 'name')).toBe('none')
+  })
+})
+
+describe('column widths', () => {
+  it('clamps a width to the column minimum and the maximum', () => {
+    const name = FILE_COLUMNS.find((c) => c.key === 'name')!
+    expect(clampColumnWidth('name', 10)).toBe(name.min)
+    expect(clampColumnWidth('name', 5000)).toBe(MAX_COLUMN_WIDTH)
+    expect(clampColumnWidth('name', 301.6)).toBe(302)
+    expect(clampColumnWidth('name', Number.NaN)).toBe(name.width)
+    expect(clampColumnWidth('clips', 0)).toBe(FILE_COLUMNS.find((c) => c.key === 'clips')!.min)
+  })
+  it('every default is within its own limits', () => {
+    for (const c of FILE_COLUMNS) {
+      expect(c.width).toBeGreaterThanOrEqual(c.min)
+      expect(clampColumnWidth(c.key, c.width)).toBe(c.width)
+    }
+  })
+  it('reads stored widths defensively', () => {
+    expect(sanitizeColumnWidths(null)).toEqual(DEFAULT_COLUMN_WIDTHS)
+    expect(sanitizeColumnWidths('garbage')).toEqual(DEFAULT_COLUMN_WIDTHS)
+    expect(sanitizeColumnWidths([1, 2])).toEqual(DEFAULT_COLUMN_WIDTHS)
+    const w = sanitizeColumnWidths({ name: 400, folder: 1, clips: 'wide', bogus: 99, status: 99999 })
+    expect(w.name).toBe(400)
+    expect(w.folder).toBe(FILE_COLUMNS.find((c) => c.key === 'folder')!.min)
+    expect(w.clips).toBe(DEFAULT_COLUMN_WIDTHS.clips)
+    expect(w.status).toBe(MAX_COLUMN_WIDTH)
+    expect('bogus' in w).toBe(false)
+  })
+  it('builds the grid template and the smallest table width', () => {
+    const t = columnTemplate(DEFAULT_COLUMN_WIDTHS)
+    expect(t.split(' ')).toHaveLength(FILE_COLUMNS.length + 3)
+    expect(t.startsWith('28px 220px ')).toBe(true)
+    expect(t.endsWith('minmax(0,1fr) 96px')).toBe(true)
+    const sum = FILE_COLUMNS.reduce((n, c) => n + c.width, 0)
+    expect(tableMinWidth(DEFAULT_COLUMN_WIDTHS)).toBe(28 + sum + 96 + 8 * (FILE_COLUMNS.length + 2) + 24)
   })
 })

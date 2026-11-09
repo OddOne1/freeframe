@@ -200,10 +200,15 @@ export function trackNeedsSpeaker(t: Pick<SnippetTrack, 'label' | 'speaker_id'>)
   return t.speaker_id == null && trackHasSpeech(t)
 }
 
-/** A file needs a speaker name when any track that may hold speech has none.
- *  A track found to have no speech never counts. */
-export function needsSpeaker(f: Pick<SnippetFile, 'tracks'>): boolean {
-  return f.tracks.some(trackNeedsSpeaker)
+/**
+ * A file needs a speaker name when it has been processed (or is being
+ * processed) and a track that may hold speech has none. A file not processed
+ * yet never counts: which of its tracks carry speech is not known until a run
+ * looks. Nor does a file with no known tracks, or a track found to have no
+ * speech.
+ */
+export function needsSpeaker(f: Pick<SnippetFile, 'tracks' | 'snippet_status'>): boolean {
+  return f.snippet_status !== 'not_processed' && f.tracks.some(trackNeedsSpeaker)
 }
 
 /** "Track 1" for track index 0: what the speaker selects are labelled with. */
@@ -254,20 +259,58 @@ export function filterCounts(files: SnippetFile[]): Record<FileFilter, number> {
   return counts
 }
 
-export type FileSortKey = 'name' | 'status' | 'length' | 'updated'
+export type FileSortKey = 'name' | 'kind' | 'folder' | 'status' | 'length' | 'segments' | 'clips' | 'updated'
 export type SortDir = 'asc' | 'desc'
 export type FileSort = `${FileSortKey}-${SortDir}`
 
+/** The dropdown's options (the only sort control at phone width, where rows
+ *  are cards); the column headers set the same values. */
 export const FILE_SORTS: { value: FileSort; label: string }[] = [
+  { value: 'updated-desc', label: 'Last updated, newest first' },
+  { value: 'updated-asc', label: 'Last updated, oldest first' },
   { value: 'name-asc', label: 'Name, A to Z' },
   { value: 'name-desc', label: 'Name, Z to A' },
+  { value: 'kind-asc', label: 'Kind, audio first' },
+  { value: 'kind-desc', label: 'Kind, video first' },
+  { value: 'folder-asc', label: 'Folder, A to Z' },
+  { value: 'folder-desc', label: 'Folder, Z to A' },
   { value: 'status-asc', label: 'Status, failed first' },
   { value: 'status-desc', label: 'Status, done first' },
   { value: 'length-asc', label: 'Length, shortest first' },
   { value: 'length-desc', label: 'Length, longest first' },
-  { value: 'updated-desc', label: 'Last updated, newest first' },
-  { value: 'updated-asc', label: 'Last updated, oldest first' },
+  { value: 'segments-desc', label: 'Segments, most first' },
+  { value: 'segments-asc', label: 'Segments, fewest first' },
+  { value: 'clips-desc', label: 'Clips, most first' },
+  { value: 'clips-asc', label: 'Clips, fewest first' },
 ]
+
+/** Which way a column sorts on its first click: words A to Z, numbers and
+ *  dates largest or newest first. */
+const FIRST_DIR: Record<FileSortKey, SortDir> = {
+  name: 'asc',
+  kind: 'asc',
+  folder: 'asc',
+  status: 'asc',
+  length: 'desc',
+  segments: 'desc',
+  clips: 'desc',
+  updated: 'desc',
+}
+
+/** A column header click: the same column flips its direction, another
+ *  column starts in its natural direction. */
+export function toggleSort(current: FileSort, key: FileSortKey): FileSort {
+  const [curKey, curDir] = current.split('-') as [FileSortKey, SortDir]
+  if (curKey === key) return `${key}-${curDir === 'asc' ? 'desc' : 'asc'}`
+  return `${key}-${FIRST_DIR[key]}`
+}
+
+/** The header's aria-sort for a column under the current sort. */
+export function ariaSortOf(current: FileSort, key: FileSortKey): 'ascending' | 'descending' | 'none' {
+  const [curKey, curDir] = current.split('-') as [FileSortKey, SortDir]
+  if (curKey !== key) return 'none'
+  return curDir === 'asc' ? 'ascending' : 'descending'
+}
 
 /** Status order for sorting: what needs a look comes first. */
 const STATUS_RANK: Record<SnippetFileStatus, number> = {
@@ -289,8 +332,14 @@ const byName = (a: Pick<SnippetFile, 'name' | 'asset_id'>, b: Pick<SnippetFile, 
 export function sortFiles(files: SnippetFile[], sort: FileSort): SnippetFile[] {
   const [key, dir] = sort.split('-') as [FileSortKey, SortDir]
   const sign = dir === 'desc' ? -1 : 1
+  if (key === 'kind' || key === 'folder') {
+    const text = (f: SnippetFile) => (key === 'kind' ? f.kind : isRootFolder(f.folder_path) ? '/' : f.folder_path)
+    return [...files].sort((a, b) => sign * collator.compare(text(a), text(b)) || byName(a, b))
+  }
   const value = (f: SnippetFile): number | null => {
     if (key === 'status') return STATUS_RANK[f.snippet_status] ?? 99
+    if (key === 'segments') return f.segment_count
+    if (key === 'clips') return f.snippet_count
     if (key === 'length') return f.duration_ms
     if (key === 'updated') {
       const t = f.updated_at ? Date.parse(f.updated_at) : NaN
@@ -378,7 +427,7 @@ export interface FilesView {
   grouped: boolean
 }
 
-export const DEFAULT_FILES_VIEW: FilesView = { q: '', filter: 'all', sort: 'name-asc', grouped: true }
+export const DEFAULT_FILES_VIEW: FilesView = { q: '', filter: 'all', sort: 'updated-desc', grouped: true }
 
 /** Query keys, prefixed so they never meet the Clips tab's. */
 export const FILES_VIEW_KEYS = {
@@ -412,4 +461,81 @@ export function writeFilesView(params: Pick<URLSearchParams, 'toString'>, view: 
   set(FILES_VIEW_KEYS.sort, view.sort, DEFAULT_FILES_VIEW.sort)
   set(FILES_VIEW_KEYS.group, view.grouped ? '' : 'none', '')
   return next
+}
+
+// ─── Table columns (desktop) ─────────────────────────────────────────────────
+
+export type FileColumnKey =
+  | 'name'
+  | 'kind'
+  | 'folder'
+  | 'status'
+  | 'length'
+  | 'segments'
+  | 'clips'
+  | 'updated'
+  | 'speakers'
+
+export interface FileColumn {
+  key: FileColumnKey
+  label: string
+  /** The sort it sets; the speakers column does not sort. */
+  sort: FileSortKey | null
+  /** Default and smallest width in px. */
+  width: number
+  min: number
+  align?: 'right'
+}
+
+/** The resizable columns, in order. A checkbox column before them and an
+ *  actions column after them have fixed widths. */
+export const FILE_COLUMNS: FileColumn[] = [
+  { key: 'name', label: 'Name', sort: 'name', width: 220, min: 120 },
+  { key: 'kind', label: 'Kind', sort: 'kind', width: 64, min: 52 },
+  { key: 'folder', label: 'Folder', sort: 'folder', width: 128, min: 72 },
+  { key: 'status', label: 'Status', sort: 'status', width: 128, min: 96 },
+  { key: 'length', label: 'Length', sort: 'length', width: 72, min: 60, align: 'right' },
+  { key: 'segments', label: 'Segments', sort: 'segments', width: 76, min: 64, align: 'right' },
+  { key: 'clips', label: 'Clips', sort: 'clips', width: 56, min: 48, align: 'right' },
+  { key: 'updated', label: 'Last updated', sort: 'updated', width: 104, min: 84 },
+  { key: 'speakers', label: 'Speakers per track', sort: null, width: 224, min: 160 },
+]
+
+/** No column grows past this by dragging. */
+export const MAX_COLUMN_WIDTH = 800
+
+export type ColumnWidths = Record<FileColumnKey, number>
+
+export const DEFAULT_COLUMN_WIDTHS = Object.fromEntries(FILE_COLUMNS.map((c) => [c.key, c.width])) as ColumnWidths
+
+/** A width for `key` kept between its minimum and MAX_COLUMN_WIDTH, in whole px. */
+export function clampColumnWidth(key: FileColumnKey, px: number): number {
+  const col = FILE_COLUMNS.find((c) => c.key === key)
+  if (!col) return 0
+  if (!Number.isFinite(px)) return col.width
+  return Math.round(Math.min(MAX_COLUMN_WIDTH, Math.max(col.min, px)))
+}
+
+/** Widths read back from storage: unknown keys dropped, bad values replaced
+ *  by the default, every value clamped. Anything unreadable is the defaults. */
+export function sanitizeColumnWidths(raw: unknown): ColumnWidths {
+  const out = { ...DEFAULT_COLUMN_WIDTHS }
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return out
+  for (const col of FILE_COLUMNS) {
+    const v = (raw as Record<string, unknown>)[col.key]
+    if (typeof v === 'number' && Number.isFinite(v)) out[col.key] = clampColumnWidth(col.key, v)
+  }
+  return out
+}
+
+/** The grid columns from `lg` up: checkbox, the resizable ones, a filler
+ *  that takes any spare width, and the actions. */
+export function columnTemplate(widths: ColumnWidths, checkbox = 28, actions = 96): string {
+  return [`${checkbox}px`, ...FILE_COLUMNS.map((c) => `${widths[c.key]}px`), 'minmax(0,1fr)', `${actions}px`].join(' ')
+}
+
+/** The table's smallest width: below it, it scrolls inside its container. */
+export function tableMinWidth(widths: ColumnWidths, gap = 8, checkbox = 28, actions = 96, padding = 24): number {
+  const cols = FILE_COLUMNS.reduce((sum, c) => sum + widths[c.key], 0)
+  return checkbox + cols + actions + gap * (FILE_COLUMNS.length + 2) + padding
 }

@@ -10,11 +10,11 @@
  * it, and that is what the player reads as "no video". Searching, filtering, sorting,
  * grouping, approve/reject, in/out saves and exports all work against it.
  *
- * Files tab: 31 files in four folders plus the project root, in every state
+ * Files tab: 34 files in four folders plus the project root, in every state
  * (done, not processed, not ready, failed, one already running), many
- * without speaker names and some tracks with no speech, so the search, the
- * filter chips, sorting, folder groups and the 20-file "select all" limit can
- * be seen. Processing one walks it through queued (5 s) and running (9 s
+ * without speaker names, some tracks with no speech and three very long
+ * names, so the search, the filter chips, sorting, folder groups, name
+ * wrapping and the 20-file "select all" limit can be seen. Processing one walks it through queued (5 s) and running (9 s
  * more) to done, so the 5 s polling can be watched starting and stopping;
  * "Keynote.mov" fails every time, for Retry.
  *
@@ -377,6 +377,23 @@ let files: FixtureFile[] = [
   file(30, { name: 'Voice note 2.m4a', duration_ms: 95_000, folder_path: '/', snippet_status: 'done',
     segment_count: 12, snippet_count: 1, tracks: [track(0, 'Track 1 · mono', ANNA)] }),
   file(31, { name: 'Untitled export.mov', duration_ms: 610_000, folder_path: '/' }),
+  // Very long names, to see wrapping (two lines, then an ellipsis) and the tooltip.
+  file(32, {
+    name: '2026-10-14 Client interview Anna Berger and Marco Rossi about the new product line, full uncut take with room tone, camera A and lavalier tracks (final).mov',
+    duration_ms: 3_960_000, folder_path: '/Interviews/Day 2', snippet_status: 'done', segment_count: 212, snippet_count: 7,
+    tracks: [track(0, 'Lav Anna · 1 ch', ANNA), track(1, 'Lav Marco · 1 ch'), track(2, 'Camera A · stereo · no speech')],
+    done_track_count: 3,
+  }),
+  file(33, {
+    name: 'PODCAST_EP017_MASTER_MIXDOWN_44k1_24bit_NORMALISED_-16LUFS_v7_FINAL_FINAL_use_this_one.wav',
+    duration_ms: 2_700_000, folder_path: '/Podcast', snippet_status: 'failed',
+    error: 'RuntimeError: the transcription worker stopped', tracks: [track(0, 'Host · mono', MARCO), track(1, 'Guest · mono')],
+    done_track_count: 1,
+  }),
+  file(34, {
+    name: 'Drone flyover of the harbour at sunrise, long version with the slow push-in over the old lighthouse.mp4',
+    duration_ms: 412_000, folder_path: '/Footage',
+  }),
 ]
 
 /** Moves a running fixture file along by the clock. */

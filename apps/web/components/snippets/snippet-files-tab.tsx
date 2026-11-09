@@ -18,7 +18,10 @@
  * FILES_VIEW_KEYS), so a reload or a shared link shows the same view.
  *
  * One tree for every width: below `lg` each file is a card, from `lg` up the
- * same elements line up as a table under a header row.
+ * same elements line up as a table under a header row. There the headers
+ * sort (the same `files_sort` as the dropdown) and their borders drag to
+ * resize; widths, and whether long names wrap, are this viewer's own and kept
+ * in localStorage when it is available.
  *
  * While any listed file is queued or running the list is re-read every 5 s
  * (POLL_INTERVAL_MS), and polling stops by itself once none is.
@@ -28,8 +31,12 @@ import useSWR from 'swr'
 import { usePathname, useSearchParams } from 'next/navigation'
 import * as Dialog from '@radix-ui/react-dialog'
 import * as Select from '@radix-ui/react-select'
+import * as Tooltip from '@radix-ui/react-tooltip'
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   Check,
   ChevronDown,
   ChevronRight,
@@ -40,13 +47,30 @@ import {
   Plus,
   RotateCcw,
   Search,
+  WrapText,
   X,
 } from 'lucide-react'
 import { cn, formatRelativeTime } from '@/lib/utils'
 import { errorMessage, snippetApi, snippetFetcher, snippetKeys } from '@/lib/snippet-api'
 import {
+  DEFAULT_COLUMN_WIDTHS,
+  FILE_COLUMNS,
   FILE_FILTERS,
   FILE_SORTS,
+  MAX_COLUMN_WIDTH,
+  ariaSortOf,
+  clampColumnWidth,
+  columnTemplate,
+  needsSpeaker,
+  sanitizeColumnWidths,
+  tableMinWidth,
+  toggleSort,
+  trackNeedsSpeaker,
+  type ColumnWidths,
+  type FileColumn,
+  type FileColumnKey,
+  type FileSort,
+  type FileSortKey,
   FILES_LOAD_LIMIT,
   MAX_PROCESS_BATCH,
   POLL_INTERVAL_MS,
@@ -87,9 +111,84 @@ import type { SnippetFile, SnippetFilesResponse, SnippetProcessResponse, Snippet
 /** How long the search box waits after the last key before it applies. */
 const SEARCH_DEBOUNCE_MS = 250
 
-/** The table's columns from `lg` up; the header row and every row share it. */
-const COLUMNS =
-  'lg:grid lg:grid-cols-[1.75rem_minmax(0,2.4fr)_8.5rem_4.5rem_3.5rem_minmax(0,2.6fr)_6.5rem] lg:items-center lg:gap-3'
+/** The table's columns from `lg` up; the header row and every row share the
+ *  template the table sets in --files-cols (columnTemplate). */
+const COLUMNS = 'lg:grid lg:[grid-template-columns:var(--files-cols)] lg:items-center lg:gap-2'
+
+/** Per-viewer conveniences in localStorage; the tab works without them. */
+const WIDTHS_KEY = 'ff.snippet-files.column-widths.v1'
+const WRAP_KEY = 'ff.snippet-files.wrap-names.v1'
+
+function readStored(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeStored(key: string, value: string | null) {
+  try {
+    if (value === null) window.localStorage.removeItem(key)
+    else window.localStorage.setItem(key, value)
+  } catch {
+    // Private mode, blocked storage, quota: the setting lasts for this visit.
+  }
+}
+
+/** Column widths: read after mount (no server/client mismatch), written a
+ *  moment after the last change; defaults are not stored. */
+function useColumnWidths() {
+  const [widths, setWidths] = React.useState<ColumnWidths>(DEFAULT_COLUMN_WIDTHS)
+  const loaded = React.useRef(false)
+  React.useEffect(() => {
+    const raw = readStored(WIDTHS_KEY)
+    if (raw) {
+      try {
+        setWidths(sanitizeColumnWidths(JSON.parse(raw)))
+      } catch {
+        // Unreadable: keep the defaults.
+      }
+    }
+    loaded.current = true
+  }, [])
+  React.useEffect(() => {
+    if (!loaded.current) return
+    const t = setTimeout(() => {
+      const isDefault = FILE_COLUMNS.every((c) => widths[c.key] === DEFAULT_COLUMN_WIDTHS[c.key])
+      writeStored(WIDTHS_KEY, isDefault ? null : JSON.stringify(widths))
+    }, 200)
+    return () => clearTimeout(t)
+  }, [widths])
+  const setWidth = React.useCallback(
+    (key: FileColumnKey, px: number) =>
+      setWidths((cur) => {
+        const next = clampColumnWidth(key, px)
+        return cur[key] === next ? cur : { ...cur, [key]: next }
+      }),
+    [],
+  )
+  const reset = React.useCallback(
+    (key?: FileColumnKey) =>
+      setWidths((cur) => (key ? { ...cur, [key]: DEFAULT_COLUMN_WIDTHS[key] } : { ...DEFAULT_COLUMN_WIDTHS })),
+    [],
+  )
+  const isDefault = FILE_COLUMNS.every((c) => widths[c.key] === DEFAULT_COLUMN_WIDTHS[c.key])
+  return { widths, setWidth, reset, isDefault }
+}
+
+/** Whether long names wrap onto two lines (the default) or stay on one. */
+function useWrapNames(): [boolean, (on: boolean) => void] {
+  const [wrap, setWrap] = React.useState(true)
+  React.useEffect(() => {
+    if (readStored(WRAP_KEY) === '0') setWrap(false)
+  }, [])
+  const update = React.useCallback((on: boolean) => {
+    setWrap(on)
+    writeStored(WRAP_KEY, on ? null : '0')
+  }, [])
+  return [wrap, update]
+}
 
 const TONE: Record<StatusTone, string> = {
   neutral: 'bg-bg-tertiary text-text-secondary',
@@ -158,6 +257,8 @@ export function SnippetFilesTab({
 }) {
   const toast = useOptionalToast()
   const [view, setView] = useFilesView()
+  const columns = useColumnWidths()
+  const [wrapNames, setWrapNames] = useWrapNames()
 
   // ── Search box: typed text, applied to the URL after a pause ─────────────
   const [text, setText] = React.useState(view.q)
@@ -351,6 +452,7 @@ export function SnippetFilesTab({
       key={f.asset_id}
       file={f}
       canManage={canManage}
+      wrapName={wrapNames}
       selected={selected.has(f.asset_id)}
       selectDisabled={!canSelect(f) || (full && !selected.has(f.asset_id))}
       onToggle={() => toggle(f.asset_id)}
@@ -400,6 +502,18 @@ export function SnippetFilesTab({
             <FolderClosed className="h-3.5 w-3.5" aria-hidden />
             Group by folder
           </Chip>
+          <Chip active={wrapNames} onClick={() => setWrapNames(!wrapNames)} title="Long names on up to two lines">
+            <WrapText className="h-3.5 w-3.5" aria-hidden />
+            Wrap names
+          </Chip>
+          <button
+            type="button"
+            onClick={() => columns.reset()}
+            disabled={columns.isDefault}
+            className="hidden rounded px-1 text-xs text-text-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:opacity-40 disabled:hover:text-text-tertiary lg:inline"
+          >
+            Reset columns
+          </button>
         </div>
       </div>
 
@@ -500,7 +614,21 @@ export function SnippetFilesTab({
           action={filtering ? { label: 'Clear search and filter', onClick: clearView } : undefined}
         />
       ) : (
-        <div role="table" aria-label="Files" className="rounded-lg border border-border bg-bg-secondary">
+        // Wider than the page (dragged columns, a narrow window): the table
+        // scrolls sideways inside this box, not the page.
+        <div className="rounded-lg border border-border bg-bg-secondary lg:overflow-x-auto">
+          <Tooltip.Provider delayDuration={300}>
+            <div
+              role="table"
+              aria-label="Files"
+              className="lg:min-w-[var(--files-min)]"
+              style={
+                {
+                  '--files-cols': columnTemplate(columns.widths),
+                  '--files-min': `${tableMinWidth(columns.widths)}px`,
+                } as React.CSSProperties
+              }
+            >
           <div role="rowgroup" className="hidden lg:block">
             <div
               role="row"
@@ -512,15 +640,18 @@ export function SnippetFilesTab({
               <span role="columnheader">
                 <span className="sr-only">Selected</span>
               </span>
-              <span role="columnheader">Name and folder</span>
-              <span role="columnheader">Status</span>
-              <span role="columnheader" className="text-right">
-                Segments
-              </span>
-              <span role="columnheader" className="text-right">
-                Clips
-              </span>
-              <span role="columnheader">Speakers per track</span>
+              {FILE_COLUMNS.map((col) => (
+                <HeaderCell
+                  key={col.key}
+                  col={col}
+                  width={columns.widths[col.key]}
+                  sort={view.sort}
+                  onSort={(key) => setView({ sort: toggleSort(view.sort, key) })}
+                  onResize={(px) => columns.setWidth(col.key, px)}
+                  onReset={() => columns.reset(col.key)}
+                />
+              ))}
+              <span aria-hidden />
               <span role="columnheader" className="sr-only">
                 Actions
               </span>
@@ -566,6 +697,8 @@ export function SnippetFilesTab({
               {shown.map(row)}
             </div>
           )}
+            </div>
+          </Tooltip.Provider>
         </div>
       )}
 
@@ -643,6 +776,7 @@ function confirmCopy(p: Pending | null): { title: string; body: React.ReactNode;
 function FileRow({
   file: f,
   canManage,
+  wrapName,
   selected,
   selectDisabled,
   onToggle,
@@ -655,6 +789,8 @@ function FileRow({
 }: {
   file: SnippetFile
   canManage: boolean
+  /** Long names on up to two lines; false keeps them on one. */
+  wrapName: boolean
   selected: boolean
   selectDisabled: boolean
   onToggle: () => void
@@ -677,6 +813,8 @@ function FileRow({
     .join(' · ')
   const folder = folderLabel(f.folder_path)
   const indent = canManage && 'pl-7 lg:pl-0'
+  // Only a file that counts as needing a name warns (see needsSpeaker).
+  const warnable = needsSpeaker(f)
 
   return (
     <div
@@ -699,22 +837,25 @@ function FileRow({
         )}
       </span>
 
-      {/* Name, folder path, length and kind */}
+      {/* Name, folder path; length, kind and update time on cards only */}
       <span role="cell" className={cn('min-w-0', indent)}>
-        <span className="flex min-w-0 items-center gap-2">
-          <Icon className={cn('h-4 w-4 shrink-0 text-text-tertiary', notReady && 'opacity-50')} aria-hidden />
-          <span
-            className={cn('truncate text-sm font-medium', notReady ? 'text-text-tertiary' : 'text-text-primary')}
-            title={f.name}
-          >
-            {f.name}
-          </span>
+        <span className="flex min-w-0 items-start gap-2">
+          <Icon className={cn('mt-0.5 h-4 w-4 shrink-0 text-text-tertiary', notReady && 'opacity-50')} aria-hidden />
+          <FileName name={f.name} wrap={wrapName} dim={notReady} />
         </span>
         <span className="mt-0.5 block truncate text-xs text-text-secondary" title={folder}>
           <span className="sr-only">Folder: </span>
           {folder}
         </span>
-        <span className="block truncate text-xs text-text-tertiary">{meta}</span>
+        <span className="block truncate text-xs text-text-tertiary lg:hidden">{meta}</span>
+      </span>
+
+      {/* Kind and folder (table only) */}
+      <span role="cell" className="hidden text-xs text-text-secondary lg:block">
+        {f.kind === 'audio' ? 'Audio' : 'Video'}
+      </span>
+      <span role="cell" className="hidden truncate text-xs text-text-secondary lg:block" title={folder}>
+        {folder}
       </span>
 
       {/* Status */}
@@ -735,12 +876,22 @@ function FileRow({
         </span>
       </span>
 
-      {/* Counts */}
+      {/* Length, counts, last updated (table only) */}
+      <span role="cell" className="hidden text-right text-xs text-text-secondary tabular-nums lg:block">
+        {f.duration_ms != null ? formatLength(f.duration_ms) : '–'}
+      </span>
       <span role="cell" className="hidden text-right text-xs text-text-secondary tabular-nums lg:block">
         {f.segment_count}
       </span>
       <span role="cell" className="hidden text-right text-xs text-text-secondary tabular-nums lg:block">
         {f.snippet_count}
+      </span>
+      <span
+        role="cell"
+        className="hidden truncate text-xs text-text-secondary lg:block"
+        title={f.updated_at ? new Date(f.updated_at).toLocaleString() : undefined}
+      >
+        {f.updated_at ? formatRelativeTime(f.updated_at) : '–'}
       </span>
 
       {/* Tracks */}
@@ -760,6 +911,7 @@ function FileRow({
                 value={t.speaker_id}
                 fallbackName={t.speaker_name}
                 hasSpeech={trackHasSpeech(t)}
+                warn={warnable && trackNeedsSpeaker(t)}
                 speakers={speakers}
                 disabled={notReady || !f.media_file_id}
                 busy={busyTrack === `${f.media_file_id}:${t.track_index}`}
@@ -771,6 +923,9 @@ function FileRow({
           ))
         )}
       </span>
+
+      {/* Spare width (table only) */}
+      <span aria-hidden className="hidden lg:block" />
 
       {/* Actions */}
       <span role="cell" className={cn('flex items-center gap-2 empty:hidden lg:justify-end', indent)}>
@@ -791,7 +946,7 @@ function FileRow({
       {(f.error || notReady) && (
         <p
           className={cn(
-            'break-words text-xs lg:col-span-5 lg:col-start-2',
+            'break-words text-xs lg:[grid-column:2/-2]',
             indent,
             notReady
               ? 'text-text-tertiary'
@@ -807,6 +962,131 @@ function FileRow({
   )
 }
 
+/**
+ * A long name on up to two lines (then an ellipsis), or on one with `wrap`
+ * off. The full name is in a tooltip on hover and on keyboard focus.
+ */
+function FileName({ name, wrap, dim }: { name: string; wrap: boolean; dim: boolean }) {
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger asChild>
+        <span
+          tabIndex={0}
+          className={cn(
+            'min-w-0 rounded text-sm font-medium [overflow-wrap:anywhere] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+            wrap ? 'line-clamp-2' : 'truncate',
+            dim ? 'text-text-tertiary' : 'text-text-primary',
+          )}
+        >
+          {name}
+        </span>
+      </Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content
+          side="top"
+          align="start"
+          sideOffset={6}
+          collisionPadding={8}
+          className="z-[70] max-w-[min(32rem,calc(100vw-1rem))] rounded-md border border-border bg-bg-elevated px-2 py-1 text-xs text-text-primary shadow-lg [overflow-wrap:anywhere]"
+        >
+          {name}
+        </Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  )
+}
+
+/** Arrow keys move a focused resize handle by this much (Shift: four times). */
+const RESIZE_STEP = 8
+
+/**
+ * A table header: the label sorts (click, Enter or Space; again flips the
+ * direction), and the handle on its right border resizes the column (drag
+ * with mouse or touch, arrow keys, double-click to reset).
+ */
+function HeaderCell({
+  col,
+  width,
+  sort,
+  onSort,
+  onResize,
+  onReset,
+}: {
+  col: FileColumn
+  width: number
+  sort: FileSort
+  onSort: (key: FileSortKey) => void
+  onResize: (px: number) => void
+  onReset: () => void
+}) {
+  const ariaSort = col.sort ? ariaSortOf(sort, col.sort) : 'none'
+  const SortIcon = ariaSort === 'ascending' ? ArrowUp : ariaSort === 'descending' ? ArrowDown : ArrowUpDown
+  const drag = React.useRef<{ x: number; w: number; id: number } | null>(null)
+  const label = <span className="truncate">{col.label}</span>
+
+  return (
+    <span
+      role="columnheader"
+      aria-sort={ariaSort === 'none' ? undefined : ariaSort}
+      className={cn('relative flex min-w-0 items-center', col.align === 'right' && 'justify-end')}
+    >
+      {col.sort ? (
+        <button
+          type="button"
+          onClick={() => onSort(col.sort!)}
+          className={cn(
+            'flex min-w-0 items-center gap-1 rounded uppercase tracking-wider hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+            col.align === 'right' && 'flex-row-reverse',
+            ariaSort !== 'none' && 'text-text-primary',
+          )}
+        >
+          {label}
+          <SortIcon className={cn('h-3 w-3 shrink-0', ariaSort === 'none' && 'opacity-40')} aria-hidden />
+        </button>
+      ) : (
+        label
+      )}
+      <span
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={`Resize the ${col.label} column`}
+        aria-valuenow={width}
+        aria-valuemin={col.min}
+        aria-valuemax={MAX_COLUMN_WIDTH}
+        tabIndex={0}
+        title="Drag to resize, double-click to reset"
+        onPointerDown={(e) => {
+          if (e.pointerType === 'mouse' && e.button !== 0) return
+          e.preventDefault()
+          e.currentTarget.setPointerCapture(e.pointerId)
+          drag.current = { x: e.clientX, w: width, id: e.pointerId }
+        }}
+        onPointerMove={(e) => {
+          if (drag.current?.id === e.pointerId) onResize(drag.current.w + e.clientX - drag.current.x)
+        }}
+        onPointerUp={() => {
+          drag.current = null
+        }}
+        onPointerCancel={() => {
+          drag.current = null
+        }}
+        onDoubleClick={onReset}
+        onKeyDown={(e) => {
+          const step = e.shiftKey ? RESIZE_STEP * 4 : RESIZE_STEP
+          if (e.key === 'ArrowLeft') onResize(width - step)
+          else if (e.key === 'ArrowRight') onResize(width + step)
+          else if (e.key === 'Home' || e.key === 'Escape') onReset()
+          else return
+          e.preventDefault()
+        }}
+        className="group/handle absolute -right-[7px] top-[-0.5rem] bottom-[-0.5rem] z-10 flex w-3.5 cursor-col-resize touch-none select-none justify-center focus-visible:outline-none"
+      >
+        <span className="h-full w-px bg-border transition-colors group-hover/handle:w-0.5 group-hover/handle:bg-accent group-focus-visible/handle:w-0.5 group-focus-visible/handle:bg-accent" />
+      </span>
+    </span>
+  )
+}
+
 /** Radix Select reserves "" (it shows the placeholder), so "add" gets a sentinel. */
 const ADD_NEW = '__add_new_speaker__'
 
@@ -814,6 +1094,7 @@ function SpeakerSelect({
   value,
   fallbackName,
   hasSpeech,
+  warn,
   speakers,
   disabled,
   busy,
@@ -824,8 +1105,10 @@ function SpeakerSelect({
   value: string | null
   /** The name the list row carries, for a speaker the roster has not loaded yet. */
   fallbackName: string | null
-  /** False for a track the last run found no speech on: no warning then. */
+  /** False for a track the last run found no speech on. */
   hasSpeech: boolean
+  /** No speaker on a track of a processed file that may have speech. */
+  warn: boolean
   speakers: SnippetSpeaker[]
   disabled: boolean
   busy: boolean
@@ -837,7 +1120,7 @@ function SpeakerSelect({
     value && !speakers.some((s) => s.id === value)
       ? [{ id: value, name: fallbackName ?? 'Unknown' }, ...speakers]
       : speakers
-  const missing = !value && hasSpeech
+  const missing = !value && warn
   return (
     <Select.Root
       value={value ?? ''}
@@ -863,7 +1146,7 @@ function SpeakerSelect({
         >
           {missing && <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />}
           <span className="truncate">
-            <Select.Value placeholder={missing ? 'no speaker yet' : 'no speech found'} />
+            <Select.Value placeholder={hasSpeech ? 'no speaker yet' : 'no speech found'} />
           </span>
         </span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" aria-hidden />
