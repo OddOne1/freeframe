@@ -6,7 +6,11 @@ this script and tasks/transcribe_tasks.py both call
 No model and no network -- the rules are in services/snippet_detect.py.
 
 Use it when a file was transcribed before `detect` existed, or after the
-window rules changed.
+window rules changed. A --dry-run lists every suggestion with its score
+(0..1, stored as `quality_score`) and the reason codes behind it -- "+x"
+raised the score, "-x" lowered it; services/snippet_detect.py names them.
+To see what changed against the previous detector, without writing
+anything, use scripts/snippet_detect_compare.py.
 
 Run on the server, from the repo root:
 
@@ -107,10 +111,9 @@ def preview(db, media_file_id) -> dict:
     Reads the same words and runs the same detection as the real thing, then
     COUNTS the rows that would go instead of deleting them.
     """
-    from apps.api.tasks.transcribe_tasks import replaceable_snippets, snippet_words_by_track
+    from apps.api.tasks.transcribe_tasks import replaceable_snippets, snippet_detect_input
 
-    tracks = snippet_words_by_track(db, media_file_id)
-    rows = detect_snippets({"media_file_id": str(media_file_id), "tracks": tracks})
+    rows = detect_snippets(snippet_detect_input(db, media_file_id))
     removed = (
         db.query(Snippet)
         .filter(Snippet.media_file_id == media_file_id, *replaceable_snippets())
@@ -157,7 +160,9 @@ def main(argv=None) -> int:
                       f"candidate(s) left out for overlapping a kept clip")
                 for row in result["rows"]:
                     print(f"        {row['start_ms']:>8}-{row['end_ms']:<8} "
-                          f"track {row['track_index']}  {row['title']}")
+                          f"track {row['track_index']}  score {row['quality_score']:.3f}  "
+                          f"{row['title']}")
+                    print(f"            {' '.join(row.get('reasons') or [])}")
                 created += result["created"]
                 removed += result["removed"]
                 continue

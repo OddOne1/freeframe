@@ -885,6 +885,9 @@ def replace_keyword_snippets(db, media_file_id, rows) -> dict:
     created (`drop_overlapping`), so a rejected clip is not suggested again
     and an edited one gets no untrimmed twin.
 
+    `quality_score` is stored as detection scored it (0..1, keyword-v2) and
+    the row's `reasons` are not stored: they are for the scripts' output.
+
     Returns {"removed": n, "created": m, "skipped": k}; `skipped` counts the
     rows dropped for overlapping a kept clip.
     """
@@ -920,16 +923,36 @@ def replace_keyword_snippets(db, media_file_id, rows) -> dict:
     return {"removed": removed or 0, "created": len(rows), "skipped": skipped}
 
 
+def snippet_detect_input(db, media_file_id) -> dict:
+    """The plain dict services/snippet_detect.detect_snippets takes, for one file.
+
+    Its words (`snippet_words_by_track`) and its length, which sets how many
+    clips the file may get (snippet_detect.max_clips_for). The length is the
+    media file's `duration_seconds`; without one, detection falls back to
+    where the last word ends. One place builds this, so the pipeline, the
+    dry run and scripts/snippet_detect_compare.py read the same input.
+    """
+    tracks = snippet_words_by_track(db, media_file_id)
+    duration_seconds = (
+        db.query(MediaFile.duration_seconds).filter(MediaFile.id == media_file_id).scalar()
+    )
+    return {
+        "media_file_id": str(media_file_id),
+        "duration_ms": int(round(duration_seconds * 1000)) if duration_seconds else None,
+        "tracks": tracks,
+    }
+
+
 def run_detect_for_media_file(db, media_file_id) -> dict:
     """Detect and store this file's clip suggestions. Raises on failure.
 
     The whole of the detect stage, without the snippet_jobs bookkeeping, so
     scripts/snippet_detect.py runs exactly what the pipeline runs.
     """
-    tracks = snippet_words_by_track(db, media_file_id)
-    rows = detect_snippets({"media_file_id": str(media_file_id), "tracks": tracks})
+    media_file = snippet_detect_input(db, media_file_id)
+    rows = detect_snippets(media_file)
     result = replace_keyword_snippets(db, media_file_id, rows)
-    result["tracks"] = sorted(tracks)
+    result["tracks"] = sorted(media_file["tracks"])
     return result
 
 

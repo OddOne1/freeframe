@@ -414,14 +414,45 @@ def test_statement_count_does_not_grow_with_the_page(db, world, api):
 # ── Naming a speaker re-runs detection ─────────────────────────────────────
 
 
-def _clear_the_transcript_span(db, world):
-    """Move Alpha's hand-made clip SC (2.5-5.5 s) past the transcript.
+#: Where `_give_alpha_an_answer` puts Alpha's one clip-worthy answer:
+#: after track 1's line at 20 s, before the approved clip at 60 s.
+ANSWER_AT_MS = 25_000
 
-    Kept clips block overlapping suggestions, and SC lies inside the only
-    window Alpha's transcript yields, so with it there nothing is created.
+
+def _give_alpha_an_answer(db, world):
+    """Add a 29-second answer to Alpha's track 0, from 25 s.
+
+    The shared world's Alpha transcript is five short sentences, about 12
+    seconds: shorter than any clip detection v2 offers (15 s at least). This
+    is one real answer -- tests/snippet_transcripts.py's EN_STORY -- that
+    yields exactly one clip.
     """
+    from apps.api.models.snippet import TranscriptSegment, TranscriptWord
+    from apps.api.services.snippet_detect import build_sentences
+    from .snippet_transcripts import EN_STORY, GUEST, conversation
+
+    words = conversation([(GUEST, EN_STORY)], start_ms=ANSWER_AT_MS)[0][GUEST]
+    for seq, sentence in enumerate(build_sentences(words), start=100):
+        seg = TranscriptSegment(
+            media_file_id=world.alpha_mf.id, track_index=0, speaker_id=world.anna.id,
+            seq=seq, start_ms=sentence["start_ms"], end_ms=sentence["end_ms"],
+            language="en", text_ai=sentence["text"], text_current=sentence["text"],
+        )
+        db.add(seg)
+        db.flush()
+        for idx, word in enumerate(sentence["words"]):
+            db.add(TranscriptWord(segment_id=seg.id, idx=idx, start_ms=word["start_ms"],
+                                  end_ms=word["end_ms"], word=word["word"]))
+    db.commit()
+    return words[0]["start_ms"], words[-1]["end_ms"]
+
+
+def _clear_the_transcript_span(db, world):
+    """Give Alpha a clip-worthy answer, and move its hand-made clip SC
+    (2.5-5.5 s) past the transcript so it blocks nothing."""
     from apps.api.models.snippet import Snippet
 
+    _give_alpha_an_answer(db, world)
     sc = db.query(Snippet).filter_by(id=world.SC.id).one()
     sc.start_ms, sc.end_ms = 80_000, 83_000
     db.commit()
@@ -498,8 +529,14 @@ def test_redetect_after_naming_a_speaker_keeps_an_edited_clip(db, world, api):
 
 
 def test_a_hand_made_clip_blocks_suggestions_over_it(db, world, api):
-    """With SC where it is, Alpha's one window overlaps it: detection runs,
+    """With SC laid over Alpha's one clip-worthy answer, detection runs,
     replaces nothing and creates nothing."""
+    from apps.api.models.snippet import Snippet
+
+    start, end = _give_alpha_an_answer(db, world)
+    sc = db.query(Snippet).filter_by(id=world.SC.id).one()
+    sc.start_ms, sc.end_ms = start, end
+    db.commit()
     r = api.as_(world.editor).put(f"/media-files/{world.alpha_mf.id}/snippet/tracks/0/speaker",
                                   json={"speaker_id": str(world.ben.id)})
     assert r.json()["detect_summary"] == {"ran": True, "created": 0, "removed": 0, "reason": None}
