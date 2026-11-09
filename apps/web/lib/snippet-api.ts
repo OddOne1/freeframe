@@ -184,6 +184,14 @@ export const snippetApi = {
       error: raw?.error ?? null,
     }
   },
+  /** A finished export's download URL, asked for again NOW. The server names
+   *  the file from the clip's title at this request (`{title}_{ratio}.mp4`),
+   *  so a rename since the render counts; a URL kept from earlier carries the
+   *  old name. null once the export is no longer "done" (e.g. expired). */
+  exportDownloadUrl: async (exportId: string): Promise<string | null> => {
+    const job = await snippetApi.getExport(exportId)
+    return job.status === 'done' ? job.download_url : null
+  },
 }
 
 /** What the export panel asks for. */

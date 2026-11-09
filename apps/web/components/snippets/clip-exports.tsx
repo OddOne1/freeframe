@@ -31,7 +31,9 @@ type State =
   | { phase: 'idle' }
   | { phase: 'starting'; aspect: SnippetAspect }
   | { phase: 'running'; aspect: SnippetAspect; job: SnippetExportJob | null }
-  | { phase: 'done'; aspect: SnippetAspect; url: string }
+  /** `url` resolved for the link; `raw` as the API gave it, for
+   *  triggerBrowserDownload (which resolves it itself). */
+  | { phase: 'done'; aspect: SnippetAspect; exportId: string; url: string; raw: string }
   /** The job failed, or the POST failed for a reason worth retrying. */
   | { phase: 'failed'; aspect: SnippetAspect; message: string }
   /** The server refused this request (422): its detail, as it is. */
@@ -124,7 +126,13 @@ export function ClipExports({
             // The repo's one download path (lib/download.ts): a hidden
             // iframe, so a cross-origin URL downloads instead of navigating
             // the app away. It resolves the URL itself: pass the RAW value.
-            setState({ phase: 'done', aspect, url: resolveApiMediaUrl(job.download_url) ?? job.download_url })
+            setState({
+              phase: 'done',
+              aspect,
+              exportId,
+              url: resolveApiMediaUrl(job.download_url) ?? job.download_url,
+              raw: job.download_url,
+            })
             triggerBrowserDownload(job.download_url)
           } else {
             setState({ phase: 'failed', aspect, message: 'The export finished without a download link.' })
@@ -167,6 +175,23 @@ export function ClipExports({
       else if (status === 422) setState({ phase: 'refused', aspect, message: errorMessage(err, 'This export is not possible.') })
       else setState({ phase: 'failed', aspect, message: errorMessage(err, 'Could not start the export.') })
     }
+  }
+
+  // The file is named from the clip's title when the download starts, so
+  // "Download again" asks the server for the URL again instead of reusing the
+  // one from the render (a rename in between would otherwise be ignored).
+  async function downloadAgain(event: React.MouseEvent<HTMLAnchorElement>, done: Extract<State, { phase: 'done' }>) {
+    event.preventDefault()
+    const token = run.current
+    let url: string | null
+    try {
+      url = await snippetApi.exportDownloadUrl(done.exportId)
+    } catch {
+      url = done.raw // offline for a moment: the old name beats no file
+    }
+    if (token !== run.current) return
+    if (url) triggerBrowserDownload(url)
+    else setState({ phase: 'gone', aspect: done.aspect })
   }
 
   const busy = state.phase === 'starting' || state.phase === 'running'
@@ -276,7 +301,7 @@ export function ClipExports({
         {state.phase === 'done' && (
           <p className="text-status-success">
             {state.aspect} export ready.{' '}
-            <a href={state.url} download className="font-medium underline">
+            <a href={state.url} download onClick={(e) => downloadAgain(e, state)} className="font-medium underline">
               Download again
             </a>
           </p>

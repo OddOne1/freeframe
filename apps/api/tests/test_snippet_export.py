@@ -9,9 +9,11 @@ The render task is tested twice: with ffmpeg replaced (states, progress,
 failure, cleanup), and for real on a generated 3-second video when the image
 has ffmpeg. S3 is always a fake in-memory bucket.
 """
+import io
 import os
 import shutil
 import subprocess
+import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -231,6 +233,60 @@ def test_the_download_is_named_asset_speaker_times_aspect():
     assert "/" not in rules.download_filename("a/b\\c.mov", "x/y", 0, 1000, "9:16")
 
 
+def test_a_titled_download_is_title_underscore_ratio():
+    from apps.api.services import snippet_export as rules
+
+    assert rules.titled_download_filename("Why the jump nearly failed", "9:16") == \
+        "Why the jump nearly failed_9x16.mp4"
+    assert rules.titled_download_filename("Why the jump nearly failed", "16:9") == \
+        "Why the jump nearly failed_16x9.mp4"
+
+
+@pytest.mark.parametrize("title, stem", [
+    # Separators and the rest of what Windows/macOS refuse become spaces,
+    # and the spaces they leave collapse.
+    ("AC/DC: live", "AC DC live"),
+    ("back\\slash", "back slash"),
+    ('He said "jump" <now>?*|', "He said jump now"),
+    ("Is it 50:50?", "Is it 50 50"),
+    # Control characters (C0, DEL, C1) and runs of whitespace.
+    ("tab\there\nnew\x00null\x7fdel\x85nel", "tab here new null del nel"),
+    ("  lots    of   space  ", "lots of space"),
+    # Umlauts and other letters stay, in NFC.
+    ("Über die Brücke, ß und Éclair", "Über die Brücke, ß und Éclair"),
+    (unicodedata.normalize("NFD", "Brücke"), "Brücke"),
+    # Emoji stay, a joined family included.
+    ("Jump 🔥 day 👨‍👩‍👧", "Jump 🔥 day 👨‍👩‍👧"),
+    # No hidden file, and no bidi trick ("clip\u202egnp.exe" shows as "clipexe.png").
+    ("..hidden", "hidden"),
+    ("clip\u202egnp.exe", "clipgnp.exe"),
+])
+def test_the_title_is_made_safe_for_a_file_name(title, stem):
+    from apps.api.services import snippet_export as rules
+
+    assert rules.title_stem(title) == stem
+
+
+def test_a_long_title_is_cut_to_80_characters():
+    from apps.api.services import snippet_export as rules
+
+    assert rules.TITLE_STEM_MAX == 80
+    assert rules.title_stem("x" * 300) == "x" * 80
+    assert rules.title_stem("ü" * 300) == "ü" * 80
+    # A cut that lands after a space does not leave it dangling.
+    assert rules.title_stem("a" * 79 + " " + "b" * 50) == "a" * 79
+    name = rules.titled_download_filename("Lange " * 40, "9:16")
+    assert name == ("Lange " * 13) + "La" + "_9x16.mp4"
+
+
+@pytest.mark.parametrize("title", [None, "", "   ", "///", '"?*', "...", "\u202e\x00"])
+def test_an_empty_title_gives_no_titled_name(title):
+    from apps.api.services import snippet_export as rules
+
+    assert rules.title_stem(title) is None
+    assert rules.titled_download_filename(title, "9:16") is None
+
+
 def test_the_input_is_the_proxy_when_there_is_one():
     from apps.api.services import snippet_export as rules
 
@@ -408,7 +464,7 @@ def test_get_export_status_and_download(db, world, api):
     done = api.as_(world.viewer).get(f"/exports/{eid}").json()
     assert done["status"] == "done" and done["progress"] == 1.0
     assert done["download_url"].startswith("/stream/hls/clip.mp4?token=")
-    assert "download=Alpha_Anna-Example_00m02s-00m05s_9x16.mp4" in done["download_url"]
+    assert "download=River%20talk_9x16.mp4" in done["download_url"], "named from the clip's title"
 
     row.status, row.progress, row.s3_key, row.error = "failed", 0.0, None, "ffmpeg: Invalid data"
     db.commit()
@@ -417,6 +473,128 @@ def test_get_export_status_and_download(db, world, api):
 
     assert api.as_(world.outsider).get(f"/exports/{eid}").status_code == 404
     assert api.as_(world.viewer).get(f"/exports/{uuid.uuid4()}").status_code == 404
+
+
+# ── The download's name: the clip's title when the download starts ────────
+
+
+def _finish(db, world, eid):
+    row = _row(db, eid)
+    row.status, row.progress, row.s3_key = "done", 1.0, f"snippet-exports/{world.A.id}/{eid}/clip.mp4"
+    db.commit()
+
+
+def _download_url(api, user, eid):
+    url = api.as_(user).get(f"/exports/{eid}").json()["download_url"]
+    assert url
+    return url
+
+
+def _download_name(api, user, eid):
+    from urllib.parse import parse_qs, urlparse
+
+    return parse_qs(urlparse(_download_url(api, user, eid)).query)["download"][0]
+
+
+def _fetch(api, user, url):
+    """Follow a download_url through the real /stream/hls proxy; S3 faked."""
+    s3 = MagicMock()
+    s3.get_object.return_value = {"Body": io.BytesIO(b"mp4"), "ContentLength": 3}
+    with patch("apps.api.routers.hls_proxy.get_s3_client", return_value=s3):
+        return api.as_(user).get(url)
+
+
+def _set_title(db, snippet_id, title):
+    from apps.api.models.snippet import Snippet
+
+    db.query(Snippet).filter(Snippet.id == snippet_id).update({"title": title}, synchronize_session=False)
+    db.commit()
+
+
+def test_the_download_is_named_from_the_title_at_download_time(db, world, api):
+    r, _ = _post(api, world, world.editor, world.SC.id)
+    eid = r.json()["export_id"]
+    _finish(db, world, eid)
+    assert _download_name(api, world.viewer, eid) == "River talk_9x16.mp4"
+
+    # Renamed after the render (and through the real PATCH): the very next
+    # download carries the new title. The row keeps the name it was created
+    # with, as the fallback.
+    renamed = api.as_(world.editor).patch(f"/snippets/{world.SC.id}", json={"title": "Why the jump nearly failed"})
+    assert renamed.status_code == 200, renamed.text
+    url = _download_url(api, world.viewer, eid)
+    assert _download_name(api, world.viewer, eid) == "Why the jump nearly failed_9x16.mp4"
+    assert _row(db, eid).download_filename == "Alpha_Anna-Example_00m02s-00m05s_9x16.mp4"
+
+    got = _fetch(api, world.viewer, url)
+    assert got.status_code == 200, got.text
+    assert got.content == b"mp4"
+    assert got.headers["content-disposition"] == 'attachment; filename="Why the jump nearly failed_9x16.mp4"'
+
+    # Asking for the same export again after a rename is a cache hit, and
+    # still downloads under the title as it is now.
+    _set_title(db, world.SC.id, "Second name")
+    again, send = _post(api, world, world.editor, world.SC.id)
+    assert again.status_code == 200 and again.json()["export_id"] == eid
+    send.assert_not_called()
+    assert _download_name(api, world.viewer, eid) == "Second name_9x16.mp4"
+
+
+def test_a_title_with_umlauts_and_emoji_is_sent_as_rfc_5987(db, world, api):
+    from urllib.parse import unquote
+
+    r, _ = _post(api, world, world.editor, world.SC.id)
+    eid = r.json()["export_id"]
+    _finish(db, world, eid)
+    _set_title(db, world.SC.id, 'Über "die" Brücke: 🔥')
+
+    assert _download_name(api, world.viewer, eid) == "Über die Brücke 🔥_9x16.mp4"
+    got = _fetch(api, world.viewer, _download_url(api, world.viewer, eid))
+    assert got.status_code == 200, got.text
+    cd = got.headers["content-disposition"]
+    plain, star = cd.split("; filename*=")
+    assert plain == 'attachment; filename="Uber die Brucke _9x16.mp4"'
+    assert star.startswith("UTF-8''%C3%9Cber%20die%20Br%C3%BCcke%20%F0%9F%94%A5")
+    assert unquote(star[len("UTF-8''"):], encoding="utf-8") == "Über die Brücke 🔥_9x16.mp4"
+
+
+@pytest.mark.parametrize("title", [None, "", "  /  "])
+def test_without_a_usable_title_the_download_keeps_the_old_pattern(db, world, api, title):
+    row = _make_export(db, world)  # snippet SC, stored name in the old pattern
+    _set_title(db, world.SC.id, title)
+    assert _download_name(api, world.viewer, row.id) == "Alpha_Anna-Example_00m02s-00m05s_9x16.mp4"
+    got = _fetch(api, world.viewer, _download_url(api, world.viewer, row.id))
+    assert got.headers["content-disposition"] == 'attachment; filename="Alpha_Anna-Example_00m02s-00m05s_9x16.mp4"'
+
+
+def test_a_moment_downloads_under_the_old_pattern(db, world, api):
+    r, _ = _post(api, world, world.editor, f"moment:{world.alpha_mf.id}:6000", end_ms=9000)
+    eid = r.json()["export_id"]
+    _finish(db, world, eid)
+    assert _download_name(api, world.viewer, eid) == "Alpha_Anna-Example_00m06s-00m09s_9x16.mp4"
+
+
+def test_a_shared_render_is_named_for_whoever_asked_last(db, world, api):
+    """The cache key has no clip in it: a moment over a clip's exact range
+    gets the clip's render. Each POST points the row at whoever asked, so a
+    moment downloads under the old pattern and the clip under its title, and
+    the lost-worker clock (updated_at) is not reset by it."""
+    r, _ = _post(api, world, world.editor, world.SC.id)
+    eid = r.json()["export_id"]
+    _finish(db, world, eid)
+    before = _row(db, eid).updated_at
+
+    moment, _ = _post(api, world, world.editor, f"moment:{world.alpha_mf.id}:2500", end_ms=5500)
+    assert moment.status_code == 200 and moment.json()["export_id"] == eid
+    row = _row(db, eid)
+    assert row.snippet_id is None
+    assert row.updated_at == before
+    assert _download_name(api, world.viewer, eid) == "Alpha_Anna-Example_00m02s-00m05s_9x16.mp4"
+
+    clip, _ = _post(api, world, world.editor, world.SC.id)
+    assert clip.json()["export_id"] == eid
+    assert _row(db, eid).snippet_id == world.SC.id
+    assert _download_name(api, world.viewer, eid) == "River talk_9x16.mp4"
 
 
 def test_get_export_answers_409_once_the_project_turns_it_off(db, world, api):

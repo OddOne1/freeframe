@@ -31,6 +31,7 @@ import hashlib
 import json
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -286,7 +287,11 @@ def download_filename(asset_name: Optional[str], speaker_name: Optional[str],
     """`{asset_name}_{speaker}_{start}-{end}_{aspect}.mp4`, filesystem-safe:
     e.g. `Interview_A-cam_Anna-Berger_00m12s-00m31s_9x16.mp4`. The asset's
     own extension is dropped (the file is an MP4 whatever the source was),
-    and the colon in the ratio becomes an x."""
+    and the colon in the ratio becomes an x.
+
+    Stored on the row when the export is created. It is the name of a
+    moment's download, and the fallback for a clip without a title (see
+    `titled_download_filename`)."""
     stem = asset_name.rsplit(".", 1)[0] if asset_name and "." in asset_name else asset_name
     return "_".join([
         _slug(stem, "clip"),
@@ -294,3 +299,43 @@ def download_filename(asset_name: Optional[str], speaker_name: Optional[str],
         f"{_clock(start_ms)}-{_clock(end_ms)}",
         aspect.replace(":", "x"),
     ]) + ".mp4"
+
+
+#: The title part of a titled download name, in characters.
+TITLE_STEM_MAX = 80
+
+#: Characters no file name may hold on Windows or macOS, plus C0/C1 controls.
+_TITLE_FORBIDDEN = re.compile(r'[/\\:*?"<>|\x00-\x1f\x7f-\x9f]')
+#: Bidirectional controls: invisible, and able to make "clip_9x16.mp4" display
+#: as something else. Dropped, not replaced.
+_TITLE_BIDI = re.compile("[\u200e\u200f\u202a-\u202e\u2066-\u2069]")
+_SPACES = re.compile(r"\s+")
+
+
+def title_stem(title: Optional[str]) -> Optional[str]:
+    """A clip title made safe as the first part of a file name, or None.
+
+    / \\ : * ? " < > | and control characters become a space, runs of
+    whitespace become one space, the ends are trimmed (and leading dots, so
+    the file is not hidden), and the result is cut to TITLE_STEM_MAX
+    characters. Letters outside ASCII (umlauts, accents, emoji) stay, in NFC
+    so an umlaut typed on a Mac is one character, not two. None when nothing
+    is left."""
+    if not title:
+        return None
+    s = unicodedata.normalize("NFC", title)
+    s = _TITLE_BIDI.sub("", s)
+    s = _TITLE_FORBIDDEN.sub(" ", s)
+    s = _SPACES.sub(" ", s).strip().lstrip(". ")
+    s = s[:TITLE_STEM_MAX].rstrip()
+    return s or None
+
+
+def titled_download_filename(title: Optional[str], aspect: str) -> Optional[str]:
+    """`{clip title}_{ratio}.mp4`, e.g. `Why the jump nearly failed_9x16.mp4`,
+    or None when the title is empty (the caller falls back to the stored
+    `download_filename`)."""
+    stem = title_stem(title)
+    if stem is None:
+        return None
+    return f"{stem}_{aspect.replace(':', 'x')}.mp4"

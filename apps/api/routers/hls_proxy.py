@@ -14,6 +14,7 @@ is only ever handed out to callers who already passed that check.
 import logging
 import posixpath
 import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -163,6 +164,28 @@ def _sanitize_download_filename(name: str) -> str:
     return safe.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _content_disposition(name: str) -> str:
+    """`attachment` with the download's file name, for any name.
+
+    An ASCII name is sent as it always was: `filename="..."`. A name with
+    anything else (an umlaut, an emoji) cannot go in `filename=` as it is:
+    a header is latin-1 on the wire, so an emoji is a 500 and an umlaut is
+    read differently by each browser. Such a name gets an ASCII stand-in in
+    `filename=` (accents dropped: "Brücke" -> "Brucke") and the real name,
+    UTF-8 and percent-encoded, in RFC 5987/6266's `filename*=`, which every
+    current browser prefers.
+    """
+    clean = re.sub(r"[\x00-\x1f\x7f]", "", name)
+    if clean.isascii():
+        return f'attachment; filename="{_sanitize_download_filename(clean)}"'
+    ascii_name = unicodedata.normalize("NFKD", clean).encode("ascii", "ignore").decode("ascii")
+    ascii_name = re.sub(r" {2,}", " ", ascii_name).strip() or "download"
+    return (
+        f'attachment; filename="{_sanitize_download_filename(ascii_name)}"; '
+        f"filename*=UTF-8''{quote(clean, safe='')}"
+    )
+
+
 @router.get("/hls/{path:path}")
 def hls_proxy(
     path: str,
@@ -259,7 +282,7 @@ def hls_proxy(
 
     headers = {"Cache-Control": cache_control, "Accept-Ranges": "bytes"}
     if download:
-        headers["Content-Disposition"] = f'attachment; filename="{_sanitize_download_filename(download)}"'
+        headers["Content-Disposition"] = _content_disposition(download)
 
     if byte_range:
         start, end = byte_range

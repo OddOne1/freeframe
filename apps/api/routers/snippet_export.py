@@ -72,6 +72,22 @@ def _speaker_at(db: Session, media_file_id, at_ms: int) -> Optional[str]:
     return sp.name if sp else None
 
 
+def _download_name(db: Session, row: SnippetExport) -> str:
+    """The file name a finished export downloads under, decided NOW.
+
+    `{clip title}_{ratio}.mp4` from the clip's title as it is in the database
+    at this request, so a rename saved a second before the download counts.
+    The name stored on the row when the export was created
+    (`asset_speaker_times_ratio.mp4`) is the fallback: for a moment, a clip
+    without a title, or a clip that has since been deleted.
+    """
+    stored = row.download_filename or "clip.mp4"
+    if row.snippet_id is None:
+        return stored
+    title = db.query(Snippet.title).filter(Snippet.id == row.snippet_id).scalar()
+    return rules.titled_download_filename(title, row.aspect) or stored
+
+
 def _unprocessable(message: str) -> HTTPException:
     return HTTPException(status_code=422, detail=message)
 
@@ -141,12 +157,24 @@ def create_export(
         live = row.status == "done" and row.s3_key
         busy = row.status in ("queued", "running") and not rules.is_stale(row.updated_at)
         if live or busy:
+            # The cache key does not include the clip, so two clips (or a clip
+            # and a moment) over the same range share one render. The one
+            # asking now is the one whose title names the download.
+            # updated_at is set to itself: it is the lost-worker clock, and
+            # its onupdate=now() would otherwise reset it on a cache hit.
+            asker = snippet.id if snippet else None
+            if row.snippet_id != asker:
+                db.query(SnippetExport).filter(SnippetExport.id == row.id).update(
+                    {SnippetExport.snippet_id: asker, SnippetExport.updated_at: SnippetExport.updated_at},
+                    synchronize_session=False,
+                )
+                db.commit()
             response.status_code = http_status.HTTP_200_OK
             return SnippetExportCreatedOut(export_id=row.id, status=row.status)
         # failed, expired, or lost in a worker restart: render it again.
         row.status, row.progress, row.error = "queued", 0.0, None
         row.s3_key, row.size_bytes, row.expires_at = None, None, None
-        row.snippet_id = snippet.id if snippet else row.snippet_id
+        row.snippet_id = snippet.id if snippet else None
         row.created_by = current_user.id
     else:
         row = SnippetExport(
@@ -207,7 +235,7 @@ def get_export(
 
     url = None
     if row.status == "done" and row.s3_key:
-        url = proxy_url_for(row.s3_key, download_filename=row.download_filename or "clip.mp4")
+        url = proxy_url_for(row.s3_key, download_filename=_download_name(db, row))
     return SnippetExportOut(
         status=row.status,
         progress=float(row.progress or 0.0),
