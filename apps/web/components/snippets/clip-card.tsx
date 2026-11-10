@@ -2,7 +2,20 @@
 
 import * as React from 'react'
 import useSWR from 'swr'
-import { AudioLines, Check, Loader2, Pause, Pencil, Play, Plus, Repeat, RotateCcw, X } from 'lucide-react'
+import {
+  AudioLines,
+  Check,
+  Loader2,
+  Maximize2,
+  Minimize2,
+  Pause,
+  Pencil,
+  Play,
+  Plus,
+  Repeat,
+  RotateCcw,
+  X,
+} from 'lucide-react'
 import { cn, resolveApiMediaUrl, resolveStreamUrl } from '@/lib/utils'
 import { errorMessage, snippetApi, snippetFetcher, snippetKeys } from '@/lib/snippet-api'
 import { type InOut, formatClipTime, formatDuration, isValidClip, moveEdge } from '@/lib/snippet-timing'
@@ -106,8 +119,9 @@ export interface ClipCardProps {
  * one (see createPlayerGroup). Edits go into a local draft at once and are
  * saved 600 ms after the last change, merged into one PATCH.
  *
- * Clicking the title (only the title) opens the card across the row with the
- * transcript beside the player; clicking it again, or Close, closes it.
+ * Clicking the title, or the expand button at the end of the title row, opens
+ * the card across the row with the transcript beside the player; clicking
+ * either again closes it. The rest of the card does not open it.
  */
 export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
   const { cardKey, clip, projectId, canEdit, speakers, activeTopics, active, expanded, group, onTopic, onToggleExpand } =
@@ -496,17 +510,25 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                 className="h-6 w-6 hover-none:h-9 hover-none:w-9 shrink-0 border-transparent"
               />
             )}
-            {expanded && (
-              <button
-                type="button"
-                onClick={() => onToggleExpand(cardKey)}
-                aria-label="Close clip"
-                title="Close"
-                className="flex h-6 w-6 hover-none:h-9 hover-none:w-9 shrink-0 items-center justify-center rounded text-text-tertiary hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            )}
+            {/* The same toggle as the title, for everyone (it edits nothing).
+                One element in both states, so focus stays on it. Below `sm`
+                it is a 44 px target whose negative margins keep the row as
+                tall as on desktop. */}
+            <button
+              type="button"
+              onClick={() => onToggleExpand(cardKey)}
+              aria-expanded={expanded}
+              aria-label={expanded ? 'Collapse clip' : 'Expand clip'}
+              title={expanded ? 'Collapse' : 'Expand with the transcript'}
+              data-testid="clip-expand-toggle"
+              className="-my-2.5 -mr-2.5 flex h-11 w-11 shrink-0 items-center justify-center rounded text-text-tertiary hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 sm:m-0 sm:h-6 sm:w-6 sm:hover-none:h-9 sm:hover-none:w-9"
+            >
+              {expanded ? (
+                <Minimize2 className="h-4 w-4" aria-hidden />
+              ) : (
+                <Maximize2 className="h-4 w-4" aria-hidden />
+              )}
+            </button>
           </div>
 
           {/* Speaker · file · where the clip starts */}
