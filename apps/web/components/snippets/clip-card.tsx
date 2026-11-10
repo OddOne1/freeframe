@@ -53,7 +53,6 @@ import {
   NoMedia,
   transcriptWindow,
 } from './clip-player'
-import { ClipMenu } from './clip-menu'
 import { EditedPill, HintTooltip, ScoreBadge, SourceBadge, StatusPill } from './snippet-ui'
 import { ClipTracksControl, SpeakerSelect, useTrackSpeakerAssign } from './speaker-assign'
 
@@ -102,7 +101,9 @@ export interface ClipCardProps {
   onToggleExpand: (cardKey: string) => void
   onSaved: (clip: SnippetClip, sent: SnippetPatch, inverse: SnippetPatch, cardKey: string) => void
   onTracksChanged: (res: SnippetTrackSpeakerResponse) => void
-  /** The owner's "Hide source file" (asks first); left out for everyone else. */
+  /** Not used by the card any more: "Hide source file" left its 3-dot menu
+   *  (hiding a file lives in the Files tab). Still accepted so the page's
+   *  wiring compiles until that is removed. */
   onHideSource?: (clip: SnippetClip) => void
   register: (cardKey: string, controller: ClipCardController) => () => void
 }
@@ -358,6 +359,52 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
     </button>
   )
 
+  // Review: the save state, then approve and reject. Wherever the export
+  // buttons show, this rides at the end of their row (right-aligned), in both
+  // layouts, so opening or closing the card does not remount it and focus
+  // stays on a button the `e` shortcut was pressed from.
+  const exportsShown = canEdit && !audioOnly
+  const reviewActions = editable ? (
+    <div className="ml-auto flex items-center gap-1.5">
+      <SaveIndicator status={saveStatus} onRetry={() => void saver.flush()} />
+      {!expanded && resetButton('inline-flex sm:hidden', true)}
+      {draft.status && (
+        <>
+          <button
+            type="button"
+            onClick={() => change({ status: draft.status === 'approved' ? 'suggested' : 'approved' })}
+            aria-pressed={draft.status === 'approved'}
+            aria-label={draft.status === 'approved' ? 'Undo approve' : 'Approve'}
+            title={draft.status === 'approved' ? 'Undo approve' : 'Approve'}
+            className={cn(
+              iconBtn,
+              draft.status === 'approved'
+                ? 'border-status-success/40 bg-status-success/15 text-status-success'
+                : 'border-border text-text-tertiary hover:border-status-success/40 hover:text-status-success',
+            )}
+          >
+            <Check className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => change({ status: draft.status === 'rejected' ? 'suggested' : 'rejected' })}
+            aria-pressed={draft.status === 'rejected'}
+            aria-label={draft.status === 'rejected' ? 'Undo reject' : 'Reject'}
+            title={draft.status === 'rejected' ? 'Undo reject' : 'Reject'}
+            className={cn(
+              iconBtn,
+              draft.status === 'rejected'
+                ? 'border-status-error/40 bg-status-error/15 text-status-error'
+                : 'border-border text-text-tertiary hover:border-status-error/40 hover:text-status-error',
+            )}
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </>
+      )}
+    </div>
+  ) : null
+
   // One tree for both states, only the classes change: opening a card keeps
   // its player playing and an export in progress polling.
   return (
@@ -377,15 +424,94 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
           'grid min-w-0 gap-3 p-3 sm:p-4',
           expanded
             ? 'grid-cols-1 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:gap-x-5'
-            : 'grid-cols-[6.5rem_minmax(0,1fr)] sm:grid-cols-[clamp(8.5rem,28%,14.5rem)_minmax(0,1fr)] sm:gap-x-4',
+            : // Rows: title, details, controls. The frame spans the first two
+              // and the flexible one takes its extra height, so the details
+              // stay under the title and the controls start below the frame.
+              'grid-cols-[6.5rem_minmax(0,1fr)] grid-rows-[auto_1fr_auto] sm:grid-cols-[clamp(8.5rem,28%,14.5rem)_minmax(0,1fr)] sm:gap-x-4',
         )}
       >
+        {/* Title row: first in the card in both states. Closed, it sits right
+            of the portrait frame; opened, it spans the card above the player
+            and the transcript, with the toggle top right as on the closed
+            card. The same element in both states, so focus on the toggle
+            survives. */}
+        <div
+          className={cn(
+            'flex min-w-0 items-start gap-1',
+            expanded ? 'col-span-full' : 'col-start-2 row-start-1',
+          )}
+          data-testid="clip-header"
+        >
+          {editingTitle ? (
+            <TitleInput
+              initial={draft.title ?? ''}
+              onCancel={() => setEditingTitle(false)}
+              onSave={(t) => {
+                setEditingTitle(false)
+                if (t && t !== draft.title) {
+                  change({ title: t })
+                  void saver.flush()
+                }
+              }}
+            />
+          ) : (
+            <h3 className="min-w-0 flex-1 text-sm font-semibold leading-snug sm:text-base">
+              <button
+                ref={titleBtnRef}
+                type="button"
+                onClick={() => onToggleExpand(cardKey)}
+                aria-expanded={expanded}
+                title={expanded ? 'Close the transcript' : 'Open with the transcript'}
+                className={cn(
+                  'rounded text-left underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                  isMoment ? 'text-text-secondary' : 'text-text-primary',
+                  !expanded && 'line-clamp-2',
+                )}
+              >
+                {heading}
+              </button>
+            </h3>
+          )}
+          {editable && !editingTitle && (
+            <button
+              type="button"
+              onClick={() => setEditingTitle(true)}
+              aria-label="Rename clip"
+              title="Rename"
+              className="flex h-6 w-6 hover-none:h-9 hover-none:w-9 shrink-0 items-center justify-center rounded text-text-tertiary opacity-60 transition-opacity hover:bg-bg-hover hover:text-text-primary hover:opacity-100 group-hover/card:opacity-100 hover-none:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {/* The same toggle as the title, for everyone (it edits nothing).
+              One element in both states, so focus stays on it. Below `sm`
+              it is a 44 px target whose negative margins keep the row as
+              tall as on desktop. */}
+          <button
+            type="button"
+            onClick={() => onToggleExpand(cardKey)}
+            aria-expanded={expanded}
+            aria-label={expanded ? 'Collapse clip' : 'Expand clip'}
+            title={expanded ? 'Collapse' : 'Expand with the transcript'}
+            data-testid="clip-expand-toggle"
+            className="-my-2.5 -mr-2.5 flex h-11 w-11 shrink-0 items-center justify-center rounded text-text-tertiary hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 sm:m-0 sm:h-6 sm:w-6 sm:hover-none:h-9 sm:hover-none:w-9"
+          >
+            {expanded ? (
+              <Minimize2 className="h-4 w-4" aria-hidden />
+            ) : (
+              <Maximize2 className="h-4 w-4" aria-hidden />
+            )}
+          </button>
+        </div>
+
         {/* Media: a portrait frame on the card (the 9:16 crop), the whole
             picture once opened. A poster until play is pressed. */}
         <div
           className={cn(
             'relative w-full self-start overflow-hidden rounded-lg bg-bg-tertiary',
-            expanded ? 'aspect-video lg:col-start-1' : 'aspect-[9/16] sm:row-span-2',
+            expanded
+              ? 'aspect-video lg:col-start-1 lg:row-start-2'
+              : 'col-start-1 row-span-2 row-start-1 aspect-[9/16]',
           )}
         >
           {active && src ? (
@@ -459,80 +585,17 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
           </span>
         </div>
 
-        {/* Title, who and where, the quote, topics */}
-        <div className={cn('min-w-0 space-y-2', expanded && 'lg:col-start-1')}>
-          <div className="flex items-start gap-1">
-            {editingTitle ? (
-              <TitleInput
-                initial={draft.title ?? ''}
-                onCancel={() => setEditingTitle(false)}
-                onSave={(t) => {
-                  setEditingTitle(false)
-                  if (t && t !== draft.title) {
-                    change({ title: t })
-                    void saver.flush()
-                  }
-                }}
-              />
-            ) : (
-              <h3 className="min-w-0 flex-1 text-sm font-semibold leading-snug sm:text-base">
-                <button
-                  ref={titleBtnRef}
-                  type="button"
-                  onClick={() => onToggleExpand(cardKey)}
-                  aria-expanded={expanded}
-                  title={expanded ? 'Close the transcript' : 'Open with the transcript'}
-                  className={cn(
-                    'rounded text-left underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
-                    isMoment ? 'text-text-secondary' : 'text-text-primary',
-                    !expanded && 'line-clamp-2',
-                  )}
-                >
-                  {heading}
-                </button>
-              </h3>
-            )}
-            {editable && !editingTitle && (
-              <button
-                type="button"
-                onClick={() => setEditingTitle(true)}
-                aria-label="Rename clip"
-                title="Rename"
-                className="flex h-6 w-6 hover-none:h-9 hover-none:w-9 shrink-0 items-center justify-center rounded text-text-tertiary opacity-60 transition-opacity hover:bg-bg-hover hover:text-text-primary hover:opacity-100 group-hover/card:opacity-100 hover-none:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </button>
-            )}
-            {props.onHideSource && !editingTitle && (
-              <ClipMenu
-                assetName={clip.asset_name}
-                onHideSource={() => latest.current.onHideSource?.(clip)}
-                className="h-6 w-6 hover-none:h-9 hover-none:w-9 shrink-0 border-transparent"
-              />
-            )}
-            {/* The same toggle as the title, for everyone (it edits nothing).
-                One element in both states, so focus stays on it. Below `sm`
-                it is a 44 px target whose negative margins keep the row as
-                tall as on desktop. */}
-            <button
-              type="button"
-              onClick={() => onToggleExpand(cardKey)}
-              aria-expanded={expanded}
-              aria-label={expanded ? 'Collapse clip' : 'Expand clip'}
-              title={expanded ? 'Collapse' : 'Expand with the transcript'}
-              data-testid="clip-expand-toggle"
-              className="-my-2.5 -mr-2.5 flex h-11 w-11 shrink-0 items-center justify-center rounded text-text-tertiary hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 sm:m-0 sm:h-6 sm:w-6 sm:hover-none:h-9 sm:hover-none:w-9"
-            >
-              {expanded ? (
-                <Minimize2 className="h-4 w-4" aria-hidden />
-              ) : (
-                <Maximize2 className="h-4 w-4" aria-hidden />
-              )}
-            </button>
-          </div>
-
+        {/* Who and where, the quote, topics */}
+        <div
+          className={cn(
+            'min-w-0 space-y-2',
+            // Closed, 8 px under the title, as when they shared a block:
+            // -4 px against the 12 px row gap.
+            expanded ? 'lg:col-start-1 lg:row-start-3' : 'col-start-2 row-start-2 -mt-1',
+          )}
+        >
           {/* Speaker · file · where the clip starts */}
-          <div className="-mt-1.5 flex min-w-0 items-center gap-1 text-xs text-text-tertiary">
+          <div className="flex min-w-0 items-center gap-1 text-xs text-text-tertiary">
             {editable ? (
               <SpeakerSelect
                 value={clip.speaker?.id ?? null}
@@ -636,8 +699,10 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
         {/* In/out, export, review */}
         <div
           className={cn(
-            'min-w-0 space-y-2',
-            expanded ? 'lg:col-start-1' : 'col-span-2 sm:col-span-1 sm:col-start-2 sm:self-end',
+            'min-w-0',
+            expanded
+              ? 'space-y-1.5 lg:col-start-1 lg:row-start-4'
+              : 'space-y-2 col-span-2 row-start-3 sm:col-span-1 sm:col-start-2 sm:self-end',
           )}
         >
           {expanded && (
@@ -689,7 +754,9 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
           />
           {editable ? (
             expanded ? (
-              <div className="grid gap-1.5 xl:grid-cols-2">
+              // Side by side wherever the column is wide enough for both
+              // (not in the narrow lg column next to the transcript).
+              <div className="grid gap-x-3 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
                 <EdgeEditor
                   label="In"
                   valueMs={range.start_ms}
@@ -741,7 +808,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
             </div>
           )}
 
-          <div className="flex flex-wrap items-center gap-2 pt-0.5">
+          <div className={cn('flex flex-wrap items-center gap-2', !expanded && 'pt-0.5')}>
             {canEdit &&
               // Exports create files on the server, so they are an editor's
               // action; the server checks too. They render the in/out on the
@@ -756,62 +823,27 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                   </p>
                 </section>
               ) : (
-                <div className={cn('min-w-0', expanded && 'w-full')}>
+                <div className="min-w-0 flex-1">
                   <ClipExports
                     compact={!expanded}
                     snippetId={clip.id}
                     range={range}
                     valid={isValidClip(range, durationMs)}
+                    actions={reviewActions}
                   />
                 </div>
               ))}
-            {editable && (
-              <div className="ml-auto flex items-center gap-1.5">
-                <SaveIndicator status={saveStatus} onRetry={() => void saver.flush()} />
-                {!expanded && resetButton('inline-flex sm:hidden', true)}
-                {draft.status && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => change({ status: draft.status === 'approved' ? 'suggested' : 'approved' })}
-                      aria-pressed={draft.status === 'approved'}
-                      aria-label={draft.status === 'approved' ? 'Undo approve' : 'Approve'}
-                      title={draft.status === 'approved' ? 'Undo approve' : 'Approve'}
-                      className={cn(
-                        iconBtn,
-                        draft.status === 'approved'
-                          ? 'border-status-success/40 bg-status-success/15 text-status-success'
-                          : 'border-border text-text-tertiary hover:border-status-success/40 hover:text-status-success',
-                      )}
-                    >
-                      <Check className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => change({ status: draft.status === 'rejected' ? 'suggested' : 'rejected' })}
-                      aria-pressed={draft.status === 'rejected'}
-                      aria-label={draft.status === 'rejected' ? 'Undo reject' : 'Reject'}
-                      title={draft.status === 'rejected' ? 'Undo reject' : 'Reject'}
-                      className={cn(
-                        iconBtn,
-                        draft.status === 'rejected'
-                          ? 'border-status-error/40 bg-status-error/15 text-status-error'
-                          : 'border-border text-text-tertiary hover:border-status-error/40 hover:text-status-error',
-                      )}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
+            {!exportsShown && reviewActions}
           </div>
         </div>
 
         {expanded && (
+          // Spans the player, the details and the controls; its content is
+          // absolutely placed, so the left column alone sets the height and
+          // the transcript ends where that column does (scrolling inside).
           <aside
             aria-label="Transcript"
-            className="flex min-h-0 flex-col rounded-lg border border-border bg-bg-primary/40 lg:relative lg:col-start-2 lg:row-span-3 lg:row-start-1"
+            className="flex min-h-0 flex-col rounded-lg border border-border bg-bg-primary/40 lg:relative lg:col-start-2 lg:row-span-3 lg:row-start-2"
           >
             <div className="flex max-h-[55vh] min-h-[220px] flex-col lg:absolute lg:inset-0 lg:max-h-none">
               <div className="flex items-center gap-2 px-3 pb-2 pt-3">

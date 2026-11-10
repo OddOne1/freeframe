@@ -69,19 +69,24 @@ function fraction(p: number | null): number | null {
  * nothing.
  *
  * `compact` is the clip card's row: "Export 9:16" as the main action and 16:9
- * beside it (the formats still to come are listed in the opened card), and
- * the status line takes no room until there is something to say.
+ * beside it (the formats still to come are listed in the opened card). The
+ * full layout puts "EXPORT · in – out" on one line above every format. In
+ * both, the status line takes no room until there is something to say.
  */
 export function ClipExports({
   snippetId,
   range,
   valid,
   compact,
+  actions,
 }: {
   snippetId: string
   range: { start_ms: number; end_ms: number }
   valid: boolean
   compact?: boolean
+  /** Rendered at the end of the format buttons' row (the card's review
+   *  buttons); give it `ml-auto` to sit on the right. */
+  actions?: React.ReactNode
 }) {
   const [state, setState] = React.useState<State>({ phase: 'idle' })
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -201,51 +206,53 @@ export function ClipExports({
   const disabled = busy || blocked || !valid
 
   return (
-    <section aria-label="Export" className={compact ? 'space-y-1.5' : 'space-y-2'}>
-      {compact ? (
-        // The card's row: the main format as the main action, the other
-        // available one beside it; formats still to come are in the opened
-        // card only.
-        <div className="flex flex-wrap items-center gap-1.5">
-          <Button
-            type="button"
-            size="sm"
-            disabled={disabled}
-            onClick={() => start('9:16')}
-            aria-label="Export 9:16"
-            className="h-8 hover-none:h-10 gap-1.5 px-3"
-          >
-            {spinning('9:16') ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
-            Export 9:16
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            disabled={disabled}
-            onClick={() => start('16:9')}
-            aria-label="Export 16:9"
-            className="h-8 hover-none:h-10 gap-1 px-2.5 text-xs"
-          >
-            {spinning('16:9') && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            16:9
-          </Button>
-        </div>
-      ) : (
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="text-2xs font-semibold uppercase tracking-wider text-text-tertiary">Export</h3>
-          <p className="text-2xs text-text-tertiary tabular-nums">
+    <section aria-label="Export" className={compact ? 'space-y-1.5' : 'space-y-1'}>
+      {!compact && (
+        // "EXPORT · 17:17.0 – 18:01.4" on one line.
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-2xs text-text-tertiary" data-testid="export-heading">
+          <h3 className="font-semibold uppercase tracking-wider">Export</h3>
+          <span aria-hidden>·</span>
+          <p className="min-w-0 tabular-nums">
             {valid
               ? `${formatClipTime(range.start_ms)} – ${formatClipTime(range.end_ms)}`
               : 'Set an in/out of at least 1 second to export.'}
           </p>
         </div>
       )}
-      {compact ? (
-        !valid && <p className="text-2xs text-text-tertiary">Set an in/out of at least 1 second to export.</p>
-      ) : (
-        <div className="flex flex-wrap items-center gap-1.5">
-          {ASPECTS.map((a) =>
+      {/* One row element in both layouts, `actions` last in it, so what the
+          caller puts there is not remounted when the layout changes. */}
+      <div className="flex flex-wrap items-center gap-1.5" data-testid="export-row">
+        {compact ? (
+          // The card's row: the main format as the main action, the other
+          // available one beside it; formats still to come are in the opened
+          // card only.
+          <>
+            <Button
+              type="button"
+              size="sm"
+              disabled={disabled}
+              onClick={() => start('9:16')}
+              aria-label="Export 9:16"
+              className="h-8 hover-none:h-10 gap-1.5 px-3"
+            >
+              {spinning('9:16') ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
+              Export 9:16
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={disabled}
+              onClick={() => start('16:9')}
+              aria-label="Export 16:9"
+              className="h-8 hover-none:h-10 gap-1 px-2.5 text-xs"
+            >
+              {spinning('16:9') && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              16:9
+            </Button>
+          </>
+        ) : (
+          ASPECTS.map((a) =>
             a.enabled ? (
               <Button
                 key={a.value}
@@ -266,13 +273,16 @@ export function ClipExports({
                 </Button>
               </HintTooltip>
             ),
-          )}
-        </div>
-      )}
+          )
+        )}
+        {actions}
+      </div>
+      {compact && !valid && <p className="text-2xs text-text-tertiary">Set an in/out of at least 1 second to export.</p>}
 
+      {/* Takes no room until there is something to say. */}
       <div
         aria-live="polite"
-        className={compact ? 'text-xs' : 'min-h-[1.25rem] text-xs'}
+        className={compact ? 'text-xs' : 'text-xs empty:!mt-0'}
         data-testid="export-status"
       >
         {state.phase === 'blocked' && <p className="text-text-tertiary">{state.message}</p>}
