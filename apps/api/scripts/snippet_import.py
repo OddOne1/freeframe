@@ -35,6 +35,10 @@ others are still imported -- one bad row in a file of thirty should not
 cost the other twenty-nine. A missing quote is filled from the transcript
 between the snapped times.
 
+Times taken from `snippet_export.py --format sentences` are word edges
+already -- a sentence starts on its first word's start and ends on its last
+word's end -- so a clip cut on sentence edges imports with nothing snapped.
+
 ── What is never touched ──────────────────────────────────────────────────
 Importing only INSERTS. It deletes and updates nothing, so hand-made
 (`source='manual'`) rows, generated ones, and anything already approved or
