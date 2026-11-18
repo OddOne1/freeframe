@@ -437,10 +437,12 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
             survives. */}
         <div
           className={cn(
-            'flex min-w-0 items-start gap-1',
+            // scroll-mt: opening scrolls this row to the top, with the card's edge still showing.
+            'flex min-w-0 scroll-mt-6 items-start gap-1',
             expanded ? 'col-span-full' : 'col-start-2 row-start-1',
           )}
           data-testid="clip-header"
+          data-clip-header=""
         >
           {editingTitle ? (
             <TitleInput

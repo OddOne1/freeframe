@@ -46,6 +46,7 @@ import {
   targetKind,
 } from "@/lib/snippet-card";
 import { ClipCard, type ClipCardController } from "@/components/snippets/clip-card";
+import { ClipGrid } from "@/components/snippets/clip-grid";
 import { HideConfirmBody, SnippetFilesTab } from "@/components/snippets/snippet-files-tab";
 import { SnippetSearchBox } from "@/components/snippets/snippet-search-box";
 import { SnippetSettingsDialog } from "@/components/snippets/snippet-settings-dialog";
@@ -309,13 +310,24 @@ export default function SnippetsPage() {
   const [players] = React.useState(createPlayerGroup);
   const activeKey = React.useSyncExternalStore(players.subscribe, players.active, () => null);
   const [expandedKey, setExpandedKey] = React.useState<string | null>(null);
+  const expandedKeyRef = React.useRef(expandedKey);
+  expandedKeyRef.current = expandedKey;
   const toggleExpand = React.useCallback((key: string) => {
-    flipCards(() => setExpandedKey((cur) => (cur === key ? null : key)));
-    requestAnimationFrame(() =>
-      document
-        .querySelector<HTMLElement>(`[data-clip-key="${CSS.escape(key)}"]`)
-        ?.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" }),
-    );
+    const opening = expandedKeyRef.current !== key;
+    // Opening a card on the right moves its row-mate below it, and closing
+    // puts it back (see ClipGrid): DOM moves that can drop focus, which the
+    // toggle and the E shortcut rely on. Put it back where it was.
+    const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    flipCards(() => setExpandedKey(opening ? key : null));
+    if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
+    requestAnimationFrame(() => {
+      const card = document.querySelector<HTMLElement>(`[data-clip-key="${CSS.escape(key)}"]`);
+      if (!card) return;
+      const behavior: ScrollBehavior = prefersReducedMotion() ? "auto" : "smooth";
+      // Opened: its title row at the top of the scroll area. Closed: just kept in view.
+      if (opening) (card.querySelector<HTMLElement>("[data-clip-header]") ?? card).scrollIntoView({ block: "start", behavior });
+      else card.scrollIntoView({ block: "nearest", behavior });
+    });
   }, []);
 
   // Cards register what the keyboard and Undo drive.
@@ -694,9 +706,9 @@ export default function SnippetsPage() {
                   <span className="text-xs font-normal tabular-nums text-text-tertiary">{groupSummary(g.items)}</span>
                 </h2>
               )}
-              {/* Dense flow: the opened card spans the row and the others fill in around it. */}
-              <div className="grid grid-flow-row-dense grid-cols-1 gap-4 lg:grid-cols-2">
-                {g.items.map((clip) => {
+              {/* The opened card spans the row it was in; its row-mate and the rest follow below. */}
+              <ClipGrid items={g.items} keyOf={(clip) => cardKeyOf(g.key, clip.id)} expandedKey={expandedKey}>
+                {(clip) => {
                   const key = cardKeyOf(g.key, clip.id);
                   return (
                     <ClipCard
@@ -718,8 +730,8 @@ export default function SnippetsPage() {
                       register={register}
                     />
                   );
-                })}
-              </div>
+                }}
+              </ClipGrid>
             </section>
           ))}
           {loaded < total && (
