@@ -396,7 +396,7 @@ export function InOutTimeline({
     <div className="space-y-1">
       <div
         ref={trackRef}
-        className={cn('relative select-none rounded-md bg-bg-tertiary', compact ? 'h-8 hover-none:h-10' : 'h-10')}
+        className={cn('relative select-none rounded-md bg-bg-tertiary', compact ? 'h-6 hover-none:h-10' : 'h-10')}
         onPointerDown={(e) => {
           if (e.target === e.currentTarget || (e.target as HTMLElement).dataset.track === '1') onSeek(msAt(e.clientX))
         }}
@@ -408,7 +408,7 @@ export function InOutTimeline({
             <span
               key={`${w.start_ms}-${w.end_ms}`}
               data-track="1"
-              className="absolute top-2.5 bottom-2.5 w-px bg-text-tertiary/40"
+              className={cn('absolute w-px bg-text-tertiary/40', compact ? 'top-1.5 bottom-1.5' : 'top-2.5 bottom-2.5')}
               style={{ left: pct(w.start_ms) }}
               aria-hidden
             />
@@ -438,8 +438,10 @@ export function InOutTimeline({
 
 /**
  * "full": a field and four nudges (−1 s, −0.1, +0.1, +1 s).
- * "inline": the card's row, `In − 1:11.1 +`: the time reads as text and is a
- * field on click; − and + move 0.1 s, 1 s with Shift held.
+ * "inline": the closed card's row, `In − 1:11.1 +`: the time reads as text
+ * and is a field on click; − and + move 0.1 s, 1 s with Shift held. Sized so
+ * In and Out fit side by side in the card's narrowest text column (about
+ * 250 px): 32 px tall, 40 px wide on touch screens.
  */
 export function EdgeEditor({
   label,
@@ -515,17 +517,19 @@ export function EdgeEditor({
         onClick={(e) => onNudge(sign * (e.shiftKey ? 1000 : 100))}
         aria-label={`${label} ${sign > 0 ? 'plus' : 'minus'} 0.1 seconds`}
         title={`${sign > 0 ? '+' : '−'}0.1 s (Shift: 1 s)`}
-        className="flex h-7 w-6 hover-none:h-9 hover-none:w-7 items-center justify-center rounded text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        className="flex h-8 w-6 shrink-0 hover-none:h-10 hover-none:w-10 items-center justify-center rounded text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         {sign > 0 ? <Plus className="h-3.5 w-3.5" /> : <Minus className="h-3.5 w-3.5" />}
       </button>
     )
     return (
       <div className="flex items-center">
-        <span className="mr-1 text-xs text-text-tertiary">{label}</span>
+        <span className="mr-0.5 text-2xs text-text-tertiary">{label}</span>
         {step(-1)}
         {field(
-          'h-7 hover-none:h-9 w-[4.75rem] rounded bg-transparent px-1 text-center font-mono text-[13px] tabular-nums text-text-primary hover:bg-bg-hover focus:bg-bg-primary focus:outline-none focus:ring-1 focus:ring-border-focus',
+          // Seven characters ("77:17.0") at 12 px mono; touch screens set
+          // every field in 16 px (globals.css, no iOS zoom), so wider there.
+          'h-8 hover-none:h-10 w-[3.625rem] hover-none:w-[4.75rem] rounded bg-transparent px-0.5 text-center font-mono text-xs tabular-nums text-text-primary hover:bg-bg-hover focus:bg-bg-primary focus:outline-none focus:ring-1 focus:ring-border-focus',
         )}
         {step(1)}
       </div>

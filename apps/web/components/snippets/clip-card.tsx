@@ -65,6 +65,9 @@ type Draft = {
   end_ms: number
 }
 
+/** Topic chips a closed card shows before folding the rest into "+N". */
+export const COLLAPSED_TOPICS = 3
+
 const draftOf = (c: SnippetClip): Draft => ({
   title: c.title,
   topics: c.topics,
@@ -332,6 +335,12 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
     wasEditing.current = editingTitle
   }, [editingTitle])
 
+  // ── Topics: the closed card shows the first few, the rest behind "+N" ──
+  const [allTopics, setAllTopics] = React.useState(false)
+  const topicsFold = !expanded && draft.topics.length > COLLAPSED_TOPICS
+  const shownTopics = topicsFold && !allTopics ? draft.topics.slice(0, COLLAPSED_TOPICS) : draft.topics
+  const hiddenTopics = draft.topics.length - shownTopics.length
+
   const heading = isMoment ? 'Transcript moment' : draft.title || 'Untitled clip'
   const lengthMs = range.end_ms - range.start_ms
   const atOriginal = range.start_ms === original.start_ms && range.end_ms === original.end_ms
@@ -340,8 +349,11 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
   const iconBtn =
     'flex h-7 w-7 hover-none:h-10 hover-none:w-10 shrink-0 items-center justify-center rounded-md border transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
 
-  /** `iconOnly`: the phone layout's copy in the action row, where the in/out
-   *  row has no room left for it. */
+  /** Approve and reject: 32 px on the closed card, as tall as the export buttons beside them. */
+  const reviewBtn = expanded ? iconBtn : cn(iconBtn, 'h-8 w-8')
+
+  /** `iconOnly`: the closed card's copy at the end of the timeline, where
+   *  there is no room for the word. */
   const resetButton = (className?: string, iconOnly?: boolean) => (
     <button
       type="button"
@@ -367,7 +379,6 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
   const reviewActions = editable ? (
     <div className="ml-auto flex items-center gap-1.5">
       <SaveIndicator status={saveStatus} onRetry={() => void saver.flush()} />
-      {!expanded && resetButton('inline-flex sm:hidden', true)}
       {draft.status && (
         <>
           <button
@@ -377,7 +388,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
             aria-label={draft.status === 'approved' ? 'Undo approve' : 'Approve'}
             title={draft.status === 'approved' ? 'Undo approve' : 'Approve'}
             className={cn(
-              iconBtn,
+              reviewBtn,
               draft.status === 'approved'
                 ? 'border-status-success/40 bg-status-success/15 text-status-success'
                 : 'border-border text-text-tertiary hover:border-status-success/40 hover:text-status-success',
@@ -392,7 +403,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
             aria-label={draft.status === 'rejected' ? 'Undo reject' : 'Reject'}
             title={draft.status === 'rejected' ? 'Undo reject' : 'Reject'}
             className={cn(
-              iconBtn,
+              reviewBtn,
               draft.status === 'rejected'
                 ? 'border-status-error/40 bg-status-error/15 text-status-error'
                 : 'border-border text-text-tertiary hover:border-status-error/40 hover:text-status-error',
@@ -413,21 +424,28 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
       tabIndex={-1}
       aria-label={heading}
       className={cn(
-        'group/card relative min-w-0 rounded-xl border bg-bg-secondary transition-[border-color,opacity,box-shadow] focus:outline-none',
+        // A `clip-card` container: the closed layout follows the card's own
+        // width (`clip-wide:`, tailwind.config.ts), not the window's.
+        'group/card relative min-w-0 rounded-xl border bg-bg-secondary transition-[border-color,opacity,box-shadow] [container-name:clip-card] [container-type:inline-size] focus:outline-none',
         active ? 'border-accent/50' : 'border-border hover:border-border-focus/60 focus-within:border-border-focus/60',
         draft.status === 'rejected' && !expanded && 'opacity-70',
         expanded && 'col-span-full shadow-lg',
       )}
     >
       <div
+        data-testid="clip-layout"
         className={cn(
-          'grid min-w-0 gap-3 p-3 sm:p-4',
+          'grid min-w-0',
           expanded
-            ? 'grid-cols-1 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:gap-x-5'
-            : // Rows: title, details, controls. The frame spans the first two
-              // and the flexible one takes its extra height, so the details
-              // stay under the title and the controls start below the frame.
-              'grid-cols-[6.5rem_minmax(0,1fr)] grid-rows-[auto_1fr_auto] sm:grid-cols-[clamp(8.5rem,28%,14.5rem)_minmax(0,1fr)] sm:gap-x-4',
+            ? 'gap-3 p-3 sm:p-4 grid-cols-1 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:gap-x-5'
+            : // Two columns: the portrait frame alone on the left, everything
+              // else on the right (title, details, controls), sized to end
+              // about where the frame does. The frame spans those three rows
+              // and the flexible last one takes its extra height, so the
+              // controls sit at the bottom. Below both, the timeline across
+              // the whole card. A card narrower than that stacks: the frame
+              // on top, the rest below it.
+              'gap-x-3 gap-y-2 p-3 grid-cols-1 clip-wide:grid-cols-[12.5rem_minmax(0,1fr)] clip-wide:grid-rows-[auto_auto_1fr_auto]',
         )}
       >
         {/* Title row: first in the card in both states. Closed, it sits right
@@ -439,7 +457,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
           className={cn(
             // scroll-mt: opening scrolls this row to the top, with the card's edge still showing.
             'flex min-w-0 scroll-mt-6 items-start gap-1',
-            expanded ? 'col-span-full' : 'col-start-2 row-start-1',
+            expanded ? 'col-span-full' : 'row-start-2 clip-wide:col-start-2 clip-wide:row-start-1',
           )}
           data-testid="clip-header"
           data-clip-header=""
@@ -457,7 +475,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
               }}
             />
           ) : (
-            <h3 className="min-w-0 flex-1 text-sm font-semibold leading-snug sm:text-base">
+            <h3 className={cn('min-w-0 flex-1 text-sm font-semibold leading-snug', expanded && 'sm:text-base')}>
               <button
                 ref={titleBtnRef}
                 type="button"
@@ -480,15 +498,20 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
               onClick={() => setEditingTitle(true)}
               aria-label="Rename clip"
               title="Rename"
-              className="flex h-6 w-6 hover-none:h-9 hover-none:w-9 shrink-0 items-center justify-center rounded text-text-tertiary opacity-60 transition-opacity hover:bg-bg-hover hover:text-text-primary hover:opacity-100 group-hover/card:opacity-100 hover-none:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              className={cn(
+                'flex shrink-0 items-center justify-center rounded text-text-tertiary opacity-60 transition-opacity hover:bg-bg-hover hover:text-text-primary hover:opacity-100 group-hover/card:opacity-100 hover-none:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                // Closed: a 32 px target whose negative margin keeps the
+                // title row as short as the title.
+                expanded ? 'h-6 w-6 hover-none:h-9 hover-none:w-9' : '-my-1.5 h-8 w-8 hover-none:h-10 hover-none:w-10',
+              )}
             >
               <Pencil className="h-3.5 w-3.5" />
             </button>
           )}
           {/* The same toggle as the title, for everyone (it edits nothing).
-              One element in both states, so focus stays on it. Below `sm`
-              it is a 44 px target whose negative margins keep the row as
-              tall as on desktop. */}
+              One element in both states, so focus stays on it. Opened and
+              below `sm` it is a 44 px target; closed, 32 px. Either way
+              negative margins keep the title row as short as the title. */}
           <button
             type="button"
             onClick={() => onToggleExpand(cardKey)}
@@ -496,7 +519,12 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
             aria-label={expanded ? 'Collapse clip' : 'Expand clip'}
             title={expanded ? 'Collapse' : 'Expand with the transcript'}
             data-testid="clip-expand-toggle"
-            className="-my-2.5 -mr-2.5 flex h-11 w-11 shrink-0 items-center justify-center rounded text-text-tertiary hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 sm:m-0 sm:h-6 sm:w-6 sm:hover-none:h-9 sm:hover-none:w-9"
+            className={cn(
+              'flex shrink-0 items-center justify-center rounded text-text-tertiary hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+              expanded
+                ? '-my-2.5 -mr-2.5 h-11 w-11 sm:m-0 sm:h-6 sm:w-6 sm:hover-none:h-9 sm:hover-none:w-9'
+                : '-my-1.5 -mr-1.5 h-8 w-8 hover-none:h-10 hover-none:w-10',
+            )}
           >
             {expanded ? (
               <Minimize2 className="h-4 w-4" aria-hidden />
@@ -509,11 +537,13 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
         {/* Media: a portrait frame on the card (the 9:16 crop), the whole
             picture once opened. A poster until play is pressed. */}
         <div
+          data-testid="clip-thumb"
           className={cn(
             'relative w-full self-start overflow-hidden rounded-lg bg-bg-tertiary',
             expanded
               ? 'aspect-video lg:col-start-1 lg:row-start-2'
-              : 'col-start-1 row-span-2 row-start-1 aspect-[9/16]',
+              : // 12.5rem wide in its column; stacked, the same size, centred.
+                'row-start-1 mx-auto aspect-[9/16] max-w-[12.5rem] clip-wide:col-start-1 clip-wide:row-span-3',
           )}
         >
           {active && src ? (
@@ -589,11 +619,12 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
 
         {/* Who and where, the quote, topics */}
         <div
+          data-testid="clip-details"
           className={cn(
-            'min-w-0 space-y-2',
-            // Closed, 8 px under the title, as when they shared a block:
-            // -4 px against the 12 px row gap.
-            expanded ? 'lg:col-start-1 lg:row-start-3' : 'col-start-2 row-start-2 -mt-1',
+            'min-w-0',
+            expanded
+              ? 'space-y-2 lg:col-start-1 lg:row-start-3'
+              : 'space-y-1.5 row-start-3 clip-wide:col-start-2 clip-wide:row-start-2',
           )}
         >
           {/* Speaker · file · where the clip starts */}
@@ -615,7 +646,11 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                   const track = await clipTrack()
                   if (track != null) assignApi.startAdd(track, `Track ${track + 1}`)
                 }}
-                className="-ml-1.5 h-6 hover-none:h-9 max-w-[55%] flex-none gap-1 border-transparent bg-transparent px-1.5 text-text-secondary hover:border-border lg:max-w-[55%]"
+                className={cn(
+                  '-ml-1.5 max-w-[55%] flex-none gap-1 border-transparent bg-transparent px-1.5 text-text-secondary hover:border-border lg:max-w-[55%]',
+                  // Closed: a 32 px target in a 24 px line.
+                  expanded ? 'h-6 hover-none:h-9' : '-my-1 h-8 hover-none:h-9',
+                )}
               />
             ) : (
               <span className="max-w-[55%] truncate text-text-secondary">{clip.speaker?.name ?? 'Unknown speaker'}</span>
@@ -636,21 +671,34 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
           {clip.quote && !expanded && (
             <blockquote
               title={clip.quote}
-              className="line-clamp-3 border-l-2 border-border pl-3 text-xs leading-relaxed text-text-secondary sm:line-clamp-4 sm:text-sm"
+              className="line-clamp-3 border-l-2 border-border pl-2.5 text-xs leading-normal text-text-secondary"
             >
               &ldquo;{clip.quote}&rdquo;
             </blockquote>
           )}
 
           {(draft.topics.length > 0 || editable) && (
-            <ul className="flex flex-wrap items-center gap-1.5" aria-label="Topics">
-              {draft.topics.map((t) => {
+            <ul
+              className={cn(
+                'flex items-center',
+                expanded
+                  ? 'flex-wrap gap-1.5'
+                  : // One row; topics past the first few wait behind "+N".
+                    allTopics
+                    ? 'flex-wrap gap-1'
+                    : 'min-w-0 flex-nowrap gap-1',
+              )}
+              aria-label="Topics"
+              data-testid="clip-topics"
+            >
+              {shownTopics.map((t) => {
                 const on = activeTopics.some((a) => a.toLowerCase() === t.toLowerCase())
                 return (
                   <li
                     key={t}
                     className={cn(
-                      'group/chip inline-flex items-center rounded-full text-xs transition-colors',
+                      'group/chip inline-flex items-center rounded-full transition-colors',
+                      expanded ? 'text-xs' : 'min-w-0 text-2xs',
                       on ? 'bg-accent/15 text-accent' : 'bg-bg-tertiary text-text-secondary hover:bg-bg-hover',
                     )}
                   >
@@ -659,7 +707,12 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                       onClick={() => onTopic(t)}
                       aria-pressed={on}
                       title={on ? `Filtering by ${t}` : `Filter by ${t}`}
-                      className="rounded-full px-2.5 py-1 hover-none:py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                      className={cn(
+                        'rounded-full hover-none:py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                        // Closed, a long topic is cut short rather than pushing the row onto a second line.
+                        // On touch screens 32 px tall, as the larger type made it before.
+                        expanded ? 'px-2.5 py-1' : 'min-w-0 max-w-[9rem] truncate px-2 py-0.5 hover-none:min-h-8',
+                      )}
                     >
                       {t}
                     </button>
@@ -668,7 +721,11 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                         type="button"
                         onClick={() => change({ topics: removeTopic(draftRef.current.topics, t) })}
                         aria-label={`Remove topic ${t}`}
-                        className="-ml-1.5 mr-1 rounded-full p-0.5 hover-none:p-1.5 opacity-0 transition-opacity hover:bg-bg-hover group-hover/chip:opacity-100 hover-none:opacity-70 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                        className={cn(
+                          '-ml-1.5 mr-1 shrink-0 rounded-full p-0.5 opacity-0 transition-opacity hover:bg-bg-hover group-hover/chip:opacity-100 hover-none:opacity-70 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                          // Closed, a 32 px target on touch screens.
+                          expanded ? 'hover-none:p-1.5' : 'hover-none:p-2.5',
+                        )}
                       >
                         <X className="h-3 w-3" />
                       </button>
@@ -676,9 +733,26 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                   </li>
                 )
               })}
+              {topicsFold && (
+                // One element for "+N" and "Fewer", so focus stays on it.
+                <li className="shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setAllTopics((v) => !v)}
+                    aria-expanded={allTopics}
+                    aria-label={allTopics ? 'Show fewer topics' : `+${hiddenTopics} more topics`}
+                    title={allTopics ? 'Show fewer topics' : `Show all ${draft.topics.length} topics`}
+                    data-testid="clip-topics-more"
+                    className="rounded-full border border-border px-2 py-0.5 hover-none:min-h-8 hover-none:py-2 text-2xs font-medium tabular-nums text-text-secondary hover:border-border-focus hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                  >
+                    {allTopics ? 'Fewer' : `+${hiddenTopics}`}
+                  </button>
+                </li>
+              )}
               {editable && (
-                <li>
+                <li className="shrink-0">
                   <TopicAdder
+                    compact={!expanded}
                     subtle={draft.topics.length > 0}
                     onAdd={(raw) => change({ topics: addTopic(draftRef.current.topics, raw) })}
                   />
@@ -688,7 +762,14 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
           )}
 
           {(clip.source || clip.quality_score != null || clip.viral_score != null || clip.user_edited || expanded) && (
-            <div className="flex flex-wrap items-center gap-1.5">
+            <div
+              data-testid="clip-badges"
+              className={cn(
+                'flex items-center',
+                // Closed: one row (the badges are short; nothing in it is a control).
+                expanded ? 'flex-wrap gap-1.5' : 'min-w-0 flex-nowrap gap-1 overflow-hidden [&>*]:shrink-0',
+              )}
+            >
               {expanded && draft.status && <StatusPill status={draft.status} />}
               {clip.source && <SourceBadge source={clip.source} generator={clip.generator} />}
               <ScoreBadge label="Q" title="Quality" score={clip.quality_score} />
@@ -698,13 +779,13 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
           )}
         </div>
 
-        {/* In/out, export, review */}
+        {/* Play row (opened) and the in/out timeline. Closed, the timeline
+            runs the full width of the card, under the frame and the text. */}
         <div
+          data-testid="clip-timeline"
           className={cn(
-            'min-w-0',
-            expanded
-              ? 'space-y-1.5 lg:col-start-1 lg:row-start-4'
-              : 'space-y-2 col-span-2 row-start-3 sm:col-span-1 sm:col-start-2 sm:self-end',
+            'min-w-0 space-y-1.5',
+            expanded ? 'lg:col-start-1 lg:row-start-4' : 'row-start-4 clip-wide:col-span-2',
           )}
         >
           {expanded && (
@@ -744,16 +825,39 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
               {editable && <span className="ml-auto">{resetButton()}</span>}
             </div>
           )}
-          <InOutTimeline
-            compact={!expanded}
-            range={range}
-            durationMs={durationMs}
-            nowMs={nowMs}
-            words={words}
-            editable={editable}
-            onChange={applyRange}
-            onSeek={seekTo}
-          />
+          {/* The same wrapper in both states, so the timeline is not
+              remounted; closed, Reset rides at its end. */}
+          <div className="flex items-center gap-1">
+            <div className="min-w-0 flex-1">
+              <InOutTimeline
+                compact={!expanded}
+                range={range}
+                durationMs={durationMs}
+                nowMs={nowMs}
+                words={words}
+                editable={editable}
+                onChange={applyRange}
+                onSeek={seekTo}
+              />
+            </div>
+            {editable &&
+              !expanded &&
+              resetButton('-my-1 inline-flex h-8 w-8 justify-center px-0 hover-none:h-10 hover-none:w-10', true)}
+          </div>
+        </div>
+
+        {/* In/out, export, review */}
+        <div
+          data-testid="clip-controls"
+          className={cn(
+            'min-w-0 space-y-1.5',
+            expanded
+              ? // -6 px against the 12 px row gap: 6 px under the timeline, as
+                // when they shared a block.
+                '-mt-1.5 lg:col-start-1 lg:row-start-5'
+              : 'row-start-5 clip-wide:col-start-2 clip-wide:row-start-3 clip-wide:self-end',
+          )}
+        >
           {editable ? (
             expanded ? (
               // Side by side wherever the column is wide enough for both
@@ -773,7 +877,8 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                 />
               </div>
             ) : (
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              // One row (it wraps only in a card at its very narrowest).
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="clip-inout">
                 <EdgeEditor
                   variant="inline"
                   label="In"
@@ -788,11 +893,10 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                   onCommit={(ms) => applyRange(moveEdge(rangeRef.current, 'out', ms, durationMs), 'out')}
                   onNudge={(d) => nudge('out', d)}
                 />
-                {resetButton('hidden sm:inline-flex')}
               </div>
             )
           ) : (
-            <p className="font-mono text-xs tabular-nums text-text-tertiary">
+            <p className={cn('font-mono tabular-nums text-text-tertiary', expanded ? 'text-xs' : 'text-2xs')}>
               In {formatClipTime(range.start_ms)} · Out {formatClipTime(range.end_ms)}
             </p>
           )}
@@ -810,7 +914,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
             </div>
           )}
 
-          <div className={cn('flex flex-wrap items-center gap-2', !expanded && 'pt-0.5')}>
+          <div className={cn('flex flex-wrap items-center', expanded ? 'gap-2' : 'gap-1.5')}>
             {canEdit &&
               // Exports create files on the server, so they are an editor's
               // action; the server checks too. They render the in/out on the
@@ -845,7 +949,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
           // the transcript ends where that column does (scrolling inside).
           <aside
             aria-label="Transcript"
-            className="flex min-h-0 flex-col rounded-lg border border-border bg-bg-primary/40 lg:relative lg:col-start-2 lg:row-span-3 lg:row-start-2"
+            className="flex min-h-0 flex-col rounded-lg border border-border bg-bg-primary/40 lg:relative lg:col-start-2 lg:row-span-4 lg:row-start-2"
           >
             <div className="flex max-h-[55vh] min-h-[220px] flex-col lg:absolute lg:inset-0 lg:max-h-none">
               <div className="flex items-center gap-2 px-3 pb-2 pt-3">
@@ -939,7 +1043,7 @@ function TitleInput({
 /** "+ Topic": Enter adds and stays open for the next one, Escape closes.
  *  `subtle`: shown only while the card is hovered or has focus (always on
  *  touch screens), so a card with topics reads like a plain chip row. */
-function TopicAdder({ onAdd, subtle }: { onAdd: (raw: string) => void; subtle?: boolean }) {
+function TopicAdder({ onAdd, subtle, compact }: { onAdd: (raw: string) => void; subtle?: boolean; compact?: boolean }) {
   const [open, setOpen] = React.useState(false)
   const [value, setValue] = React.useState('')
   if (!open) {
@@ -948,7 +1052,8 @@ function TopicAdder({ onAdd, subtle }: { onAdd: (raw: string) => void; subtle?: 
         type="button"
         onClick={() => setOpen(true)}
         className={cn(
-          'inline-flex items-center gap-0.5 rounded-full border border-dashed border-border px-2 py-1 hover-none:py-2 text-xs text-text-tertiary transition-opacity hover:border-border-focus hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+          'inline-flex items-center gap-0.5 rounded-full border border-dashed border-border px-2 hover-none:py-2 text-text-tertiary transition-opacity hover:border-border-focus hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+          compact ? 'py-0.5 text-2xs hover-none:min-h-8' : 'py-1 text-xs',
           subtle && 'opacity-0 group-hover/card:opacity-100 group-focus-within/card:opacity-100 hover-none:opacity-100',
         )}
       >

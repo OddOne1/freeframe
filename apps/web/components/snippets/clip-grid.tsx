@@ -8,8 +8,11 @@
  * original order. No card from a later row moves up, which is what the old
  * dense flow did when it backfilled the slot the opened card left.
  *
- * The number of columns is read from the grid's own computed layout, not
- * from a breakpoint copied out of the class list, so it follows the CSS.
+ * The grid fits as many columns as its width allows (auto-fill, each at
+ * least 31rem, never wider than the grid), so a narrow window shows one,
+ * a laptop two and a wide screen three or more. The number of columns is
+ * read from the grid's own computed layout, not from a breakpoint copied
+ * out of the class list, so it follows the CSS at any count.
  */
 import * as React from 'react'
 
@@ -80,6 +83,17 @@ function useGridColumns(ref: React.RefObject<HTMLElement>): number {
   return columns
 }
 
+/**
+ * As many columns as fit, each at least 31rem (the closed card's two
+ * columns, picture and text, need about that) and at most the grid's own
+ * width, so a single column never overflows a narrow window. auto-fill,
+ * not auto-fit: a short row keeps card-sized columns instead of
+ * stretching one card across the page. An opened card's `col-span-full`
+ * still spans every column. The card's `clip-wide:` variant
+ * (tailwind.config.ts) sits just under this minimum.
+ */
+export const CLIP_GRID_CLASS = 'grid gap-4 grid-cols-[repeat(auto-fill,minmax(min(100%,31rem),1fr))]'
+
 export interface ClipGridProps<T> {
   items: readonly T[]
   keyOf: (item: T) => string
@@ -95,7 +109,7 @@ export function ClipGrid<T>({ items, keyOf, expandedKey, children, className }: 
   const ordered = expandedRowOrder(items, expandedIndex, columns)
   return (
     // Plain row flow, never dense: a later card must not backfill an earlier row.
-    <div ref={ref} data-clip-grid="" className={className ?? 'grid grid-cols-1 gap-4 lg:grid-cols-2'}>
+    <div ref={ref} data-clip-grid="" className={className ?? CLIP_GRID_CLASS}>
       {ordered.map((item) => (
         <React.Fragment key={keyOf(item)}>{children(item)}</React.Fragment>
       ))}

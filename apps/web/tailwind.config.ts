@@ -129,6 +129,24 @@ const config: Config = {
       addVariant('hover-none', '@media (hover: none)')
       addVariant('group-hover-none', '@media (hover: none)')
     }),
+    /**
+     * `clip-wide:` for the SocialSnippet clip card: true while the card
+     * itself (a `clip-card` container, see components/snippets/clip-card.tsx)
+     * is at least 30.5rem wide. A container query, not a breakpoint: the
+     * clips grid fits as many columns as the window allows, so the window's
+     * width says nothing about a card's. Narrower, the closed card stacks
+     * its picture above the text. 30.5rem stays under the grid's 31rem
+     * column minimum (components/snippets/clip-grid.tsx) once the card's
+     * border is taken off, so a card in the grid only stacks when the grid
+     * itself is narrower than that minimum.
+     *
+     * A variant through `tailwindcss/plugin` like `hover-none` above, so no
+     * dependency is added (the reason app/globals.css writes its own
+     * @container rules by hand).
+     */
+    plugin(({ addVariant }) => {
+      addVariant('clip-wide', '@container clip-card (min-width: 30.5rem)')
+    }),
   ],
 }
 

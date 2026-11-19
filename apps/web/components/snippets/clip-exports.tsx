@@ -233,7 +233,7 @@ export function ClipExports({
               disabled={disabled}
               onClick={() => start('9:16')}
               aria-label="Export 9:16"
-              className="h-8 hover-none:h-10 gap-1.5 px-3"
+              className="h-8 hover-none:h-10 gap-1 px-2.5 text-xs"
             >
               {spinning('9:16') ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
               Export 9:16
@@ -245,7 +245,7 @@ export function ClipExports({
               disabled={disabled}
               onClick={() => start('16:9')}
               aria-label="Export 16:9"
-              className="h-8 hover-none:h-10 gap-1 px-2.5 text-xs"
+              className="h-8 hover-none:h-10 gap-1 px-2 text-xs"
             >
               {spinning('16:9') && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               16:9
@@ -282,7 +282,8 @@ export function ClipExports({
       {/* Takes no room until there is something to say. */}
       <div
         aria-live="polite"
-        className={compact ? 'text-xs' : 'text-xs empty:!mt-0'}
+        // Empty, it takes no room in either layout (not even the gap above it).
+        className="text-xs empty:!mt-0"
         data-testid="export-status"
       >
         {state.phase === 'blocked' && <p className="text-text-tertiary">{state.message}</p>}
