@@ -12,6 +12,7 @@
 
 import * as React from 'react'
 import { Loader2, MessageSquare } from 'lucide-react'
+import { shareFetch } from '@/lib/share-fetch'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -99,7 +100,7 @@ export function GuestCommentList({ token, refreshKey, shareSession }: GuestComme
   React.useEffect(() => {
     setLoading(true)
     const sp = shareSession ? `?share_session=${encodeURIComponent(shareSession)}` : ''
-    fetch(`${API_URL}/share/${token}/comments${sp}`)
+    shareFetch(token, `${API_URL}/share/${token}/comments${sp}`)
       .then((r) => (r.ok ? r.json() : Promise.resolve([])))
       .then((data: GuestComment[]) => setComments(Array.isArray(data) ? data : []))
       .catch(() => setComments([]))

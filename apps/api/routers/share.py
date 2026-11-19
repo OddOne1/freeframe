@@ -58,6 +58,7 @@ from ..schemas.share import (
     variant_values,
 )
 from ..services.permissions import (
+    SHARE_NOT_FOUND,
     asset_is_in_share_scope,
     get_project_member,
     is_descendant_of,
@@ -218,29 +219,22 @@ def _get_folder(db: Session, folder_id: uuid.UUID) -> Folder:
 def _validate_asset_in_share(db: Session, link: ShareLink, asset: Asset) -> None:
     """Refuse an asset that is not inside what this link shares.
 
-    §234 — the DECISION now lives in one place,
+    §234 — the DECISION lives in one place,
     `services/permissions.asset_is_in_share_scope`, which the share-comment
-    routes read too; this wrapper keeps the wording and the 403 these routes
-    have always answered with, so nothing about them changes.
+    routes read too.
 
-    The comment routes deliberately answer the same 404 as an unknown token
-    instead (`validate_asset_in_share` in the same module). These routes are
-    not converted to that: `_get_asset` above them already answers 404 for an
-    asset that does not exist, so the pair of codes here is a distinction a
-    caller can already make, and flattening it is a behaviour change for the
-    stream, export, zip and fields routes that §234 is not the place for.
+    An asset outside the link answers 404 "Share link not found", the same
+    as an unknown token and the same as the share-comment routes
+    (`validate_asset_in_share`). It used to answer 403 with a reason ("not
+    within the shared folder", "not in the shared items"), which told a
+    token holder that the uuid they tried is a real asset elsewhere in the
+    instance.
     """
     if not (link.folder_id or link.asset_id or link.project_id):
         raise HTTPException(status_code=400, detail="Invalid share link")
     if asset_is_in_share_scope(db, link, asset):
         return
-    if link.folder_id:
-        raise HTTPException(status_code=403, detail="Asset is not within the shared folder")
-    if link.asset_id:
-        raise HTTPException(status_code=403, detail="Asset does not match share link")
-    if asset.project_id != link.project_id:
-        raise HTTPException(status_code=403, detail="Asset is not within the shared project")
-    raise HTTPException(status_code=403, detail="Asset is not in the shared items")
+    raise HTTPException(status_code=404, detail=SHARE_NOT_FOUND)
 
 
 def _get_project_id_from_link(db: Session, link: ShareLink) -> uuid.UUID:
@@ -1509,9 +1503,13 @@ def get_folder_share_assets(
     ),
     share_session: Optional[str] = Query(None, alias="share_session"),
     db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
-    """Public endpoint — no auth required. Returns assets and subfolders for a folder or project share link."""
-    link = validate_share_link_with_session(db, token, share_session=share_session)
+    """Public endpoint — optional auth (required for a `secure` link). Returns assets and subfolders for a folder or project share link."""
+    # `viewer=`, not `current_user=`: see validate_share_link_with_session.
+    link = validate_share_link_with_session(
+        db, token, share_session=share_session, viewer=current_user
+    )
 
     # An unknown sort key falls back to the default rather than 400-ing: this
     # is a public viewer, and a link whose stored appearance predates a key
@@ -1606,9 +1604,11 @@ def get_folder_share_assets(
     if folder_id:
         if is_project_share:
             # Project share: validate folder belongs to this project
+            # A folder outside the link answers like an unknown token (404,
+            # SHARE_NOT_FOUND) — see `_validate_asset_in_share`.
             f = db.query(Folder).filter(Folder.id == folder_id, Folder.deleted_at.is_(None)).first()
             if not f or f.project_id != link.project_id:
-                raise HTTPException(status_code=403, detail="Folder is not within the shared project")
+                raise HTTPException(status_code=404, detail=SHARE_NOT_FOUND)
             # §234 A — and, for a multi-share, that it is one of the SELECTED
             # folders or inside one. The project check alone let an items
             # link list any folder of the project by naming it: the root
@@ -1619,9 +1619,9 @@ def get_folder_share_assets(
                     folder_id == fid or is_descendant_of(db, folder_id, fid)
                     for fid in item_folder_ids
                 ):
-                    raise HTTPException(status_code=403, detail="Folder is not in the shared items")
+                    raise HTTPException(status_code=404, detail=SHARE_NOT_FOUND)
         elif folder_id != link.folder_id and not is_descendant_of(db, folder_id, link.folder_id):
-            raise HTTPException(status_code=403, detail="Folder is not within the shared folder")
+            raise HTTPException(status_code=404, detail=SHARE_NOT_FOUND)
         target_folder_id = folder_id
 
     # Get subfolders
@@ -1863,9 +1863,13 @@ def get_share_thumbnail_url(
     asset_id: uuid.UUID,
     share_session: Optional[str] = Query(None, alias="share_session"),
     db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
-    """Public endpoint — no auth required. Returns presigned thumbnail URL for an asset in a share link."""
-    link = validate_share_link_with_session(db, token, share_session=share_session)
+    """Public endpoint — optional auth (required for a `secure` link). Returns presigned thumbnail URL for an asset in a share link."""
+    # `viewer=`, not `current_user=`: see validate_share_link_with_session.
+    link = validate_share_link_with_session(
+        db, token, share_session=share_session, viewer=current_user
+    )
 
     asset = _get_asset(db, asset_id)
 

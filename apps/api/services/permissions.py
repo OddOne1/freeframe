@@ -1,11 +1,11 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 import uuid
-from ..models.user import User, UserGlobalRole
+from ..models.user import User, UserGlobalRole, UserStatus
 from ..models.project import Project, ProjectMember, ProjectRole
 from ..models.asset import Asset
 from ..models.folder import Folder
-from ..models.share import AssetShare, ShareLink, ShareLinkItem, SharePermission
+from ..models.share import AssetShare, ShareLink, ShareLinkItem, SharePermission, ShareVisibility
 from ..services.redis_service import verify_share_session
 
 
@@ -364,15 +364,70 @@ def validate_share_link(db: Session, token: str) -> ShareLink:
     return link
 
 
+def enforce_share_link_visibility(link: ShareLink, current_user: "User | None") -> None:
+    """A `secure` link answers only a signed-in, non-deactivated user. 401 otherwise.
+
+    What "secure" has always meant at GET /share/{token}: that route reads
+    the caller through `get_optional_user` and, with nobody signed in,
+    answers `requires_auth` instead of the link. No role, membership or
+    e-mail check is involved — any signed-in account may open a secure
+    link. That route was the ONLY reader of `visibility`, though, so every
+    other public share endpoint served a secure link to anyone holding the
+    token. This is the one place the rule now lives.
+
+    "Signed in" is decided exactly as `get_optional_user` decides it (a
+    valid, current access token for an account that is not deactivated);
+    the status check is repeated here so a caller that resolved its user
+    some other way cannot hand in a deactivated one. Public links are
+    untouched.
+    """
+    if link.visibility != ShareVisibility.secure:
+        return
+    if current_user is None or current_user.status == UserStatus.deactivated:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sign in to open this share link",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+#: Default for `viewer` below: "the same user as `current_user`".
+_SAME_AS_CURRENT_USER = object()
+
+
 def validate_share_link_with_session(
     db: Session,
     token: str,
     share_session: "str | None" = None,
     current_user: "User | None" = None,
+    *,
+    viewer=_SAME_AS_CURRENT_USER,
+    enforce_visibility: bool = True,
 ) -> ShareLink:
     """Validate a share link and verify password session if link is password-protected.
-    Skips password check if the caller is the authenticated link creator."""
+    Skips password check if the caller is the authenticated link creator.
+
+    Also enforces the link's `visibility` (`enforce_share_link_visibility`),
+    before the password: a secure link asks for an account first, exactly
+    as GET /share/{token} does.
+
+    `viewer` is the signed-in caller for that visibility check, when it has
+    to differ from `current_user`. Two routes (/assets, /thumbnail) never
+    passed `current_user`, and passing it now would also switch on the
+    creator's password skip for them — a password change this rule is not
+    making. They pass `viewer=` instead.
+
+    `enforce_visibility=False` is for exactly one caller: the zip byte-range
+    download (`zip_download.authorise_export_download`). Its URL carries a
+    signed download token and is opened by the browser with no
+    Authorization header, and it is minted only by the zip status route,
+    which itself goes through this check with the caller's account.
+    """
     link = validate_share_link(db, token)
+    if enforce_visibility:
+        enforce_share_link_visibility(
+            link, current_user if viewer is _SAME_AS_CURRENT_USER else viewer
+        )
     if link.password_hash:
         # Skip password for authenticated link creator (e.g. admin settings preview)
         if current_user and link.created_by == current_user.id:

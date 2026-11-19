@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 import { TechnicalMetadataList } from '@/components/review/technical-metadata-list'
 import { SidecarList } from '@/components/review/sidecar-metadata'
 import type { SidecarFile, TechnicalMetadata } from '@/types'
+import { shareFetch } from '@/lib/share-fetch'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -76,7 +77,7 @@ export function ShareFieldsPanel({
   const { data, isLoading, error } = useSWR<ShareFieldsData>(
     assetId ? `${API_URL}/share/${token}/fields/${assetId}${query}` : null,
     async (url: string) => {
-      const res = await fetch(url)
+      const res = await shareFetch(token, url)
       if (!res.ok) throw new Error(String(res.status))
       return res.json()
     },

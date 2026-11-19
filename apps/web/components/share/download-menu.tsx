@@ -6,6 +6,7 @@ import { Download, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { triggerBrowserDownload as trigger } from '@/lib/download'
 import { DOWNLOAD_VARIANT_LABELS, type DownloadVariant } from '@/types'
+import { shareFetch } from '@/lib/share-fetch'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -31,7 +32,8 @@ const POLL_INTERVAL_MS = 3000
 
 async function downloadRaw(token: string, assetId: string, shareSession?: string | null) {
   const sp = shareSession ? `&share_session=${encodeURIComponent(shareSession)}` : ''
-  const res = await fetch(
+  const res = await shareFetch(
+    token,
     `${API_URL}/share/${token}/stream/${assetId}?download=true&variant=raw${sp}`,
   )
   if (!res.ok) throw new Error('Download not allowed')
@@ -46,7 +48,8 @@ async function downloadRendered(
   shareSession?: string | null,
 ) {
   const sp = shareSession ? `&share_session=${encodeURIComponent(shareSession)}` : ''
-  const start = await fetch(
+  const start = await shareFetch(
+    token,
     `${API_URL}/share/${token}/export/${assetId}?variant=${variant}${sp}`,
     { method: 'POST' },
   )
@@ -56,7 +59,8 @@ async function downloadRendered(
   const deadline = Date.now() + POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
-    const res = await fetch(
+    const res = await shareFetch(
+      token,
       `${API_URL}/share/${token}/export/${assetId}/${export_id}` +
         `?version_id=${version_id}&variant=${variant}${sp}`,
     )

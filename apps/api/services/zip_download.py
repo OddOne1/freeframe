@@ -155,8 +155,13 @@ def authorise_export_download(
         # share surface uses and it is where the deleted/disabled/expired
         # and password-session rules live. Re-reading them here would be a
         # second copy of a permission rule.
+        # `enforce_visibility=False`: this URL is opened by the browser with
+        # no Authorization header, so a `secure` link could never pass here.
+        # It carries a signed download token minted only by the zip status
+        # route, which DOES enforce visibility for the caller's account.
         link = validate_share_link_with_session(
-            db, link.token, share_session=share_session, current_user=None
+            db, link.token, share_session=share_session, current_user=None,
+            enforce_visibility=False,
         )
         if not (link.allowed_download_variants or []):
             raise HTTPException(

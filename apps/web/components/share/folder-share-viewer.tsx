@@ -41,6 +41,7 @@ import type {
 import { ShareFieldsPanel } from './share-fields-panel'
 import { useShareSidebar, type FieldsVisibility } from './use-share-sidebar'
 import { DownloadMenu } from './download-menu'
+import { shareFetch } from '@/lib/share-fetch'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -152,7 +153,7 @@ function isShareCardSize(v: string): v is ShareCardSize {
 async function fetchDownloadUrl(token: string, assetId: string, shareSession?: string | null): Promise<string | null> {
   const sp = shareSession ? `&share_session=${encodeURIComponent(shareSession)}` : ''
   try {
-    const response = await fetch(`${API_URL}/share/${token}/stream/${assetId}?download=true&variant=raw${sp}`)
+    const response = await shareFetch(token, `${API_URL}/share/${token}/stream/${assetId}?download=true&variant=raw${sp}`)
     if (!response.ok) return null
     const data = await response.json()
     // Returned RAW. triggerBrowserDownload resolves — resolving here too
@@ -172,7 +173,7 @@ async function collectAllAssetsRecursive(
   const sp = shareSession ? `&share_session=${encodeURIComponent(shareSession)}` : ''
   const folderParam = folderId ? `folder_id=${folderId}&` : ''
   try {
-    const res = await fetch(`${API_URL}/share/${token}/assets?${folderParam}page=1&per_page=500${sp}`)
+    const res = await shareFetch(token, `${API_URL}/share/${token}/assets?${folderParam}page=1&per_page=500${sp}`)
     if (!res.ok) return []
     const data = await res.json() as { assets?: { id: string; name: string }[]; subfolders?: { id: string }[] }
     const items: { id: string; name: string }[] = (data.assets ?? []).map((a) => ({ id: a.id, name: a.name }))
@@ -465,7 +466,7 @@ function RightPanel({ selectedAsset, token, shareSession, permission, downloadVa
     }
     setLoadingComments(true)
     const sp = shareSession ? `&share_session=${encodeURIComponent(shareSession)}` : ''
-    fetch(`${API_URL}/share/${token}/comments?asset_id=${selectedAsset.id}${sp}`)
+    shareFetch(token, `${API_URL}/share/${token}/comments?asset_id=${selectedAsset.id}${sp}`)
       .then((r) => (r.ok ? r.json() : Promise.resolve([])))
       .then((data) => setComments(Array.isArray(data) ? data : (data.comments ?? [])))
       .catch(() => setComments([]))
@@ -680,7 +681,7 @@ function ShareCommentInput({ token, assetId, shareSession, onCommentPosted }: Sh
       }
 
       const sp = shareSession ? `?share_session=${encodeURIComponent(shareSession)}` : ''
-      const res = await fetch(`${API_URL}/share/${token}/comment${sp}`, {
+      const res = await shareFetch(token, `${API_URL}/share/${token}/comment${sp}`, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
@@ -1250,7 +1251,7 @@ export function FolderShareViewer({
   // its own; everything the user sees is shared.
   const zipApi = React.useMemo<BatchDownloadApi>(() => ({
     fetchOptions: async (items) => {
-      const r = await fetch(`${API_URL}/share/${token}/zip/options?${sessionParam.replace(/^&/, '')}`, {
+      const r = await shareFetch(token, `${API_URL}/share/${token}/zip/options?${sessionParam.replace(/^&/, '')}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items, variant: 'raw' }),
@@ -1259,7 +1260,7 @@ export function FolderShareViewer({
       return r.json()
     },
     start: async (items, variant, scope, folderName) => {
-      const r = await fetch(`${API_URL}/share/${token}/zip?${sessionParam.replace(/^&/, '')}`, {
+      const r = await shareFetch(token, `${API_URL}/share/${token}/zip?${sessionParam.replace(/^&/, '')}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items, variant, scope, folder_name: folderName ?? null }),
@@ -1272,7 +1273,7 @@ export function FolderShareViewer({
     // button uses.
     fileUrl: (assetId) => fetchDownloadUrl(token, assetId, shareSession),
     poll: async (exportId) => {
-      const r = await fetch(`${API_URL}/share/${token}/zip/${exportId}?${sessionParam.replace(/^&/, '')}`)
+      const r = await shareFetch(token, `${API_URL}/share/${token}/zip/${exportId}?${sessionParam.replace(/^&/, '')}`)
       if (!r.ok) throw new Error('Lost track of the download')
       return r.json()
     },
@@ -1355,7 +1356,8 @@ export function FolderShareViewer({
     setTotalBytes(null)
     setSelectedAsset(null)
 
-    fetch(
+    shareFetch(
+      token,
       `${API_URL}/share/${token}/assets?${currentSubfolderId ? `folder_id=${currentSubfolderId}&` : ''}page=1&per_page=${perPage}&sort=${encodeURIComponent(sortBy)}${sessionParam}`,
     )
       .then((r) => {
@@ -1384,7 +1386,8 @@ export function FolderShareViewer({
     const nextPage = page + 1
     setLoadingMore(true)
     try {
-      const r = await fetch(
+      const r = await shareFetch(
+        token,
         `${API_URL}/share/${token}/assets?${currentSubfolderId ? `folder_id=${currentSubfolderId}&` : ''}page=${nextPage}&per_page=${perPage}&sort=${encodeURIComponent(sortBy)}${sessionParam}`,
       )
       if (!r.ok) throw new Error('Failed to load more')

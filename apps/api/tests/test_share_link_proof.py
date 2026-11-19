@@ -1,15 +1,15 @@
 """Proof tests for suspected share-link holes (security/share-link-proof-tests).
 
-Each test asserts the SAFE behaviour. A test that fails proves the hole; the
-failing ones are marked `xfail(strict=True)` so the suite stays green today
-and turns red (XPASS) the moment the hole is closed, which is the signal to
-drop the marker.
+Each test asserts the SAFE behaviour. A, B and D failed when written (strict
+xfail on security/share-link-proof-tests); all three holes are now closed
+on security/share-link-fixes and the markers are gone.
 
     A  secure-visibility link, anonymous caller, every public endpoint
-    B  GET /share/{token}/details as a plain project viewer
+       (+ signed-in user served, deactivated user refused)       — fixed
+    B  GET /share/{token}/details as a plain project viewer        — fixed
     C  is_public project, logged-in NON-member lists folders and assets
        (documents current behaviour; not called a hole)
-    D  folder-scoped link, asking for a SIBLING folder outside it
+    D  folder-scoped link, asking for a SIBLING folder outside it  — fixed
     E  revoked and expired link, every public endpoint
 
 How the DB is mocked
@@ -507,30 +507,14 @@ class TestControls:
 
 
 # ── A. secure link, anonymous caller ────────────────────────────────────────
-
-#: What each endpoint hands an anonymous caller on a `secure` link today.
-#: `visibility == "secure"` is read by GET /share/{token} alone, which only
-#: tells the browser to show a login prompt; no other route checks it.
-_A_LEAKS = {
-    "assets": "anonymous caller gets the folder listing: asset names, thumbnail URLs, sizes",
-    "stream": "anonymous caller gets a playable HLS stream URL for the asset",
-    "thumbnail": "anonymous caller gets a signed thumbnail URL",
-    "export-start": "anonymous caller can start a proxy render job",
-    "export-poll": "anonymous caller gets the signed download URL of a finished export",
-    "zip-options": "anonymous caller gets asset names and downloadable variants",
-    "zip-start": "anonymous caller can start a zip build of the link's files",
-    "zip-poll": "anonymous caller can poll a zip build (download URL once ready)",
-    "fields": "anonymous caller gets asset name, description, rating, keywords",
-    "comments-list": "anonymous caller reads the link's public comment thread",
-    "comment-post": "anonymous caller can post a guest comment (201)",
-}
-
+#
+# Was a hole: `visibility == "secure"` was read by GET /share/{token} alone.
+# Now every public share endpoint goes through
+# `permissions.enforce_share_link_visibility` (inside
+# `validate_share_link_with_session`).
 
 class TestA_SecureLinkRefusesAnonymous:
-    @pytest.mark.parametrize("name", [
-        pytest.param(n, id=n, marks=pytest.mark.xfail(strict=True, reason=_A_LEAKS[n]))
-        for n in ENDPOINTS
-    ])
+    @pytest.mark.parametrize("name", ENDPOINTS)
     def test_anonymous_request_is_refused(self, client, world, below_the_gate, name):
         world["link"].visibility = "secure"
         resp = _call(client, world, name)
@@ -538,6 +522,52 @@ class TestA_SecureLinkRefusesAnonymous:
             f"{name}: secure link served an anonymous caller "
             f"({resp.status_code}): {resp.text[:300]}"
         )
+        assert SECRET_ASSET not in resp.text
+        assert PUBLIC_NOTE not in resp.text
+
+
+def _bearer_for(world, *, status):
+    """A REAL account row and a real access token for it, so the request goes
+    through `get_optional_user` exactly as a browser's would — the status
+    check under test is that dependency's, not a stub's."""
+    from apps.api.models.user import User, UserStatus
+    from apps.api.services.auth_service import create_access_token
+
+    user = world["store"].put(User(
+        id=uuid.uuid4(), email=f"viewer-{uuid.uuid4().hex[:6]}@example.com",
+        first_name="Vera", last_name="Viewer", password_hash="x",
+        status=UserStatus(status), token_version=0,
+    ))
+    return {"Authorization": f"Bearer {create_access_token(str(user.id), 0)}"}
+
+
+class TestA_SecureLinkServesSignedInUsers:
+    @pytest.mark.parametrize("name", ENDPOINTS)
+    def test_signed_in_user_is_served(self, client, world, below_the_gate, name):
+        world["link"].visibility = "secure"
+        resp = _call(client, world, name, headers=_bearer_for(world, status="active"))
+        assert resp.status_code in (200, 201), resp.text
+
+    @pytest.mark.parametrize("name", ENDPOINTS)
+    def test_deactivated_user_is_refused(self, client, world, below_the_gate, name):
+        world["link"].visibility = "secure"
+        resp = _call(client, world, name, headers=_bearer_for(world, status="deactivated"))
+        assert resp.status_code in (401, 403), resp.text
+        assert SECRET_ASSET not in resp.text
+
+    def test_the_zip_byte_range_download_still_opens_for_a_secure_link(self, world):
+        """The one deliberate exception (`enforce_visibility=False`): that URL
+        is opened by the browser with no Authorization header and carries a
+        signed token minted by the zip poll route, which enforces visibility.
+        Refusing here would break every secure-link zip download."""
+        from unittest.mock import MagicMock
+
+        from apps.api.services.zip_download import authorise_export_download
+
+        world["link"].visibility = "secure"
+        db = MagicMock()
+        _wire(db, world["store"])
+        authorise_export_download(db, world["zip"], share_session=None)  # no raise
 
 
 # ── B. /details as a plain project viewer ───────────────────────────────────
@@ -706,31 +736,24 @@ class TestC_PublicProjectNonMember:
 
 # ── D. folder link, sibling folder outside it ───────────────────────────────
 #
-# No CONTENT leaks here — each test checks that first, and that part holds.
-# What fails is the status: 403 with "...not within the shared folder"
-# where an unknown id gets 404, so a token holder can tell a real folder or
-# asset id elsewhere in the project from a random one. The share-comment
-# routes already answer 404 for this (permissions.SHARE_NOT_FOUND, §234).
-
-_D_REASON = "403 not 404 for an id outside the shared folder: no content, but confirms the id exists"
-
+# No CONTENT ever leaked here. What was wrong was the status: 403 with
+# "...not within the shared folder", where an unknown id gets 404, so a
+# token holder could tell a real folder or asset id elsewhere in the project
+# from a random one. Now 404 SHARE_NOT_FOUND, as the share-comment routes.
 
 class TestD_FolderLinkStaysInsideItsFolder:
-    @pytest.mark.xfail(strict=True, reason=_D_REASON)
     def test_listing_a_sibling_folder_is_404(self, client, world, below_the_gate):
         t = world["link"].token
         resp = client.get(f"/share/{t}/assets", params={"folder_id": str(world["sibling"].id)})
         assert SIBLING_ASSET not in resp.text
         assert resp.status_code == 404, resp.text
 
-    @pytest.mark.xfail(strict=True, reason=_D_REASON)
     def test_streaming_a_sibling_asset_is_404(self, client, world, below_the_gate):
         t = world["link"].token
         resp = client.get(f"/share/{t}/stream/{world['sib_asset'].id}")
         assert "url" not in resp.json()
         assert resp.status_code == 404, resp.text
 
-    @pytest.mark.xfail(strict=True, reason=_D_REASON)
     def test_thumbnail_of_a_sibling_asset_is_404(self, client, world, below_the_gate):
         t = world["link"].token
         resp = client.get(f"/share/{t}/thumbnail/{world['sib_asset'].id}")

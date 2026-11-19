@@ -29,6 +29,7 @@ import { ShareFieldsPanel } from '@/components/share/share-fields-panel'
 import { useShareSidebar, type FieldsVisibility, type ShareSidebar } from '@/components/share/use-share-sidebar'
 import { DownloadMenu } from '@/components/share/download-menu'
 import { SharePlayer } from '@/components/share/share-player'
+import { setShareLinkVisibility, shareFetch } from '@/lib/share-fetch'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -644,7 +645,7 @@ function ShareViewer({
     }
     if (asset.asset_type !== 'video' && asset.asset_type !== 'audio') return
     setStreamLoading(true)
-    fetch(`${API_URL}/share/${token}/stream/${asset.id}`)
+    shareFetch(token, `${API_URL}/share/${token}/stream/${asset.id}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data?.stream_url) setStreamUrl(data.stream_url)
@@ -752,11 +753,11 @@ function FolderAssetViewer({
     let cancelled = false
     setLoading(true)
 
-    const streamPromise = fetch(`${API_URL}/share/${token}/stream/${assetId}`)
+    const streamPromise = shareFetch(token, `${API_URL}/share/${token}/stream/${assetId}`)
       .then((r) => (r.ok ? r.json() : null))
       .catch(() => null)
 
-    const thumbPromise = fetch(`${API_URL}/share/${token}/thumbnail/${assetId}`)
+    const thumbPromise = shareFetch(token, `${API_URL}/share/${token}/thumbnail/${assetId}`)
       .then((r) => {
         if (!r.ok) return null
         const contentType = r.headers.get('content-type')
@@ -905,6 +906,10 @@ export default function SharePage({
         setState({ stage: 'invalid' })
         return
       }
+
+      // Secure links send the viewer's session on every later share request
+      // (lib/share-fetch). Recorded before any of those components render.
+      setShareLinkVisibility(token, data.visibility)
 
       // Store share session from password-protected link validation
       if (data.share_session) {
