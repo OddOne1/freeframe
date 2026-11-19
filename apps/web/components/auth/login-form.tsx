@@ -10,6 +10,7 @@ import {
 } from '@/lib/auth'
 import { useAuthStore } from '@/stores/auth-store'
 import { useSiteSettings } from '@/hooks/use-site-settings'
+import { DEFAULT_LANDING_PATH, safeNext } from '@/lib/safe-next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { CodeInput, EMPTY_CODE } from '@/components/auth/code-input'
@@ -149,6 +150,24 @@ export function LoginForm() {
     await completeLogin(res)
   }
 
+  /**
+   * Where a finished sign-in lands: the `?from=` that `middleware.ts` or a
+   * secure share link's sign-in prompt put on /login, through `safeNext`,
+   * or DEFAULT_LANDING_PATH (/projects). Read at the END rather than on
+   * mount because every step of this form — email, code, 2FA, password —
+   * happens on /login itself, so the query string is still there.
+   *
+   * Not carried through forced 2FA enrolment: that deliberately signs the
+   * user out (`handleBackupCodesSaved` → clearTokens → plain /login).
+   */
+  function landingPath(): string {
+    const from =
+      typeof window === 'undefined'
+        ? null
+        : new URLSearchParams(window.location.search).get('from')
+    return safeNext(from, DEFAULT_LANDING_PATH)
+  }
+
   /** Tokens in hand: the end of every path through this form. */
   async function completeLogin(res: VerifyCodeResponse) {
     setTokens(res.access_token, res.refresh_token)
@@ -157,7 +176,7 @@ export function LoginForm() {
       return
     }
     await useAuthStore.getState().fetchUser()
-    router.replace('/projects')
+    router.replace(landingPath())
   }
 
   // ─── Step 1: Send magic code ──────────────────────────────────────────────
@@ -263,7 +282,7 @@ export function LoginForm() {
       })
       setTokens(res.access_token, res.refresh_token)
       await useAuthStore.getState().fetchUser()
-      router.replace('/projects')
+      router.replace(landingPath())
     } catch (err) {
       if (err instanceof ApiError) {
         setGeneralError(err.detail)

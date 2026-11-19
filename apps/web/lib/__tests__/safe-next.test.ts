@@ -100,6 +100,10 @@ describe('safeNext keeps a real target', () => {
   it('keeps the root', () => {
     expect(safeNext('/')).toBe('/')
   })
+
+  it('keeps a share link, the target of the secure-link sign-in prompt', () => {
+    expect(safeNext('/share/abc123')).toBe('/share/abc123')
+  })
 })
 
 describe('safeNext falls back when there is nothing to use', () => {

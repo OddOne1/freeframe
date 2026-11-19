@@ -15,7 +15,7 @@
  * shown and gate the redirect, and magic-code sign-in is not offered on an
  * instance whose API refuses it (§195).
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { SiteSettingsResponse } from '@/types'
@@ -414,5 +414,49 @@ describe('magic-code sign-in is not offered when the instance requires 2FA', () 
 
     expect(screen.queryByRole('button', { name: /send magic code/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^sign in$/i })).toBeNull()
+  })
+})
+
+// ── where a finished sign-in lands ──────────────────────────────────────────
+//
+// Every step of this form happens on /login itself, so a `?from=` put there
+// by middleware.ts or a secure share link's sign-in prompt is still in the
+// URL at the end. It used to be ignored: every login landed on /projects.
+
+describe('the ?from= target survives the whole sign-in', () => {
+  afterEach(() => {
+    window.history.replaceState({}, '', '/')
+  })
+
+  it('email -> magic code -> 2FA code lands on the share link it came from', async () => {
+    window.history.replaceState({}, '', '/login?from=%2Fshare%2Fabc123')
+    const user = userEvent.setup()
+    vi.mocked(api.post)
+      .mockResolvedValueOnce({ message: 'sent' })
+      .mockResolvedValueOnce(challenge({ method: 'email', email_code_sent: true }))
+      .mockResolvedValueOnce(TOKENS)
+    render(<LoginForm />)
+
+    await user.type(screen.getByLabelText(/email address/i), 'u@example.com')
+    await user.click(screen.getByRole('button', { name: /send magic code/i }))
+    await screen.findByText(/we sent a 6-digit code/i)
+    await typeCode(user, '123456')
+    await screen.findByText(/we sent a 6-digit code to u@example.com/i)
+    await typeCode(user, '654321')
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/share/abc123'))
+  })
+
+  it('an off-site target is refused and the login lands on /projects', async () => {
+    window.history.replaceState({}, '', '/login?from=%2F%2Fevil.com')
+    const user = userEvent.setup()
+    vi.mocked(api.post).mockResolvedValueOnce(TOKENS)
+    render(<LoginForm />)
+
+    await user.click(screen.getByRole('button', { name: /sign in with password/i }))
+    await signInWithPassword(user)
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/projects'))
+    expect(replace).not.toHaveBeenCalledWith('//evil.com')
   })
 })

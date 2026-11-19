@@ -69,6 +69,20 @@ interface ShareValidateResponse {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
+/**
+ * The secure-link sign-in prompt's target: /login, told to come back here.
+ *
+ * Built from the route's token alone — never from `window.location` or
+ * anything else a visitor can shape — and percent-encoded twice over: the
+ * token as a path segment, then the whole path as the `from` value. The
+ * login form still runs it through `safeNext` before following it.
+ *
+ * Not exported: a Next page module may only export what Next defines.
+ */
+function signInHrefFor(token: string): string {
+  return `/login?from=${encodeURIComponent(`/share/${encodeURIComponent(token)}`)}`
+}
+
 async function fetchShareInfo(
   token: string,
   password?: string,
@@ -1014,7 +1028,7 @@ export default function SharePage({
             This link is private. Please sign in to view the shared content.
           </p>
           <a
-            href="/login"
+            href={signInHrefFor(token)}
             className="mt-4 inline-flex w-full items-center justify-center rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white hover:bg-accent/90 transition-colors"
           >
             Sign in to continue
