@@ -543,7 +543,6 @@ class TestA_SecureLinkRefusesAnonymous:
 # ── B. /details as a plain project viewer ───────────────────────────────────
 
 class TestB_DetailsDoesNotHandViewersThePassword:
-    @pytest.mark.xfail(strict=True, reason="a project VIEWER gets the link password back decrypted, in password_value")
     def test_viewer_does_not_receive_the_password(self, client, world, auth_headers, test_user):
         from apps.api.models.project import ProjectMember, ProjectRole
         from apps.api.services.crypto_service import encrypt_password
@@ -563,6 +562,105 @@ class TestB_DetailsDoesNotHandViewersThePassword:
         if resp.status_code == 200:
             assert resp.json().get("password_value") in (None, "")
             assert "password_encrypted" not in resp.json()
+
+
+class TestB_WhoMaySeeThePassword:
+    """The fix for B: `password_value` goes to the link's creator, the
+    project's owner/admin and superadmins only — on /details and on the
+    PATCH response, which share one builder. Everyone else reads
+    `has_password`."""
+
+    def _protect(self, world):
+        from apps.api.services.crypto_service import encrypt_password
+
+        link = world["link"]
+        link.password_hash = "$2b$12$notarealhashbutnonempty000000000000000000000000000000"
+        link.password_encrypted = encrypt_password(LINK_PASSWORD)
+        return link
+
+    def _join(self, world, user, role):
+        from apps.api.models.project import ProjectMember, ProjectRole
+
+        world["store"].put(ProjectMember(
+            id=uuid.uuid4(), project_id=world["project"].id,
+            user_id=user.id, role=ProjectRole(role),
+        ))
+
+    @pytest.mark.parametrize("role", ["viewer", "reviewer", "editor"])
+    def test_below_admin_gets_has_password_but_not_the_password(
+        self, client, world, auth_headers, test_user, role
+    ):
+        link = self._protect(world)
+        self._join(world, test_user, role)
+        resp = client.get(f"/share/{link.token}/details", headers=auth_headers)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["has_password"] is True
+        assert body["password_value"] is None
+        assert LINK_PASSWORD not in resp.text
+
+    @pytest.mark.parametrize("role", ["owner", "admin"])
+    def test_project_owner_and_admin_get_the_password(
+        self, client, world, auth_headers, test_user, role
+    ):
+        link = self._protect(world)
+        self._join(world, test_user, role)
+        body = client.get(f"/share/{link.token}/details", headers=auth_headers).json()
+        assert body["has_password"] is True
+        assert body["password_value"] == LINK_PASSWORD
+
+    def test_link_creator_gets_the_password_even_as_a_viewer(
+        self, client, world, auth_headers, test_user
+    ):
+        link = self._protect(world)
+        link.created_by = test_user.id
+        self._join(world, test_user, "viewer")
+        body = client.get(f"/share/{link.token}/details", headers=auth_headers).json()
+        assert body["password_value"] == LINK_PASSWORD
+
+    def test_superadmin_gets_the_password(self, client, world, auth_headers, test_user):
+        from apps.api.models.user import UserGlobalRole
+
+        link = self._protect(world)
+        test_user.role = UserGlobalRole.superadmin
+        self._join(world, test_user, "viewer")
+        body = client.get(f"/share/{link.token}/details", headers=auth_headers).json()
+        assert body["password_value"] == LINK_PASSWORD
+
+    def test_has_password_is_false_without_a_passphrase(
+        self, client, world, auth_headers, test_user
+    ):
+        self._join(world, test_user, "owner")
+        body = client.get(f"/share/{world['link'].token}/details", headers=auth_headers).json()
+        assert body["has_password"] is False
+        assert body["password_value"] is None
+
+    def test_a_removed_member_is_refused_outright(self, client, world, auth_headers, test_user):
+        """No membership row at all: the /details gate itself answers 403."""
+        link = self._protect(world)
+        resp = client.get(f"/share/{link.token}/details", headers=auth_headers)
+        assert resp.status_code == 403
+        assert LINK_PASSWORD not in resp.text
+
+    def test_patch_response_follows_the_same_rule_for_an_editor(
+        self, client, world, auth_headers, test_user
+    ):
+        link = self._protect(world)
+        self._join(world, test_user, "editor")
+        resp = client.patch(f"/share/{link.token}", json={"title": "Renamed"}, headers=auth_headers)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["has_password"] is True
+        assert resp.json()["password_value"] is None
+        assert LINK_PASSWORD not in resp.text
+
+    def test_patch_response_still_carries_it_for_the_owner(
+        self, client, world, auth_headers, test_user
+    ):
+        link = self._protect(world)
+        self._join(world, test_user, "owner")
+        resp = client.patch(f"/share/{link.token}", json={"title": "Renamed"}, headers=auth_headers)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["password_value"] == LINK_PASSWORD
 
 
 # ── C. public project, logged-in non-member (documents behaviour) ───────────

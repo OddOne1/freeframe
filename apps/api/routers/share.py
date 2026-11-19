@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..middleware.auth import get_current_user, get_optional_user
 from ..middleware.rate_limit import rate_limit
-from ..models.user import User
+from ..models.user import User, UserGlobalRole
 from ..models.asset import Asset
 from ..models.folder import Folder
 from ..models.share import (
@@ -59,6 +59,7 @@ from ..schemas.share import (
 )
 from ..services.permissions import (
     asset_is_in_share_scope,
+    get_project_member,
     is_descendant_of,
     require_project_role,
     validate_share_link,
@@ -518,11 +519,41 @@ def validate_share_link_endpoint(
     )
 
 
-def _share_link_response(link: ShareLink) -> ShareLinkResponse:
-    """Build ShareLinkResponse from ORM model, computing has_password and decrypting password."""
+def _may_read_link_password(
+    db: Session, link: ShareLink, project_id: uuid.UUID, user: User
+) -> bool:
+    """Who may see a link's passphrase in clear: the link's creator, the
+    project's owner or admin ("Manager"), or a superadmin.
+
+    The passphrase is stored reversibly (`password_encrypted`) so the
+    settings panel can show it back to the people who manage the link.
+    `/details` itself only requires a project VIEWER, and it used to decrypt
+    the passphrase for every one of them — so anyone who could open the
+    settings panel could read the secret of a password-protected link.
+    Editors are deliberately not included: they may still SET or clear the
+    passphrase (PATCH requires editor), they just are not shown the current
+    one unless they created the link.
+    """
+    if link.created_by is not None and link.created_by == user.id:
+        return True
+    if user.role == UserGlobalRole.superadmin:
+        return True
+    member = get_project_member(db, project_id, user.id)
+    return member is not None and member.role in (ProjectRole.owner, ProjectRole.admin)
+
+
+def _share_link_response(link: ShareLink, *, reveal_password: bool) -> ShareLinkResponse:
+    """Build ShareLinkResponse from the ORM row.
+
+    `has_password` is always computed. `password_value` (the decrypted
+    passphrase) is filled only when `reveal_password` is True, which the
+    caller decides with `_may_read_link_password` — keyword-only with no
+    default, so a new caller has to make that decision explicitly.
+    """
     response = ShareLinkResponse.model_validate(link)
     response.has_password = link.password_hash is not None and link.password_hash != ''
-    if link.password_encrypted:
+    response.password_value = None
+    if reveal_password and link.password_encrypted:
         try:
             response.password_value = decrypt_password(link.password_encrypted)
         except Exception:
@@ -547,7 +578,10 @@ def get_share_link_details(
         raise HTTPException(status_code=404, detail="Share link not found")
     project_id = _get_project_id_from_link(db, link)
     require_project_role(db, project_id, current_user, ProjectRole.viewer)
-    return _share_link_response(link)
+    return _share_link_response(
+        link,
+        reveal_password=_may_read_link_password(db, link, project_id, current_user),
+    )
 
 
 # ── PATCH share link ─────────────────────────────────────────────────────────
@@ -620,7 +654,12 @@ def update_share_link(
     if turning_off or downloads_revoked:
         _purge_link_zips(link.id)
 
-    return _share_link_response(link)
+    # Same rule as /details: an editor may change the passphrase but is not
+    # handed back the current one unless they may read it there too.
+    return _share_link_response(
+        link,
+        reveal_password=_may_read_link_password(db, link, project_id, current_user),
+    )
 
 
 @router.delete("/share/{token}", status_code=status.HTTP_204_NO_CONTENT)

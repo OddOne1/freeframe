@@ -98,7 +98,10 @@ class ShareLinkResponse(BaseModel):
     expires_at: Optional[datetime] = None
     created_at: datetime
     has_password: bool = False
-    password_value: Optional[str] = None  # Decrypted password for admin display only
+    # Decrypted passphrase. Filled ONLY for the link's creator, the project's
+    # owner/admin and superadmins (routers/share.py::_may_read_link_password);
+    # null for everyone else, who read `has_password` instead.
+    password_value: Optional[str] = None
     model_config = {"from_attributes": True}
 
 

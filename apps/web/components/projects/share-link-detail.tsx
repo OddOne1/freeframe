@@ -856,13 +856,32 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
     appearance.theme === "light" ? "light" : "dark",
   );
 
+  // A different link: never carry one link's typed passphrase into another.
+  React.useEffect(() => {
+    setLocalPassword("");
+  }, [token]);
+
   React.useEffect(() => {
     if (shareLink) {
       setPasswordEnabled(shareLink.has_password ?? false);
-      setLocalPassword(shareLink.password_value || "");
+      // `password_value` is only sent to the link's creator and the
+      // project's owner/admin. For anyone else it is null even while a
+      // passphrase is set, so null must not overwrite the field: every
+      // save re-fetches this record, and resetting to "" here would blank
+      // an editor's input mid-typing — and the next keystroke would then
+      // save a truncated passphrase.
+      if (shareLink.password_value != null) {
+        setLocalPassword(shareLink.password_value);
+      } else if (!shareLink.has_password) {
+        setLocalPassword("");
+      }
       setLocalAccentColor(shareLink.appearance?.accent_color || "");
     }
   }, [shareLink]);
+
+  // A passphrase exists but this viewer is not shown it.
+  const passwordHidden =
+    !!shareLink?.has_password && shareLink.password_value == null;
 
   const shareUrl =
     typeof window !== "undefined"
@@ -1076,7 +1095,11 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
                         password: e.target.value.trim() || null,
                       });
                     }}
-                    placeholder="Enter passphrase"
+                    placeholder={
+                      passwordHidden
+                        ? "Passphrase set — type to replace it"
+                        : "Enter passphrase"
+                    }
                     className="w-full rounded-md border border-border bg-bg-tertiary px-3 py-2 pr-12 text-sm text-text-primary placeholder:text-text-tertiary outline-none focus:border-accent/50"
                   />
                   <button

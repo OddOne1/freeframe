@@ -583,6 +583,9 @@ export interface ShareLink {
   created_at: string;
   deleted_at: string | null;
   has_password: boolean;
+  /** The decrypted passphrase. Sent only to the link's creator, the
+     project's owner/admin and superadmins; `null` for everyone else even
+     when `has_password` is true, so `null` does NOT mean "no passphrase". */
   password_value: string | null;
 }
 
