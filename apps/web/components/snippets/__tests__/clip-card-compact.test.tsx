@@ -80,6 +80,7 @@ function Harness({
 }
 
 const classes = (el: Element) => el.className.split(/\s+/)
+const follows = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
 const topicNames = () =>
   within(screen.getByTestId('clip-topics'))
     .getAllByRole('button', { pressed: false })
@@ -115,16 +116,15 @@ describe('closed card layout', () => {
     const timeline = screen.getByTestId('clip-timeline')
     expect(classes(header)).toEqual(expect.arrayContaining(['clip-wide:col-start-2', 'clip-wide:row-start-1']))
     expect(classes(details)).toEqual(expect.arrayContaining(['clip-wide:col-start-2', 'clip-wide:row-start-2']))
-    expect(classes(controls)).toEqual(
-      expect.arrayContaining(['clip-wide:col-start-2', 'clip-wide:row-start-3', 'clip-wide:self-end']),
-    )
+    expect(classes(controls)).toEqual(expect.arrayContaining(['clip-wide:col-start-2', 'clip-wide:row-start-3']))
     // Everything but the frame and the timeline is in the right column.
     for (const part of Array.from(layout.children)) {
       if (part === thumb || part === timeline) continue
       expect(classes(part)).toContain('clip-wide:col-start-2')
     }
     // The timeline: a row of its own under both columns, the full width of the card.
-    expect(classes(layout)).toContain('clip-wide:grid-rows-[auto_auto_1fr_auto]')
+    // The details row (second) is the flexible one: the quote takes its free space.
+    expect(classes(layout)).toContain('clip-wide:grid-rows-[auto_minmax(0,1fr)_auto_auto]')
     expect(classes(timeline)).toEqual(expect.arrayContaining(['row-start-4', 'clip-wide:col-span-2']))
     expect(timeline.className).not.toMatch(/col-start/)
     expect(within(timeline).getByRole('slider', { name: 'In point' })).toBeInTheDocument()
@@ -151,21 +151,55 @@ describe('closed card layout', () => {
     expect(classes(screen.getByTestId('clip-controls'))).toContain('row-start-5')
   })
 
-  it('clamps the title to two lines and the quote to three, in small type', () => {
+  it('clamps the title to two lines, in small type', () => {
     render(<Harness />)
     expect(classes(screen.getByRole('button', { name: 'A clip' }))).toContain('line-clamp-2')
     expect(classes(screen.getByRole('heading', { name: 'A clip' }))).not.toContain('sm:text-base')
-    const quote = screen.getByText(/Something said\./)
-    expect(classes(quote)).toEqual(expect.arrayContaining(['line-clamp-3', 'text-xs']))
   })
 
-  it('keeps the badges on one row', () => {
-    render(<Harness />)
+  it('lets the quote fill the free space at the end of the details, above the controls', () => {
+    render(<Harness clip={{ ...base, topics: ['climate'], viral_score: 0.5 }} />)
+    const details = screen.getByTestId('clip-details')
+    const box = screen.getByTestId('clip-quote')
+    const quote = within(box).getByText(/Something said\./)
+    // Last in the details, after the topics and the badges, and the flexible part of a column.
+    expect(details.lastElementChild).toBe(box)
+    expect(classes(details)).toEqual(expect.arrayContaining(['flex', 'flex-col']))
+    expect(follows(screen.getByTestId('clip-topics'), box)).toBe(true)
+    expect(follows(screen.getByTestId('clip-badges'), box)).toBe(true)
+    expect(classes(box)).toEqual(expect.arrayContaining(['relative', 'flex-1', 'min-h-0']))
+    // Beside the frame: placed over the whole box (so it never makes the card
+    // taller), cut off rather than clamped to a fixed number of lines.
+    expect(classes(quote)).toEqual(
+      expect.arrayContaining(['overflow-hidden', 'clip-wide:absolute', 'clip-wide:inset-0', 'clip-wide:max-h-none', 'text-xs']),
+    )
+    expect(quote.className).not.toMatch(/line-clamp/)
+  })
+
+  it('keeps the badges on one row, without the source and the quality score', () => {
+    render(<Harness clip={{ ...base, viral_score: 0.6 }} />)
     const badges = screen.getByTestId('clip-badges')
     expect(classes(badges)).toContain('flex-nowrap')
+    expect(badges).not.toHaveTextContent('imported')
+    expect(badges).not.toHaveTextContent('Q80')
+    expect(badges).toHaveTextContent('V60')
+    expect(badges).toHaveTextContent('edited')
+  })
+
+  it('shows "imported" and the quality score once opened', () => {
+    render(<Harness initiallyOpen />)
+    const badges = screen.getByTestId('clip-badges')
     expect(badges).toHaveTextContent('imported')
     expect(badges).toHaveTextContent('Q80')
     expect(badges).toHaveTextContent('edited')
+    expect(badges).toHaveTextContent('Suggested')
+  })
+
+  it('has no "imported" or quality score anywhere on the closed card', () => {
+    render(<Harness />)
+    const card = screen.getByRole('article', { name: 'A clip' })
+    expect(within(card).queryByText('imported')).toBeNull()
+    expect(within(card).queryByTitle(/^Quality:/)).toBeNull()
   })
 
   it('gives the header and review buttons 32 px targets', () => {

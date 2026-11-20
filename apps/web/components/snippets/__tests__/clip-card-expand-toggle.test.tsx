@@ -1,6 +1,6 @@
 /**
- * The expand button at the end of a card's title row: the same toggle as the
- * title, for viewers too. It swaps its icon and label with the state, stays
+ * The expand button at the end of a card's title row: the card's one toggle
+ * (the title renames instead), for viewers too. It swaps its icon and label with the state, stays
  * the focused element, and neither plays nor saves anything.
  */
 import * as React from 'react'
@@ -90,8 +90,8 @@ describe('ClipCard expand toggle', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     expect(toggle).toHaveAttribute('title', 'Collapse')
     expect(screen.getByRole('complementary', { name: 'Transcript' })).toBeInTheDocument()
-    // The title says the same thing.
-    expect(screen.getByRole('button', { name: 'A clip' })).toHaveAttribute('aria-expanded', 'true')
+    // The title is not a second toggle any more.
+    expect(screen.getByRole('heading', { name: 'A clip' }).querySelector('[aria-expanded]')).toBeNull()
     // One element in both states: focus did not go anywhere.
     expect(toggle).toHaveFocus()
 

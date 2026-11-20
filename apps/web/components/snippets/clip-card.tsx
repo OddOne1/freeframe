@@ -123,9 +123,10 @@ export interface ClipCardProps {
  * one (see createPlayerGroup). Edits go into a local draft at once and are
  * saved 600 ms after the last change, merged into one PATCH.
  *
- * Clicking the title, or the expand button at the end of the title row, opens
- * the card across the row with the transcript beside the player; clicking
- * either again closes it. The rest of the card does not open it.
+ * The expand button at the end of the title row (or `e`) opens the card
+ * across the row with the transcript beside the player; pressing it again
+ * closes it. Nothing else on the card opens it: clicking the title renames
+ * the clip in place for those who may edit it, and does nothing for viewers.
  */
 export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
   const { cardKey, clip, projectId, canEdit, speakers, activeTopics, active, expanded, group, onTopic, onToggleExpand } =
@@ -244,6 +245,9 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
   // ── Keyboard and Undo, driven by the page ────────────────────────────────
   const runRef = React.useRef<(a: ShortcutAction) => boolean>(() => false)
   runRef.current = (a) => {
+    // The title field takes every key while it is open (the page skips text
+    // fields already; this holds even if a key arrives from elsewhere).
+    if (editingTitleRef.current) return false
     const m = active ? mediaRef.current : null
     switch (a.type) {
       case 'toggle-play':
@@ -326,14 +330,84 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
     [transcriptSWR.data],
   )
 
-  // ── Title ────────────────────────────────────────────────────────────────
-  const [editingTitle, setEditingTitle] = React.useState(false)
+  // ── Title: edited in place ───────────────────────────────────────────────
+  // Clicking the title or the pencil starts; the pencil turns into a check.
+  // Enter or the check saves (and stays in the field if the save fails);
+  // Escape or clicking anywhere else puts the old title back.
+  const [editingTitle, setEditingTitleState] = React.useState(false)
+  const editingTitleRef = React.useRef(false)
+  const setEditingTitle = (on: boolean) => {
+    editingTitleRef.current = on
+    setEditingTitleState(on)
+  }
+  const [titleValue, setTitleValue] = React.useState('')
+  const titleValueRef = React.useRef('')
+  titleValueRef.current = titleValue
+  const [titleSaving, setTitleSavingState] = React.useState(false)
+  const titleSavingRef = React.useRef(false)
+  const setTitleSaving = (on: boolean) => {
+    titleSavingRef.current = on
+    setTitleSavingState(on)
+  }
+  const [titleError, setTitleError] = React.useState<unknown>(null)
+  /** The title's height when editing started: a two-line title keeps its room. */
+  const [titleMinHeight, setTitleMinHeight] = React.useState<number | undefined>(undefined)
+  /** The title as it was when editing started, for Escape and clicking away. */
+  const titleBefore = React.useRef<string | null>(null)
+  const titleHeadingRef = React.useRef<HTMLHeadingElement>(null)
   const titleBtnRef = React.useRef<HTMLButtonElement>(null)
+  const titleInputRef = React.useRef<HTMLInputElement>(null)
+  /** Finished from the keyboard or the check: focus goes back to the title.
+   *  Clicking away leaves focus where the click put it. */
+  const titleFocusBack = React.useRef(false)
   const wasEditing = React.useRef(false)
   React.useEffect(() => {
-    if (wasEditing.current && !editingTitle) titleBtnRef.current?.focus()
+    if (wasEditing.current && !editingTitle && titleFocusBack.current) titleBtnRef.current?.focus()
     wasEditing.current = editingTitle
   }, [editingTitle])
+
+  const startTitleEdit = () => {
+    if (!editable || editingTitleRef.current) return
+    titleBefore.current = draftRef.current.title
+    setTitleValue(draftRef.current.title ?? '')
+    setTitleError(null)
+    setTitleMinHeight(titleHeadingRef.current?.getBoundingClientRect().height || undefined)
+    setEditingTitle(true)
+  }
+  const endTitleEdit = (focusBack: boolean) => {
+    titleFocusBack.current = focusBack
+    setTitleSaving(false)
+    setTitleError(null)
+    setEditingTitle(false)
+  }
+  const cancelTitleEdit = (focusBack: boolean) => {
+    if (!editingTitleRef.current || titleSavingRef.current) return
+    // Only a save that failed has changed the draft; put the old title back.
+    if (draftRef.current.title !== titleBefore.current) change({ title: titleBefore.current })
+    endTitleEdit(focusBack)
+  }
+  const saveTitleEdit = async () => {
+    if (!editingTitleRef.current || titleSavingRef.current) return
+    const t = titleValueRef.current.trim()
+    // An empty title is not saved (as before): the old one stays.
+    if (!t) return cancelTitleEdit(true)
+    // Nothing changed and nothing waiting to be retried.
+    if (t === titleBefore.current && draftRef.current.title === t) return endTitleEdit(true)
+    change({ title: t })
+    setTitleSaving(true)
+    setTitleError(null)
+    // A save already running sends ours after it; wait for both.
+    for (let i = 0; i < 5 && saver.busy() && saver.status().state !== 'error'; i++) await saver.flush()
+    if (!editingTitleRef.current) return
+    const s = saver.status()
+    if (s.state === 'error') {
+      setTitleSaving(false)
+      setTitleError(s.error ?? new Error('Not saved'))
+      titleInputRef.current?.focus()
+      return
+    }
+    endTitleEdit(true)
+  }
 
   // ── Topics: the closed card shows the first few, the rest behind "+N" ──
   const [allTopics, setAllTopics] = React.useState(false)
@@ -445,7 +519,9 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
               // controls sit at the bottom. Below both, the timeline across
               // the whole card. A card narrower than that stacks: the frame
               // on top, the rest below it.
-              'gap-x-3 gap-y-2 p-3 grid-cols-1 clip-wide:grid-cols-[12.5rem_minmax(0,1fr)] clip-wide:grid-rows-[auto_auto_1fr_auto]',
+              // The details row is the flexible one: the quote at its end
+              // fills what the frame leaves free (see ClipQuote).
+              'gap-x-3 gap-y-2 p-3 grid-cols-1 clip-wide:grid-cols-[12.5rem_minmax(0,1fr)] clip-wide:grid-rows-[auto_minmax(0,1fr)_auto_auto]',
         )}
       >
         {/* Title row: first in the card in both states. Closed, it sits right
@@ -462,54 +538,125 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
           data-testid="clip-header"
           data-clip-header=""
         >
-          {editingTitle ? (
-            <TitleInput
-              initial={draft.title ?? ''}
-              onCancel={() => setEditingTitle(false)}
-              onSave={(t) => {
-                setEditingTitle(false)
-                if (t && t !== draft.title) {
-                  change({ title: t })
-                  void saver.flush()
-                }
-              }}
-            />
-          ) : (
-            <h3 className={cn('min-w-0 flex-1 text-sm font-semibold leading-snug', expanded && 'sm:text-base')}>
-              <button
-                ref={titleBtnRef}
-                type="button"
-                onClick={() => onToggleExpand(cardKey)}
-                aria-expanded={expanded}
-                title={expanded ? 'Close the transcript' : 'Open with the transcript'}
+          {/* The title and its pencil. While editing, every key stays in
+              here (no shortcuts, Escape only cancels), and focus leaving
+              for anything outside puts the old title back. */}
+          <div
+            className="flex min-w-0 flex-1 items-start gap-1"
+            data-testid="clip-title"
+            onKeyDown={(e) => {
+              if (!editingTitleRef.current) return
+              e.stopPropagation()
+              if (e.key === 'Escape') {
+                e.preventDefault()
+                cancelTitleEdit(true)
+              }
+            }}
+            onKeyUp={(e) => {
+              if (editingTitleRef.current) e.stopPropagation()
+            }}
+            onBlur={(e) => {
+              if (!editingTitleRef.current) return
+              if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return
+              cancelTitleEdit(false)
+            }}
+          >
+            {editingTitle ? (
+              <div className="min-w-0 flex-1" style={{ minHeight: titleMinHeight }}>
+                <input
+                  ref={titleInputRef}
+                  autoFocus
+                  value={titleValue}
+                  maxLength={255}
+                  readOnly={titleSaving}
+                  aria-busy={titleSaving || undefined}
+                  aria-invalid={titleError ? true : undefined}
+                  aria-describedby={titleError ? `${cardKey}-title-error` : undefined}
+                  onFocus={(e) => e.currentTarget.select()}
+                  onChange={(e) => setTitleValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                      e.preventDefault()
+                      void saveTitleEdit()
+                    }
+                  }}
+                  aria-label="Clip title"
+                  // The title's own type and width, so nothing moves.
+                  className={cn(
+                    'block w-full min-w-0 rounded-sm border-0 bg-transparent p-0 text-sm font-semibold leading-snug text-text-primary outline-none ring-1 ring-border-focus ring-offset-2 ring-offset-bg-secondary',
+                    expanded && 'sm:text-base',
+                  )}
+                />
+                {titleError != null && (
+                  <p id={`${cardKey}-title-error`} role="alert" className="mt-1.5 text-2xs text-status-error">
+                    Not saved: {errorMessage(titleError, 'the server refused the title.')}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <h3
+                ref={titleHeadingRef}
                 className={cn(
-                  'rounded text-left underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                  'min-w-0 flex-1 text-sm font-semibold leading-snug',
+                  expanded && 'sm:text-base',
                   isMoment ? 'text-text-secondary' : 'text-text-primary',
-                  !expanded && 'line-clamp-2',
                 )}
               >
-                {heading}
+                {editable ? (
+                  <button
+                    ref={titleBtnRef}
+                    type="button"
+                    onClick={startTitleEdit}
+                    title="Rename"
+                    className={cn(
+                      'cursor-text rounded text-left hover:underline hover:decoration-dotted underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                      !expanded && 'line-clamp-2',
+                    )}
+                  >
+                    {heading}
+                  </button>
+                ) : (
+                  <span className={cn('block', !expanded && 'line-clamp-2')}>{heading}</span>
+                )}
+              </h3>
+            )}
+            {editable && (
+              // One button for both: the pencil starts, the check saves.
+              <button
+                type="button"
+                onClick={() => (editingTitleRef.current ? void saveTitleEdit() : startTitleEdit())}
+                // Keeps focus in the field: otherwise its blur (which comes
+                // before the click) would read as clicking away and discard.
+                onMouseDown={(e) => {
+                  if (editingTitleRef.current) e.preventDefault()
+                }}
+                disabled={titleSaving}
+                aria-label={editingTitle ? (titleSaving ? 'Saving title' : 'Save title') : 'Rename clip'}
+                title={editingTitle ? 'Save (Enter)' : 'Rename'}
+                data-testid="clip-title-action"
+                className={cn(
+                  'flex shrink-0 items-center justify-center rounded transition-opacity hover:bg-bg-hover focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-wait',
+                  editingTitle
+                    ? 'text-accent opacity-100'
+                    : 'text-text-tertiary opacity-60 hover:text-text-primary hover:opacity-100 group-hover/card:opacity-100 hover-none:opacity-100',
+                  // Closed: a 32 px target whose negative margin keeps the
+                  // title row as short as the title.
+                  expanded ? 'h-6 w-6 hover-none:h-9 hover-none:w-9' : '-my-1.5 h-8 w-8 hover-none:h-10 hover-none:w-10',
+                )}
+              >
+                {titleSaving ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                ) : editingTitle ? (
+                  <Check className="h-3.5 w-3.5" aria-hidden />
+                ) : (
+                  <Pencil className="h-3.5 w-3.5" aria-hidden />
+                )}
               </button>
-            </h3>
-          )}
-          {editable && !editingTitle && (
-            <button
-              type="button"
-              onClick={() => setEditingTitle(true)}
-              aria-label="Rename clip"
-              title="Rename"
-              className={cn(
-                'flex shrink-0 items-center justify-center rounded text-text-tertiary opacity-60 transition-opacity hover:bg-bg-hover hover:text-text-primary hover:opacity-100 group-hover/card:opacity-100 hover-none:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
-                // Closed: a 32 px target whose negative margin keeps the
-                // title row as short as the title.
-                expanded ? 'h-6 w-6 hover-none:h-9 hover-none:w-9' : '-my-1.5 h-8 w-8 hover-none:h-10 hover-none:w-10',
-              )}
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </button>
-          )}
-          {/* The same toggle as the title, for everyone (it edits nothing).
-              One element in both states, so focus stays on it. Opened and
+            )}
+          </div>
+          {/* Opens and closes the card, for everyone (it edits nothing; the
+              title no longer does this). One element in both states, so
+              focus stays on it. Opened and
               below `sm` it is a 44 px target; closed, 32 px. Either way
               negative margins keep the title row as short as the title. */}
           <button
@@ -624,7 +771,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
             'min-w-0',
             expanded
               ? 'space-y-2 lg:col-start-1 lg:row-start-3'
-              : 'space-y-1.5 row-start-3 clip-wide:col-start-2 clip-wide:row-start-2',
+              : 'flex flex-col gap-1.5 row-start-3 clip-wide:col-start-2 clip-wide:row-start-2',
           )}
         >
           {/* Speaker · file · where the clip starts */}
@@ -666,15 +813,6 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
             <p className="-mt-1 text-2xs text-text-tertiary" role="status">
               {assignApi.note}
             </p>
-          )}
-
-          {clip.quote && !expanded && (
-            <blockquote
-              title={clip.quote}
-              className="line-clamp-3 border-l-2 border-border pl-2.5 text-xs leading-normal text-text-secondary"
-            >
-              &ldquo;{clip.quote}&rdquo;
-            </blockquote>
           )}
 
           {(draft.topics.length > 0 || editable) && (
@@ -761,7 +899,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
             </ul>
           )}
 
-          {(clip.source || clip.quality_score != null || clip.viral_score != null || clip.user_edited || expanded) && (
+          {(expanded || clip.viral_score != null || clip.user_edited) && (
             <div
               data-testid="clip-badges"
               className={cn(
@@ -771,12 +909,15 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
               )}
             >
               {expanded && draft.status && <StatusPill status={draft.status} />}
-              {clip.source && <SourceBadge source={clip.source} generator={clip.generator} />}
-              <ScoreBadge label="Q" title="Quality" score={clip.quality_score} />
+              {/* Where the clip came from and its quality score: opened cards only. */}
+              {expanded && clip.source && <SourceBadge source={clip.source} generator={clip.generator} />}
+              {expanded && <ScoreBadge label="Q" title="Quality" score={clip.quality_score} />}
               <ScoreBadge label="V" title="Viral" score={clip.viral_score} />
               {clip.user_edited && <EditedPill />}
             </div>
           )}
+
+          {clip.quote && !expanded && <ClipQuote quote={clip.quote} />}
         </div>
 
         {/* Play row (opened) and the in/out timeline. Closed, the timeline
@@ -855,7 +996,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
               ? // -6 px against the 12 px row gap: 6 px under the timeline, as
                 // when they shared a block.
                 '-mt-1.5 lg:col-start-1 lg:row-start-5'
-              : 'row-start-5 clip-wide:col-start-2 clip-wide:row-start-3 clip-wide:self-end',
+              : 'row-start-5 clip-wide:col-start-2 clip-wide:row-start-3',
           )}
         >
           {editable ? (
@@ -999,44 +1140,41 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
 
 // ─── Small pieces ─────────────────────────────────────────────────────────────
 
-/** Enter saves, Escape cancels, leaving the field saves. */
-function TitleInput({
-  initial,
-  onSave,
-  onCancel,
-}: {
-  initial: string
-  onSave: (title: string) => void
-  onCancel: () => void
-}) {
-  const [value, setValue] = React.useState(initial)
-  const done = React.useRef(false)
-  const finish = (save: boolean) => {
-    if (done.current) return
-    done.current = true
-    if (save) onSave(value.trim())
-    else onCancel()
-  }
+/** The fade under a quote that does not fit. */
+const QUOTE_FADE = 'linear-gradient(to bottom, #000 calc(100% - 1.5em), transparent)'
+
+/**
+ * The closed card's quote. Side by side with the frame it fills whatever the
+ * details row has left (absolutely placed, so the text never makes the card
+ * taller than the frame); stacked, it shows up to three lines. Either way as
+ * many lines as fit, with a soft fade at the bottom when some do not.
+ */
+function ClipQuote({ quote }: { quote: string }) {
+  const ref = React.useRef<HTMLQuoteElement>(null)
+  const [overflowing, setOverflowing] = React.useState(false)
+  React.useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const check = () => setOverflowing(el.scrollHeight > el.clientHeight + 1)
+    check()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [quote])
   return (
-    <input
-      autoFocus
-      value={value}
-      maxLength={255}
-      onFocus={(e) => e.currentTarget.select()}
-      onChange={(e) => setValue(e.target.value)}
-      onBlur={() => finish(true)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault()
-          finish(true)
-        } else if (e.key === 'Escape') {
-          e.preventDefault()
-          finish(false)
-        }
-      }}
-      aria-label="Clip title"
-      className="h-7 hover-none:h-10 min-w-0 flex-1 rounded-md border border-border-focus bg-bg-primary px-2 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-border-focus"
-    />
+    // At least one line, so a crowded card still shows the start of the quote.
+    <div data-testid="clip-quote" className="relative min-h-0 flex-1 clip-wide:min-h-[1.125rem]">
+      <blockquote
+        ref={ref}
+        title={quote}
+        data-overflowing={overflowing || undefined}
+        style={overflowing ? { maskImage: QUOTE_FADE, WebkitMaskImage: QUOTE_FADE } : undefined}
+        className="max-h-[4.5em] overflow-hidden border-l-2 border-border pl-2.5 text-xs leading-normal text-text-secondary clip-wide:absolute clip-wide:inset-0 clip-wide:max-h-none"
+      >
+        &ldquo;{quote}&rdquo;
+      </blockquote>
+    </div>
   )
 }
 
