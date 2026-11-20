@@ -6,6 +6,7 @@ import { Download, Loader2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useFormatBytes } from '@/hooks/use-byte-units'
 import { triggerBrowserDownload } from '@/lib/download'
+import { TooManyRequestsError } from '@/lib/share-fetch'
 import { DOWNLOAD_VARIANT_LABELS, type DownloadVariant } from '@/types'
 import type { ZipScope } from '@/lib/bulk-download'
 import type {
@@ -138,7 +139,14 @@ export function BatchDownloadDialog({
         // is allowed — a link may permit only a proxy.
         if (o.variants.length > 0 && !o.variants.includes(variant)) setVariant(o.variants[0])
       })
-      .catch(() => setError('Could not load download options'))
+      // A throttled share link says so (429 → TooManyRequestsError, whose
+      // message is meant to be shown); every other failure keeps the
+      // generic text, so no raw server detail reaches this dialog.
+      .catch((e) =>
+        setError(
+          e instanceof TooManyRequestsError ? e.message : 'Could not load download options',
+        ),
+      )
       .finally(() => setLoadingOptions(false))
     // assetIds is a new array identity every render; key on its contents.
     // eslint-disable-next-line react-hooks/exhaustive-deps

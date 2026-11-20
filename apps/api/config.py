@@ -240,6 +240,28 @@ class Settings(BaseSettings):
     share_comment_rate_limit_per_ip: int = 120
     share_comment_rate_limit_ip_window_seconds: int = 600
 
+    # Share endpoints that queue server-side work — export start, zip
+    # options, zip start — metered the same way (middleware/rate_limit.
+    # share_work_rate_limit). The TOKEN bucket is the per-link budget. The
+    # IP bucket keeps the comment limiter's 4x headroom for the same reason:
+    # behind the tunnel every visitor may share one address, so an IP bucket
+    # as tight as the token bucket would cap the whole instance at 5 export
+    # starts a minute. Lower the IP values only if X-Real-Ip is known to be
+    # the real client. Polls, streams, thumbnails and listings are not
+    # metered here.
+    share_export_rate_limit_per_token: int = 5
+    share_export_rate_limit_token_window_seconds: int = 60
+    share_export_rate_limit_per_ip: int = 20
+    share_export_rate_limit_ip_window_seconds: int = 60
+    share_zip_options_rate_limit_per_token: int = 10
+    share_zip_options_rate_limit_token_window_seconds: int = 60
+    share_zip_options_rate_limit_per_ip: int = 40
+    share_zip_options_rate_limit_ip_window_seconds: int = 60
+    share_zip_start_rate_limit_per_token: int = 5
+    share_zip_start_rate_limit_token_window_seconds: int = 60
+    share_zip_start_rate_limit_per_ip: int = 20
+    share_zip_start_rate_limit_ip_window_seconds: int = 60
+
     jwt_secret: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15

@@ -233,22 +233,89 @@ async def share_comment_rate_limit(request: Request) -> None:
     Both sizes are settings, read at call time so a test (or a future
     restart-free reload) sees the current value.
     """
+    _meter_share_token_and_ip(
+        request,
+        token_action=SHARE_COMMENT_TOKEN_ACTION,
+        per_token=settings.share_comment_rate_limit_per_token,
+        token_window=settings.share_comment_rate_limit_token_window_seconds,
+        ip_action=SHARE_COMMENT_IP_ACTION,
+        per_ip=settings.share_comment_rate_limit_per_ip,
+        ip_window=settings.share_comment_rate_limit_ip_window_seconds,
+    )
+
+
+def _meter_share_token_and_ip(
+    request: Request,
+    *,
+    token_action: str,
+    per_token: int,
+    token_window: int,
+    ip_action: str,
+    per_ip: int,
+    ip_window: int,
+) -> None:
+    """The two-bucket check itself: the hashed share token, then the IP.
+
+    Extracted unchanged from `share_comment_rate_limit` so the comment write
+    and the share endpoints that queue server work (`share_work_rate_limit`)
+    run ONE implementation — same key shapes, same order, same `_too_many`
+    response, and the same fail-open behaviour `check_rate_limit` has when
+    Redis is unreachable.
+    """
     token = request.path_params.get("token")
     if isinstance(token, str) and token:
         allowed, retry_after = check_rate_limit(
-            share_token_bucket(token),
-            SHARE_COMMENT_TOKEN_ACTION,
-            settings.share_comment_rate_limit_per_token,
-            settings.share_comment_rate_limit_token_window_seconds,
+            share_token_bucket(token), token_action, per_token, token_window,
         )
         if not allowed:
             raise _too_many(retry_after)
 
     allowed, retry_after = check_rate_limit(
-        client_ip(request),
-        SHARE_COMMENT_IP_ACTION,
-        settings.share_comment_rate_limit_per_ip,
-        settings.share_comment_rate_limit_ip_window_seconds,
+        client_ip(request), ip_action, per_ip, ip_window,
     )
     if not allowed:
         raise _too_many(retry_after)
+
+
+# ── metering share endpoints that queue server-side work ────────────────────
+
+#: Which public share endpoints are metered by `share_work_rate_limit`. Each
+#: kind has its own Redis actions (`share_<kind>_token`, `share_<kind>_ip`),
+#: so an export flood does not spend the zip budget, and four settings:
+#: `share_<kind>_rate_limit_per_token`, `..._token_window_seconds`,
+#: `..._per_ip`, `..._ip_window_seconds`.
+SHARE_WORK_KINDS = ("export", "zip_options", "zip_start")
+
+
+def share_work_rate_limit(kind: str):
+    """A route dependency metering one share endpoint that queues work.
+
+    For export start, zip options and zip start: anonymous requests that
+    start a render, read the selection's variants, or build an archive, and
+    that until now only had the global 300-writes-a-minute middleware in
+    front of them. Same two buckets, same order, same 429 and same Redis-down
+    behaviour as `share_comment_rate_limit` (it is the same function,
+    `_meter_share_token_and_ip`), and for the same reasons — read that
+    docstring. Runs as a route dependency, before the link is validated, so
+    it cannot be used to tell valid tokens from invalid ones.
+
+    The poll endpoints, the stream, the thumbnail and the listing are NOT
+    metered here: a viewer legitimately polls an export every few seconds.
+    """
+    if kind not in SHARE_WORK_KINDS:
+        raise ValueError(f"unknown share work kind: {kind!r}")
+    prefix = f"share_{kind}_rate_limit"
+
+    def _dependency(request: Request) -> None:
+        # Read at call time, like every limiter in this module.
+        _meter_share_token_and_ip(
+            request,
+            token_action=f"share_{kind}_token",
+            per_token=getattr(settings, f"{prefix}_per_token"),
+            token_window=getattr(settings, f"{prefix}_token_window_seconds"),
+            ip_action=f"share_{kind}_ip",
+            per_ip=getattr(settings, f"{prefix}_per_ip"),
+            ip_window=getattr(settings, f"{prefix}_ip_window_seconds"),
+        )
+
+    return _dependency

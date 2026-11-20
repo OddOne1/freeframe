@@ -41,7 +41,7 @@ import type {
 import { ShareFieldsPanel } from './share-fields-panel'
 import { useShareSidebar, type FieldsVisibility } from './use-share-sidebar'
 import { DownloadMenu } from './download-menu'
-import { shareFetch } from '@/lib/share-fetch'
+import { shareFetch, throwIfThrottled } from '@/lib/share-fetch'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -1256,6 +1256,7 @@ export function FolderShareViewer({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items, variant: 'raw' }),
       })
+      throwIfThrottled(r)
       if (!r.ok) throw new Error('Could not load download options')
       return r.json()
     },
@@ -1265,6 +1266,7 @@ export function FolderShareViewer({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items, variant, scope, folder_name: folderName ?? null }),
       })
+      throwIfThrottled(r)
       if (!r.ok) throw new Error('Could not start the download')
       return r.json()
     },

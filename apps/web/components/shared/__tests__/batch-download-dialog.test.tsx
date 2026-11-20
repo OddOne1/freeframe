@@ -15,6 +15,7 @@ vi.stubEnv('NEXT_PUBLIC_API_URL', '/api')
 
 import { BatchDownloadDialog, type BatchDownloadApi, type ZipScope } from '../batch-download-dialog'
 import type { ZipExportOptionsResponse } from '@/types'
+import { TooManyRequestsError } from '@/lib/share-fetch'
 
 let downloads: string[] = []
 vi.mock('@/lib/download', () => ({
@@ -541,5 +542,45 @@ describe('zip or individual files (§177)', () => {
     )
     expect(api.start).not.toHaveBeenCalled()
     expect(downloads.length).toBe(0)
+  })
+})
+
+// ── a throttled share link (429) ──────────────────────────────────────────
+
+describe('rate limited', () => {
+  it('says so when loading the options is throttled', async () => {
+    const api = makeApi({
+      fetchOptions: vi.fn(async () => {
+        throw new TooManyRequestsError()
+      }),
+    })
+    renderDialog(api)
+    expect(
+      await screen.findByText('Too many requests, try again in a minute'),
+    ).toBeInTheDocument()
+  })
+
+  it('keeps the generic text for any other options failure', async () => {
+    const api = makeApi({
+      fetchOptions: vi.fn(async () => {
+        throw new Error('500 from somewhere')
+      }),
+    })
+    renderDialog(api)
+    expect(await screen.findByText('Could not load download options')).toBeInTheDocument()
+    expect(screen.queryByText(/500 from somewhere/)).toBeNull()
+  })
+
+  it('says so when starting the zip is throttled', async () => {
+    const api = makeApi({
+      start: vi.fn(async () => {
+        throw new TooManyRequestsError()
+      }),
+    })
+    renderDialog(api)
+    await userEvent.click(await screen.findByRole('button', { name: /download zip/i }))
+    expect(
+      await screen.findByText('Too many requests, try again in a minute'),
+    ).toBeInTheDocument()
   })
 })

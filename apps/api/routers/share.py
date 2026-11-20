@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..middleware.auth import get_current_user, get_optional_user
-from ..middleware.rate_limit import rate_limit
+from ..middleware.rate_limit import rate_limit, share_work_rate_limit
 from ..models.user import User, UserGlobalRole
 from ..models.asset import Asset
 from ..models.folder import Folder
@@ -1886,7 +1886,10 @@ def get_share_thumbnail_url(
 
 # ── Variant exports for share links (§30) ────────────────────────────────────
 
-@router.post("/share/{token}/export/{asset_id}")
+@router.post(
+    "/share/{token}/export/{asset_id}",
+    dependencies=[Depends(share_work_rate_limit("export"))],
+)
 def request_share_export(
     token: str,
     asset_id: uuid.UUID,
@@ -2426,7 +2429,11 @@ def _start_or_reuse_zip(
     return export, False
 
 
-@router.post("/share/{token}/zip/options", response_model=ZipExportOptionsResponse)
+@router.post(
+    "/share/{token}/zip/options",
+    response_model=ZipExportOptionsResponse,
+    dependencies=[Depends(share_work_rate_limit("zip_options"))],
+)
 def get_share_zip_options(
     token: str,
     body: ZipExportRequest,
@@ -2484,7 +2491,11 @@ def get_share_zip_options(
     )
 
 
-@router.post("/share/{token}/zip", response_model=ZipExportStatusResponse)
+@router.post(
+    "/share/{token}/zip",
+    response_model=ZipExportStatusResponse,
+    dependencies=[Depends(share_work_rate_limit("zip_start"))],
+)
 def request_share_zip(
     token: str,
     body: ZipExportRequest,

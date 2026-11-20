@@ -3,7 +3,12 @@
  * requests, and on nothing else.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { setShareLinkVisibility, shareFetch } from '../share-fetch'
+import {
+  setShareLinkVisibility,
+  shareFetch,
+  throwIfThrottled,
+  TooManyRequestsError,
+} from '../share-fetch'
 
 const fetchMock = vi.fn(
   async (_url: string, _init?: RequestInit) => new Response('{}'),
@@ -70,5 +75,20 @@ describe('shareFetch', () => {
     setShareLinkVisibility('sec', 'public')
     await shareFetch('sec', '/share/sec/assets')
     expect(sentAuth()).toBeNull()
+  })
+})
+
+describe('throwIfThrottled', () => {
+  it('throws TooManyRequestsError with the short message on a 429', () => {
+    expect(() => throwIfThrottled(new Response('', { status: 429 }))).toThrow(TooManyRequestsError)
+    expect(() => throwIfThrottled(new Response('', { status: 429 }))).toThrow(
+      'Too many requests, try again in a minute',
+    )
+  })
+
+  it('leaves every other status to the caller', () => {
+    for (const status of [200, 400, 403, 404, 500]) {
+      expect(() => throwIfThrottled(new Response(status === 200 ? '{}' : '', { status }))).not.toThrow()
+    }
   })
 })

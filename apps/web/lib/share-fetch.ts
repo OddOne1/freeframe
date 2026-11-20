@@ -37,6 +37,24 @@ function accessToken(): string | null {
   }
 }
 
+/** What a viewer reads when a share endpoint answers 429. */
+export const TOO_MANY_REQUESTS_MESSAGE = 'Too many requests, try again in a minute'
+
+/** A share request was throttled (429). Its message is meant to be shown. */
+export class TooManyRequestsError extends Error {
+  constructor() {
+    super(TOO_MANY_REQUESTS_MESSAGE)
+    this.name = 'TooManyRequestsError'
+  }
+}
+
+/** Throw `TooManyRequestsError` for a 429 — export start, zip options and
+ *  zip start are rate limited per link and per address (API:
+ *  `share_work_rate_limit`). Any other status is left to the caller. */
+export function throwIfThrottled(res: Response): void {
+  if (res.status === 429) throw new TooManyRequestsError()
+}
+
 /** `fetch(url, init)`, plus `Authorization: Bearer …` when `token` is a
  *  secure link and this browser holds a session. */
 export function shareFetch(token: string, url: string, init?: RequestInit): Promise<Response> {

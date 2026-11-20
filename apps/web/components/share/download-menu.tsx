@@ -6,7 +6,7 @@ import { Download, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { triggerBrowserDownload as trigger } from '@/lib/download'
 import { DOWNLOAD_VARIANT_LABELS, type DownloadVariant } from '@/types'
-import { shareFetch } from '@/lib/share-fetch'
+import { shareFetch, throwIfThrottled } from '@/lib/share-fetch'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -53,6 +53,7 @@ async function downloadRendered(
     `${API_URL}/share/${token}/export/${assetId}?variant=${variant}${sp}`,
     { method: 'POST' },
   )
+  throwIfThrottled(start)
   if (!start.ok) throw new Error('Could not start the export')
   const { export_id, version_id } = await start.json()
 
