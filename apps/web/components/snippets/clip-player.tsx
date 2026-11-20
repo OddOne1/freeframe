@@ -7,7 +7,8 @@
  *                    once someone presses play, so a grid of cards does not
  *                    start a player each; useVideoPlayer does the HLS work.
  *  - InOutTimeline   the in/out range with two draggable handles.
- *  - EdgeEditor      one point as a numeric field with ±0.1 s / ±1 s nudges.
+ *  - EdgeEditor      one point as a numeric field with ±0.1 s / ±1 s nudges
+ *                    (the Out group mirrored on the opened card).
  *  - LiveTranscript  the transcript around the clip, the spoken word lit,
  *                    click a word to seek, the speaker named per segment.
  */
@@ -42,6 +43,40 @@ function timelineView(r: InOut, durationMs: number | null): { from: number; to: 
   const from = Math.max(0, r.start_ms - pad)
   const to = durationMs ? Math.min(durationMs, r.end_ms + pad) : r.end_ms + pad
   return { from, to: Math.max(to, from + 1000) }
+}
+
+const useBrowserLayoutEffect = typeof window === 'undefined' ? React.useEffect : React.useLayoutEffect
+
+/** Space kept between the In and Out labels under the timeline, in px. */
+export const EDGE_LABEL_GAP = 8
+
+/**
+ * Where the In and Out time labels go under the timeline, in px from its left
+ * edge: each centred under its handle, kept inside the timeline, and, when
+ * the two would touch, pushed apart around the handles' midpoint (still
+ * inside the timeline) so both stay readable.
+ */
+export function placeEdgeLabels(p: {
+  /** Handle centres, px from the left edge. */
+  inX: number
+  outX: number
+  /** Label widths, px. */
+  inW: number
+  outW: number
+  /** Timeline width, px. */
+  width: number
+  gap?: number
+}): { inLeft: number; outLeft: number } {
+  const gap = p.gap ?? EDGE_LABEL_GAP
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(Math.max(lo, hi), v))
+  let inLeft = clamp(p.inX - p.inW / 2, 0, p.width - p.inW)
+  let outLeft = clamp(p.outX - p.outW / 2, 0, p.width - p.outW)
+  if (inLeft + p.inW + gap > outLeft) {
+    const total = p.inW + gap + p.outW
+    inLeft = clamp((p.inX + p.outX) / 2 - total / 2, 0, p.width - total)
+    outLeft = inLeft + p.inW + gap
+  }
+  return { inLeft, outLeft }
 }
 
 // ─── The player ──────────────────────────────────────────────────────────────
@@ -316,7 +351,8 @@ export function InOutTimeline({
   }, [range, durationMs, drag])
 
   const span = view.to - view.from
-  const pct = (ms: number) => `${Math.max(0, Math.min(100, ((ms - view.from) / span) * 100))}%`
+  const frac = (ms: number) => Math.max(0, Math.min(1, (ms - view.from) / span))
+  const pct = (ms: number) => `${frac(ms) * 100}%`
   const msAt = (clientX: number) => {
     const el = trackRef.current
     if (!el) return 0
@@ -357,6 +393,43 @@ export function InOutTimeline({
       onChange(moveEdge(range, edge, next, durationMs), edge)
     }
   }
+
+  // The selected In and Out under their handles (opened card only). Measured
+  // after layout; until then (and without layout, as in tests) each label is
+  // centred on its handle by percentage.
+  const inText = formatClipTime(range.start_ms)
+  const outText = formatClipTime(range.end_ms)
+  const labelsRef = React.useRef<HTMLDivElement>(null)
+  const inLabelRef = React.useRef<HTMLSpanElement>(null)
+  const outLabelRef = React.useRef<HTMLSpanElement>(null)
+  const [sizes, setSizes] = React.useState({ width: 0, inW: 0, outW: 0 })
+  useBrowserLayoutEffect(() => {
+    if (compact) return
+    const measure = () => {
+      const width = labelsRef.current?.offsetWidth ?? 0
+      const inW = inLabelRef.current?.offsetWidth ?? 0
+      const outW = outLabelRef.current?.offsetWidth ?? 0
+      setSizes((s) => (s.width === width && s.inW === inW && s.outW === outW ? s : { width, inW, outW }))
+    }
+    measure()
+    const el = labelsRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [compact, inText, outText])
+  const placed =
+    sizes.width > 0 && sizes.inW > 0 && sizes.outW > 0
+      ? placeEdgeLabels({
+          inX: frac(range.start_ms) * sizes.width,
+          outX: frac(range.end_ms) * sizes.width,
+          inW: sizes.inW,
+          outW: sizes.outW,
+          width: sizes.width,
+        })
+      : null
+  const labelStyle = (leftPx: number | undefined, ms: number): React.CSSProperties =>
+    leftPx != null ? { left: `${leftPx}px` } : { left: pct(ms), transform: 'translateX(-50%)' }
 
   const handle = (edge: 'in' | 'out') => {
     const ms = edge === 'in' ? range.start_ms : range.end_ms
@@ -425,9 +498,29 @@ export function InOutTimeline({
         {handle('out')}
       </div>
       {!compact && (
-        <div className="flex justify-between text-2xs tabular-nums text-text-tertiary">
-          <span>{formatClipTime(view.from)}</span>
-          <span>{formatClipTime(view.to)}</span>
+        // The handles already announce these values (aria-valuetext).
+        <div
+          ref={labelsRef}
+          aria-hidden
+          data-testid="timeline-edge-labels"
+          className="relative h-4 text-2xs tabular-nums text-text-secondary"
+        >
+          <span
+            ref={inLabelRef}
+            data-testid="timeline-in-label"
+            className="absolute top-0 whitespace-nowrap"
+            style={labelStyle(placed?.inLeft, range.start_ms)}
+          >
+            {inText}
+          </span>
+          <span
+            ref={outLabelRef}
+            data-testid="timeline-out-label"
+            className="absolute top-0 whitespace-nowrap"
+            style={labelStyle(placed?.outLeft, range.end_ms)}
+          >
+            {outText}
+          </span>
         </div>
       )}
     </div>
@@ -449,12 +542,17 @@ export function EdgeEditor({
   onCommit,
   onNudge,
   variant = 'full',
+  mirrored = false,
 }: {
   label: 'In' | 'Out'
   valueMs: number
   onCommit: (ms: number) => void
   onNudge: (deltaMs: number) => void
   variant?: 'full' | 'inline'
+  /** "full" only: laid out right to left (+1s, +.1, −.1, −1s, field, label)
+   *  and ending at the right edge, the mirror image of the In group. Each
+   *  button does what it does unmirrored. */
+  mirrored?: boolean
 }) {
   const [text, setText] = React.useState(formatClipTime(valueMs))
   const [editing, setEditing] = React.useState(false)
@@ -477,6 +575,7 @@ export function EdgeEditor({
 
   const nudgeBtn = (d: number, l: string) => (
     <button
+      key={d}
       type="button"
       onClick={() => onNudge(d)}
       aria-label={`${label} ${d > 0 ? 'plus' : 'minus'} ${Math.abs(d) / 1000} seconds`}
@@ -536,10 +635,20 @@ export function EdgeEditor({
     )
   }
 
+  const nudges = [nudgeBtn(-1000, '−1s'), nudgeBtn(-100, '−.1'), nudgeBtn(100, '+.1'), nudgeBtn(1000, '+1s')]
+  const name = (
+    <span data-edge-label="" className={cn('w-6', mirrored && 'text-right')}>
+      {label}
+    </span>
+  )
   return (
-    <div className="flex flex-wrap items-center gap-1">
+    <div
+      data-testid={`edge-editor-${label.toLowerCase()}`}
+      className={cn('flex flex-wrap items-center gap-1', mirrored && 'justify-end')}
+    >
+      {mirrored && <span className="flex gap-1">{nudges.slice().reverse()}</span>}
       <label className="flex items-center gap-1.5 text-xs font-medium text-text-secondary">
-        <span className="w-6">{label}</span>
+        {!mirrored && name}
         <input
           value={text}
           inputMode="decimal"
@@ -561,13 +670,9 @@ export function EdgeEditor({
             invalid ? 'border-status-error' : 'border-border focus:border-border-focus',
           )}
         />
+        {mirrored && name}
       </label>
-      <span className="flex gap-1">
-        {nudgeBtn(-1000, '−1s')}
-        {nudgeBtn(-100, '−.1')}
-        {nudgeBtn(100, '+.1')}
-        {nudgeBtn(1000, '+1s')}
-      </span>
+      {!mirrored && <span className="flex gap-1">{nudges}</span>}
     </div>
   )
 }

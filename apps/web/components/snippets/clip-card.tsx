@@ -774,40 +774,60 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
               : 'flex flex-col gap-1.5 row-start-3 clip-wide:col-start-2 clip-wide:row-start-2',
           )}
         >
-          {/* Speaker · file · where the clip starts */}
-          <div className="flex min-w-0 items-center gap-1 text-xs text-text-tertiary">
-            {editable ? (
-              <SpeakerSelect
-                value={clip.speaker?.id ?? null}
-                fallbackName={clip.speaker?.name ?? null}
-                speakers={speakers}
-                disabled={false}
-                busy={assignApi.busyTrack != null || findingTrack}
-                label={`Speaker of ${heading}: names the speaker of its track`}
-                placeholder="Unknown speaker"
-                onChange={async (id) => {
-                  const track = await clipTrack()
-                  if (track != null) await assignApi.assign(track, id)
-                }}
-                onAdd={async () => {
-                  const track = await clipTrack()
-                  if (track != null) assignApi.startAdd(track, `Track ${track + 1}`)
-                }}
-                className={cn(
-                  '-ml-1.5 max-w-[55%] flex-none gap-1 border-transparent bg-transparent px-1.5 text-text-secondary hover:border-border lg:max-w-[55%]',
-                  // Closed: a 32 px target in a 24 px line.
-                  expanded ? 'h-6 hover-none:h-9' : '-my-1 h-8 hover-none:h-9',
-                )}
-              />
-            ) : (
-              <span className="max-w-[55%] truncate text-text-secondary">{clip.speaker?.name ?? 'Unknown speaker'}</span>
+          {/* Speaker · file · where the clip starts. Opened, the status line
+              (status, source, scores, edited) ends the same row, right-aligned;
+              where the row is too narrow for both it wraps below, never over
+              the speaker. */}
+          <div
+            data-testid="clip-speaker-row"
+            className={cn(expanded && 'flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1')}
+          >
+            <div
+              data-testid="clip-who"
+              className={cn('flex min-w-0 items-center gap-1 text-xs text-text-tertiary', expanded && 'flex-[1_1_16rem]')}
+            >
+              {editable ? (
+                <SpeakerSelect
+                  value={clip.speaker?.id ?? null}
+                  fallbackName={clip.speaker?.name ?? null}
+                  speakers={speakers}
+                  disabled={false}
+                  busy={assignApi.busyTrack != null || findingTrack}
+                  label={`Speaker of ${heading}: names the speaker of its track`}
+                  placeholder="Unknown speaker"
+                  onChange={async (id) => {
+                    const track = await clipTrack()
+                    if (track != null) await assignApi.assign(track, id)
+                  }}
+                  onAdd={async () => {
+                    const track = await clipTrack()
+                    if (track != null) assignApi.startAdd(track, `Track ${track + 1}`)
+                  }}
+                  className={cn(
+                    '-ml-1.5 max-w-[55%] flex-none gap-1 border-transparent bg-transparent px-1.5 text-text-secondary hover:border-border lg:max-w-[55%]',
+                    // Closed: a 32 px target in a 24 px line.
+                    expanded ? 'h-6 hover-none:h-9' : '-my-1 h-8 hover-none:h-9',
+                  )}
+                />
+              ) : (
+                <span className="max-w-[55%] truncate text-text-secondary">{clip.speaker?.name ?? 'Unknown speaker'}</span>
+              )}
+              <span aria-hidden>·</span>
+              <span className="min-w-0 truncate" title={clip.asset_name}>
+                {clip.asset_name}
+              </span>
+              <span aria-hidden>·</span>
+              <span className="shrink-0 font-mono tabular-nums">{formatClipTime(range.start_ms)}</span>
+            </div>
+            {expanded && (
+              <div data-testid="clip-badges" className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
+                {draft.status && <StatusPill status={draft.status} />}
+                {clip.source && <SourceBadge source={clip.source} generator={clip.generator} />}
+                <ScoreBadge label="Q" title="Quality" score={clip.quality_score} />
+                <ScoreBadge label="V" title="Viral" score={clip.viral_score} />
+                {clip.user_edited && <EditedPill />}
+              </div>
             )}
-            <span aria-hidden>·</span>
-            <span className="min-w-0 truncate" title={clip.asset_name}>
-              {clip.asset_name}
-            </span>
-            <span aria-hidden>·</span>
-            <span className="shrink-0 font-mono tabular-nums">{formatClipTime(range.start_ms)}</span>
           </div>
           {assignApi.note && (
             <p className="-mt-1 text-2xs text-text-tertiary" role="status">
@@ -899,19 +919,14 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
             </ul>
           )}
 
-          {(expanded || clip.viral_score != null || clip.user_edited) && (
+          {/* Closed: the viral score and "edited" on one row of their own
+              (nothing in it is a control). Opened, the whole status line rides
+              on the speaker row above. */}
+          {!expanded && (clip.viral_score != null || clip.user_edited) && (
             <div
               data-testid="clip-badges"
-              className={cn(
-                'flex items-center',
-                // Closed: one row (the badges are short; nothing in it is a control).
-                expanded ? 'flex-wrap gap-1.5' : 'min-w-0 flex-nowrap gap-1 overflow-hidden [&>*]:shrink-0',
-              )}
+              className="flex min-w-0 flex-nowrap items-center gap-1 overflow-hidden [&>*]:shrink-0"
             >
-              {expanded && draft.status && <StatusPill status={draft.status} />}
-              {/* Where the clip came from and its quality score: opened cards only. */}
-              {expanded && clip.source && <SourceBadge source={clip.source} generator={clip.generator} />}
-              {expanded && <ScoreBadge label="Q" title="Quality" score={clip.quality_score} />}
               <ScoreBadge label="V" title="Viral" score={clip.viral_score} />
               {clip.user_edited && <EditedPill />}
             </div>
@@ -1001,21 +1016,25 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
         >
           {editable ? (
             expanded ? (
-              // Side by side wherever the column is wide enough for both
-              // (not in the narrow lg column next to the transcript).
-              <div className="grid gap-x-3 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+              // In at the left edge of the timeline, Out its mirror image
+              // ending at the right edge. Too narrow for both: Out wraps
+              // below, still at the right.
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5" data-testid="clip-trim">
                 <EdgeEditor
                   label="In"
                   valueMs={range.start_ms}
                   onCommit={(ms) => applyRange(moveEdge(rangeRef.current, 'in', ms, durationMs), 'in')}
                   onNudge={(d) => nudge('in', d)}
                 />
-                <EdgeEditor
-                  label="Out"
-                  valueMs={range.end_ms}
-                  onCommit={(ms) => applyRange(moveEdge(rangeRef.current, 'out', ms, durationMs), 'out')}
-                  onNudge={(d) => nudge('out', d)}
-                />
+                <div className="ml-auto">
+                  <EdgeEditor
+                    label="Out"
+                    mirrored
+                    valueMs={range.end_ms}
+                    onCommit={(ms) => applyRange(moveEdge(rangeRef.current, 'out', ms, durationMs), 'out')}
+                    onNudge={(d) => nudge('out', d)}
+                  />
+                </div>
               </div>
             ) : (
               // One row (it wraps only in a card at its very narrowest).
