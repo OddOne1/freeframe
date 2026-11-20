@@ -53,6 +53,14 @@ import {
   NoMedia,
   transcriptWindow,
 } from './clip-player'
+import {
+  CLIP_CTL_SQ8,
+  CLIP_FONT_XS,
+  CLIP_ICON_3_5,
+  CLIP_ICON_4,
+  CLIP_TEXT_2XS,
+  CLIP_TEXT_XS,
+} from './clip-display'
 import { EditedPill, HintTooltip, ScoreBadge, SourceBadge, StatusPill } from './snippet-ui'
 import { ClipTracksControl, SpeakerSelect, useTrackSpeakerAssign } from './speaker-assign'
 
@@ -423,8 +431,8 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
   const iconBtn =
     'flex h-7 w-7 hover-none:h-10 hover-none:w-10 shrink-0 items-center justify-center rounded-md border transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
 
-  /** Approve and reject: 32 px on the closed card, as tall as the export buttons beside them. */
-  const reviewBtn = expanded ? iconBtn : cn(iconBtn, 'h-8 w-8')
+  /** Approve and reject: 32 px on the closed card (times the grid size), as tall as the export buttons beside them. */
+  const reviewBtn = expanded ? iconBtn : cn(iconBtn, CLIP_CTL_SQ8)
 
   /** `iconOnly`: the closed card's copy at the end of the timeline, where
    *  there is no room for the word. */
@@ -440,7 +448,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
         className ?? 'inline-flex',
       )}
     >
-      <RotateCcw className="h-3.5 w-3.5" aria-hidden />
+      <RotateCcw className={CLIP_ICON_3_5} aria-hidden />
       {!iconOnly && 'Reset'}
     </button>
   )
@@ -468,7 +476,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                 : 'border-border text-text-tertiary hover:border-status-success/40 hover:text-status-success',
             )}
           >
-            <Check className="h-3.5 w-3.5" />
+            <Check className={CLIP_ICON_3_5} />
           </button>
           <button
             type="button"
@@ -483,7 +491,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                 : 'border-border text-text-tertiary hover:border-status-error/40 hover:text-status-error',
             )}
           >
-            <X className="h-3.5 w-3.5" />
+            <X className={CLIP_ICON_3_5} />
           </button>
         </>
       )}
@@ -503,7 +511,9 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
         'group/card relative min-w-0 rounded-xl border bg-bg-secondary transition-[border-color,opacity,box-shadow] [container-name:clip-card] [container-type:inline-size] focus:outline-none',
         active ? 'border-accent/50' : 'border-border hover:border-border-focus/60 focus-within:border-border-focus/60',
         draft.status === 'rejected' && !expanded && 'opacity-70',
-        expanded && 'col-span-full shadow-lg',
+        // Opened, the card keeps today's sizes whatever the grid size
+        // (clip-display.ts): only closed cards scale with it.
+        expanded && 'col-span-full shadow-lg [--clip-scale:1]',
       )}
     >
       <div
@@ -521,7 +531,10 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
               // on top, the rest below it.
               // The details row is the flexible one: the quote at its end
               // fills what the frame leaves free (see ClipQuote).
-              'gap-x-3 gap-y-2 p-3 grid-cols-1 clip-wide:grid-cols-[12.5rem_minmax(0,1fr)] clip-wide:grid-rows-[auto_minmax(0,1fr)_auto_auto]',
+              // The frame is 12.5rem times the grid size; a large frame in a
+              // card too narrow for it gives way down to 42% of the card
+              // (never under 12.5rem), so the text keeps a usable column.
+              'gap-x-3 gap-y-2 p-3 grid-cols-1 clip-wide:grid-cols-[min(calc(12.5rem*var(--clip-scale,1)),max(12.5rem,42cqi))_minmax(0,1fr)] clip-wide:grid-rows-[auto_minmax(0,1fr)_auto_auto]',
         )}
       >
         {/* Title row: first in the card in both states. Closed, it sits right
@@ -639,17 +652,19 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                   editingTitle
                     ? 'text-accent opacity-100'
                     : 'text-text-tertiary opacity-60 hover:text-text-primary hover:opacity-100 group-hover/card:opacity-100 hover-none:opacity-100',
-                  // Closed: a 32 px target whose negative margin keeps the
-                  // title row as short as the title.
-                  expanded ? 'h-6 w-6 hover-none:h-9 hover-none:w-9' : '-my-1.5 h-8 w-8 hover-none:h-10 hover-none:w-10',
+                  // Closed: a 32 px target (times the grid size) whose
+                  // negative margin keeps the title row as short as the title.
+                  expanded
+                    ? 'h-6 w-6 hover-none:h-9 hover-none:w-9'
+                    : cn(CLIP_CTL_SQ8, '-my-[calc(1rem*var(--clip-scale,1)-0.625rem)]'),
                 )}
               >
                 {titleSaving ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                  <Loader2 className={cn(CLIP_ICON_3_5, 'animate-spin')} aria-hidden />
                 ) : editingTitle ? (
-                  <Check className="h-3.5 w-3.5" aria-hidden />
+                  <Check className={CLIP_ICON_3_5} aria-hidden />
                 ) : (
-                  <Pencil className="h-3.5 w-3.5" aria-hidden />
+                  <Pencil className={CLIP_ICON_3_5} aria-hidden />
                 )}
               </button>
             )}
@@ -670,13 +685,16 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
               'flex shrink-0 items-center justify-center rounded text-text-tertiary hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
               expanded
                 ? '-my-2.5 -mr-2.5 h-11 w-11 sm:m-0 sm:h-6 sm:w-6 sm:hover-none:h-9 sm:hover-none:w-9'
-                : '-my-1.5 -mr-1.5 h-8 w-8 hover-none:h-10 hover-none:w-10',
+                : cn(
+                    CLIP_CTL_SQ8,
+                    '-my-[calc(1rem*var(--clip-scale,1)-0.625rem)] -mr-[calc(1rem*var(--clip-scale,1)-0.625rem)]',
+                  ),
             )}
           >
             {expanded ? (
               <Minimize2 className="h-4 w-4" aria-hidden />
             ) : (
-              <Maximize2 className="h-4 w-4" aria-hidden />
+              <Maximize2 className={CLIP_ICON_4} aria-hidden />
             )}
           </button>
         </div>
@@ -689,8 +707,8 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
             'relative w-full self-start overflow-hidden rounded-lg bg-bg-tertiary',
             expanded
               ? 'aspect-video lg:col-start-1 lg:row-start-2'
-              : // 12.5rem wide in its column; stacked, the same size, centred.
-                'row-start-1 mx-auto aspect-[9/16] max-w-[12.5rem] clip-wide:col-start-1 clip-wide:row-span-3',
+              : // 12.5rem (times the grid size) wide in its column; stacked, the same size, centred.
+                'row-start-1 mx-auto aspect-[9/16] max-w-[calc(12.5rem*var(--clip-scale,1))] clip-wide:col-start-1 clip-wide:row-span-3',
           )}
         >
           {active && src ? (
@@ -736,8 +754,8 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
               )}
               {src && (
                 <span className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover/play:bg-black/20">
-                  <span className="flex h-11 w-11 items-center justify-center rounded-full bg-black/55 text-white opacity-90 shadow-lg transition-transform group-hover/play:scale-105">
-                    <Play className="h-4 w-4 translate-x-[1px]" fill="currentColor" aria-hidden />
+                  <span className="flex h-[calc(2.75rem*var(--clip-scale,1))] w-[calc(2.75rem*var(--clip-scale,1))] items-center justify-center rounded-full bg-black/55 text-white opacity-90 shadow-lg transition-transform group-hover/play:scale-105">
+                    <Play className={cn(CLIP_ICON_4, 'translate-x-[1px]')} fill="currentColor" aria-hidden />
                   </span>
                 </span>
               )}
@@ -752,11 +770,11 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
               aria-label="Loop between in and out"
               title="Loop between in and out"
               className={cn(
-                'absolute bottom-1.5 left-1.5 z-10 flex h-7 w-7 hover-none:h-9 hover-none:w-9 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
+                'absolute bottom-1.5 left-1.5 z-10 flex h-[calc(1.75rem*var(--clip-scale,1))] w-[calc(1.75rem*var(--clip-scale,1))] hover-none:h-[calc(2.25rem*var(--clip-scale,1))] hover-none:w-[calc(2.25rem*var(--clip-scale,1))] items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
                 loop ? 'bg-accent text-white' : 'bg-black/60 text-white/80 hover:text-white',
               )}
             >
-              <Repeat className="h-3.5 w-3.5" />
+              <Repeat className={CLIP_ICON_3_5} />
             </button>
           )}
           <span className="pointer-events-none absolute bottom-1.5 right-1.5 z-10 rounded bg-black/65 px-1.5 py-0.5 font-mono text-2xs tabular-nums text-white">
@@ -784,7 +802,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
           >
             <div
               data-testid="clip-who"
-              className={cn('flex min-w-0 items-center gap-1 text-xs text-text-tertiary', expanded && 'flex-[1_1_16rem]')}
+              className={cn('flex min-w-0 items-center gap-1 text-text-tertiary', CLIP_TEXT_XS, expanded && 'flex-[1_1_16rem]')}
             >
               {editable ? (
                 <SpeakerSelect
@@ -805,6 +823,8 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                   }}
                   className={cn(
                     '-ml-1.5 max-w-[55%] flex-none gap-1 border-transparent bg-transparent px-1.5 text-text-secondary hover:border-border lg:max-w-[55%]',
+                    // The speaker line's text size (clip-display.ts).
+                    CLIP_TEXT_XS,
                     // Closed: a 32 px target in a 24 px line.
                     expanded ? 'h-6 hover-none:h-9' : '-my-1 h-8 hover-none:h-9',
                   )}
@@ -856,7 +876,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                     key={t}
                     className={cn(
                       'group/chip inline-flex items-center rounded-full transition-colors',
-                      expanded ? 'text-xs' : 'min-w-0 text-2xs',
+                      expanded ? CLIP_TEXT_XS : cn('min-w-0', CLIP_TEXT_2XS),
                       on ? 'bg-accent/15 text-accent' : 'bg-bg-tertiary text-text-secondary hover:bg-bg-hover',
                     )}
                   >
@@ -869,7 +889,9 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                         'rounded-full hover-none:py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
                         // Closed, a long topic is cut short rather than pushing the row onto a second line.
                         // On touch screens 32 px tall, as the larger type made it before.
-                        expanded ? 'px-2.5 py-1' : 'min-w-0 max-w-[9rem] truncate px-2 py-0.5 hover-none:min-h-8',
+                        expanded
+                          ? 'px-2.5 py-1'
+                          : 'min-w-0 max-w-[calc(9rem*var(--clip-text,1))] truncate px-2 py-0.5 hover-none:min-h-8',
                       )}
                     >
                       {t}
@@ -901,7 +923,10 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
                     aria-label={allTopics ? 'Show fewer topics' : `+${hiddenTopics} more topics`}
                     title={allTopics ? 'Show fewer topics' : `Show all ${draft.topics.length} topics`}
                     data-testid="clip-topics-more"
-                    className="rounded-full border border-border px-2 py-0.5 hover-none:min-h-8 hover-none:py-2 text-2xs font-medium tabular-nums text-text-secondary hover:border-border-focus hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                    className={cn(
+                      'rounded-full border border-border px-2 py-0.5 hover-none:min-h-8 hover-none:py-2 font-medium tabular-nums text-text-secondary hover:border-border-focus hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                      CLIP_TEXT_2XS,
+                    )}
                   >
                     {allTopics ? 'Fewer' : `+${hiddenTopics}`}
                   </button>
@@ -998,7 +1023,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
             </div>
             {editable &&
               !expanded &&
-              resetButton('-my-1 inline-flex h-8 w-8 justify-center px-0 hover-none:h-10 hover-none:w-10', true)}
+              resetButton(cn('-my-1 inline-flex justify-center px-0', CLIP_CTL_SQ8), true)}
           </div>
         </div>
 
@@ -1113,7 +1138,7 @@ export const ClipCard = React.memo(function ClipCard(props: ClipCardProps) {
           >
             <div className="flex max-h-[55vh] min-h-[220px] flex-col lg:absolute lg:inset-0 lg:max-h-none">
               <div className="flex items-center gap-2 px-3 pb-2 pt-3">
-                <h4 className="text-2xs font-semibold uppercase tracking-wider text-text-tertiary">Transcript</h4>
+                <h4 className={cn('font-semibold uppercase tracking-wider text-text-tertiary', CLIP_TEXT_2XS)}>Transcript</h4>
                 {canEdit && (
                   <div className="ml-auto">
                     <ClipTracksControl
@@ -1183,13 +1208,16 @@ function ClipQuote({ quote }: { quote: string }) {
   }, [quote])
   return (
     // At least one line, so a crowded card still shows the start of the quote.
-    <div data-testid="clip-quote" className="relative min-h-0 flex-1 clip-wide:min-h-[1.125rem]">
+    <div data-testid="clip-quote" className="relative min-h-0 flex-1 clip-wide:min-h-[calc(1.125rem*var(--clip-text,1))]">
       <blockquote
         ref={ref}
         title={quote}
         data-overflowing={overflowing || undefined}
         style={overflowing ? { maskImage: QUOTE_FADE, WebkitMaskImage: QUOTE_FADE } : undefined}
-        className="max-h-[4.5em] overflow-hidden border-l-2 border-border pl-2.5 text-xs leading-normal text-text-secondary clip-wide:absolute clip-wide:inset-0 clip-wide:max-h-none"
+        className={cn(
+          'max-h-[4.5em] overflow-hidden border-l-2 border-border pl-2.5 leading-normal text-text-secondary clip-wide:absolute clip-wide:inset-0 clip-wide:max-h-none',
+          CLIP_FONT_XS,
+        )}
       >
         &ldquo;{quote}&rdquo;
       </blockquote>
@@ -1210,7 +1238,7 @@ function TopicAdder({ onAdd, subtle, compact }: { onAdd: (raw: string) => void; 
         onClick={() => setOpen(true)}
         className={cn(
           'inline-flex items-center gap-0.5 rounded-full border border-dashed border-border px-2 hover-none:py-2 text-text-tertiary transition-opacity hover:border-border-focus hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
-          compact ? 'py-0.5 text-2xs hover-none:min-h-8' : 'py-1 text-xs',
+          compact ? cn('py-0.5 hover-none:min-h-8', CLIP_TEXT_2XS) : cn('py-1', CLIP_TEXT_XS),
           subtle && 'opacity-0 group-hover/card:opacity-100 group-focus-within/card:opacity-100 hover-none:opacity-100',
         )}
       >
@@ -1245,7 +1273,10 @@ function TopicAdder({ onAdd, subtle, compact }: { onAdd: (raw: string) => void; 
           setOpen(false)
         }
       }}
-      className="h-6 hover-none:h-9 w-24 rounded-full border border-border-focus bg-bg-primary px-2 text-2xs text-text-primary focus:outline-none"
+      className={cn(
+        'h-6 hover-none:h-9 w-24 rounded-full border border-border-focus bg-bg-primary px-2 text-text-primary focus:outline-none',
+        CLIP_TEXT_2XS,
+      )}
     />
   )
 }

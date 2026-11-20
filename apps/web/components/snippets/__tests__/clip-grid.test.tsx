@@ -192,11 +192,13 @@ describe('ClipGrid', () => {
     expect(domOrder()).toEqual(['c3', 'c0', 'c1', 'c2', 'c4', 'c5', 'c6'])
   })
 
-  it('uses an auto-fill grid with a 31rem column minimum by default', () => {
+  it('uses an auto-fill grid with a 31rem column minimum by default (45rem at the Large grid size)', () => {
     render(<Harness />)
     const grid = document.querySelector('[data-clip-grid]')!
     expect(grid.className).toBe(CLIP_GRID_CLASS)
-    expect(CLIP_GRID_CLASS).toContain('grid-cols-[repeat(auto-fill,minmax(min(100%,31rem),1fr))]')
+    expect(CLIP_GRID_CLASS).toContain(
+      'grid-cols-[repeat(auto-fill,minmax(min(100%,calc(31rem*var(--clip-scale,1)_-_3rem*(var(--clip-scale,1)_-_1))),1fr))]',
+    )
     // No fixed column count left over from the old two-column grid.
     expect(CLIP_GRID_CLASS).not.toMatch(/grid-cols-\d|lg:grid-cols/)
   })

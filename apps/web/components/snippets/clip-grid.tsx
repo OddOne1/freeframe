@@ -9,7 +9,8 @@
  * dense flow did when it backfilled the slot the opened card left.
  *
  * The grid fits as many columns as its width allows (auto-fill, each at
- * least 31rem, never wider than the grid), so a narrow window shows one,
+ * least 31rem, or 45rem at the Clips tab's Large grid size; never wider
+ * than the grid), so a narrow window shows one,
  * a laptop two and a wide screen three or more. The number of columns is
  * read from the grid's own computed layout, not from a breakpoint copied
  * out of the class list, so it follows the CSS at any count.
@@ -64,8 +65,13 @@ export function countGridColumns(template: string | null | undefined): number {
 // Layout effects warn on the server; this grid only measures in the browser.
 const useBrowserLayoutEffect = typeof window === 'undefined' ? React.useEffect : React.useLayoutEffect
 
-/** The grid's current column count, kept in step with its size. */
-function useGridColumns(ref: React.RefObject<HTMLElement>): number {
+/**
+ * The grid's current column count, kept in step with its size. `layoutKey`
+ * re-reads it when the column minimum changes (the grid size setting): that
+ * changes the column count without changing the grid's own size, so the
+ * ResizeObserver alone would not notice.
+ */
+function useGridColumns(ref: React.RefObject<HTMLElement>, layoutKey?: unknown): number {
   const [columns, setColumns] = React.useState(1)
   useBrowserLayoutEffect(() => {
     const el = ref.current
@@ -79,7 +85,7 @@ function useGridColumns(ref: React.RefObject<HTMLElement>): number {
     const observer = new ResizeObserver(read)
     observer.observe(el)
     return () => observer.disconnect()
-  }, [ref])
+  }, [ref, layoutKey])
   return columns
 }
 
@@ -91,8 +97,14 @@ function useGridColumns(ref: React.RefObject<HTMLElement>): number {
  * stretching one card across the page. An opened card's `col-span-full`
  * still spans every column. The card's `clip-wide:` variant
  * (tailwind.config.ts) sits just under this minimum.
+ *
+ * The Clips tab's grid size (`--clip-scale`, clip-display.ts) raises the
+ * minimum: 31rem at Small (scale 1, exactly as before), 45rem at Large
+ * (scale 1.5). The frame and the controls grow by the full 1.5, the text
+ * column a little less, so two Large columns still fit a 1600 px window.
  */
-export const CLIP_GRID_CLASS = 'grid gap-4 grid-cols-[repeat(auto-fill,minmax(min(100%,31rem),1fr))]'
+export const CLIP_GRID_CLASS =
+  'grid gap-4 grid-cols-[repeat(auto-fill,minmax(min(100%,calc(31rem*var(--clip-scale,1)_-_3rem*(var(--clip-scale,1)_-_1))),1fr))]'
 
 export interface ClipGridProps<T> {
   items: readonly T[]
@@ -100,11 +112,14 @@ export interface ClipGridProps<T> {
   expandedKey: string | null
   children: (item: T) => React.ReactNode
   className?: string
+  /** Anything that changes the column minimum without resizing the grid
+   *  (the grid size setting): the column count is read again when it changes. */
+  layoutKey?: unknown
 }
 
-export function ClipGrid<T>({ items, keyOf, expandedKey, children, className }: ClipGridProps<T>) {
+export function ClipGrid<T>({ items, keyOf, expandedKey, children, className, layoutKey }: ClipGridProps<T>) {
   const ref = React.useRef<HTMLDivElement>(null)
-  const columns = useGridColumns(ref)
+  const columns = useGridColumns(ref, layoutKey)
   const expandedIndex = expandedKey === null ? -1 : items.findIndex((item) => keyOf(item) === expandedKey)
   const ordered = expandedRowOrder(items, expandedIndex, columns)
   return (

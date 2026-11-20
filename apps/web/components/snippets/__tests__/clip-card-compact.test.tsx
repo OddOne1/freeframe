@@ -25,6 +25,7 @@ vi.mock('@/lib/snippet-api', async (importActual) => {
 
 import { snippetApi } from '@/lib/snippet-api'
 import { COLLAPSED_TOPICS, ClipCard, type ClipCardProps } from '../clip-card'
+import { CLIP_CTL_SQ8, CLIP_FONT_XS } from '../clip-display'
 
 const base: SnippetClip = {
   id: 'snip-1',
@@ -100,12 +101,20 @@ describe('closed card layout', () => {
   it('puts the portrait frame alone in the left column and everything else in the right one', () => {
     render(<Harness />)
     const layout = screen.getByTestId('clip-layout')
-    expect(classes(layout)).toContain('clip-wide:grid-cols-[12.5rem_minmax(0,1fr)]')
+    // 12.5rem times the grid size (1 unless the Clips tab sets it, clip-display.ts).
+    expect(classes(layout)).toContain(
+      'clip-wide:grid-cols-[min(calc(12.5rem*var(--clip-scale,1)),max(12.5rem,42cqi))_minmax(0,1fr)]',
+    )
 
     // Left column: the 9:16 frame, across all three rows.
     const thumb = screen.getByTestId('clip-thumb')
     expect(classes(thumb)).toEqual(
-      expect.arrayContaining(['aspect-[9/16]', 'max-w-[12.5rem]', 'clip-wide:col-start-1', 'clip-wide:row-span-3']),
+      expect.arrayContaining([
+        'aspect-[9/16]',
+        'max-w-[calc(12.5rem*var(--clip-scale,1))]',
+        'clip-wide:col-start-1',
+        'clip-wide:row-span-3',
+      ]),
     )
     expect(within(thumb).getByRole('button', { name: 'Play A clip from interview.mov' })).toBeInTheDocument()
 
@@ -171,7 +180,8 @@ describe('closed card layout', () => {
     // Beside the frame: placed over the whole box (so it never makes the card
     // taller), cut off rather than clamped to a fixed number of lines.
     expect(classes(quote)).toEqual(
-      expect.arrayContaining(['overflow-hidden', 'clip-wide:absolute', 'clip-wide:inset-0', 'clip-wide:max-h-none', 'text-xs']),
+      // text-xs times the text size (clip-display.ts).
+      expect.arrayContaining(['overflow-hidden', 'clip-wide:absolute', 'clip-wide:inset-0', 'clip-wide:max-h-none', CLIP_FONT_XS]),
     )
     expect(quote.className).not.toMatch(/line-clamp/)
   })
@@ -202,10 +212,10 @@ describe('closed card layout', () => {
     expect(within(card).queryByTitle(/^Quality:/)).toBeNull()
   })
 
-  it('gives the header and review buttons 32 px targets', () => {
+  it('gives the header and review buttons 32 px targets (times the grid size)', () => {
     render(<Harness />)
     for (const name of ['Rename clip', 'Expand clip', 'Approve', 'Reject', 'Reset in and out']) {
-      expect(classes(screen.getByRole('button', { name }))).toEqual(expect.arrayContaining(['h-8', 'w-8']))
+      expect(classes(screen.getByRole('button', { name }))).toEqual(expect.arrayContaining(CLIP_CTL_SQ8.split(' ')))
     }
   })
 

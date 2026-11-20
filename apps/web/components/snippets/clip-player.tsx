@@ -27,6 +27,7 @@ import {
   wordIndexAt,
 } from '@/lib/snippet-timing'
 import type { SnippetTranscript, SnippetTranscriptWord } from '@/types'
+import { CLIP_FONT_SM, CLIP_ICON_3_5, CLIP_TEXT_2XS, CLIP_TEXT_SM } from './clip-display'
 
 /** Transcript context fetched on each side of the clip. */
 const TRANSCRIPT_CONTEXT_MS = 60_000
@@ -450,7 +451,7 @@ export function InOutTimeline({
         onKeyDown={editable ? onHandleKey(edge) : undefined}
         style={{ left: pct(ms) }}
         className={cn(
-          'absolute top-0 bottom-0 z-10 flex w-6 hover-none:w-9 -translate-x-1/2 touch-none items-center justify-center focus-visible:outline-none group/handle',
+          'absolute top-0 bottom-0 z-10 flex w-[calc(1.5rem*var(--clip-scale,1))] hover-none:w-[calc(2.25rem*var(--clip-scale,1))] -translate-x-1/2 touch-none items-center justify-center focus-visible:outline-none group/handle',
           editable ? 'cursor-ew-resize' : 'pointer-events-none',
         )}
       >
@@ -469,7 +470,11 @@ export function InOutTimeline({
     <div className="space-y-1">
       <div
         ref={trackRef}
-        className={cn('relative select-none rounded-md bg-bg-tertiary', compact ? 'h-6 hover-none:h-10' : 'h-10')}
+        className={cn(
+          'relative select-none rounded-md bg-bg-tertiary',
+          // The closed card's track grows with the grid size (clip-display.ts).
+          compact ? 'h-[calc(1.5rem*var(--clip-scale,1))] hover-none:h-[calc(2.5rem*var(--clip-scale,1))]' : 'h-10',
+        )}
         onPointerDown={(e) => {
           if (e.target === e.currentTarget || (e.target as HTMLElement).dataset.track === '1') onSeek(msAt(e.clientX))
         }}
@@ -616,9 +621,9 @@ export function EdgeEditor({
         onClick={(e) => onNudge(sign * (e.shiftKey ? 1000 : 100))}
         aria-label={`${label} ${sign > 0 ? 'plus' : 'minus'} 0.1 seconds`}
         title={`${sign > 0 ? '+' : '−'}0.1 s (Shift: 1 s)`}
-        className="flex h-8 w-6 shrink-0 hover-none:h-10 hover-none:w-10 items-center justify-center rounded text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        className="flex h-[calc(2rem*var(--clip-scale,1))] w-[calc(1.5rem*var(--clip-scale,1))] shrink-0 hover-none:h-[calc(2.5rem*var(--clip-scale,1))] hover-none:w-[calc(2.5rem*var(--clip-scale,1))] items-center justify-center rounded text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
-        {sign > 0 ? <Plus className="h-3.5 w-3.5" /> : <Minus className="h-3.5 w-3.5" />}
+        {sign > 0 ? <Plus className={CLIP_ICON_3_5} /> : <Minus className={CLIP_ICON_3_5} />}
       </button>
     )
     return (
@@ -628,7 +633,7 @@ export function EdgeEditor({
         {field(
           // Seven characters ("77:17.0") at 12 px mono; touch screens set
           // every field in 16 px (globals.css, no iOS zoom), so wider there.
-          'h-8 hover-none:h-10 w-[3.625rem] hover-none:w-[4.75rem] rounded bg-transparent px-0.5 text-center font-mono text-xs tabular-nums text-text-primary hover:bg-bg-hover focus:bg-bg-primary focus:outline-none focus:ring-1 focus:ring-border-focus',
+          'h-[calc(2rem*var(--clip-scale,1))] hover-none:h-[calc(2.5rem*var(--clip-scale,1))] w-[3.625rem] hover-none:w-[4.75rem] rounded bg-transparent px-0.5 text-center font-mono text-xs tabular-nums text-text-primary hover:bg-bg-hover focus:bg-bg-primary focus:outline-none focus:ring-1 focus:ring-border-focus',
         )}
         {step(1)}
       </div>
@@ -742,7 +747,7 @@ export function LiveTranscript({
   }
   if (error && !transcript) {
     return (
-      <div className={cn('px-3 pb-3 text-sm text-text-secondary', className)}>
+      <div className={cn('px-3 pb-3 text-text-secondary', CLIP_TEXT_SM, className)}>
         <p role="alert">Could not load the transcript. {errorMessage(error)}</p>
         <Button type="button" size="sm" variant="secondary" className="mt-2" onClick={onRetry}>
           Retry
@@ -751,7 +756,7 @@ export function LiveTranscript({
     )
   }
   if (segments.length === 0) {
-    return <p className={cn('px-3 pb-3 text-sm text-text-tertiary', className)}>No transcript around this clip.</p>
+    return <p className={cn('px-3 pb-3 text-text-tertiary', CLIP_TEXT_SM, className)}>No transcript around this clip.</p>
   }
 
   return (
@@ -761,7 +766,7 @@ export function LiveTranscript({
         const segInside = seg.end_ms > range.start_ms && seg.start_ms < range.end_ms
         return (
           <div key={seg.id} data-inside={segInside ? '1' : undefined}>
-            <p className="mb-0.5 text-2xs font-semibold text-text-tertiary">
+            <p className={cn('mb-0.5 font-semibold text-text-tertiary', CLIP_TEXT_2XS)}>
               {onSpeaker ? (
                 <button
                   type="button"
@@ -776,7 +781,8 @@ export function LiveTranscript({
               )}
               <span className="ml-1.5 font-normal tabular-nums">{formatClipTime(seg.start_ms)}</span>
             </p>
-            <p className="text-sm leading-relaxed">
+            {/* The Clips tab's text size (clip-display.ts). */}
+            <p className={cn('leading-relaxed', CLIP_FONT_SM)}>
               {seg.words.length === 0 ? (
                 <span className="text-text-secondary">{seg.text}</span>
               ) : (

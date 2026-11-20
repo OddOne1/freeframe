@@ -36,6 +36,7 @@ import { Skeleton } from "@/components/shared/skeleton";
 import { useOptionalToast } from "@/components/shared/toast";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { useBreadcrumbStore } from "@/stores/breadcrumb-store";
+import { useSnippetViewStore } from "@/stores/snippet-view-store";
 import {
   SHORTCUTS,
   cardKeyOf,
@@ -47,6 +48,8 @@ import {
 } from "@/lib/snippet-card";
 import { ClipCard, type ClipCardController } from "@/components/snippets/clip-card";
 import { ClipGrid } from "@/components/snippets/clip-grid";
+import { clipDisplayVars } from "@/components/snippets/clip-display";
+import { ClipDisplayControls } from "@/components/snippets/clip-display-controls";
 import { HideConfirmBody, SnippetFilesTab } from "@/components/snippets/snippet-files-tab";
 import { SnippetSearchBox } from "@/components/snippets/snippet-search-box";
 import { SnippetSettingsDialog } from "@/components/snippets/snippet-settings-dialog";
@@ -286,6 +289,14 @@ export default function SnippetsPage() {
     setSourceLabels([]);
     setStatus("default");
   }
+
+  // ── Display (Clips tab only) ────────────────────────────────────────────
+  // Grid size and text size, stored like the project view's card size and
+  // applied as two CSS variables on the Clips container (clip-display.ts).
+  const clipGridSize = useSnippetViewStore((s) => s.clipGridSize);
+  const clipTextSize = useSnippetViewStore((s) => s.clipTextSize);
+  const setClipGridSize = useSnippetViewStore((s) => s.setClipGridSize);
+  const setClipTextSize = useSnippetViewStore((s) => s.setClipTextSize);
 
   // ── Player and review ───────────────────────────────────────────────────
   const [settingsOpen, setSettingsOpen] = React.useState(false);
@@ -566,7 +577,9 @@ export default function SnippetsPage() {
   const searchStatus = errorStatus(search.error);
 
   const clipsView = (
-    <>
+    // The Clips tab's own container: its two display settings live here as
+    // CSS variables and reach nothing outside it (the Files tab included).
+    <div data-testid="clips-view" className="space-y-5" style={clipDisplayVars(clipGridSize, clipTextSize)}>
       {/* Search and filters */}
       <div className="space-y-3">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
@@ -585,6 +598,12 @@ export default function SnippetsPage() {
           <div className="flex flex-wrap items-center gap-2">
             <SnippetSelect label="Sort" value={sort} onChange={setSort} options={SORTS} />
             <SnippetSelect label="Group" value={group} onChange={setGroup} options={GROUPS} />
+            <ClipDisplayControls
+              gridSize={clipGridSize}
+              textSize={clipTextSize}
+              onGridSize={setClipGridSize}
+              onTextSize={setClipTextSize}
+            />
           </div>
         </div>
 
@@ -707,7 +726,12 @@ export default function SnippetsPage() {
                 </h2>
               )}
               {/* The opened card spans the row it was in; its row-mate and the rest follow below. */}
-              <ClipGrid items={g.items} keyOf={(clip) => cardKeyOf(g.key, clip.id)} expandedKey={expandedKey}>
+              <ClipGrid
+                items={g.items}
+                keyOf={(clip) => cardKeyOf(g.key, clip.id)}
+                expandedKey={expandedKey}
+                layoutKey={clipGridSize}
+              >
                 {(clip) => {
                   const key = cardKeyOf(g.key, clip.id);
                   return (
@@ -769,7 +793,7 @@ export default function SnippetsPage() {
           if (hiding) await hideSource(hiding);
         }}
       />
-    </>
+    </div>
   );
 
   if (!canEdit) return shell(clipsView);

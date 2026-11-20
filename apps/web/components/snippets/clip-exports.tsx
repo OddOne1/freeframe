@@ -4,10 +4,11 @@ import * as React from 'react'
 import { Download, Loader2, RotateCcw, Scissors } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { triggerBrowserDownload } from '@/lib/download'
-import { resolveApiMediaUrl } from '@/lib/utils'
+import { cn, resolveApiMediaUrl } from '@/lib/utils'
 import { errorMessage, errorStatus, snippetApi } from '@/lib/snippet-api'
 import { formatClipTime } from '@/lib/snippet-timing'
 import type { SnippetAspect, SnippetExportJob } from '@/types'
+import { CLIP_CTL_H8, CLIP_ICON_3_5 } from './clip-display'
 import { HintTooltip } from './snippet-ui'
 
 const ASPECTS: { value: SnippetAspect; enabled: boolean }[] = [
@@ -233,9 +234,13 @@ export function ClipExports({
               disabled={disabled}
               onClick={() => start('9:16')}
               aria-label="Export 9:16"
-              className="h-8 hover-none:h-10 gap-1 px-2.5 text-xs"
+              className={cn(CLIP_CTL_H8, 'gap-1 px-2.5 text-xs')}
             >
-              {spinning('9:16') ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
+              {spinning('9:16') ? (
+                <Loader2 className={cn(CLIP_ICON_3_5, 'animate-spin')} />
+              ) : (
+                <Scissors className={CLIP_ICON_3_5} />
+              )}
               Export 9:16
             </Button>
             <Button
@@ -245,9 +250,9 @@ export function ClipExports({
               disabled={disabled}
               onClick={() => start('16:9')}
               aria-label="Export 16:9"
-              className="h-8 hover-none:h-10 gap-1 px-2 text-xs"
+              className={cn(CLIP_CTL_H8, 'gap-1 px-2 text-xs')}
             >
-              {spinning('16:9') && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {spinning('16:9') && <Loader2 className={cn(CLIP_ICON_3_5, 'animate-spin')} />}
               16:9
             </Button>
           </>
