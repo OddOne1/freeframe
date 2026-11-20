@@ -1,13 +1,13 @@
-"""Share endpoints that queue server work are metered per link and per IP.
+"""Share endpoints that queue server work are metered per IP and per link.
 
-Export start, zip options and zip start used to have nothing in front of
-them but the global 300-writes-a-minute middleware. They now go through
+Export start, zip options and zip start go through
 `middleware/rate_limit.share_work_rate_limit`, which is the comment write's
-two-bucket check (`_meter_share_token_and_ip`) with its own budgets:
+two-bucket check (`_meter_share_token_and_ip`) with its own budgets
+(config.py defaults, all overridable by environment variable):
 
-    export start   5 / 60s per link, 20 / 60s per IP
-    zip options   10 / 60s per link, 40 / 60s per IP
-    zip start      5 / 60s per link, 20 / 60s per IP
+    export start   20 / 60s per IP, 240 / 60s per link
+    zip options    20 / 60s per IP, 180 / 60s per link
+    zip start      20 / 60s per IP, 180 / 60s per link
 
 The polls, the stream, the thumbnail and the listing are deliberately NOT
 metered — a viewer polls an export every few seconds.
@@ -76,72 +76,93 @@ def _zip_start(client, token=TOKEN, ip=IP):
     )
 
 
+PER_IP = 20
+
 #: (kind, request, per-link budget) for the three metered endpoints.
 METERED = [
-    pytest.param("export", _export_start, 5, id="export-start"),
-    pytest.param("zip_options", _zip_options, 10, id="zip-options"),
-    pytest.param("zip_start", _zip_start, 5, id="zip-start"),
+    pytest.param("export", _export_start, 240, id="export-start"),
+    pytest.param("zip_options", _zip_options, 180, id="zip-options"),
+    pytest.param("zip_start", _zip_start, 180, id="zip-start"),
 ]
 
 
-class TestExportStart:
-    def test_the_sixth_start_within_the_window_is_429_with_retry_after(
-        self, client, mock_db, fake_redis, unknown_link
+def _ip(n: int) -> str:
+    """The n-th distinct visitor address, in 10.0.0.0/8 so there is room."""
+    return f"10.{n // 65536 % 256}.{n // 256 % 256}.{n % 256}"
+
+
+class TestPerIp:
+    @pytest.mark.parametrize("kind,send,per_link", METERED)
+    def test_the_21st_request_from_one_address_is_429_with_retry_after(
+        self, client, mock_db, fake_redis, unknown_link, kind, send, per_link
     ):
-        for _ in range(5):
-            assert _export_start(client).status_code == 404
-        throttled = _export_start(client)
+        for _ in range(PER_IP):
+            assert send(client, ip=IP).status_code == 404
+        throttled = send(client, ip=IP)
         assert throttled.status_code == 429
         assert int(throttled.headers["Retry-After"]) >= 1
 
-    def test_another_link_from_the_same_address_has_its_own_counter(
-        self, client, mock_db, fake_redis, unknown_link
+    @pytest.mark.parametrize("kind,send,per_link", METERED)
+    def test_another_address_has_its_own_counter(
+        self, client, mock_db, fake_redis, unknown_link, kind, send, per_link
     ):
-        for _ in range(6):
-            _export_start(client, token=TOKEN)
-        assert _export_start(client, token=TOKEN).status_code == 429
-        assert _export_start(client, token=OTHER_TOKEN).status_code == 404
+        for _ in range(PER_IP + 1):
+            send(client, ip=IP)
+        assert send(client, ip=IP).status_code == 429
+        assert send(client, ip=OTHER_IP).status_code == 404
 
-    def test_an_address_has_its_own_counter_across_links(
-        self, client, mock_db, fake_redis, unknown_link
-    ):
+    def test_the_address_budget_spans_links(self, client, mock_db, fake_redis, unknown_link):
         """20 starts from one address, each on a different link, spend that
-        address's budget and nobody else's."""
-        for _ in range(20):
+        address's budget — a new link does not reset it."""
+        for _ in range(PER_IP):
             assert _export_start(client, token=uuid.uuid4().hex, ip=IP).status_code == 404
         assert _export_start(client, token=uuid.uuid4().hex, ip=IP).status_code == 429
-        assert _export_start(client, token=uuid.uuid4().hex, ip=OTHER_IP).status_code == 404
 
     def test_it_reopens_when_the_window_passes(
         self, client, mock_db, fake_redis, clock, unknown_link
     ):
-        for _ in range(6):
+        for _ in range(PER_IP + 1):
             _export_start(client)
         assert _export_start(client).status_code == 429
         clock.advance(61)
         assert _export_start(client).status_code == 404
 
+
+class TestPerLink:
+    @pytest.mark.parametrize("kind,send,per_link", METERED)
+    def test_the_request_past_the_link_budget_is_429(
+        self, client, mock_db, fake_redis, unknown_link, kind, send, per_link
+    ):
+        """Every request from a different address, so the per-IP bucket
+        never fills and only the link's own counter can trip."""
+        for n in range(per_link):
+            assert send(client, token=TOKEN, ip=_ip(n)).status_code == 404
+        throttled = send(client, token=TOKEN, ip=_ip(per_link))
+        assert throttled.status_code == 429
+        assert "Retry-After" in throttled.headers
+
+    @pytest.mark.parametrize("kind,send,per_link", METERED)
+    def test_another_link_has_its_own_counter(
+        self, client, mock_db, fake_redis, unknown_link, kind, send, per_link
+    ):
+        for n in range(per_link + 1):
+            send(client, token=TOKEN, ip=_ip(n))
+        assert send(client, token=TOKEN, ip=_ip(per_link + 1)).status_code == 429
+        assert send(client, token=OTHER_TOKEN, ip=_ip(per_link + 2)).status_code == 404
+
+
+class TestWiring:
     def test_redis_down_fails_open_like_the_other_limiters(self, client, mock_db, unknown_link):
         with patch(
             "apps.api.services.redis_service.get_redis",
             side_effect=RuntimeError("redis is down"),
         ):
-            for _ in range(20):
+            for _ in range(PER_IP * 2):
                 assert _export_start(client).status_code == 404
 
-
-class TestWiredIntoAllThree:
-    @pytest.mark.parametrize("kind,send,budget", METERED)
-    def test_budget_then_429(self, client, mock_db, fake_redis, unknown_link, kind, send, budget):
-        for _ in range(budget):
-            assert send(client).status_code == 404
-        throttled = send(client)
-        assert throttled.status_code == 429
-        assert "Retry-After" in throttled.headers
-
-    @pytest.mark.parametrize("kind,send,budget", METERED)
+    @pytest.mark.parametrize("kind,send,per_link", METERED)
     def test_each_endpoint_has_its_own_redis_buckets(
-        self, client, mock_db, fake_redis, unknown_link, kind, send, budget
+        self, client, mock_db, fake_redis, unknown_link, kind, send, per_link
     ):
         """Its own action names — an export flood does not spend the zip
         budget — and the token is hashed, never stored as a key."""
@@ -154,7 +175,7 @@ class TestWiredIntoAllThree:
         assert not any(TOKEN in key for key in keys)
 
     def test_the_three_budgets_are_independent(self, client, mock_db, fake_redis, unknown_link):
-        for _ in range(6):
+        for _ in range(PER_IP + 1):
             _export_start(client)
         assert _export_start(client).status_code == 429
         assert _zip_start(client).status_code == 404
@@ -178,7 +199,7 @@ class TestNotMetered:
         pytest.param("GET", f"/share/{TOKEN}/assets", {}, id="listing"),
     ])
     def test_never_429(self, client, mock_db, fake_redis, unknown_link, method, path, params):
-        for _ in range(40):
+        for _ in range(PER_IP * 3):
             resp = client.request(method, path, params=params, headers={"x-real-ip": IP})
             assert resp.status_code == 404, resp.text
         assert not any("share_" in key for key in fake_redis.values)

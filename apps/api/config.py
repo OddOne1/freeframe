@@ -242,22 +242,23 @@ class Settings(BaseSettings):
 
     # Share endpoints that queue server-side work — export start, zip
     # options, zip start — metered the same way (middleware/rate_limit.
-    # share_work_rate_limit). The TOKEN bucket is the per-link budget. The
-    # IP bucket keeps the comment limiter's 4x headroom for the same reason:
-    # behind the tunnel every visitor may share one address, so an IP bucket
-    # as tight as the token bucket would cap the whole instance at 5 export
-    # starts a minute. Lower the IP values only if X-Real-Ip is known to be
-    # the real client. Polls, streams, thumbnails and listings are not
-    # metered here.
-    share_export_rate_limit_per_token: int = 5
+    # share_work_rate_limit). The IP bucket (20 a minute per kind) is the
+    # tight one; the per-link bucket is a ceiling for one link shared
+    # widely, so many viewers on one link do not throttle each other.
+    # NOTE: the IP is X-Real-Ip (middleware/rate_limit.client_ip). If the
+    # proxy chain hands the API the tunnel's address instead of the
+    # visitor's, the IP bucket is shared by every visitor and acts as an
+    # instance-wide cap — raise the *_PER_IP values in that case. Polls,
+    # streams, thumbnails and listings are not metered here.
+    share_export_rate_limit_per_token: int = 240
     share_export_rate_limit_token_window_seconds: int = 60
     share_export_rate_limit_per_ip: int = 20
     share_export_rate_limit_ip_window_seconds: int = 60
-    share_zip_options_rate_limit_per_token: int = 10
+    share_zip_options_rate_limit_per_token: int = 180
     share_zip_options_rate_limit_token_window_seconds: int = 60
-    share_zip_options_rate_limit_per_ip: int = 40
+    share_zip_options_rate_limit_per_ip: int = 20
     share_zip_options_rate_limit_ip_window_seconds: int = 60
-    share_zip_start_rate_limit_per_token: int = 5
+    share_zip_start_rate_limit_per_token: int = 180
     share_zip_start_rate_limit_token_window_seconds: int = 60
     share_zip_start_rate_limit_per_ip: int = 20
     share_zip_start_rate_limit_ip_window_seconds: int = 60
